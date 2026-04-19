@@ -6,6 +6,7 @@ const { analyzeStaticComplexity } = require("../services/complexityAnalyzer");
 const { arbitrateClinicalData } = require("../services/arbitratorService");
 const { generateMermaidDiagram } = require("../services/qwenService");
 const { saveToObsidian } = require("../utils/obsidianWriter");
+const { parseJsonSafe } = require("../utils/outputSanitizer");
 
 // Tier 2：Groq 優先（含 complexity_score），失敗 fallback 到 Gemini
 async function getTier2RoutingDecision(prompt) {
@@ -101,8 +102,7 @@ async function handleCCBRequest(req, res) {
     // ==========================================
     console.log(`├─ [步驟 2] 仲裁模型: ${arbitrationModel} (complexity=${complexityScore})`);
     const arbitratedString = await arbitrateClinicalData(weightedData, arbitrationModel);
-    const cleanJsonString = arbitratedString.replace(/```json|```/g, "").trim();
-    const arbitratedJson = JSON.parse(cleanJsonString);
+    const arbitratedJson = parseJsonSafe(arbitratedString, 'arbitration');
 
     // ==========================================
     // 步驟 3: 視覺化轉譯與繁中總編 (Qwen 7B)
