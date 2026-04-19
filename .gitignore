@@ -1,0 +1,12 @@
+.env
+node_modules/
+logs/
+downloads/
+.claude/
+.claude.json
+.gemini/
+obsidian-sync/
+temp_source_files
+*.ps1
+*.bat
+*.py
