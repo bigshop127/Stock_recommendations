@@ -6,6 +6,30 @@
 
 const { analyzeStaticComplexity } = require('../services/complexityAnalyzer');
 const { parseJsonSafe } = require('../utils/outputSanitizer');
+const { callLocalModel } = require('../services/ollamaService');
+
+async function checkOllamaModels() {
+  try {
+    const res = await fetch('http://localhost:11434/api/tags');
+    const data = await res.json();
+    return data.models && data.models.length > 0;
+  } catch {
+    return false;
+  }
+}
+
+async function runTier2Baseline(prompt) {
+  const testMsg = [{ role: "user", content: `請用一句話回應：${prompt}` }];
+
+  console.log(`  [Tier 2] 冷啟動測試 (keep_alive=0)...`);
+  try {
+    await callLocalModel(testMsg, "deepseek-r1:14b", { keepAlive: 0 });
+    console.log(`  [Tier 2] 暖啟動測試 (keep_alive=-1)...`);
+    await callLocalModel(testMsg, "deepseek-r1:14b", { keepAlive: -1 });
+  } catch (err) {
+    console.log(`  [Tier 2] LLM 呼叫失敗: ${err.message}`);
+  }
+}
 
 // 5 個代表性 payload：覆蓋 Tier 1 Fast / Local 與 Tier 2 Evaluate 三條路徑
 const TEST_PAYLOADS = [
@@ -54,9 +78,14 @@ async function runSmokeTest() {
       console.log(`  Tier: ${analysis.tier.toUpperCase().padEnd(8)} | 預期: ${payload.expectedTier.toUpperCase().padEnd(8)} | ${pass ? '✅ PASS' : '❌ FAIL'} | ${latencyMs}ms`);
       console.log(`  原因: ${analysis.reason}`);
 
-      // Tier 2 案例：模型尚未就緒時跳過實際呼叫，僅驗證路由邏輯
+      // Tier 2 案例：若 Ollama 有模型則實際呼叫，否則僅驗證路由邏輯
       if (analysis.tier === "evaluate") {
-        console.log(`  [Tier 2] 待模型就緒後執行實際 LLM 呼叫`);
+        const ollamaReady = await checkOllamaModels();
+        if (ollamaReady) {
+          await runTier2Baseline(payload.prompt);
+        } else {
+          console.log(`  [Tier 2] Ollama 模型尚未就緒，跳過 LLM 呼叫`);
+        }
       }
 
       results.push({ label: payload.label, tier: analysis.tier, expected: payload.expectedTier, pass, latencyMs });
