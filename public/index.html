@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PT 臨床路徑協作平台</title>
+    <style>
+        :root {
+            --bg: #0f172a;
+            --card: #1e293b;
+            --text: #f8fafc;
+            --accent: #38bdf8;
+            --success: #22c55e;
+            --warning: #f59e0b;
+        }
+        body { font-family: 'Segoe UI', system-ui, sans-serif; background: var(--bg); color: var(--text); padding: 2rem; margin: 0; }
+        .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 2rem; border-bottom: 1px solid #334155; padding-bottom: 1rem; }
+        .status-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 1.5rem; }
+        .card { background: var(--card); border-radius: 12px; padding: 1.5rem; box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1); border: 1px solid #334155; }
+        .card-header { font-size: 1.25rem; font-weight: 600; margin-bottom: 1rem; color: var(--accent); display: flex; justify-content: space-between; }
+        .step { display: flex; align-items: center; margin: 0.8rem 0; font-size: 0.95rem; }
+        .step-dot { width: 12px; height: 12px; border-radius: 50%; margin-right: 12px; background: #475569; }
+        .step.done .step-dot { background: var(--success); box-shadow: 0 0 8px var(--success); }
+        .btn-group { display: flex; gap: 8px; margin-top: 1rem; }
+        button { background: #334155; color: white; border: none; padding: 6px 12px; border-radius: 6px; cursor: pointer; transition: 0.2s; font-size: 0.85rem; }
+        button:hover { background: #475569; }
+        button.primary { background: var(--accent); color: #0f172a; font-weight: 600; }
+        button.primary:hover { opacity: 0.9; }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>PT 臨床路徑協作平台 Dashboard</h1>
+        <div id="stats">更新中...</div>
+    </div>
+    
+    <div class="status-grid" id="dashboard">
+        <!-- 內容由 JS 動態生成 -->
+    </div>
+
+    <script>
+        async function fetchStatus() {
+            const res = await fetch('/api/status');
+            const data = await res.json();
+            const dashboard = document.getElementById('dashboard');
+            dashboard.innerHTML = '';
+
+            data.chapters.forEach(ch => {
+                const card = document.createElement('div');
+                card.className = 'card';
+                card.innerHTML = `
+                    <div class="card-header">${ch.name}</div>
+                    <div class="step ${ch.steps.raw ? 'done' : ''}"><span class="step-dot"></span>1. NotebookLM 提取內容</div>
+                    <div class="step ${ch.steps.refined ? 'done' : ''}"><span class="step-dot"></span>2. ChatGPT 優化 JSON</div>
+                    <div class="step ${ch.steps.final ? 'done' : ''}"><span class="step-dot"></span>3. CCB 仲裁繪圖</div>
+                    <div class="btn-group">
+                        <button onclick="copyRaw('${ch.name}')">複製提取內容</button>
+                        <button onclick="copyPrompt('${ch.name}')">產出 ChatGPT Prompt</button>
+                        <button class="primary" onclick="runCCB('${ch.name}')">啟動 CCB 仲裁</button>
+                    </div>
+                `;
+                dashboard.appendChild(card);
+            });
+        }
+
+        async function copyPrompt(name) {
+            const res = await fetch(`/api/raw/${name}`);
+            const text = await res.text();
+            const prompt = `你現在是一位具備 20 年經驗的高階物理治療臨床專家。請將以下資料重構為 JSON 臨床決策邏輯：\n\n${text}\n\n---
+【輸出嚴格要求】
+1. 請直接輸出純 JSON 字串，禁止使用 \`\`\`json 標籤包裹。
+2. 嚴禁任何開場白、解釋或結尾語。
+3. 確保 JSON 格式完全正確且可被 JSON.parse() 解析。`;
+            navigator.clipboard.writeText(prompt);
+            alert(`${name} 的 ChatGPT 優化指令已複製！請貼給朋友。`);
+        }
+
+        async function copyRaw(name) {
+            const res = await fetch(`/api/raw/${name}`);
+            const text = await res.text();
+            navigator.clipboard.writeText(text);
+            alert(`${name} 內容已複製到剪貼簿！`);
+        }
+
+        async function runCCB(name) {
+            alert(`正在為 ${name} 啟動 CCB 流程...`);
+            await fetch(`/api/run-ccb/${name}`, { method: 'POST' });
+        }
+
+        setInterval(fetchStatus, 3000);
+        fetchStatus();
+    </script>
+</body>
+</html>
