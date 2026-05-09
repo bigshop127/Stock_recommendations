@@ -1,0 +1,56 @@
+name: Puhui Daily Summary
+
+on:
+  schedule:
+    - cron: '0 5 * * 1-5'  # 05:00 UTC = 13:00 Taiwan (Mon-Fri)
+  workflow_dispatch:
+    inputs:
+      date:
+        description: '指定日期 YYYY-MM-DD（空白=今天）'
+        required: false
+        default: ''
+      url:
+        description: '指定文章 URL（空白=自動抓取）'
+        required: false
+        default: ''
+
+jobs:
+  daily-summary:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Playwright Chromium
+        run: npx playwright install chromium --with-deps
+
+      - name: Decode PressPlay cookies
+        env:
+          PRESSPLAY_COOKIES: ${{ secrets.PRESSPLAY_COOKIES }}
+        run: |
+          mkdir -p data
+          echo "$PRESSPLAY_COOKIES" | base64 -d > data/pressplay_cookies.json
+          echo "Cookies decoded: $(wc -c < data/pressplay_cookies.json) bytes"
+
+      - name: Run daily summary
+        env:
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
+          GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
+          GOOGLE_REFRESH_TOKEN: ${{ secrets.GOOGLE_REFRESH_TOKEN }}
+          CI: 'true'
+        run: node scripts/puhui_daily.cjs "${{ github.event.inputs.date }}" "${{ github.event.inputs.url }}"
