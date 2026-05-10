@@ -308,11 +308,14 @@ async function fetchPressPlayArticle(url) {
     const page = await context.newPage();
     await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 });
 
-    // Wait for React-rendered article body (PressPlay is SPA — DOM loads before content)
-    await page.waitForSelector(
-      '.article-content, .article-main-content, .content.article-tab-content',
-      { timeout: 30000 }
-    ).catch(() => {});
+    // Wait for React-rendered article body to be populated (PressPlay SPA fetches
+    // content via API after initial render — container exists but is empty at first)
+    await page.waitForFunction(() => {
+      const el = document.querySelector('.article-content') ||
+                 document.querySelector('.article-main-content') ||
+                 document.querySelector('.content.article-tab-content');
+      return el && el.innerText.trim().length > 50;
+    }, { timeout: 30000 }).catch(() => {});
 
     // 擷取文章正文（優先用 .article-content，fallback 用 .article-main-content）
     const content = await page.evaluate(() => {
