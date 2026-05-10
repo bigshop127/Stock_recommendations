@@ -457,12 +457,33 @@ function extractPuhuiCache(markdown) {
   const waterMatch = markdown.match(/([一二三四五六七八九十]+成)持股水位/);
   const waterLevel = waterMatch ? waterMatch[1] : '未知';
   const stocks = [];
-  const stockRe = /###\s*<span[^>]*>(🟢|🟠|🔴)\s+([^<（(]+)/g;
+
+  // Format 1: ### <span> headings (Obsidian callout style)
+  const stockRe = /###\s*<span[^>]*>(🟢|🟠|🔴)\s+([^<（(]+)/gu;
   let m;
   while ((m = stockRe.exec(markdown)) !== null) {
     const name = m[2].trim();
     if (name) stocks.push({ name, emoji: m[1].trim() });
   }
+
+  // Format 2: Markdown table under 個股 section (standard Groq/Gemini output)
+  if (stocks.length === 0) {
+    const lines = markdown.split('\n');
+    let inStockSection = false;
+    for (const l of lines) {
+      if (l.startsWith('## ') && l.includes('個股')) { inStockSection = true; continue; }
+      if (l.startsWith('## ') && inStockSection) break;
+      if (!inStockSection || !l.startsWith('|')) continue;
+      const cells = l.split('|').map(c => c.trim()).filter(Boolean);
+      if (cells.length < 2 || /^[-:]+$/.test(cells[0]) || cells[0] === '代號') continue;
+      const [code, name, advice = ''] = cells;
+      const em = (advice.includes('出清') || advice.includes('賣出')) ? '🔴' :
+                 (advice.includes('續抱') || advice.includes('持有') || advice.includes('持股')) ? '🟢' : '🟠';
+      const displayName = name ? `${code} ${name}` : code;
+      if (displayName) stocks.push({ name: displayName, emoji: em });
+    }
+  }
+
   const cache = { date: TARGET_DATE, water_level: waterLevel, stocks };
   try {
     fs.mkdirSync(path.dirname(PUHUI_CACHE_PATH), { recursive: true });
