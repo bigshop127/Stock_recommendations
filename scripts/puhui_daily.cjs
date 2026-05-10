@@ -30,6 +30,7 @@ const OBSIDIAN_DIR = 'C:\\obsidian\\儲存庫\\浦惠投顧報告整理';
 const NOTE_PATH = path.join(OBSIDIAN_DIR, `${TARGET_DATE}.md`);
 const COOKIES_PATH = path.join(__dirname, '..', 'data', 'pressplay_cookies.json');
 const LOG_PATH = path.join(__dirname, '..', 'data', 'puhui_daily.log');
+const PUHUI_CACHE_PATH = path.join(__dirname, '..', 'data', 'puhui_cache.json');
 
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
 const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET;
@@ -161,7 +162,7 @@ function buildTelegramSummary(markdown, articleTitle, articleUrl) {
   let inStockSection = false;
   for (const l of lines) {
     if (l.startsWith('## ')) {
-      inStockSection = !!stripHtml(l).match(/今日提到個股|📌.*個股/);
+      inStockSection = !!stripHtml(l).match(/個股/);
       continue;
     }
 
@@ -305,7 +306,7 @@ async function fetchPressPlayArticle(url) {
     }
 
     const page = await context.newPage();
-    await page.goto(url, { waitUntil: 'networkidle', timeout: 40000 });
+    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 });
 
     // 擷取文章正文（優先用 .article-content，fallback 用 .article-main-content）
     const content = await page.evaluate(() => {
@@ -407,7 +408,7 @@ async function fetchArticleUrlByDate(dateDisplay) {
       await context.addCookies(cookies);
     }
     const page = await context.newPage();
-    await page.goto(LIST_URL, { waitUntil: 'networkidle', timeout: 40000 });
+    await page.goto(LIST_URL, { waitUntil: 'domcontentloaded', timeout: 60000 });
 
     // Scroll down multiple times to trigger lazy-loading of older articles
     for (let i = 0; i < 8; i++) {
@@ -435,6 +436,27 @@ async function fetchArticleUrlByDate(dateDisplay) {
     return url;
   } finally {
     await browser.close();
+  }
+}
+
+// ── puhui_cache.json（供 premarket GitHub Actions 讀取）────
+function extractPuhuiCache(markdown) {
+  const waterMatch = markdown.match(/([一二三四五六七八九十]+成)持股水位/);
+  const waterLevel = waterMatch ? waterMatch[1] : '未知';
+  const stocks = [];
+  const stockRe = /###\s*<span[^>]*>(🟢|🟠|🔴)\s+([^<（(]+)/g;
+  let m;
+  while ((m = stockRe.exec(markdown)) !== null) {
+    const name = m[2].trim();
+    if (name) stocks.push({ name, emoji: m[1].trim() });
+  }
+  const cache = { date: TARGET_DATE, water_level: waterLevel, stocks };
+  try {
+    fs.mkdirSync(path.dirname(PUHUI_CACHE_PATH), { recursive: true });
+    fs.writeFileSync(PUHUI_CACHE_PATH, JSON.stringify(cache, null, 2), 'utf-8');
+    log(`puhui_cache.json 已寫入: 水位=${waterLevel}, 個股=${stocks.length} 檔`);
+  } catch (e) {
+    log(`puhui_cache.json 寫入失敗: ${e.message}`);
   }
 }
 
@@ -562,6 +584,9 @@ async function main() {
   if (articleUrl && !markdown.includes(articleUrl)) {
     markdown += `\n\n---\n🔗 [閱讀原文](${articleUrl})`;
   }
+
+  // 寫入 puhui_cache.json（供 premarket workflow 隔日讀取）
+  extractPuhuiCache(markdown);
 
   // 7. 寫入 Obsidian（CI 環境略過 Windows 路徑）
   if (!IS_CI) {
