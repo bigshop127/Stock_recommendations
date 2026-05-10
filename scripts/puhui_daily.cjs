@@ -493,7 +493,10 @@ async function main() {
     log('OAuth 正常');
   } catch (e) {
     log(`OAuth 失敗: ${e.message} — 改走 Playwright 文章列表 fallback`);
-    await sendTelegram(`⚠️ 浦惠投顧 OAuth 異常，改走 Playwright fallback\n\n${e.message}\n\n請執行 node scripts/oauth_reauth.cjs 修復`);
+    // 在 CI 或 deleted_client（永久失效）時不發 Telegram，避免每次觸發垃圾通知
+    if (!IS_CI && !e.message.includes('deleted_client')) {
+      await sendTelegram(`⚠️ 浦惠投顧 OAuth 異常，改走 Playwright fallback\n\n${e.message}\n\n請執行 node scripts/oauth_reauth.cjs 修復`);
+    }
   }
 
   // 3 & 4. 取文章（Gmail 優先，Playwright 列表頁 fallback）
