@@ -310,11 +310,12 @@ async function fetchPressPlayArticle(url) {
 
     // Wait for React-rendered article body to be populated (PressPlay SPA fetches
     // content via API after initial render — container exists but is empty at first)
+    // Threshold 500 chars: teaser is ~87 chars (paywall), real article is typically 2000+
     await page.waitForFunction(() => {
       const el = document.querySelector('.article-content') ||
                  document.querySelector('.article-main-content') ||
                  document.querySelector('.content.article-tab-content');
-      return el && el.innerText.trim().length > 50;
+      return el && el.innerText.trim().length > 500;
     }, { timeout: 30000 }).catch(() => {});
 
     // 擷取文章正文（優先用 .article-content，fallback 用 .article-main-content）
@@ -327,6 +328,9 @@ async function fetchPressPlayArticle(url) {
     });
 
     const title = await page.title();
+    // Log first 200 chars to diagnose paywall/teaser vs real content in CI
+    const preview = content.substring(0, 200).replace(/\n/g, ' ');
+    log(`抓取完成，內容長度: ${content.length}，前200字: ${preview}`);
     return { title: title.replace(' - PressPlay', '').replace(' - PressPlay Academy', '').trim(), content };
   } finally {
     await browser.close();
@@ -563,7 +567,7 @@ async function main() {
       const fetched = await fetchPressPlayArticle(articleUrl);
       articleTitle = fetched.title || articleTitle || DATE_DISPLAY;
       articleContent = { content: fetched.content, url: articleUrl };
-      log(`抓取成功，內容長度: ${fetched.content.length}`);
+      log(`抓取結果: ${fetched.content.length} 字${fetched.content.length < 500 ? ' ⚠️ 疑似 paywall teaser' : ' ✅ 正常'}`);
     } catch (e) {
       log(`Playwright 抓取失敗: ${e.message}`);
       await notify(`${DATE_DISPLAY} 文章抓取失敗`, `⚠️ 浦惠投顧 ${DATE_DISPLAY} 文章抓取失敗\n\n${e.message}\n\n請手動補建筆記：${articleUrl}`);
