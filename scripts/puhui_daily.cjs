@@ -339,28 +339,76 @@ async function fetchPressPlayArticle(url) {
 
 // ── Groq 摘要 ─────────────────────────────────────────────
 async function summarizeWithGroq(articleTitle, rawContent) {
-  const prompt = `你是台股投資分析助手。請將以下浦惠投顧老王的每日分析文章，整理成繁體中文的 Obsidian Markdown 筆記。
+  const prompt = `你是台股投資分析助手。請將以下浦惠投顧老王的每日分析文章，整理成繁體中文的 Obsidian Markdown 筆記。報告必須與5月8日報告的結構和詳細程度一致。
 
-格式要求：
-- 第一行：# 📊 浦惠投顧每日摘要 — ${DATE_DISPLAY}
-- 接著 > 引用句（用文章標題）
-- ## 整體操作水位（持股水位，用紅色 span 標記）
-- ## 大盤與美股觀察（要點列表）
-- 族群分析章節（依文章內容動態決定）
-- ## 📌 今日提到個股（Markdown 表格，欄位：代號、名稱、操作建議）
-- 最後 🔗 [閱讀原文](${rawContent.url || ''})
+【強制要求的報告結構】
+
+# 📊 浦惠投顧每日摘要 — ${DATE_DISPLAY}
+> ${articleTitle}
+
+## 整體操作水位
+- 清楚標記持股水位（如：七成持股水位）
+- 說明持股邏輯和理由
+
+## 大盤與美股觀察
+- 包含大盤技術面分析
+- 美股相關訊息
+- 可以包含表格列出重點數據
+
+## 原油
+- 如果文章提到原油，必須獨立成章，包含：
+  - 價格走勢
+  - 對台股的影響
+  - 警示信息（用 > 警示框）
+
+## 重大政策事件 / 政策分析
+- 如果文章提到政策、法規、或重要消息，必須獨立成章
+- 清楚說明對台股的影響
+
+## 台股評估
+- 必須包含投資框架分析（如：Buffett Indicator、季節性、基本面等）
+- 深入分析目前的市場條件
+- 評估買進風險與機會
+
+## 操作策略
+- 【A場景】: 如果市場條件如何...那麼操作建議是...
+- 【B場景】: 如果市場條件如何...那麼操作建議是...
+- 【C場景】: 如果市場條件如何...那麼操作建議是...
+- 清楚的進場點、停損點、獲利點
+
+## 📌 今日提到個股
+以 Markdown 表格形式，每隻股票必須包含：
+| 代號 | 名稱 | 關鍵訊號 | 操作建議 |
+
+對每隻股票的分析必須包括：
+- 關鍵訊號：為什麼老王看好或看空這隻股票（技術面、基本面、消息面理由）
+- 操作建議：具體的進場點、停損點、目標價或操作建議
+
+## 老王重要提醒
+- 交易風險提示
+- 重要注意事項
+- 本週或本月的重點提醒
+
+🔗 [閱讀原文](${rawContent.url || ''})
+
+【內容質量要求】
+- 分析必須深入、有邏輯、有框架
+- 個股分析不能是空泛的建議，要說明理由和訊號
+- 表格要完整，每個欄位都要有實質內容
+- 不要簡化、跳過任何章節
+- 所有章節的分析深度要保持一致（都要有足夠的細節）
 
 文章標題：${articleTitle}
 
 文章內容：
 ${rawContent.content.substring(0, 8000)}
 
-請直接輸出 Markdown 內容，不要任何前言或解釋。`;
+請直接輸出完整的 Markdown 內容，不要任何前言或解釋。確保報告包含所有強制要求的章節。`;
 
   const body = {
     model: 'llama-3.3-70b-versatile',
     messages: [{ role: 'user', content: prompt }],
-    max_tokens: 3000,
+    max_tokens: 4500,
     temperature: 0.3
   };
 
@@ -374,20 +422,69 @@ ${rawContent.content.substring(0, 8000)}
 
 // ── Gemini fallback ───────────────────────────────────────
 async function summarizeWithGemini(articleTitle, rawContent) {
-  const prompt = `你是台股投資分析助手。請將以下浦惠投顧老王的每日分析文章，整理成繁體中文的 Obsidian Markdown 筆記。
+  const prompt = `你是台股投資分析助手。請將以下浦惠投顧老王的每日分析文章，整理成繁體中文的 Obsidian Markdown 筆記。報告必須與5月8日報告的結構和詳細程度一致。
 
-格式要求：
-- # 📊 浦惠投顧每日摘要 — ${DATE_DISPLAY}
-- > 引用標題
-- ## 整體操作水位
-- ## 大盤與美股觀察
-- 族群章節（依內容）
-- ## 📌 今日提到個股（表格）
+【強制要求的報告結構】
+
+# 📊 浦惠投顧每日摘要 — ${DATE_DISPLAY}
+> ${articleTitle}
+
+## 整體操作水位
+- 清楚標記持股水位（如：七成持股水位）
+- 說明持股邏輯和理由
+
+## 大盤與美股觀察
+- 包含大盤技術面分析
+- 美股相關訊息
+- 可以包含表格列出重點數據
+
+## 原油
+- 如果文章提到原油，必須獨立成章，包含：
+  - 價格走勢
+  - 對台股的影響
+  - 警示信息（用 > 警示框）
+
+## 重大政策事件 / 政策分析
+- 如果文章提到政策、法規、或重要消息，必須獨立成章
+- 清楚說明對台股的影響
+
+## 台股評估
+- 必須包含投資框架分析（如：Buffett Indicator、季節性、基本面等）
+- 深入分析目前的市場條件
+- 評估買進風險與機會
+
+## 操作策略
+- 【A場景】: 如果市場條件如何...那麼操作建議是...
+- 【B場景】: 如果市場條件如何...那麼操作建議是...
+- 【C場景】: 如果市場條件如何...那麼操作建議是...
+- 清楚的進場點、停損點、獲利點
+
+## 📌 今日提到個股
+以 Markdown 表格形式，每隻股票必須包含：
+| 代號 | 名稱 | 關鍵訊號 | 操作建議 |
+
+對每隻股票的分析必須包括：
+- 關鍵訊號：為什麼老王看好或看空這隻股票（技術面、基本面、消息面理由）
+- 操作建議：具體的進場點、停損點、目標價或操作建議
+
+## 老王重要提醒
+- 交易風險提示
+- 重要注意事項
+- 本週或本月的重點提醒
+
+🔗 [閱讀原文](${rawContent.url || ''})
+
+【內容質量要求】
+- 分析必須深入、有邏輯、有框架
+- 個股分析不能是空泛的建議，要說明理由和訊號
+- 表格要完整，每個欄位都要有實質內容
+- 不要簡化、跳過任何章節
+- 所有章節的分析深度要保持一致（都要有足夠的細節）
 
 文章標題：${articleTitle}
 文章內容：${rawContent.content.substring(0, 8000)}
 
-請直接輸出 Markdown 內容。`;
+請直接輸出完整的 Markdown 內容，不要任何前言或解釋。確保報告包含所有強制要求的章節。`;
 
   const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_API_KEY}`;
   const { default: fetch } = await import('node-fetch');
@@ -484,11 +581,54 @@ function extractPuhuiCache(markdown) {
     }
   }
 
-  const cache = { date: TARGET_DATE, water_level: waterLevel, stocks };
+  // Phase 12: Extract market_sentiment (樂觀/中立/悲觀 + 1-10 score)
+  const sentimentMap = {
+    '樂觀': 8, '看多': 8, '偏多': 7, '積極': 7,
+    '中立': 5, '平盤': 5, '觀望': 5,
+    '悲觀': 2, '看空': 2, '警惕': 3, '謹慎': 4, '保守': 4
+  };
+  let marketSentiment = { label: '中立', score: 5 };
+  for (const [label, score] of Object.entries(sentimentMap)) {
+    if (markdown.includes(label)) {
+      marketSentiment = { label, score };
+      break;
+    }
+  }
+
+  // Phase 12: Extract sector_rotation (板塊輪動觀點)
+  const knownSectors = ['科技', '電子', '傳產', '金融', '航運', '鋼鐵', '能源', '化工', '醫療', '消費', '建構'];
+  const sectorRotation = [];
+  for (const sector of knownSectors) {
+    if (markdown.includes(sector) && !sectorRotation.includes(sector)) {
+      sectorRotation.push(sector);
+    }
+  }
+
+  // Phase 12: Extract confidence_level (1-10 報告信心度)
+  let confidenceLevel = 7; // default
+  // Boost confidence if many stocks mentioned (high detail)
+  if (stocks.length >= 8) confidenceLevel = 8;
+  if (stocks.length >= 12) confidenceLevel = 9;
+  // Reduce if few stocks or vague language
+  if (stocks.length < 3) confidenceLevel = 5;
+  // Check for explicit confidence mention
+  const confMatch = markdown.match(/信心度[：:]*([0-9]|十)/);
+  if (confMatch) {
+    confidenceLevel = confMatch[1] === '十' ? 10 : parseInt(confMatch[1]) || confidenceLevel;
+  }
+
+  const cache = {
+    date: TARGET_DATE,
+    water_level: waterLevel,
+    stocks,
+    market_sentiment: marketSentiment,
+    sector_rotation: sectorRotation,
+    confidence_level: confidenceLevel
+  };
   try {
     fs.mkdirSync(path.dirname(PUHUI_CACHE_PATH), { recursive: true });
     fs.writeFileSync(PUHUI_CACHE_PATH, JSON.stringify(cache, null, 2), 'utf-8');
-    log(`puhui_cache.json 已寫入: 水位=${waterLevel}, 個股=${stocks.length} 檔`);
+    log(`puhui_cache.json 已寫入: 水位=${waterLevel}, 個股=${stocks.length} 檔, 情緒=${marketSentiment.label}(${marketSentiment.score}), 信心=${confidenceLevel}`);
   } catch (e) {
     log(`puhui_cache.json 寫入失敗: ${e.message}`);
   }
