@@ -210,18 +210,150 @@ function buildTelegramSummary(markdown, articleTitle, articleUrl) {
   return msg.length > 3800 ? msg.substring(0, 3800) + '\n…' : msg;
 }
 
-async function sendEmail(subject, body) {
+function encodeSubject(text) {
+  // RFC 2047 encoding for non-ASCII subjects
+  const encoded = Buffer.from(text).toString('base64');
+  return `=?UTF-8?B?${encoded}?=`;
+}
+
+function markdownToHTML(markdown) {
+  let html = markdown;
+
+  // Process tables first (before line breaks)
+  const tableRegex = /^\|[\s\S]*?\n\|.*?\|[\s\S]*?(?=\n\n|\n[^|]|$)/gm;
+  html = html.replace(tableRegex, (tableStr) => {
+    const rows = tableStr.trim().split('\n');
+    if (rows.length < 2) return tableStr;
+
+    const headers = rows[0].split('|').slice(1, -1).map(h => h.trim());
+    const cellStyle = 'padding:10px;border:1px solid #ddd;text-align:left';
+    const headerStyle = 'padding:12px;border:1px solid #ddd;background:#f5f5f5;font-weight:bold;color:#1a1a1a';
+
+    let table = '<table style="border-collapse:collapse;width:100%;margin:12px 0">';
+    table += '<thead><tr>' + headers.map(h => `<th style="${headerStyle}">${h}</th>`).join('') + '</tr></thead>';
+    table += '<tbody>';
+    for (let i = 2; i < rows.length; i++) {
+      const cells = rows[i].split('|').slice(1, -1).map(c => c.trim());
+      if (cells.some(c => c.length > 0)) {
+        table += '<tr>' + cells.map(c => `<td style="${cellStyle}">${c}</td>`).join('') + '</tr>';
+      }
+    }
+    table += '</tbody></table>';
+    return table;
+  });
+
+  // Headers (before escaping)
+  html = html.replace(/^# (.*?)$/gm, '<h1 style="color:#1a1a1a;margin:24px 0 12px;font-size:28px;font-weight:bold">$1</h1>');
+  html = html.replace(/^## (.*?)$/gm, '<h2 style="color:#333;margin:20px 0 10px;font-size:22px;font-weight:bold">$1</h2>');
+  html = html.replace(/^### (.*?)$/gm, '<h3 style="color:#555;margin:16px 0 8px;font-size:18px;font-weight:bold">$1</h3>');
+  html = html.replace(/^#### (.*?)$/gm, '<h4 style="color:#666;margin:12px 0 6px;font-size:16px;font-weight:bold">$1</h4>');
+
+  // Blockquotes (警示框)
+  html = html.replace(/^> (.*?)$/gm, '<div style="background:#fff3cd;border-left:4px solid #ff9800;padding:12px 16px;margin:12px 0;border-radius:4px;color:#e65100">$1</div>');
+
+  // Links (before escaping)
+  html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" style="color:#1976d2;text-decoration:none">$1</a>');
+
+  // Bold and italic (before escaping)
+  html = html.replace(/\*\*(.+?)\*\*/g, '<strong style="color:#d32f2f">$1</strong>');
+  html = html.replace(/\*(.+?)\*/g, '<em>$1</em>');
+  html = html.replace(/_(.+?)_/g, '<em>$1</em>');
+
+  // Escape remaining HTML in plain text
+  html = html.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+  // Restore HTML tags
+  html = html.replace(/&lt;a href=/g, '<a href=').replace(/&quot;/g, '"').replace(/&lt;\/a&gt;/g, '</a>');
+  html = html.replace(/&lt;strong/g, '<strong').replace(/&lt;\/strong&gt;/g, '</strong>');
+  html = html.replace(/&lt;em/g, '<em').replace(/&lt;\/em&gt;/g, '</em>');
+  html = html.replace(/&lt;h[1-4]/g, (m) => m.replace('&lt;', '<')).replace(/&lt;\/h[1-4]&gt;/g, (m) => m.replace('&lt;', '<').replace('&gt;', '>'));
+  html = html.replace(/&lt;div style=/g, '<div style=').replace(/&lt;\/div&gt;/g, '</div>');
+  html = html.replace(/&lt;table/g, '<table').replace(/&lt;\/table&gt;/g, '</table>');
+  html = html.replace(/&lt;thead/g, '<thead').replace(/&lt;\/thead&gt;/g, '</thead>');
+  html = html.replace(/&lt;tbody/g, '<tbody').replace(/&lt;\/tbody&gt;/g, '</tbody>');
+  html = html.replace(/&lt;tr/g, '<tr').replace(/&lt;\/tr&gt;/g, '</tr>');
+  html = html.replace(/&lt;th/g, '<th').replace(/&lt;\/th&gt;/g, '</th>');
+  html = html.replace(/&lt;td/g, '<td').replace(/&lt;\/td&gt;/g, '</td>');
+
+  // Lists
+  html = html.replace(/^- (.+?)$/gm, '<li style="margin:6px 0">$1</li>');
+  const listRegex = /(<li[^<]*>[^<]*<\/li>[\s\n]*)+/gm;
+  html = html.replace(listRegex, (match) => `<ul style="margin:8px 0 8px 20px;padding:0">\n${match}</ul>\n`);
+
+  // Line breaks and paragraphs
+  html = html.replace(/\n\n+/g, '</p><p>');
+  html = html.replace(/\n/g, '<br>');
+  html = `<p>${html}</p>`;
+
+  // Remove double paragraph tags
+  html = html.replace(/<\/p>\s*<p>/g, '</p><p>');
+
+  const css = `<style>
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; line-height: 1.6; color: #333; max-width: 900px; margin: 0 auto; padding: 20px; }
+    h1 { color: #1a1a1a; font-size: 28px; margin: 24px 0 12px; }
+    h2 { color: #333; font-size: 22px; margin: 20px 0 10px; }
+    h3 { color: #555; font-size: 18px; margin: 16px 0 8px; }
+    h4 { color: #666; font-size: 16px; margin: 12px 0 6px; }
+    table { border-collapse: collapse; width: 100%; margin: 16px 0; }
+    th { background: #f5f5f5; padding: 12px; border: 1px solid #ddd; font-weight: bold; color: #1a1a1a; }
+    td { padding: 10px; border: 1px solid #ddd; }
+    a { color: #1976d2; text-decoration: none; }
+    strong { color: #d32f2f; font-weight: bold; }
+    em { font-style: italic; }
+    ul { margin: 8px 0 8px 20px; padding: 0; }
+    li { margin: 6px 0; }
+    div[style*="background"] { border-radius: 4px; }
+  </style>`;
+
+  return `<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+${css}
+</head>
+<body>
+${html}
+</body>
+</html>`;
+}
+
+async function sendEmail(subject, body, htmlBody = null) {
   if (!_gmailToken) return; // OAuth 尚未成功，跳過
   try {
-    const raw = [
-      `From: ${NOTIFY_EMAIL}`,
-      `To: ${NOTIFY_EMAIL}`,
-      `Subject: ${subject}`,
-      'MIME-Version: 1.0',
-      'Content-Type: text/plain; charset=utf-8',
-      '',
-      body,
-    ].join('\r\n');
+    const encodedSubject = encodeSubject(subject);
+    let raw;
+    if (htmlBody) {
+      // Multipart MIME with HTML alternative
+      const boundary = '----boundary_' + Date.now();
+      const textPart = `--${boundary}\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n${body}`;
+      const htmlPart = `--${boundary}\r\nContent-Type: text/html; charset=utf-8\r\n\r\n${htmlBody}`;
+      const closing = `--${boundary}--`;
+
+      raw = [
+        `From: ${NOTIFY_EMAIL}`,
+        `To: ${NOTIFY_EMAIL}`,
+        `Subject: ${encodedSubject}`,
+        'MIME-Version: 1.0',
+        `Content-Type: multipart/alternative; boundary="${boundary}"`,
+        '',
+        textPart,
+        htmlPart,
+        closing
+      ].join('\r\n');
+    } else {
+      // Plain text email
+      raw = [
+        `From: ${NOTIFY_EMAIL}`,
+        `To: ${NOTIFY_EMAIL}`,
+        `Subject: ${encodedSubject}`,
+        'MIME-Version: 1.0',
+        'Content-Type: text/plain; charset=utf-8',
+        '',
+        body,
+      ].join('\r\n');
+    }
+
     const encoded = Buffer.from(raw).toString('base64')
       .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
     await new Promise((resolve, reject) => {
@@ -403,6 +535,12 @@ async function summarizeWithGroq(articleTitle, rawContent) {
 文章內容：
 ${rawContent.content.substring(0, 8000)}
 
+【摘要粒度 — 最重要】
+- 對文章的每個主要段落，用 2-3 句話來總結（不要壓縮成 1-2 句或過度簡化）
+- 保留原文的邏輯和細節，使用清晰的標題、要點符號、表格、引用框來美化內容
+- 優先保留內容的完整性和可讀性，而不是過度濃縮
+- 每個章節都應該讓讀者能理解老王的完整觀點，而不是只看到骨架
+
 請直接輸出完整的 Markdown 內容，不要任何前言或解釋。確保報告包含所有強制要求的章節。`;
 
   const body = {
@@ -480,6 +618,12 @@ async function summarizeWithGemini(articleTitle, rawContent) {
 - 表格要完整，每個欄位都要有實質內容
 - 不要簡化、跳過任何章節
 - 所有章節的分析深度要保持一致（都要有足夠的細節）
+
+【摘要粒度 — 最重要】
+- 對文章的每個主要段落，用 2-3 句話來總結（不要壓縮成 1-2 句或過度簡化）
+- 保留原文的邏輯和細節，使用清晰的標題、要點符號、表格、引用框來美化內容
+- 優先保留內容的完整性和可讀性，而不是過度濃縮
+- 每個章節都應該讓讀者能理解老王的完整觀點，而不是只看到骨架
 
 文章標題：${articleTitle}
 文章內容：${rawContent.content.substring(0, 8000)}
@@ -774,13 +918,21 @@ async function main() {
     log('CI 模式：跳過 Obsidian 寫入');
   }
 
-  // 8. Telegram 通知
+  // 7.5 發送完整 HTML 報告到 Gmail（停用 notify 的郵件部分，避免重複）
+  if (_gmailToken) {
+    try {
+      const htmlContent = markdownToHTML(markdown);
+      await sendEmail(`浦惠投顧每日摘要 — ${DATE_DISPLAY}`, markdown, htmlContent);
+      log('HTML 報告已發送到 Gmail');
+    } catch (e) {
+      log(`HTML 報告發送失敗: ${e.message}`);
+    }
+  }
+
+  // 8. Telegram 通知（改用直接發送，避免 notify 函式的重複郵件）
   const tgMessage = buildTelegramSummary(markdown, articleTitle, articleUrl);
-  await notify(
-    `${DATE_DISPLAY} 摘要完成 — ${articleTitle.substring(0, 30)}`,
-    tgMessage
-  );
-  log('通知已發送（Telegram + Email）');
+  await sendTelegram(tgMessage);
+  log('Telegram 通知已發送');
   log('===== puhui_daily 完成 =====');
 }
 
