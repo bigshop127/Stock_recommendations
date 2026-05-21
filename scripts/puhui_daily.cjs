@@ -21,13 +21,28 @@ const path = require('path');
 
 // ── 設定 ────────────────────────────────────────────────
 const TARGET_DATE = process.argv[2] || new Date().toISOString().slice(0, 10);
-const ARTICLE_URL_OVERRIDE = process.argv[3] || null;
+const FORCE_REGENERATE = process.argv.includes('--force');
+const ARTICLE_URL_OVERRIDE = (process.argv[3] && !process.argv[3].startsWith('--')) ? process.argv[3] : null;
 const IS_CI = process.env.CI === 'true';
 const [Y, M, D] = TARGET_DATE.split('-');
 const DATE_DISPLAY = `${Y}/${M}/${D}`;
 
+// 計算月份內的週數（week-of-month）用於資料夾組織
+// 規則：(dayOfMonth - 1) / 7 向下取整 + 1
+// 例：1-7 日 = W1，8-14 日 = W2，15-21 日 = W3，22-28 日 = W4，29+ = W5
+function getMonthWeek(dateStr) {
+  const [year, month, day] = dateStr.split('-').map(Number);
+  const weekOfMonth = Math.floor((day - 1) / 7) + 1;
+  return { year, month, weekOfMonth };
+}
+
+const { year: targetYear, month: targetMonth, weekOfMonth } = getMonthWeek(TARGET_DATE);
+const MONTH_FOLDER = `${targetYear}-${String(targetMonth).padStart(2, '0')}`;
+const WEEK_FOLDER = `W${weekOfMonth}`;
+
 const OBSIDIAN_DIR = 'C:\\obsidian\\儲存庫\\浦惠投顧報告整理';
-const NOTE_PATH = path.join(OBSIDIAN_DIR, `${TARGET_DATE}.md`);
+const NOTE_DIR = path.join(OBSIDIAN_DIR, MONTH_FOLDER, WEEK_FOLDER);
+const NOTE_PATH = path.join(NOTE_DIR, `${TARGET_DATE}.md`);
 const COOKIES_PATH = path.join(__dirname, '..', 'data', 'pressplay_cookies.json');
 const LOG_PATH = path.join(__dirname, '..', 'data', 'puhui_daily.log');
 const PUHUI_CACHE_PATH = path.join(__dirname, '..', 'data', 'puhui_cache.json');
@@ -274,16 +289,17 @@ function markdownToHTML(markdown) {
   html = html.replace(/&lt;tr/g, '<tr').replace(/&lt;\/tr&gt;/g, '</tr>');
   html = html.replace(/&lt;th/g, '<th').replace(/&lt;\/th&gt;/g, '</th>');
   html = html.replace(/&lt;td/g, '<td').replace(/&lt;\/td&gt;/g, '</td>');
+  html = html.replace(/&lt;span style=/g, '<span style=').replace(/&lt;\/span&gt;/g, '</span>');
 
   // Lists
-  html = html.replace(/^- (.+?)$/gm, '<li style="margin:6px 0">$1</li>');
+  html = html.replace(/^- (.+?)$/gm, '<li style="margin:10px 0;line-height:1.6">$1</li>');
   const listRegex = /(<li[^<]*>[^<]*<\/li>[\s\n]*)+/gm;
-  html = html.replace(listRegex, (match) => `<ul style="margin:8px 0 8px 20px;padding:0">\n${match}</ul>\n`);
+  html = html.replace(listRegex, (match) => `<ul style="margin:16px 0;padding:0 0 0 24px">\n${match}</ul>\n`);
 
   // Line breaks and paragraphs
-  html = html.replace(/\n\n+/g, '</p><p>');
+  html = html.replace(/\n\n+/g, '</p><p style="margin:14px 0;line-height:1.8;color:#333">');
   html = html.replace(/\n/g, '<br>');
-  html = `<p>${html}</p>`;
+  html = `<p style="margin:14px 0;line-height:1.8;color:#333">${html}</p>`;
 
   // Remove double paragraph tags
   html = html.replace(/<\/p>\s*<p>/g, '</p><p>');
@@ -415,138 +431,222 @@ function extractPressPlayLinks(payload) {
   return [...new Set(links)];
 }
 
-// ── Playwright 無頭抓取 ────────────────────────────────────
+// ── PressPlay API 直接抓取（取代 Playwright headless）───────
+// 使用 og-web.pressplay.cc/timeline/{id}/info，穩定不受 bot 偵測影響
 async function fetchPressPlayArticle(url) {
-  const { chromium } = require('playwright-core');
-  const execPath = process.env.PLAYWRIGHT_CHROMIUM_PATH ||
-    (IS_CI ? null : 'C:\\Users\\bigsh\\AppData\\Local\\ms-playwright\\chromium-1217\\chrome-win64\\chrome.exe');
+  const articleId = url.match(/articles\/([A-Z0-9]+)/i)?.[1];
+  if (!articleId) throw new Error(`無法從 URL 取得文章 ID: ${url}`);
 
-  const browser = await chromium.launch({
-    ...(execPath ? { executablePath: execPath } : {}),
-    headless: true,
-    args: ['--no-sandbox', '--disable-setuid-sandbox']
+  const cookies = fs.existsSync(COOKIES_PATH)
+    ? JSON.parse(fs.readFileSync(COOKIES_PATH, 'utf-8'))
+    : [];
+  const cookieStr = cookies.map(c => c.name + '=' + c.value).join('; ');
+  log(`已載入 ${cookies.length} 個 PressPlay cookies`);
+
+  const PP_HEADERS = {
+    'Cookie': cookieStr,
+    'pp-os': 'Web', 'pp-os-ver': '1.0', 'pp-app-ver': '1.0',
+    'pp-locale': 'zh-TW', 'pp-region': 'TW',
+    'pp-timezone': 'Asia/Taipei', 'pp-timezone-offset': '-480',
+    'pp-device-id': 'howdoyouturnthison',
+    'x-requested-with': 'XMLHttpRequest',
+    'accept': 'application/json',
+    'referer': 'https://www.pressplay.cc/',
+    'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36',
+  };
+
+  const data = await new Promise((resolve, reject) => {
+    const req = https.request(
+      { hostname: 'og-web.pressplay.cc', path: `/timeline/${articleId}/info`,
+        method: 'GET', headers: PP_HEADERS },
+      res => {
+        let d = '';
+        res.on('data', c => d += c);
+        res.on('end', () => { try { resolve(JSON.parse(d)); } catch (e) { reject(e); } });
+      }
+    );
+    req.on('error', reject);
+    req.end();
   });
 
-  try {
-    const context = await browser.newContext();
-
-    // 載入已儲存的 cookies
-    if (fs.existsSync(COOKIES_PATH)) {
-      const cookies = JSON.parse(fs.readFileSync(COOKIES_PATH, 'utf-8'));
-      await context.addCookies(cookies);
-      log(`已載入 ${cookies.length} 個 PressPlay cookies`);
-    }
-
-    const page = await context.newPage();
-    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 });
-
-    // Wait for React-rendered article body to be populated (PressPlay SPA fetches
-    // content via API after initial render — container exists but is empty at first)
-    // Threshold 500 chars: teaser is ~87 chars (paywall), real article is typically 2000+
-    await page.waitForFunction(() => {
-      const el = document.querySelector('.article-content') ||
-                 document.querySelector('.article-main-content') ||
-                 document.querySelector('.content.article-tab-content');
-      return el && el.innerText.trim().length > 500;
-    }, { timeout: 30000 }).catch(() => {});
-
-    // 擷取文章正文（優先用 .article-content，fallback 用 .article-main-content）
-    const content = await page.evaluate(() => {
-      const el = document.querySelector('.article-content') ||
-                 document.querySelector('.article-main-content') ||
-                 document.querySelector('.content.article-tab-content');
-      if (!el) return '';
-      return el.innerText.trim();
-    });
-
-    const title = await page.title();
-    // Log first 200 chars to diagnose paywall/teaser vs real content in CI
-    const preview = content.substring(0, 200).replace(/\n/g, ' ');
-    log(`抓取完成，內容長度: ${content.length}，前200字: ${preview}`);
-    return { title: title.replace(' - PressPlay', '').replace(' - PressPlay Academy', '').trim(), content };
-  } finally {
-    await browser.close();
+  if (!data?.data?.canReadTimeline) {
+    log(`⚠️ canReadTimeline=false，cookies 可能失效（status=${data?.status}）`);
   }
+
+  const info = data?.data?.timeline_info || {};
+  const htmlContent = info.timeline_desc || '';
+  const title = info.timeline_title || '';
+
+  // HTML → 純文字
+  const content = htmlContent
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<\/p>/gi, '\n')
+    .replace(/<[^>]+>/g, '')
+    .replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+    .replace(/[ \t]+/g, ' ')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+
+  const preview = content.substring(0, 200).replace(/\n/g, ' ');
+  log(`抓取完成，內容長度: ${content.length}，前200字: ${preview}`);
+  return { title, content };
 }
 
-// ── Groq 摘要 ─────────────────────────────────────────────
-async function summarizeWithGroq(articleTitle, rawContent) {
-  const prompt = `你是台股投資分析助手。請將以下浦惠投顧老王的每日分析文章，整理成繁體中文的 Obsidian Markdown 筆記。報告必須與5月8日報告的結構和詳細程度一致。
+// ── 共用 Obsidian 報告 Prompt（金標準：2026-05-21）────────
+function buildObsidianPrompt(articleTitle, rawContent, dateDisplay) {
+  return `你是台股投資分析助手。請將以下浦惠投顧老王的每日分析文章，整理成繁體中文的 Obsidian Markdown 筆記。
 
-【強制要求的報告結構】
+【第一步：段落分組 — 最重要的規則】
+閱讀全文後，先在腦中把所有段落依主題分組：
+- 討論「同一家公司財報/事件」的多段 → 合併為同一個 ## 或 ### 區塊
+- 討論「同一個市場/指數走勢」的多段 → 合併
+- 討論「同一個選股邏輯/操作建議」的多段 → 合併
+- 只有真正不相關的段落才分開
+**每一段原文內容都必須涵蓋到，不能漏掉任何段落的資訊。**
 
-# 📊 浦惠投顧每日摘要 — ${DATE_DISPLAY}
-> ${articleTitle}
+【報告章節結構 — 依序輸出】
+1. 標題 + 副標題
+2. ## 🎯 整體操作水位（`[!tip]` callout，放最前面）
+3. ## 🌍 大盤與美股觀察（含指數表格）
+4. 當日主題區塊（依文章內容動態生成，例：## 💡 Nvidia 財報、## 🚀 SpaceX IPO 等）
+5. ## 🇹🇼 台股評估與選股邏輯（含老王選股教學）
+6. ## 📌 今日提到個股（每檔獨立 ### + 表格）
+7. ## ⚠️ 老王重要提醒
 
-## 整體操作水位
-- 清楚標記持股水位（如：七成持股水位）
-- 說明持股邏輯和理由
+【Obsidian Callout 語法 — 絕對不用 HTML div，只用這個】
+\`\`\`
+> [!tip] 標題文字
+> 內容
 
-## 大盤與美股觀察
-- 包含大盤技術面分析
-- 美股相關訊息
-- 可以包含表格列出重點數據
+> [!info] 標題文字
+> 內容
 
-## 原油
-- 如果文章提到原油，必須獨立成章，包含：
-  - 價格走勢
-  - 對台股的影響
-  - 警示信息（用 > 警示框）
+> [!note] 標題文字
+> 內容
 
-## 重大政策事件 / 政策分析
-- 如果文章提到政策、法規、或重要消息，必須獨立成章
-- 清楚說明對台股的影響
+> [!warning] 標題文字
+> 內容
 
-## 台股評估
-- 必須包含投資框架分析（如：Buffett Indicator、季節性、基本面等）
-- 深入分析目前的市場條件
-- 評估買進風險與機會
+> [!danger] 標題文字
+> 內容
+\`\`\`
+使用時機：
+- [!tip]：操作水位、正面訊號、選股建議
+- [!info]：數據統計、財報數字、指數表現
+- [!note]：補充說明、細節資訊
+- [!warning]：重要觀察、需注意事項、均線警戒
+- [!danger]：重大風險、IPO 重要事件、利空警示
 
-## 操作策略
-- 【A場景】: 如果市場條件如何...那麼操作建議是...
-- 【B場景】: 如果市場條件如何...那麼操作建議是...
-- 【C場景】: 如果市場條件如何...那麼操作建議是...
-- 清楚的進場點、停損點、獲利點
+【色碼系統 — 個股與內文】
+個股標題色碼（用 <span style="color:..."> 包住 ### 標題）：
+- 🔴 可持續抱股 → color:red
+- 🟠 觀察個股訊號 → color:#B35A00
+- 🟢 風險警示 → color:green
 
-## 📌 今日提到個股
-以 Markdown 表格形式，每隻股票必須包含：
-| 代號 | 名稱 | 關鍵訊號 | 操作建議 |
+內文重點色碼（用 <span style="color:..."> 包住關鍵文字）：
+- color:red → 強勢訊號、利多、漲停、創新高
+- color:#B35A00 → 警戒觀察、均線挑戰、尚未確認
+- color:green → 安全持有確認
 
-對每隻股票的分析必須包括：
-- 關鍵訊號：為什麼老王看好或看空這隻股票（技術面、基本面、消息面理由）
-- 操作建議：具體的進場點、停損點、目標價或操作建議
+【個股區塊格式】
+每檔個股用兩欄表格：
+\`\`\`
+### <span style="color:red">🔴 股票名稱（代號）</span>
 
-## 老王重要提醒
-- 交易風險提示
-- 重要注意事項
-- 本週或本月的重點提醒
+| 項目 | 內容 |
+| --- | --- |
+| **關鍵訊號** | <span style="color:red">**訊號說明**</span> |
+| **操作建議** | <span style="color:red">**操作說明**</span> |
+\`\`\`
 
-🔗 [閱讀原文](${rawContent.url || ''})
+【表格使用規則】
+- 美股指數比較 → Markdown 表格（| 市場 | 今日表現 | 備註 |）
+- 財務數據比較（多業務/多季） → 表格
+- 個股操作建議 → 每檔用「關鍵訊號 + 操作建議」兩欄表格
+- 情境操作策略（A/B/C 場景）→ 表格
 
-【內容質量要求】
-- 分析必須深入、有邏輯、有框架
-- 個股分析不能是空泛的建議，要說明理由和訊號
-- 表格要完整，每個欄位都要有實質內容
-- 不要簡化、跳過任何章節
-- 所有章節的分析深度要保持一致（都要有足夠的細節）
+【數據格式】
+- 所有百分比、點數、億美元、倍數 → **粗體**
+- 例：**+92% YoY**、**752 億美元**、**漲停**、**10 倍**
+
+【完整性要求】
+- 原文每個段落的資訊都必須出現在報告中，不能遺漏
+- 數據必須精確，直接來自原文
+- 選股 APP 推薦個股、老王實戰示範等教學段落也要完整呈現
 
 文章標題：${articleTitle}
 
 文章內容：
 ${rawContent.content.substring(0, 8000)}
 
-【摘要粒度 — 最重要】
-- 對文章的每個主要段落，用 2-3 句話來總結（不要壓縮成 1-2 句或過度簡化）
-- 保留原文的邏輯和細節，使用清晰的標題、要點符號、表格、引用框來美化內容
-- 優先保留內容的完整性和可讀性，而不是過度濃縮
-- 每個章節都應該讓讀者能理解老王的完整觀點，而不是只看到骨架
+🔗 參考原文：${rawContent.url || ''}
 
-請直接輸出完整的 Markdown 內容，不要任何前言或解釋。確保報告包含所有強制要求的章節。`;
+【輸出範例（節錄，展示正確格式）】
+
+# 📊 浦惠投顧每日摘要 — ${dateDisplay}
+> 文章副標題
+
+---
+
+## 🎯 整體操作水位
+
+> [!tip] 目前維持：<span style="color:#B35A00">**三成持股水位**</span>
+> 大盤指數長紅反彈，但櫃買市場仍未完整收復三條短期均線，維持三成持股水位，正常買賣進出即可。
+
+---
+
+## 🌍 大盤與美股觀察
+
+### 費城半導體指數反彈
+
+> [!info] 📈 費半大漲逾 4%，重回短期均線
+> 費城半導體指數大漲超過 **4%**，已重新站回五日與十日均線。
+
+| 市場 | 今日表現 | 備註 |
+| --- | --- | --- |
+| 費城半導體 | <span style="color:red">▲ 4%+</span> | 站回五日與十日均線 |
+| 台股大盤 | <span style="color:red">▲ 千點長紅</span> | 準備站回所有均線 |
+
+---
+
+## 💡 Nvidia Q1 財報
+
+> [!info] 🔥 全面超預期
+> - **Q1 營收 816.2 億美元**，YoY +85%
+
+---
+
+## 📌 今日提到個股
+
+> 色碼說明：<span style="color:red">🔴 紅 = 可持續抱股</span>　<span style="color:#B35A00">🟠 橙 = 觀察個股訊號</span>　<span style="color:green">🟢 綠 = 風險警示</span>
+
+---
+
+### <span style="color:red">🔴 台積電（2330）</span>
+
+| 項目 | 內容 |
+| --- | --- |
+| **關鍵訊號** | <span style="color:red">**今日出現多方缺口**</span> |
+| **操作建議** | <span style="color:#B35A00">**可直接買進，設缺口封閉為停損點**</span> |
+
+---
+
+## ⚠️ 老王重要提醒
+
+> [!warning] 獨立判斷，審慎操作
+> 投資者應獨立判斷、審慎評估並自負投資風險。
+
+直接輸出完整報告，不要輸出任何說明文字。`;
+}
+
+// ── Groq 摘要 ─────────────────────────────────────────────
+async function summarizeWithGroq(articleTitle, rawContent) {
+  const prompt = buildObsidianPrompt(articleTitle, rawContent, DATE_DISPLAY);
 
   const body = {
     model: 'llama-3.3-70b-versatile',
     messages: [{ role: 'user', content: prompt }],
-    max_tokens: 4500,
+    max_tokens: 6000,
     temperature: 0.3
   };
 
@@ -560,75 +660,7 @@ ${rawContent.content.substring(0, 8000)}
 
 // ── Gemini fallback ───────────────────────────────────────
 async function summarizeWithGemini(articleTitle, rawContent) {
-  const prompt = `你是台股投資分析助手。請將以下浦惠投顧老王的每日分析文章，整理成繁體中文的 Obsidian Markdown 筆記。報告必須與5月8日報告的結構和詳細程度一致。
-
-【強制要求的報告結構】
-
-# 📊 浦惠投顧每日摘要 — ${DATE_DISPLAY}
-> ${articleTitle}
-
-## 整體操作水位
-- 清楚標記持股水位（如：七成持股水位）
-- 說明持股邏輯和理由
-
-## 大盤與美股觀察
-- 包含大盤技術面分析
-- 美股相關訊息
-- 可以包含表格列出重點數據
-
-## 原油
-- 如果文章提到原油，必須獨立成章，包含：
-  - 價格走勢
-  - 對台股的影響
-  - 警示信息（用 > 警示框）
-
-## 重大政策事件 / 政策分析
-- 如果文章提到政策、法規、或重要消息，必須獨立成章
-- 清楚說明對台股的影響
-
-## 台股評估
-- 必須包含投資框架分析（如：Buffett Indicator、季節性、基本面等）
-- 深入分析目前的市場條件
-- 評估買進風險與機會
-
-## 操作策略
-- 【A場景】: 如果市場條件如何...那麼操作建議是...
-- 【B場景】: 如果市場條件如何...那麼操作建議是...
-- 【C場景】: 如果市場條件如何...那麼操作建議是...
-- 清楚的進場點、停損點、獲利點
-
-## 📌 今日提到個股
-以 Markdown 表格形式，每隻股票必須包含：
-| 代號 | 名稱 | 關鍵訊號 | 操作建議 |
-
-對每隻股票的分析必須包括：
-- 關鍵訊號：為什麼老王看好或看空這隻股票（技術面、基本面、消息面理由）
-- 操作建議：具體的進場點、停損點、目標價或操作建議
-
-## 老王重要提醒
-- 交易風險提示
-- 重要注意事項
-- 本週或本月的重點提醒
-
-🔗 [閱讀原文](${rawContent.url || ''})
-
-【內容質量要求】
-- 分析必須深入、有邏輯、有框架
-- 個股分析不能是空泛的建議，要說明理由和訊號
-- 表格要完整，每個欄位都要有實質內容
-- 不要簡化、跳過任何章節
-- 所有章節的分析深度要保持一致（都要有足夠的細節）
-
-【摘要粒度 — 最重要】
-- 對文章的每個主要段落，用 2-3 句話來總結（不要壓縮成 1-2 句或過度簡化）
-- 保留原文的邏輯和細節，使用清晰的標題、要點符號、表格、引用框來美化內容
-- 優先保留內容的完整性和可讀性，而不是過度濃縮
-- 每個章節都應該讓讀者能理解老王的完整觀點，而不是只看到骨架
-
-文章標題：${articleTitle}
-文章內容：${rawContent.content.substring(0, 8000)}
-
-請直接輸出完整的 Markdown 內容，不要任何前言或解釋。確保報告包含所有強制要求的章節。`;
+  const prompt = buildObsidianPrompt(articleTitle, rawContent, DATE_DISPLAY);
 
   const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_API_KEY}`;
   const { default: fetch } = await import('node-fetch');
@@ -782,8 +814,30 @@ function extractPuhuiCache(markdown) {
 async function main() {
   log(`===== puhui_daily 啟動 target=${TARGET_DATE} =====`);
 
-  // 1. 檢查筆記是否已存在（CI 環境略過，每次都執行）
-  if (!IS_CI && fs.existsSync(NOTE_PATH)) {
+  // 0. 檢查 PressPlay cookies 過期狀態
+  try {
+    if (fs.existsSync(COOKIES_PATH)) {
+      const cookies = JSON.parse(fs.readFileSync(COOKIES_PATH, 'utf-8'));
+      const jwt = Array.isArray(cookies)
+        ? cookies.find(c => c.name === 'JAccessToken')?.value
+        : cookies['JAccessToken'];
+      if (jwt) {
+        const payload = JSON.parse(Buffer.from(jwt.split('.')[1], 'base64').toString());
+        const expMs = payload.exp * 1000;
+        const daysLeft = Math.ceil((expMs - Date.now()) / 86400000);
+        if (daysLeft <= 0) {
+          log('⛔ JAccessToken 已過期！請立刻更新 PressPlay cookies');
+          await sendTelegram('⛔ 浦惠投顧 PressPlay cookies 已過期！請立刻更新並重新存入 data/pressplay_cookies.json');
+        } else if (daysLeft <= 5) {
+          log(`⚠️ JAccessToken 將在 ${daysLeft} 天後過期（${new Date(expMs).toISOString().slice(0,10)}），請盡快更新 cookies`);
+          await sendTelegram(`⚠️ 浦惠投顧 PressPlay cookies 將在 ${daysLeft} 天後過期（${new Date(expMs).toISOString().slice(0,10)}），請盡快更新`);
+        }
+      }
+    }
+  } catch (_) {}
+
+  // 1. 檢查筆記是否已存在（CI 環境略過，--force 時強制重新生成）
+  if (!IS_CI && !FORCE_REGENERATE && fs.existsSync(NOTE_PATH)) {
     log(`筆記已存在: ${NOTE_PATH} → 跳過`);
     return;
   }
@@ -874,8 +928,33 @@ async function main() {
     try {
       const fetched = await fetchPressPlayArticle(articleUrl);
       articleTitle = fetched.title || articleTitle || DATE_DISPLAY;
+      const isPaywall = fetched.content.length < 500;
+      log(`抓取結果: ${fetched.content.length} 字${isPaywall ? ' ⚠️ 疑似 paywall teaser' : ' ✅ 正常'}`);
+
+      if (isPaywall) {
+        // 若已有完整筆記（長度 > 1000），保留現有筆記，不覆蓋
+        if (!IS_CI && fs.existsSync(NOTE_PATH)) {
+          const existingLen = fs.readFileSync(NOTE_PATH, 'utf-8').length;
+          if (existingLen > 1000) {
+            log(`paywall 偵測，現有筆記完整（${existingLen} 字） → 保留，略過覆蓋`);
+            return;
+          }
+        }
+        await notify(`${DATE_DISPLAY} Cookies 疑似失效`, `⚠️ 浦惠投顧 ${DATE_DISPLAY}\n\n文章抓取失敗（疑似 paywall），PressPlay cookies 可能已失效\n\n請更新 cookies 後以 --force 重跑\nURL: ${articleUrl}`);
+        process.exit(1);
+      }
+
       articleContent = { content: fetched.content, url: articleUrl };
-      log(`抓取結果: ${fetched.content.length} 字${fetched.content.length < 500 ? ' ⚠️ 疑似 paywall teaser' : ' ✅ 正常'}`);
+
+      // 成功抓取後備份 cookies（防止檔案被意外清空）
+      try {
+        if (fs.existsSync(COOKIES_PATH)) {
+          const cookieData = fs.readFileSync(COOKIES_PATH);
+          const b64 = cookieData.toString('base64');
+          const B64_PATH = path.join(__dirname, '..', 'data', 'pressplay_cookies_b64.txt');
+          fs.writeFileSync(B64_PATH, b64);
+        }
+      } catch (_) {}
     } catch (e) {
       log(`Playwright 抓取失敗: ${e.message}`);
       await notify(`${DATE_DISPLAY} 文章抓取失敗`, `⚠️ 浦惠投顧 ${DATE_DISPLAY} 文章抓取失敗\n\n${e.message}\n\n請手動補建筆記：${articleUrl}`);
@@ -911,9 +990,9 @@ async function main() {
 
   // 7. 寫入 Obsidian（CI 環境略過 Windows 路徑）
   if (!IS_CI) {
-    fs.mkdirSync(OBSIDIAN_DIR, { recursive: true });
+    fs.mkdirSync(NOTE_DIR, { recursive: true });
     fs.writeFileSync(NOTE_PATH, markdown, 'utf-8');
-    log(`筆記寫入完成: ${NOTE_PATH}`);
+    log(`筆記寫入完成: ${NOTE_PATH} (${WEEK_FOLDER})`);
   } else {
     log('CI 模式：跳過 Obsidian 寫入');
   }
