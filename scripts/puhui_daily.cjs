@@ -1040,13 +1040,19 @@ async function main() {
   // 寫入 puhui_cache.json（供 premarket workflow 隔日讀取）
   extractPuhuiCache(markdown);
 
-  // 7. 寫入 Obsidian（CI 環境略過 Windows 路徑）
+  // 7. 寫入報告
   if (!IS_CI) {
+    // 本機：寫入 Obsidian vault
     fs.mkdirSync(NOTE_DIR, { recursive: true });
     fs.writeFileSync(NOTE_PATH, markdown, 'utf-8');
     log(`筆記寫入完成: ${NOTE_PATH} (${WEEK_FOLDER})`);
   } else {
-    log('CI 模式：跳過 Obsidian 寫入');
+    // CI：寫入 repo 內 reports/ 資料夾，供 GitHub Actions commit 後推送
+    const CI_REPORT_DIR = path.join(__dirname, '..', 'reports', MONTH_FOLDER, WEEK_FOLDER);
+    const CI_REPORT_PATH = path.join(CI_REPORT_DIR, `${TARGET_DATE}.md`);
+    fs.mkdirSync(CI_REPORT_DIR, { recursive: true });
+    fs.writeFileSync(CI_REPORT_PATH, markdown, 'utf-8');
+    log(`CI 報告寫入: reports/${MONTH_FOLDER}/${WEEK_FOLDER}/${TARGET_DATE}.md`);
   }
 
   // 7.5 發送完整 HTML 報告到 Gmail（停用 notify 的郵件部分，避免重複）
