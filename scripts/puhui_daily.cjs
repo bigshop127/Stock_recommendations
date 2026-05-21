@@ -493,8 +493,14 @@ async function fetchPressPlayArticle(url) {
 }
 
 // ── 共用 Obsidian 報告 Prompt（金標準：2026-05-21）────────
+// Gemini 使用單一 prompt；Groq 使用 split 版本（system + user）以提升輸出完整度
 function buildObsidianPrompt(articleTitle, rawContent, dateDisplay) {
-  return `你是台股投資分析助手。請將以下浦惠投顧老王的每日分析文章，整理成繁體中文的 Obsidian Markdown 筆記。
+  const { systemPrompt, userPrompt } = buildObsidianPromptSplit(articleTitle, rawContent, dateDisplay);
+  return systemPrompt + '\n\n' + userPrompt;
+}
+
+function buildObsidianPromptSplit(articleTitle, rawContent, dateDisplay) {
+  const systemPrompt = `你是台股投資分析助手。請將浦惠投顧老王的每日分析文章，整理成繁體中文的 Obsidian Markdown 筆記。
 
 【第一步：段落分組 — 最重要的規則】
 閱讀全文後，先在腦中把所有段落依主題分組：
@@ -569,63 +575,45 @@ function buildObsidianPrompt(articleTitle, rawContent, dateDisplay) {
 - 所有百分比、點數、億美元、倍數 → **粗體**
 - 例：**+92% YoY**、**752 億美元**、**漲停**、**10 倍**
 
-【完整性要求】
-- 原文每個段落的資訊都必須出現在報告中，不能遺漏
-- 數據必須精確，直接來自原文
+【完整性要求 — 絕對不可違反】
+- 原文每個段落的資訊都必須出現在報告中，不能遺漏任何段落
+- 數據必須精確，直接來自原文（億美元、百分比、倍數等全部保留）
 - 選股 APP 推薦個股、老王實戰示範等教學段落也要完整呈現
+- 每篇文章通常有 8–15 段，報告必須完整覆蓋所有段落
+- **輸出字數：2000 字以上（繁體中文字）**
+- 每個 ## 章節至少 3 句話，不能只寫一句話就跳下一節
+- 在輸出最後一個段落前，不得停止生成
+- 個股區塊每一檔都要完整輸出（不可省略任何一檔）
 
-文章標題：${articleTitle}
+直接輸出完整 Markdown 報告，不要輸出任何說明文字，不要在報告完成前停止。`;
+
+  const userPrompt = `文章標題：${articleTitle}
+日期：${dateDisplay}
 
 文章內容：
 ${rawContent.content.substring(0, 8000)}
 
-🔗 參考原文：${rawContent.url || ''}
+🔗 原文網址：${rawContent.url || ''}
 
-【輸出格式範例（節錄）】
-# 📊 浦惠投顧每日摘要 — ${dateDisplay}
-> 文章標題
+請依照上述規則，輸出完整的 Obsidian Markdown 報告。`;
 
-## 🎯 整體操作水位
-> [!tip] 目前維持：<span style="color:#B35A00">**三成持股水位**</span>
-> 說明文字
-
-## 🌍 大盤與美股觀察
-> [!info] 📈 費半大漲逾 4%
-> 費城半導體指數大漲超過 **4%**
-
-| 市場 | 今日表現 | 備註 |
-| --- | --- | --- |
-| 費城半導體 | <span style="color:red">▲ 4%+</span> | 站回短期均線 |
-
-## 💡 主題區塊標題（依當日內容命名）
-> [!info] 🔥 關鍵數據
-> - **數據 A**、**數據 B**
-
-## 📌 今日提到個股
-> 色碼說明：<span style="color:red">🔴 紅 = 可持續抱股</span>　<span style="color:#B35A00">🟠 橙 = 觀察</span>　<span style="color:green">🟢 綠 = 風險警示</span>
-
-### <span style="color:red">🔴 股票名稱（代號）</span>
-| 項目 | 內容 |
-| --- | --- |
-| **關鍵訊號** | <span style="color:red">**訊號說明**</span> |
-| **操作建議** | <span style="color:red">**操作說明**</span> |
-
-## ⚠️ 老王重要提醒
-> [!warning] 獨立判斷，審慎操作
-> 投資者應獨立判斷、審慎評估並自負投資風險。
-
-直接輸出完整報告，不要輸出任何說明文字。`;
+  return { systemPrompt, userPrompt };
 }
 
 // ── Groq 摘要 ─────────────────────────────────────────────
 async function summarizeWithGroq(articleTitle, rawContent) {
-  const prompt = buildObsidianPrompt(articleTitle, rawContent, DATE_DISPLAY);
+  const { systemPrompt, userPrompt } = buildObsidianPromptSplit(articleTitle, rawContent, DATE_DISPLAY);
 
   const body = {
     model: 'llama-3.3-70b-versatile',
-    messages: [{ role: 'user', content: prompt }],
+    messages: [
+      { role: 'system', content: systemPrompt },
+      { role: 'user', content: userPrompt }
+    ],
     max_tokens: 5500,
-    temperature: 0.3
+    min_tokens: 1500,
+    temperature: 0.45,
+    stop: null
   };
 
   const r = await httpsPostJson('api.groq.com', '/openai/v1/chat/completions', body, {
@@ -633,23 +621,44 @@ async function summarizeWithGroq(articleTitle, rawContent) {
   });
 
   if (r.error) throw new Error(`Groq: ${r.error.message}`);
-  return r.choices[0].message.content;
+  const content = r.choices[0].message.content;
+  const finishReason = r.choices[0].finish_reason;
+  log(`Groq 輸出長度: ${content.length} 字元，finish_reason: ${finishReason}`);
+  if (content.length < 800) {
+    log(`⚠️ Groq 輸出過短 (${content.length} 字元)，報告可能不完整，請手動確認`);
+    await sendTelegram(`⚠️ 浦惠投顧 ${DATE_DISPLAY}\n\nGroq 輸出過短（${content.length} 字元），報告可能不完整，請手動確認筆記品質`);
+  }
+  return content;
 }
 
-// ── Gemini fallback ───────────────────────────────────────
+// ── Gemini 主力 ───────────────────────────────────────────
+// 嘗試順序：gemini-2.0-flash → gemini-2.0-flash-lite（quota 問題時自動降級）
 async function summarizeWithGemini(articleTitle, rawContent) {
   const prompt = buildObsidianPrompt(articleTitle, rawContent, DATE_DISPLAY);
-
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key=${GEMINI_API_KEY}`;
   const { default: fetch } = await import('node-fetch');
-  const r = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] })
-  });
-  const data = await r.json();
-  if (data.error) throw new Error(`Gemini: ${data.error.message}`);
-  return data.candidates[0].content.parts[0].text;
+
+  const models = ['gemini-2.0-flash', 'gemini-2.0-flash-lite'];
+  let lastError;
+  for (const model of models) {
+    const url = `https://generativelanguage.googleapis.com/v1/models/${model}:generateContent?key=${GEMINI_API_KEY}`;
+    const r = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        contents: [{ parts: [{ text: prompt }] }],
+        generationConfig: { maxOutputTokens: 8192, temperature: 0.3 }
+      })
+    });
+    const data = await r.json();
+    if (data.error) {
+      log(`Gemini ${model} 失敗: ${data.error.message?.substring(0, 120)}`);
+      lastError = new Error(`Gemini: ${data.error.message}`);
+      continue;
+    }
+    log(`Gemini ${model} 摘要成功`);
+    return data.candidates[0].content.parts[0].text;
+  }
+  throw lastError;
 }
 
 // ── Playwright 文章列表頁抓取（不需 OAuth）─────────────────
@@ -940,23 +949,25 @@ async function main() {
     }
   }
 
-  // 5 & 6. AI 摘要（Groq → Gemini fallback）
-  log('呼叫 Groq 進行摘要...');
+  // 5 & 6. AI 摘要（Gemini 主力 → Groq fallback）
+  log('呼叫 Gemini 進行摘要...');
   let markdown;
   try {
-    markdown = await summarizeWithGroq(articleTitle, articleContent);
-    log('Groq 摘要完成');
+    markdown = await summarizeWithGemini(articleTitle, articleContent);
+    log('Gemini 摘要完成');
   } catch (e) {
-    log(`Groq 失敗 (${e.message})，切換 Gemini...`);
+    log(`Gemini 失敗 (${e.message})，切換 Groq...`);
     try {
-      markdown = await summarizeWithGemini(articleTitle, articleContent);
-      log('Gemini 摘要完成');
+      markdown = await summarizeWithGroq(articleTitle, articleContent);
+      log('Groq 摘要完成');
     } catch (e2) {
-      log(`Gemini 也失敗: ${e2.message}`);
-      await notify(`${DATE_DISPLAY} AI 摘要失敗`, `⚠️ 浦惠投顧 ${DATE_DISPLAY} AI 摘要失敗\n\nGroq: ${e.message}\nGemini: ${e2.message}`);
+      log(`Groq 也失敗: ${e2.message}`);
+      await notify(`${DATE_DISPLAY} AI 摘要失敗`, `⚠️ 浦惠投顧 ${DATE_DISPLAY} AI 摘要失敗\n\nGemini: ${e.message}\nGroq: ${e2.message}`);
       process.exit(1);
     }
   }
+  // 清除 UTF-8 替換字元（API 截斷導致的亂碼）
+  markdown = markdown.replace(/�/g, '');
 
   // 若 AI 沒有加原文連結，補上
   if (articleUrl && !markdown.includes(articleUrl)) {
