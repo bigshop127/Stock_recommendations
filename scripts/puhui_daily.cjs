@@ -661,6 +661,53 @@ async function summarizeWithGemini(articleTitle, rawContent) {
   throw lastError;
 }
 
+// ── Groq 審查員（第二次呼叫，mixtral 審查 llama 的輸出）────────
+// 使用不同 model（mixtral-8x7b-32768）確保獨立視角，且有獨立 TPM 配額
+async function reviewWithGroq(rawArticle, generatedMarkdown, articleTitle) {
+  const systemPrompt = `你是浦惠投顧每日報告品質審查員。對照原文審查 AI 生成的 Obsidian 報告，確認完整性與格式正確。
+
+【審查標準】
+1. 段落覆蓋：原文每個段落的主要資訊都必須出現在報告中（逐段核對）
+2. 個股完整：原文提到的每一檔股票都必須有獨立 ### 區塊 + 兩欄表格
+3. 數字保留：重要財務數字（億美元、%、倍數、目標價）必須精確保留，不可模糊化
+4. Callout 格式：只能用 > [!tip/info/warning/danger/note]，嚴禁 HTML div 或其他格式
+5. 長度：報告必須超過 1000 字，每個 ## 章節至少 2–3 句話
+
+【回覆規則 — 嚴格遵守，不可偏離】
+- 報告完整且通過所有標準 → 只回覆：PASS
+- 任何標準不合格 → 直接輸出完整修正後的 Markdown 報告，不加任何說明或前言`;
+
+  const userPrompt = `文章標題：${articleTitle}
+
+=== 原文 ===
+${rawArticle.substring(0, 5500)}
+
+=== AI 生成的報告（待審查）===
+${generatedMarkdown}
+
+請審查。報告通過所有標準則只回覆 PASS，否則直接輸出完整修正後的 Markdown 報告。`;
+
+  const body = {
+    model: 'mixtral-8x7b-32768',
+    messages: [
+      { role: 'system', content: systemPrompt },
+      { role: 'user', content: userPrompt }
+    ],
+    max_tokens: 5500,
+    temperature: 0.2,
+    stop: null
+  };
+
+  const r = await httpsPostJson('api.groq.com', '/openai/v1/chat/completions', body, {
+    Authorization: `Bearer ${GROQ_API_KEY}`
+  });
+
+  if (r.error) throw new Error(`Groq Review: ${r.error.message}`);
+  const result = r.choices[0].message.content;
+  log(`Groq 審查結果: ${result.length} 字元，finish_reason: ${r.choices[0].finish_reason}`);
+  return result.trim();
+}
+
 // ── Playwright 文章列表頁抓取（不需 OAuth）─────────────────
 async function fetchArticleUrlByDate(dateDisplay) {
   const { chromium } = require('playwright-core');
@@ -969,6 +1016,22 @@ async function main() {
   // 清除 UTF-8 替換字元（API 截斷導致的亂碼）
   markdown = markdown.replace(/�/g, '');
 
+  // 6.5 Groq 審查（mixtral-8x7b-32768 審查剛生成的報告）
+  let reviewFixed = false;
+  try {
+    log('Groq 審查員啟動（mixtral-8x7b-32768）...');
+    const reviewResult = await reviewWithGroq(articleContent.content, markdown, articleTitle);
+    if (reviewResult === 'PASS') {
+      log('✅ Groq 審查通過，報告完整');
+    } else {
+      log('⚠️ Groq 審查發現問題，使用修正版報告');
+      markdown = reviewResult.replace(/�/g, '');
+      reviewFixed = true;
+    }
+  } catch (e) {
+    log(`Groq 審查失敗，跳過審查步驟 (${e.message})`);
+  }
+
   // 若 AI 沒有加原文連結，補上
   if (articleUrl && !markdown.includes(articleUrl)) {
     markdown += `\n\n---\n🔗 [閱讀原文](${articleUrl})`;
@@ -998,7 +1061,10 @@ async function main() {
   }
 
   // 8. Telegram 通知（改用直接發送，避免 notify 函式的重複郵件）
-  const tgMessage = buildTelegramSummary(markdown, articleTitle, articleUrl);
+  let tgMessage = buildTelegramSummary(markdown, articleTitle, articleUrl);
+  if (reviewFixed) {
+    tgMessage += '\n\n🔍 <i>報告已由 Groq 審查員自動修正</i>';
+  }
   await sendTelegram(tgMessage);
   log('Telegram 通知已發送');
   log('===== puhui_daily 完成 =====');
