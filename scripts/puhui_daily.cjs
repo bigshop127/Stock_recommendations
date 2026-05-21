@@ -506,7 +506,7 @@ function buildObsidianPrompt(articleTitle, rawContent, dateDisplay) {
 
 【報告章節結構 — 依序輸出】
 1. 標題 + 副標題
-2. ## 🎯 整體操作水位（`[!tip]` callout，放最前面）
+2. ## 🎯 整體操作水位（[!tip] callout，放最前面）
 3. ## 🌍 大盤與美股觀察（含指數表格）
 4. 當日主題區塊（依文章內容動態生成，例：## 💡 Nvidia 財報、## 🚀 SpaceX IPO 等）
 5. ## 🇹🇼 台股評估與選股邏輯（含老王選股教學）
@@ -581,58 +581,36 @@ ${rawContent.content.substring(0, 8000)}
 
 🔗 參考原文：${rawContent.url || ''}
 
-【輸出範例（節錄，展示正確格式）】
-
+【輸出格式範例（節錄）】
 # 📊 浦惠投顧每日摘要 — ${dateDisplay}
-> 文章副標題
-
----
+> 文章標題
 
 ## 🎯 整體操作水位
-
 > [!tip] 目前維持：<span style="color:#B35A00">**三成持股水位**</span>
-> 大盤指數長紅反彈，但櫃買市場仍未完整收復三條短期均線，維持三成持股水位，正常買賣進出即可。
-
----
+> 說明文字
 
 ## 🌍 大盤與美股觀察
-
-### 費城半導體指數反彈
-
-> [!info] 📈 費半大漲逾 4%，重回短期均線
-> 費城半導體指數大漲超過 **4%**，已重新站回五日與十日均線。
+> [!info] 📈 費半大漲逾 4%
+> 費城半導體指數大漲超過 **4%**
 
 | 市場 | 今日表現 | 備註 |
 | --- | --- | --- |
-| 費城半導體 | <span style="color:red">▲ 4%+</span> | 站回五日與十日均線 |
-| 台股大盤 | <span style="color:red">▲ 千點長紅</span> | 準備站回所有均線 |
+| 費城半導體 | <span style="color:red">▲ 4%+</span> | 站回短期均線 |
 
----
-
-## 💡 Nvidia Q1 財報
-
-> [!info] 🔥 全面超預期
-> - **Q1 營收 816.2 億美元**，YoY +85%
-
----
+## 💡 主題區塊標題（依當日內容命名）
+> [!info] 🔥 關鍵數據
+> - **數據 A**、**數據 B**
 
 ## 📌 今日提到個股
+> 色碼說明：<span style="color:red">🔴 紅 = 可持續抱股</span>　<span style="color:#B35A00">🟠 橙 = 觀察</span>　<span style="color:green">🟢 綠 = 風險警示</span>
 
-> 色碼說明：<span style="color:red">🔴 紅 = 可持續抱股</span>　<span style="color:#B35A00">🟠 橙 = 觀察個股訊號</span>　<span style="color:green">🟢 綠 = 風險警示</span>
-
----
-
-### <span style="color:red">🔴 台積電（2330）</span>
-
+### <span style="color:red">🔴 股票名稱（代號）</span>
 | 項目 | 內容 |
 | --- | --- |
-| **關鍵訊號** | <span style="color:red">**今日出現多方缺口**</span> |
-| **操作建議** | <span style="color:#B35A00">**可直接買進，設缺口封閉為停損點**</span> |
-
----
+| **關鍵訊號** | <span style="color:red">**訊號說明**</span> |
+| **操作建議** | <span style="color:red">**操作說明**</span> |
 
 ## ⚠️ 老王重要提醒
-
 > [!warning] 獨立判斷，審慎操作
 > 投資者應獨立判斷、審慎評估並自負投資風險。
 
@@ -646,7 +624,7 @@ async function summarizeWithGroq(articleTitle, rawContent) {
   const body = {
     model: 'llama-3.3-70b-versatile',
     messages: [{ role: 'user', content: prompt }],
-    max_tokens: 6000,
+    max_tokens: 5500,
     temperature: 0.3
   };
 
@@ -662,7 +640,7 @@ async function summarizeWithGroq(articleTitle, rawContent) {
 async function summarizeWithGemini(articleTitle, rawContent) {
   const prompt = buildObsidianPrompt(articleTitle, rawContent, DATE_DISPLAY);
 
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_API_KEY}`;
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key=${GEMINI_API_KEY}`;
   const { default: fetch } = await import('node-fetch');
   const r = await fetch(url, {
     method: 'POST',
