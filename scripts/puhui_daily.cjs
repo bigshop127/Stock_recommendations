@@ -18,6 +18,7 @@ require('dotenv').config({ path: require('path').join(__dirname, '..', '.env') }
 const fs = require('fs');
 const https = require('https');
 const path = require('path');
+const { execSync } = require('child_process');
 
 // ── 設定 ────────────────────────────────────────────────
 const TARGET_DATE = process.argv[2] || new Date().toISOString().slice(0, 10);
@@ -1042,17 +1043,31 @@ async function main() {
 
   // 7. 寫入報告
   if (!IS_CI) {
-    // 本機：寫入 Obsidian vault
+    // 本機：寫入 Obsidian vault（PC 讀取）
     fs.mkdirSync(NOTE_DIR, { recursive: true });
     fs.writeFileSync(NOTE_PATH, markdown, 'utf-8');
     log(`筆記寫入完成: ${NOTE_PATH} (${WEEK_FOLDER})`);
-  } else {
-    // CI：寫入 repo 內 reports/ 資料夾，供 GitHub Actions commit 後推送
-    const CI_REPORT_DIR = path.join(__dirname, '..', 'reports', MONTH_FOLDER, WEEK_FOLDER);
-    const CI_REPORT_PATH = path.join(CI_REPORT_DIR, `${TARGET_DATE}.md`);
-    fs.mkdirSync(CI_REPORT_DIR, { recursive: true });
-    fs.writeFileSync(CI_REPORT_PATH, markdown, 'utf-8');
-    log(`CI 報告寫入: reports/${MONTH_FOLDER}/${WEEK_FOLDER}/${TARGET_DATE}.md`);
+  }
+
+  // 本機 & CI：都寫入 repo reports/（手機透過 GitHub pull 讀取）
+  const REPORT_DIR = path.join(__dirname, '..', 'reports', MONTH_FOLDER, WEEK_FOLDER);
+  const REPORT_PATH = path.join(REPORT_DIR, `${TARGET_DATE}.md`);
+  fs.mkdirSync(REPORT_DIR, { recursive: true });
+  fs.writeFileSync(REPORT_PATH, markdown, 'utf-8');
+  log(`報告寫入 repo: reports/${MONTH_FOLDER}/${WEEK_FOLDER}/${TARGET_DATE}.md`);
+
+  // 本機：自動 git push，讓手機可 pull 到最新報告
+  if (!IS_CI) {
+    try {
+      const repoDir = path.join(__dirname, '..');
+      execSync(
+        `git -C "${repoDir}" add "reports/" && git -C "${repoDir}" diff --cached --quiet || git -C "${repoDir}" commit -m "report: ${TARGET_DATE} (local)" && git -C "${repoDir}" push`,
+        { stdio: 'pipe' }
+      );
+      log('報告已推送到 GitHub（手機可同步）');
+    } catch (e) {
+      log(`GitHub push 失敗（非致命）: ${e.message.slice(0, 150)}`);
+    }
   }
 
   // 7.5 發送完整 HTML 報告到 Gmail（停用 notify 的郵件部分，避免重複）
