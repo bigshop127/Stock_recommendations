@@ -6,7 +6,7 @@
  *   2. 測試 Google OAuth 健康狀態 → 失敗則 Telegram 告警
  *   3. 搜尋 Gmail 取得今日每日摘要郵件
  *   4. 若無郵件 → 從通知信取 PressPlay URL → Playwright 無頭抓取
- *   5. 用 Groq (llama-3.3-70b) 摘要文章，Gemini 作為 fallback
+ *   5. 用 Gemini 摘要文章（3 key 輪換：flash → flash-lite）
  *   6. 格式化為 Obsidian Markdown
  *   7. 寫入 Obsidian
  *   8. Telegram 通知
@@ -51,8 +51,9 @@ const PUHUI_CACHE_PATH = path.join(__dirname, '..', 'data', 'puhui_cache.json');
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
 const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET;
 const GOOGLE_REFRESH_TOKEN = process.env.GOOGLE_REFRESH_TOKEN;
-const GROQ_API_KEY = process.env.GROQ_API_KEY;
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
+const GEMINI_API_KEY_2 = process.env.GEMINI_API_KEY_2;
+const GEMINI_API_KEY_3 = process.env.GEMINI_API_KEY_3;
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 const NOTIFY_EMAIL = process.env.NOTIFY_EMAIL || 'a4980678@gmail.com';
@@ -493,8 +494,7 @@ async function fetchPressPlayArticle(url) {
   return { title, content };
 }
 
-// ── 共用 Obsidian 報告 Prompt（金標準：2026-05-21）────────
-// Gemini 使用單一 prompt；Groq 使用 split 版本（system + user）以提升輸出完整度
+// ── Obsidian 報告 Prompt（金標準：2026-05-21）────────────
 function buildObsidianPrompt(articleTitle, rawContent, dateDisplay) {
   const { systemPrompt, userPrompt } = buildObsidianPromptSplit(articleTitle, rawContent, dateDisplay);
   return systemPrompt + '\n\n' + userPrompt;
@@ -601,111 +601,40 @@ ${rawContent.content.substring(0, 8000)}
   return { systemPrompt, userPrompt };
 }
 
-// ── Groq 摘要 ─────────────────────────────────────────────
-async function summarizeWithGroq(articleTitle, rawContent) {
-  const { systemPrompt, userPrompt } = buildObsidianPromptSplit(articleTitle, rawContent, DATE_DISPLAY);
-
-  const body = {
-    model: 'llama-3.3-70b-versatile',
-    messages: [
-      { role: 'system', content: systemPrompt },
-      { role: 'user', content: userPrompt }
-    ],
-    max_tokens: 5500,
-    temperature: 0.45,
-    stop: null
-  };
-
-  const r = await httpsPostJson('api.groq.com', '/openai/v1/chat/completions', body, {
-    Authorization: `Bearer ${GROQ_API_KEY}`
-  });
-
-  if (r.error) throw new Error(`Groq: ${r.error.message}`);
-  const content = r.choices[0].message.content;
-  const finishReason = r.choices[0].finish_reason;
-  log(`Groq 輸出長度: ${content.length} 字元，finish_reason: ${finishReason}`);
-  if (content.length < 800) {
-    log(`⚠️ Groq 輸出過短 (${content.length} 字元)，報告可能不完整，請手動確認`);
-    await sendTelegram(`⚠️ 浦惠投顧 ${DATE_DISPLAY}\n\nGroq 輸出過短（${content.length} 字元），報告可能不完整，請手動確認筆記品質`);
-  }
-  return content;
-}
-
-// ── Gemini 主力 ───────────────────────────────────────────
-// 嘗試順序：gemini-2.0-flash → gemini-2.0-flash-lite（quota 問題時自動降級）
+// ── Gemini 主力（3 key 輪換，flash → flash-lite）─────────────
 async function summarizeWithGemini(articleTitle, rawContent) {
   const prompt = buildObsidianPrompt(articleTitle, rawContent, DATE_DISPLAY);
   const { default: fetch } = await import('node-fetch');
 
+  const apiKeys = [GEMINI_API_KEY, GEMINI_API_KEY_2, GEMINI_API_KEY_3].filter(Boolean);
   const models = ['gemini-2.0-flash', 'gemini-2.0-flash-lite'];
   let lastError;
-  for (const model of models) {
-    const url = `https://generativelanguage.googleapis.com/v1/models/${model}:generateContent?key=${GEMINI_API_KEY}`;
-    const r = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        contents: [{ parts: [{ text: prompt }] }],
-        generationConfig: { maxOutputTokens: 8192, temperature: 0.3 }
-      })
-    });
-    const data = await r.json();
-    if (data.error) {
-      log(`Gemini ${model} 失敗: ${data.error.message?.substring(0, 120)}`);
-      lastError = new Error(`Gemini: ${data.error.message}`);
-      continue;
+
+  for (const apiKey of apiKeys) {
+    const keyHint = apiKey.slice(-8);
+    for (const model of models) {
+      const url = `https://generativelanguage.googleapis.com/v1/models/${model}:generateContent?key=${apiKey}`;
+      const r = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: prompt }] }],
+          generationConfig: { maxOutputTokens: 8192, temperature: 0.3 }
+        })
+      });
+      const data = await r.json();
+      if (data.error) {
+        const is400 = data.error.code === 400 || data.error.status === 'INVALID_ARGUMENT';
+        log(`Gemini ${model} (...${keyHint}) 失敗: ${data.error.message?.substring(0, 120)}`);
+        lastError = new Error(`Gemini ${model}: ${data.error.message}`);
+        if (is400) break; // key itself invalid, skip to next key
+        continue; // quota/other error, try next model
+      }
+      log(`Gemini ${model} (...${keyHint}) 摘要成功`);
+      return data.candidates[0].content.parts[0].text;
     }
-    log(`Gemini ${model} 摘要成功`);
-    return data.candidates[0].content.parts[0].text;
   }
-  throw lastError;
-}
-
-// ── Groq 審查員（第二次呼叫，gemma2 審查 llama 的輸出）────────
-// 使用不同 model（gemma2-9b-it）確保獨立視角，且有獨立 TPM 配額
-async function reviewWithGroq(rawArticle, generatedMarkdown, articleTitle) {
-  const systemPrompt = `你是浦惠投顧每日報告品質審查員。對照原文審查 AI 生成的 Obsidian 報告，確認完整性與格式正確。
-
-【審查標準】
-1. 段落覆蓋：原文每個段落的主要資訊都必須出現在報告中（逐段核對）
-2. 個股完整：原文提到的每一檔股票都必須有獨立 ### 區塊 + 兩欄表格
-3. 數字保留：重要財務數字（億美元、%、倍數、目標價）必須精確保留，不可模糊化
-4. Callout 格式：只能用 > [!tip/info/warning/danger/note]，嚴禁 HTML div 或其他格式
-5. 長度：報告必須超過 1000 字，每個 ## 章節至少 2–3 句話
-
-【回覆規則 — 嚴格遵守，不可偏離】
-- 報告完整且通過所有標準 → 只回覆：PASS
-- 任何標準不合格 → 直接輸出完整修正後的 Markdown 報告，不加任何說明或前言`;
-
-  const userPrompt = `文章標題：${articleTitle}
-
-=== 原文 ===
-${rawArticle.substring(0, 5500)}
-
-=== AI 生成的報告（待審查）===
-${generatedMarkdown}
-
-請審查。報告通過所有標準則只回覆 PASS，否則直接輸出完整修正後的 Markdown 報告。`;
-
-  const body = {
-    model: 'gemma2-9b-it',
-    messages: [
-      { role: 'system', content: systemPrompt },
-      { role: 'user', content: userPrompt }
-    ],
-    max_tokens: 5500,
-    temperature: 0.2,
-    stop: null
-  };
-
-  const r = await httpsPostJson('api.groq.com', '/openai/v1/chat/completions', body, {
-    Authorization: `Bearer ${GROQ_API_KEY}`
-  });
-
-  if (r.error) throw new Error(`Groq Review: ${r.error.message}`);
-  const result = r.choices[0].message.content;
-  log(`Groq 審查結果: ${result.length} 字元，finish_reason: ${r.choices[0].finish_reason}`);
-  return result.trim();
+  throw lastError || new Error('所有 Gemini API key 均失敗');
 }
 
 // ── Playwright 文章列表頁抓取（不需 OAuth）─────────────────
@@ -773,7 +702,7 @@ function extractPuhuiCache(markdown) {
     if (name) stocks.push({ name, emoji: m[1].trim() });
   }
 
-  // Format 2: Markdown table under 個股 section (standard Groq/Gemini output)
+  // Format 2: Markdown table under 個股 section (standard Gemini output)
   if (stocks.length === 0) {
     const lines = markdown.split('\n');
     let inStockSection = false;
@@ -996,41 +925,19 @@ async function main() {
     }
   }
 
-  // 5 & 6. AI 摘要（Gemini 主力 → Groq fallback）
+  // 5 & 6. AI 摘要（Gemini 3 key 輪換）
   log('呼叫 Gemini 進行摘要...');
   let markdown;
   try {
     markdown = await summarizeWithGemini(articleTitle, articleContent);
     log('Gemini 摘要完成');
   } catch (e) {
-    log(`Gemini 失敗 (${e.message})，切換 Groq...`);
-    try {
-      markdown = await summarizeWithGroq(articleTitle, articleContent);
-      log('Groq 摘要完成');
-    } catch (e2) {
-      log(`Groq 也失敗: ${e2.message}`);
-      await notify(`${DATE_DISPLAY} AI 摘要失敗`, `⚠️ 浦惠投顧 ${DATE_DISPLAY} AI 摘要失敗\n\nGemini: ${e.message}\nGroq: ${e2.message}`);
-      process.exit(1);
-    }
+    log(`Gemini 全部 key 失敗: ${e.message}`);
+    await notify(`${DATE_DISPLAY} AI 摘要失敗`, `⚠️ 浦惠投顧 ${DATE_DISPLAY} AI 摘要失敗\n\n${e.message}`);
+    process.exit(1);
   }
   // 清除 UTF-8 替換字元（API 截斷導致的亂碼）
   markdown = markdown.replace(/�/g, '');
-
-  // 6.5 Groq 審查（mixtral-8x7b-32768 審查剛生成的報告）
-  let reviewFixed = false;
-  try {
-    log('Groq 審查員啟動（gemma2-9b-it）...');
-    const reviewResult = await reviewWithGroq(articleContent.content, markdown, articleTitle);
-    if (reviewResult === 'PASS') {
-      log('✅ Groq 審查通過，報告完整');
-    } else {
-      log('⚠️ Groq 審查發現問題，使用修正版報告');
-      markdown = reviewResult.replace(/�/g, '');
-      reviewFixed = true;
-    }
-  } catch (e) {
-    log(`Groq 審查失敗，跳過審查步驟 (${e.message})`);
-  }
 
   // 若 AI 沒有加原文連結，補上
   if (articleUrl && !markdown.includes(articleUrl)) {
@@ -1081,10 +988,7 @@ async function main() {
   }
 
   // 8. Telegram 通知（改用直接發送，避免 notify 函式的重複郵件）
-  let tgMessage = buildTelegramSummary(markdown, articleTitle, articleUrl);
-  if (reviewFixed) {
-    tgMessage += '\n\n🔍 <i>報告已由 Groq 審查員自動修正</i>';
-  }
+  const tgMessage = buildTelegramSummary(markdown, articleTitle, articleUrl);
   await sendTelegram(tgMessage);
   log('Telegram 通知已發送');
   log('===== puhui_daily 完成 =====');
