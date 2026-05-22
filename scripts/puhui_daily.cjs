@@ -612,7 +612,6 @@ async function summarizeWithGroq(articleTitle, rawContent) {
       { role: 'user', content: userPrompt }
     ],
     max_tokens: 5500,
-    min_tokens: 1500,
     temperature: 0.45,
     stop: null
   };
@@ -662,8 +661,8 @@ async function summarizeWithGemini(articleTitle, rawContent) {
   throw lastError;
 }
 
-// ── Groq 審查員（第二次呼叫，mixtral 審查 llama 的輸出）────────
-// 使用不同 model（mixtral-8x7b-32768）確保獨立視角，且有獨立 TPM 配額
+// ── Groq 審查員（第二次呼叫，gemma2 審查 llama 的輸出）────────
+// 使用不同 model（gemma2-9b-it）確保獨立視角，且有獨立 TPM 配額
 async function reviewWithGroq(rawArticle, generatedMarkdown, articleTitle) {
   const systemPrompt = `你是浦惠投顧每日報告品質審查員。對照原文審查 AI 生成的 Obsidian 報告，確認完整性與格式正確。
 
@@ -689,7 +688,7 @@ ${generatedMarkdown}
 請審查。報告通過所有標準則只回覆 PASS，否則直接輸出完整修正後的 Markdown 報告。`;
 
   const body = {
-    model: 'mixtral-8x7b-32768',
+    model: 'gemma2-9b-it',
     messages: [
       { role: 'system', content: systemPrompt },
       { role: 'user', content: userPrompt }
@@ -1020,7 +1019,7 @@ async function main() {
   // 6.5 Groq 審查（mixtral-8x7b-32768 審查剛生成的報告）
   let reviewFixed = false;
   try {
-    log('Groq 審查員啟動（mixtral-8x7b-32768）...');
+    log('Groq 審查員啟動（gemma2-9b-it）...');
     const reviewResult = await reviewWithGroq(articleContent.content, markdown, articleTitle);
     if (reviewResult === 'PASS') {
       log('✅ Groq 審查通過，報告完整');
