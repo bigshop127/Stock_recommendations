@@ -2,8 +2,14 @@
 name: Puhui Daily Summary
 
 on:
-  schedule:
-    - cron: '0 5 * * 1-5'  # 05:00 UTC = 13:00 Taiwan (Mon-Fri)
+  # 2026-05-25 暫停雲端排程：
+  # - Gemini free-tier flash-lite quota 改為 limit=0，3 把 key 全失效
+  # - 本機 puhui_daily.cjs 已改為 Claude CLI 主（吃 Pro 訂閱、無 quota）+ Gemini fallback
+  # - 雲端沒法用 Claude CLI（需要登入態），所以雲端排程目前無法穩定產報告
+  # - 改靠本機 Task Scheduler `PuhuiDaily_Summary`（週一～五 13:00）
+  # 若日後升級 Gemini 付費 tier 或補上 Anthropic / OpenAI API key，再恢復下行 schedule
+  # schedule:
+  #   - cron: '0 5 * * 1-5'  # 05:00 UTC = 13:00 Taiwan (Mon-Fri)
   workflow_dispatch:
     inputs:
       date:

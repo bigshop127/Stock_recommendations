@@ -18,7 +18,7 @@ require('dotenv').config({ path: require('path').join(__dirname, '..', '.env') }
 const fs = require('fs');
 const https = require('https');
 const path = require('path');
-const { execSync } = require('child_process');
+const { execSync, spawnSync } = require('child_process');
 
 // ── 設定 ────────────────────────────────────────────────
 const TARGET_DATE = process.argv[2] || new Date().toISOString().slice(0, 10);
@@ -637,6 +637,38 @@ async function summarizeWithGemini(articleTitle, rawContent) {
   throw lastError || new Error('所有 Gemini API key 均失敗');
 }
 
+// ── Claude CLI 摘要（本機 fallback，吃 Claude Pro/Max 訂閱）─
+// 雲端 GitHub Actions 沒有 claude CLI，呼叫端需自行判斷 IS_CI
+async function summarizeWithClaudeCli(articleTitle, rawContent) {
+  const fullPrompt = buildObsidianPrompt(articleTitle, rawContent, DATE_DISPLAY);
+
+  // Windows arg 傳長中文 prompt 不可靠（CreateProcess 32k 限制 + UTF-16），
+  // 改用 stdin pipe 把 prompt 餵進去（claude -p 支援 stdin）
+  // 必須指向 claude.exe，不可用 'claude'（會被 resolve 到 claude.cmd，stdin 不透傳）
+  const CLAUDE_BIN = process.env.CLAUDE_BIN ||
+    'C:\\Users\\bigsh\\.local\\bin\\claude.exe';
+  const result = spawnSync(CLAUDE_BIN, ['-p'], {
+    input: fullPrompt,
+    encoding: 'utf8',
+    timeout: 300000,
+    maxBuffer: 20 * 1024 * 1024,
+    shell: false,
+  });
+
+  const combined = (result.stdout || '') + (result.stderr || '');
+  if (/usage limit|rate limit|limit reached|exceeded.*limit/i.test(combined)) {
+    throw new Error('Claude CLI 用量上限');
+  }
+  if (result.error || result.status !== 0) {
+    throw new Error(`Claude CLI 失敗: ${result.error?.message || `exit ${result.status}`} ${combined.substring(0, 200)}`);
+  }
+  const out = (result.stdout || '').trim();
+  if (out.length < 500) {
+    throw new Error(`Claude CLI 輸出過短 (${out.length} chars): ${out.substring(0, 200)}`);
+  }
+  return out;
+}
+
 // ── Playwright 文章列表頁抓取（不需 OAuth）─────────────────
 async function fetchArticleUrlByDate(dateDisplay) {
   const { chromium } = require('playwright-core');
@@ -665,26 +697,70 @@ async function fetchArticleUrlByDate(dateDisplay) {
       await page.waitForTimeout(1500);
     }
 
-    const url = await page.evaluate((date) => {
-      // Use computed a.href (absolute URL) instead of href attribute to avoid
-      // selector mismatch when the page uses relative or JS-rendered links
+    // 收集所有當日候選 URL（同日可能有多篇：每日盤勢 + 週報 + 3999 專屬等）
+    const candidates = await page.evaluate((date) => {
       const projectPattern = /pressplay\.cc\/project\/[A-Z0-9]+\/articles\/[A-Z0-9]+/i;
       const anchors = Array.from(document.querySelectorAll('a'));
+      const seen = new Set();
+      const result = [];
       for (const a of anchors) {
-        if (projectPattern.test(a.href) && a.textContent.trim().includes(date)) {
-          return a.href;
+        if (projectPattern.test(a.href) && a.textContent.trim().includes(date) && !seen.has(a.href)) {
+          seen.add(a.href);
+          result.push({ url: a.href, text: a.textContent.trim().substring(0, 80) });
         }
       }
-      // Fallback: return the first valid article link (most recent)
-      for (const a of anchors) {
-        if (projectPattern.test(a.href)) return a.href;
+      // 若當日無命中，把最新一篇當 fallback
+      if (result.length === 0) {
+        for (const a of anchors) {
+          if (projectPattern.test(a.href) && !seen.has(a.href)) {
+            seen.add(a.href);
+            result.push({ url: a.href, text: a.textContent.trim().substring(0, 80) });
+            break;
+          }
+        }
       }
-      return null;
+      return result;
     }, dateDisplay);
 
-    return url;
+    return candidates;
   } finally {
     await browser.close();
+  }
+}
+
+// 檢查 URL 對應文章是否為當前 cookies 可讀（避免抓到無權限的會員專屬文）
+async function checkArticleReadable(articleUrl) {
+  const articleId = articleUrl.match(/articles\/([A-Z0-9]+)/i)?.[1];
+  if (!articleId) return { readable: false, title: '' };
+  const cookies = fs.existsSync(COOKIES_PATH)
+    ? JSON.parse(fs.readFileSync(COOKIES_PATH, 'utf-8')) : [];
+  const cookieStr = cookies.map(c => c.name + '=' + c.value).join('; ');
+  const PP_HEADERS = {
+    'Cookie': cookieStr,
+    'pp-os': 'Web', 'pp-locale': 'zh-TW', 'pp-timezone': 'Asia/Taipei',
+    'pp-device-id': 'howdoyouturnthison',
+    'x-requested-with': 'XMLHttpRequest', 'accept': 'application/json',
+    'referer': 'https://www.pressplay.cc/',
+    'user-agent': 'Mozilla/5.0',
+  };
+  try {
+    const data = await new Promise((resolve, reject) => {
+      const req = https.request(
+        { hostname: 'og-web.pressplay.cc', path: `/timeline/${articleId}/info`,
+          method: 'GET', headers: PP_HEADERS },
+        res => {
+          let d = ''; res.on('data', c => d += c);
+          res.on('end', () => { try { resolve(JSON.parse(d)); } catch (e) { reject(e); } });
+        }
+      );
+      req.on('error', reject); req.end();
+    });
+    return {
+      readable: !!data?.data?.canReadTimeline,
+      title: data?.data?.timeline_info?.timeline_title || '',
+    };
+  } catch (_) {
+    return { readable: false, title: '' };
   }
 }
 
@@ -841,8 +917,21 @@ async function main() {
       log(`找到 ${msgs.length} 封摘要郵件，使用第一封`);
       const email = await getEmail(token, msgs[0].id);
       const subjHeader = email.payload.headers.find(h => h.name === 'Subject');
-      articleTitle = subjHeader?.value || DATE_DISPLAY;
-      articleContent = { content: extractTextFromPayload(email.payload), url: '' };
+      const emailBody = extractTextFromPayload(email.payload);
+      // 若 email 內容太短（< 800 字），多半是通知信而非實際摘要，改走 Playwright 抓原文
+      if (emailBody.length < 800) {
+        log(`Gmail 摘要內容過短（${emailBody.length} 字），疑為通知信 → 改走 Playwright 抓原文`);
+        // 嘗試從通知信內容抽出 PressPlay 文章 URL
+        const links = extractPressPlayLinks(email.payload);
+        if (links[0]) {
+          articleUrl = links[0];
+          log(`從通知信抽出文章 URL: ${articleUrl}`);
+        }
+        articleTitle = subjHeader?.value || DATE_DISPLAY;
+      } else {
+        articleTitle = subjHeader?.value || DATE_DISPLAY;
+        articleContent = { content: emailBody, url: '' };
+      }
     }
 
     if (!articleContent) {
@@ -869,14 +958,29 @@ async function main() {
     } else {
       log(`Gmail 無結果或不可用，改用 Playwright 抓取文章列表（${DATE_DISPLAY}）`);
       try {
-        articleUrl = await fetchArticleUrlByDate(DATE_DISPLAY);
-        if (articleUrl) {
-          log(`從文章列表找到 URL: ${articleUrl}`);
-        } else {
+        const candidates = await fetchArticleUrlByDate(DATE_DISPLAY);
+        if (!candidates || candidates.length === 0) {
           log(`文章列表中找不到 ${DATE_DISPLAY} 的文章，可能未發文（週末/假日/請假）`);
           await notify(`${DATE_DISPLAY} 今日無發文`, `ℹ️ 浦惠投顧 ${DATE_DISPLAY}\n\n今日無發文（週末/假日/老王請假）`);
           return;
         }
+        log(`找到 ${candidates.length} 篇候選文章，逐一檢查閱讀權限...`);
+        // 從候選裡挑可讀的（跳過 3999 會員專屬等無權限文章）
+        for (const c of candidates) {
+          const { readable, title } = await checkArticleReadable(c.url);
+          log(`  候選: ${title.substring(0, 50)} | canRead=${readable}`);
+          if (readable) {
+            articleUrl = c.url;
+            break;
+          }
+        }
+        if (!articleUrl) {
+          log(`所有候選文章都無權限閱讀（可能是 3999 會員專屬週報等）`);
+          await notify(`${DATE_DISPLAY} 今日無一般每日盤勢文`,
+            `ℹ️ 浦惠投顧 ${DATE_DISPLAY}\n\n當日有 ${candidates.length} 篇文章但都不在你的閱讀權限內：\n${candidates.map(c => '- ' + c.text).join('\n')}`);
+          return;
+        }
+        log(`選定可讀 URL: ${articleUrl}`);
       } catch (e) {
         log(`Playwright 文章列表抓取失敗: ${e.message}`);
         await notify(`${DATE_DISPLAY} 文章列表抓取失敗`, `⚠️ 浦惠投顧 ${DATE_DISPLAY}\n\n${e.message}`);
@@ -925,16 +1029,34 @@ async function main() {
     }
   }
 
-  // 5 & 6. AI 摘要（Gemini 3 key 輪換）
-  log('呼叫 Gemini 進行摘要...');
+  // 5 & 6. AI 摘要
+  //   本機：Claude CLI 主（吃訂閱不限額）→ Gemini fallback（3 key 輪換）
+  //   雲端 CI：只能用 Gemini（沒有 Claude CLI）
   let markdown;
-  try {
-    markdown = await summarizeWithGemini(articleTitle, articleContent);
-    log('Gemini 摘要完成');
-  } catch (e) {
-    log(`Gemini 全部 key 失敗: ${e.message}`);
-    await notify(`${DATE_DISPLAY} AI 摘要失敗`, `⚠️ 浦惠投顧 ${DATE_DISPLAY} AI 摘要失敗\n\n${e.message}`);
-    process.exit(1);
+  const errors = [];
+
+  if (!IS_CI) {
+    log('呼叫 Claude CLI 進行摘要（本機優先）...');
+    try {
+      markdown = await summarizeWithClaudeCli(articleTitle, articleContent);
+      log(`Claude CLI 摘要完成 (${markdown.length} 字元)`);
+    } catch (e) {
+      log(`Claude CLI 失敗，改用 Gemini: ${e.message}`);
+      errors.push(`Claude CLI: ${e.message}`);
+    }
+  }
+
+  if (!markdown) {
+    log('呼叫 Gemini 進行摘要...');
+    try {
+      markdown = await summarizeWithGemini(articleTitle, articleContent);
+      log('Gemini 摘要完成');
+    } catch (e) {
+      log(`Gemini 全部 key 失敗: ${e.message}`);
+      errors.push(`Gemini: ${e.message}`);
+      await notify(`${DATE_DISPLAY} AI 摘要失敗`, `⚠️ 浦惠投顧 ${DATE_DISPLAY} AI 摘要失敗\n\n${errors.join('\n\n')}`);
+      process.exit(1);
+    }
   }
   // 清除 UTF-8 替換字元（API 截斷導致的亂碼）
   markdown = markdown.replace(/�/g, '');
