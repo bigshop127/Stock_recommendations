@@ -737,11 +737,13 @@ async function checkArticleReadable(articleUrl) {
   const cookieStr = cookies.map(c => c.name + '=' + c.value).join('; ');
   const PP_HEADERS = {
     'Cookie': cookieStr,
-    'pp-os': 'Web', 'pp-locale': 'zh-TW', 'pp-timezone': 'Asia/Taipei',
+    'pp-os': 'Web', 'pp-os-ver': '1.0', 'pp-app-ver': '1.0',
+    'pp-locale': 'zh-TW', 'pp-region': 'TW',
+    'pp-timezone': 'Asia/Taipei', 'pp-timezone-offset': '-480',
     'pp-device-id': 'howdoyouturnthison',
     'x-requested-with': 'XMLHttpRequest', 'accept': 'application/json',
     'referer': 'https://www.pressplay.cc/',
-    'user-agent': 'Mozilla/5.0',
+    'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36',
   };
   try {
     const data = await new Promise((resolve, reject) => {
