@@ -1109,10 +1109,8 @@ async function main() {
   // 7.5 Gmail 已停發完整報告（2026-05-28）：報告改在 Obsidian / GitHub 查看
   //     原因：markdownToHTML 不認 Obsidian callout 多行語法，callout 內 table 會碎片化
 
-  // 8. Telegram 通知（改用直接發送，避免 notify 函式的重複郵件）
-  const tgMessage = buildTelegramSummary(markdown, articleTitle, articleUrl);
-  await sendTelegram(tgMessage);
-  log('Telegram 通知已發送');
+  // 8. Telegram 每日摘要已停發（2026-05-28）：報告改在 Obsidian / GitHub 查看
+  //     保留：cookies 過期、OAuth 失效、崩潰通知（安全網警告）
   log('===== puhui_daily 完成 =====');
 }
 
