@@ -576,11 +576,17 @@ function buildObsidianPromptSplit(articleTitle, rawContent, dateDisplay) {
 - 所有百分比、點數、億美元、倍數 → **粗體**
 - 例：**+92% YoY**、**752 億美元**、**漲停**、**10 倍**
 
+【排除段落 — 絕對不可寫入報告】
+以下三類段落屬於文章固定樣板，**不是當日分析內容**，必須完全忽略、不要轉述、不要做成 callout：
+1. **業配 / 訂閱推銷**：浦惠選股 APP 實戰績效、APP 推薦、勸誘加入 3999 會員、訂閱方案說明、【郁金香】【浦惠】等專欄訂閱導購段落
+2. **著作權警示**：「浦惠投顧所有會員付費文章與圖片都已採用電子編碼追蹤外流」、智慧財產權法第 91 條三年以下有期徒刑罰則那段
+3. **投資聲明**：王倚隆 / 為投顧會員服務分析文章 / 僅提供支撐壓力價位 / 並非帶進帶出服務 / 投資應獨立判斷自負風險 那段
+報告焦點是當日的盤勢分析、個股操作、選股邏輯、風險提醒，業配與制式聲明一律剔除。
+
 【完整性要求 — 絕對不可違反】
-- 原文每個段落的資訊都必須出現在報告中，不能遺漏任何段落
+- 原文「實際盤勢分析」每段都必須涵蓋（指數、個股、選股邏輯、風險提醒）
 - 數據必須精確，直接來自原文（億美元、百分比、倍數等全部保留）
-- 選股 APP 推薦個股、老王實戰示範等教學段落也要完整呈現
-- 每篇文章通常有 8–15 段，報告必須完整覆蓋所有段落
+- 老王實戰示範、選股教學是內容；APP 推薦頁則屬上方排除清單，不寫
 - **輸出字數：2000 字以上（繁體中文字）**
 - 每個 ## 章節至少 3 句話，不能只寫一句話就跳下一節
 - 在輸出最後一個段落前，不得停止生成
@@ -1100,16 +1106,8 @@ async function main() {
     }
   }
 
-  // 7.5 發送完整 HTML 報告到 Gmail（停用 notify 的郵件部分，避免重複）
-  if (_gmailToken) {
-    try {
-      const htmlContent = markdownToHTML(markdown);
-      await sendEmail(`浦惠投顧每日摘要 — ${DATE_DISPLAY}`, markdown, htmlContent);
-      log('HTML 報告已發送到 Gmail');
-    } catch (e) {
-      log(`HTML 報告發送失敗: ${e.message}`);
-    }
-  }
+  // 7.5 Gmail 已停發完整報告（2026-05-28）：報告改在 Obsidian / GitHub 查看
+  //     原因：markdownToHTML 不認 Obsidian callout 多行語法，callout 內 table 會碎片化
 
   // 8. Telegram 通知（改用直接發送，避免 notify 函式的重複郵件）
   const tgMessage = buildTelegramSummary(markdown, articleTitle, articleUrl);
