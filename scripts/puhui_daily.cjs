@@ -29,11 +29,22 @@ const [Y, M, D] = TARGET_DATE.split('-');
 const DATE_DISPLAY = `${Y}/${M}/${D}`;
 
 // 計算月份內的週數（week-of-month）用於資料夾組織
-// 規則：(dayOfMonth - 1) / 7 向下取整 + 1
-// 例：1-7 日 = W1，8-14 日 = W2，15-21 日 = W3，22-28 日 = W4，29+ = W5
+// 規則：日期所在 ISO 週的星期一決定歸屬月份；W = 該月第幾個星期一
+// 例：5/04 (Mon) → 2026-05/W1；5/22 (Fri, Mon=5/18) → 2026-05/W3；
+//     5/01 (Fri, Mon=4/27) → 2026-04/W4（孤兒日跟 Monday 走）
 function getMonthWeek(dateStr) {
-  const [year, month, day] = dateStr.split('-').map(Number);
-  const weekOfMonth = Math.floor((day - 1) / 7) + 1;
+  const [y, m, d] = dateStr.split('-').map(Number);
+  const date = new Date(Date.UTC(y, m - 1, d));
+  const dayOfWeek = date.getUTCDay() || 7; // Sun=7
+  const monday = new Date(date);
+  monday.setUTCDate(date.getUTCDate() - dayOfWeek + 1);
+  const year = monday.getUTCFullYear();
+  const month = monday.getUTCMonth() + 1;
+  const mondayDay = monday.getUTCDate();
+  const firstOfMonth = new Date(Date.UTC(year, month - 1, 1));
+  const firstDow = firstOfMonth.getUTCDay() || 7;
+  const firstMondayDay = firstDow === 1 ? 1 : (1 + (8 - firstDow));
+  const weekOfMonth = Math.floor((mondayDay - firstMondayDay) / 7) + 1;
   return { year, month, weekOfMonth };
 }
 
