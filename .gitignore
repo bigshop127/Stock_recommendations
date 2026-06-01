@@ -1,4 +1,42 @@
-﻿*.msi
+# Build artifacts
+*.msi
 node_modules/
 .claude/
 chat_history/
+
+# Logs
+*.log
+data/puhui_*.log
+data/oracle_*.log
+data/server_*.log
+
+# Pipeline 中間產物
+data/puhui_urls_part_*.json
+data/puhui_urls_v*.json
+data/puhui_urls_api.json
+data/puhui_urls_full.json
+data/puhui_urls_public.json
+data/puhui_urls_rss.json
+data/puhui_page_debug.*
+data/puhui_2026-*_raw.txt
+
+# Secrets / cookies
+.env
+.env.local
+.env.*.local
+auth_url.txt
+data/pressplay_cookies*.txt
+data/pressplay_cookies*.db
+data/temp_cookies.db
+PressPlay_cookies.json
+*pressplay_cookies*.json
+!data/pressplay_cookies.json
+
+# Debug
+.playwright-mcp/
+firebase-debug.log
+firestore-debug.log
+
+# 過時殘留（保險）
+PowerShell-*.msi
+HANDOVER_*.md
