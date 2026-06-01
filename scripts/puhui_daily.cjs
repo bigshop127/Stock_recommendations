@@ -667,7 +667,7 @@ async function summarizeWithClaudeCli(articleTitle, rawContent) {
   const result = spawnSync(CLAUDE_BIN, ['-p'], {
     input: fullPrompt,
     encoding: 'utf8',
-    timeout: 300000,
+    timeout: 600000,
     maxBuffer: 20 * 1024 * 1024,
     shell: false,
   });
