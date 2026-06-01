@@ -52,7 +52,7 @@ const { year: targetYear, month: targetMonth, weekOfMonth } = getMonthWeek(TARGE
 const MONTH_FOLDER = `${targetYear}-${String(targetMonth).padStart(2, '0')}`;
 const WEEK_FOLDER = `W${weekOfMonth}`;
 
-const OBSIDIAN_DIR = 'C:\\obsidian\\儲存庫\\浦惠投顧報告整理';
+const OBSIDIAN_DIR = process.env.OBSIDIAN_DIR || 'C:\\obsidian\\儲存庫\\浦惠投顧報告整理';
 const NOTE_DIR = path.join(OBSIDIAN_DIR, MONTH_FOLDER, WEEK_FOLDER);
 const NOTE_PATH = path.join(NOTE_DIR, `${TARGET_DATE}.md`);
 const COOKIES_PATH = path.join(__dirname, '..', 'data', 'pressplay_cookies.json');
