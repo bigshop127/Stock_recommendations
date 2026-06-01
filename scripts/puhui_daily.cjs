@@ -689,8 +689,9 @@ async function summarizeWithClaudeCli(articleTitle, rawContent) {
 // ── Playwright 文章列表頁抓取（不需 OAuth）─────────────────
 async function fetchArticleUrlByDate(dateDisplay) {
   const { chromium } = require('playwright-core');
+  const WIN_CHROMIUM_FALLBACK = 'C:\\Users\\bigsh\\AppData\\Local\\ms-playwright\\chromium-1217\\chrome-win64\\chrome.exe';
   const execPath = process.env.PLAYWRIGHT_CHROMIUM_PATH ||
-    (IS_CI ? null : 'C:\\Users\\bigsh\\AppData\\Local\\ms-playwright\\chromium-1217\\chrome-win64\\chrome.exe');
+    (!IS_CI && process.platform === 'win32' ? WIN_CHROMIUM_FALLBACK : null);
   const LIST_URL = 'https://www.pressplay.cc/project/CF6DA5CB5BE8C843FE37526843D3E126/articles';
 
   const browser = await chromium.launch({
