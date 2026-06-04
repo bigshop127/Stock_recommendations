@@ -174,91 +174,9 @@ async function withRetry(fn, label, { max = 3, delayMs = 30000 } = {}) {
   throw lastErr;
 }
 
-function buildTelegramSummary(markdown, articleTitle, articleUrl) {
-  const escHtml = s => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-  const stripHtml = s => s.replace(/<[^>]+>/g, '');
-  const stripMd = s => s.replace(/\*\*([^*]+)\*\*/g, '$1');
-  const clean = s => escHtml(stripMd(stripHtml(s)).trim());
-
-  const lines = markdown.split('\n');
-  const out = [];
-
-  // Header + subtitle
-  out.push(`📊 <b>浦惠投顧每日摘要</b> — ${DATE_DISPLAY}`);
-  const subtitleLine = lines.find(l => l.startsWith('> ') && !l.includes('[!'));
-  if (subtitleLine) out.push(`<i>${clean(subtitleLine.slice(2))}</i>`);
-  out.push('');
-
-  // 操作水位
-  const waterIdx = lines.findIndex(l => stripHtml(l).includes('操作水位'));
-  if (waterIdx >= 0) {
-    for (let i = waterIdx; i < Math.min(waterIdx + 8, lines.length); i++) {
-      const c = stripHtml(lines[i]);
-      const m = c.match(/[一二三四五六七八九十]+成(?:持股水位)?|\d+%(?:持股)?水位/);
-      if (m) { out.push(`💼 <b>操作水位：${escHtml(m[0])}</b>`); break; }
-    }
-  }
-
-  // Danger callouts (重大警示)
-  for (const l of lines) {
-    if (l.includes('[!danger]')) {
-      const content = clean(l.replace(/^>?\s*\[!danger\]\s*/, ''));
-      if (content) out.push(`🚨 <b>${content}</b>`);
-    }
-  }
-
-  // Individual stocks (table format or ### section format)
-  const stocks = [];
-  let inStockSection = false;
-  for (const l of lines) {
-    if (l.startsWith('## ')) {
-      inStockSection = !!stripHtml(l).match(/個股/);
-      continue;
-    }
-
-    if (inStockSection && l.trim().startsWith('|')) {
-      if (l.match(/^\|\s*[-:]+/) || stripHtml(l).match(/代號|名稱/)) continue;
-      const cells = l.split('|').slice(1, -1).map(c => clean(c.trim()));
-      if (cells.length >= 2 && cells[0]) {
-        const advice = cells[2] || '';
-        const em = (advice.includes('出清') || advice.includes('賣出')) ? '🔴' :
-                   (advice.includes('續抱') || advice.includes('持有') || advice.includes('持股')) ? '🟢' : '🟠';
-        stocks.push(`${em} <b>${cells[0]} ${cells[1]}</b>${advice ? ` — ${advice.substring(0, 35)}` : ''}`);
-      }
-    }
-
-    if (inStockSection && l.startsWith('### ')) {
-      const raw = l.slice(4);
-      const header = clean(raw);
-      const em = (header.includes('🔴') || raw.includes('color:red')) ? '🔴' :
-                 (header.includes('🟠') || raw.includes('#B35A00') || raw.includes('color:orange')) ? '🟠' :
-                 (header.includes('🟢') || raw.includes('color:green')) ? '🟢' : '';
-      if (em) stocks.push(`${em} <b>${header.replace(/^[🔴🟠🟢]\s*/u, '')}</b>`);
-    }
-
-    if (inStockSection && stocks.length > 0 && l.includes('操作建議') &&
-        !stocks[stocks.length - 1].includes('↳')) {
-      const advice = clean(l.replace(/^-?\s*\*\*操作建議\*\*[^：:]*[：:]\s*/, ''));
-      if (advice) {
-        const truncated = advice.length > 60 ? advice.substring(0, 60) + '…' : advice;
-        stocks[stocks.length - 1] += `\n↳ ${truncated}`;
-      }
-    }
-  }
-  if (stocks.length > 0) {
-    out.push('');
-    out.push('📌 <b>今日個股</b>');
-    out.push(...stocks);
-  }
-
-  // Original link
-  const linkMatch = markdown.match(/\[閱讀原文\]\(([^)]+)\)/);
-  const link = articleUrl || (linkMatch ? linkMatch[1] : null);
-  if (link) { out.push(''); out.push(`🔗 <a href="${link}">閱讀原文</a>`); }
-
-  const msg = out.join('\n');
-  return msg.length > 3800 ? msg.substring(0, 3800) + '\n…' : msg;
-}
+// buildTelegramSummary 已於 2026-05-28 (commit a4e48ac) 從 main flow 移除，
+// 整個函式於 2026-06-04 一併刪除，徹底斷根避免任何路徑誤觸發 Telegram 每日摘要。
+// 報告統一在 Obsidian / GitHub 查看；Telegram 僅保留 cookies/OAuth/崩潰等安全網警告。
 
 function encodeSubject(text) {
   // RFC 2047 encoding for non-ASCII subjects
