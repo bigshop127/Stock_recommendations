@@ -136,11 +136,13 @@ function extractTextFromPayload(payload) {
 }
 
 // ── 通知：Telegram + Email ────────────────────────────────
-async function sendTelegram(text) {
+async function sendTelegram(text, { html = false } = {}) {
   try {
+    const payload = { chat_id: TELEGRAM_CHAT_ID, text };
+    if (html) payload.parse_mode = 'HTML';
     const result = await httpsPostJson('api.telegram.org',
       `/bot${TELEGRAM_BOT_TOKEN}/sendMessage`,
-      { chat_id: TELEGRAM_CHAT_ID, text, parse_mode: 'HTML' }
+      payload
     );
     if (result.ok) {
       log(`Telegram 已發送 (message_id: ${result.result?.message_id})`);
