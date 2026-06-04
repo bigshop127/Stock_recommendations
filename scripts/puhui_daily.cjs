@@ -154,6 +154,26 @@ async function sendTelegram(text, { html = false } = {}) {
   }
 }
 
+// 偶發失敗（chromium SIGSEGV、暫時性網路錯誤）的 retry 包裝
+async function withRetry(fn, label, { max = 3, delayMs = 30000 } = {}) {
+  let lastErr;
+  for (let attempt = 1; attempt <= max; attempt++) {
+    try {
+      const result = await fn();
+      if (attempt > 1) log(`${label} 第 ${attempt} 次嘗試成功`);
+      return result;
+    } catch (e) {
+      lastErr = e;
+      log(`${label} 失敗 (attempt ${attempt}/${max}): ${e.message}`);
+      if (attempt < max) {
+        log(`等 ${Math.round(delayMs / 1000)}s 後重試...`);
+        await new Promise(r => setTimeout(r, delayMs));
+      }
+    }
+  }
+  throw lastErr;
+}
+
 function buildTelegramSummary(markdown, articleTitle, articleUrl) {
   const escHtml = s => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
   const stripHtml = s => s.replace(/<[^>]+>/g, '');
@@ -1082,7 +1102,10 @@ async function main() {
     } else {
       log(`Gmail 無結果或不可用，改用 Playwright 抓取文章列表（${DATE_DISPLAY}）`);
       try {
-        const candidates = await fetchArticleUrlByDate(DATE_DISPLAY);
+        const candidates = await withRetry(
+          () => fetchArticleUrlByDate(DATE_DISPLAY),
+          'Playwright 文章列表抓取'
+        );
         if (!candidates || candidates.length === 0) {
           log(`文章列表中找不到 ${DATE_DISPLAY} 的文章，可能未發文（週末/假日/請假）`);
           await notify(`${DATE_DISPLAY} 今日無發文`, `ℹ️ 浦惠投顧 ${DATE_DISPLAY}\n\n今日無發文（週末/假日/老王請假）`);
@@ -1117,7 +1140,10 @@ async function main() {
   if (!articleContent && articleUrl) {
     log('Playwright 無頭抓取文章...');
     try {
-      const fetched = await fetchPressPlayArticle(articleUrl);
+      const fetched = await withRetry(
+        () => fetchPressPlayArticle(articleUrl),
+        'Playwright 文章內容抓取'
+      );
       articleTitle = fetched.title || articleTitle || DATE_DISPLAY;
       const isPaywall = fetched.content.length < 500;
       log(`抓取結果: ${fetched.content.length} 字${isPaywall ? ' ⚠️ 疑似 paywall teaser' : ' ✅ 正常'}`);
