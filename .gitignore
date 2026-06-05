@@ -24,13 +24,16 @@ data/puhui_2026-*_raw.txt
 .env
 .env.local
 .env.*.local
+.env.bak
+.env.*.bak
 auth_url.txt
 data/pressplay_cookies*.txt
 data/pressplay_cookies*.db
 data/temp_cookies.db
 PressPlay_cookies.json
 *pressplay_cookies*.json
-!data/pressplay_cookies.json
+data/pressplay_cookies.json
+data/pressplay_cookies_b64.txt
 
 # Debug
 .playwright-mcp/
@@ -40,3 +43,24 @@ firestore-debug.log
 # 過時殘留（保險）
 PowerShell-*.msi
 HANDOVER_*.md
+
+# === Added 2026-06-05 (S1 inventory) ===
+
+# Inventory artifacts (per-stage cleanup reports)
+INVENTORY_*.md
+inventory_raw.txt
+
+# IDE / tooling caches
+.antigravitycli/
+
+# Data: machine-generated caches and mutable state
+data/puhui_cache.json
+data/finance_progress.json
+data/parse_error_list.json
+data/token_usage.json
+
+# Data: large binaries / generated artifacts
+data/all_books*.pdf
+data/puhui_raw/
+data/puhui_analysis/
+data/patch_*.js
