@@ -6,7 +6,10 @@ const path = require('path');
 const axios = require('axios');
 require('dotenv').config();
 
-const COOKIE = process.env.PP_COOKIE || `JAccessToken=eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJpYXQiOjE3NzcwMjM1OTAsImV4cCI6MTc3OTYxNTU5MCwiZGF0YSI6eyJhY2Nlc3NUb2tlbiI6IjZkZjgzMzljYjE3MjY1Mjg2MjA0MmRhZTk1ZGU2M2Q0NzZiYzM5YTAiLCJtZW1iZXJfaWQiOiI5NkMwRjY4RUIzNjg1NTA4NUM2RjdEQTczMDM3OUQ2MCJ9fQ.UZuRkUcGGUOTVAZlBv92ufssawOe3DIGKuMGErb5-wE; PHPSESSID=568jb4qoda7bj7faqb51ps019r; pp_identify=72dff85f0f6c397867acca3c2995457d; salt=19dbedb80df223f-07f45531a5719c8-26061e51-1a298c-19dbedb80e0284b`;
+const COOKIE = process.env.PP_COOKIE;
+if (!COOKIE) {
+  throw new Error('PP_COOKIE must be set in .env (PressPlay session cookie string).');
+}
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 
 const DATED_JSON_PATH = path.join(__dirname, '../data/puhui_urls_paginated_dated.json');

@@ -16,8 +16,11 @@ const envConfig = dotenv.parse(fs.readFileSync(envPath));
 const app = express();
 const PORT = 3002;
 
-const CLIENT_ID = envConfig.GOOGLE_CLIENT_ID || '939568061140-922kr3lovdkb8alfi1p8kt1p302su1rh.apps.googleusercontent.com';
-const CLIENT_SECRET = envConfig.GOOGLE_CLIENT_SECRET || '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';
+const CLIENT_ID = envConfig.GOOGLE_CLIENT_ID;
+const CLIENT_SECRET = envConfig.GOOGLE_CLIENT_SECRET;
+if (!CLIENT_ID || !CLIENT_SECRET) {
+  throw new Error('GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET must be set in .env');
+}
 const REDIRECT_URI = `http://localhost:${PORT}/callback`;
 
 const oauth2Client = new google.auth.OAuth2(CLIENT_ID, CLIENT_SECRET, REDIRECT_URI);
