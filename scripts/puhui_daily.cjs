@@ -21,7 +21,10 @@ const path = require('path');
 const { execSync, spawnSync } = require('child_process');
 
 // ── 設定 ────────────────────────────────────────────────
-const TARGET_DATE = process.argv[2] || new Date().toISOString().slice(0, 10);
+// TARGET_DATE 用 Asia/Taipei 算當天日期。
+// Why: 原本用 new Date().toISOString() = UTC，當 cron 在台北凌晨跑時 UTC 還在「昨天」，
+// target 會算錯一天（2026-06-04→6-05 跳過事件就是這個 bug）。
+const TARGET_DATE = process.argv[2] || new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Taipei' }).format(new Date());
 const FORCE_REGENERATE = process.argv.includes('--force');
 const ARTICLE_URL_OVERRIDE = (process.argv[3] && !process.argv[3].startsWith('--')) ? process.argv[3] : null;
 const IS_CI = process.env.CI === 'true';
@@ -1153,16 +1156,25 @@ async function main() {
   log(`報告寫入 repo: reports/${MONTH_FOLDER}/${WEEK_FOLDER}/${TARGET_DATE}.md`);
 
   // 本機：自動 git push，讓手機可 pull 到最新報告
+  // push 被 reject (non-fast-forward) 時自動 pull --rebase 重試一次，避免 VM/本機雙寫分岔。
   if (!IS_CI) {
+    const repoDir = path.join(__dirname, '..');
     try {
-      const repoDir = path.join(__dirname, '..');
       execSync(
-        `git -C "${repoDir}" add "reports/" && git -C "${repoDir}" diff --cached --quiet || git -C "${repoDir}" commit -m "report: ${TARGET_DATE} (local)" && git -C "${repoDir}" push`,
+        `git -C "${repoDir}" add "reports/" && (git -C "${repoDir}" diff --cached --quiet || git -C "${repoDir}" commit -m "report: ${TARGET_DATE} (local)")`,
         { stdio: 'pipe' }
       );
-      log('報告已推送到 GitHub（手機可同步）');
+      try {
+        execSync(`git -C "${repoDir}" push`, { stdio: 'pipe' });
+        log('報告已推送到 GitHub（手機可同步）');
+      } catch (pushErr) {
+        log(`GitHub push 第一次失敗，rebase 後重試: ${String(pushErr.message).slice(0, 120)}`);
+        execSync(`git -C "${repoDir}" pull --rebase origin master`, { stdio: 'pipe' });
+        execSync(`git -C "${repoDir}" push`, { stdio: 'pipe' });
+        log('報告已推送到 GitHub（rebase 後重試成功）');
+      }
     } catch (e) {
-      log(`GitHub push 失敗（非致命）: ${e.message.slice(0, 150)}`);
+      log(`GitHub push 失敗（非致命）: ${String(e.message).slice(0, 150)}`);
     }
   }
 
