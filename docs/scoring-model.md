@@ -50,7 +50,7 @@ core_swing = 0.40·F_technical + 0.40·F_chips + 0.20·F_sentiment      # 各因
 #### F_sentiment（子訊號 → 0~100）
 | 子訊號 | 計算 | 數據 |
 |---|---|---|
-| 新聞情緒 | 個股新聞情緒分數 −1..+1 → 映射 0~100 | 新聞（階段4 來源定） |
+| 新聞情緒 | 個股新聞情緒分數 −1..+1 → 映射 0~100 | 階段2 已接 `/data/news`（鉅亨/Google）；階段3 做輕量關鍵字/詞典極性，情緒模型/語料庫階段4 |
 | 老王訊號 | `mentioned_stocks[].signal`（買/續抱/觀察/賣）映射分數 | `data/puhui_analysis/*.json` |
 | 老王 insights | `strategy_insights` 中與該股相關的多空語意 | 同上 |
 
@@ -69,7 +69,8 @@ gate ∈ [0.5 , 1.1]
 | `neutral` | 0.9 ~ 1.0 | 中性 |
 | `risk_on` | 1.0 ~ 1.1 | 大盤站上 MA60 多頭、漲跌家數偏多、情緒偏貪婪 |
 
-環境輸入：加權指數/0050 趨勢（FinMind）、漲跌家數 A/D、恐懼貪婪 proxy（融資增減 + A/D + 美股 VIX）、美股四大指數/費半隔夜（yfinance）。
+環境輸入（階段2 已備源）：加權指數/0050 趨勢（FinMind `/data/ohlcv`）、**TAIFEX 三大法人期貨未平倉（外資淨多空）＋ P/C ratio**（`/data/futures`）、**FRED 殖利率倒掛 `yield_curve`／`vix`**（`/data/macro`，需 key）、美股四大/費半/VIX 隔夜（yfinance `/data/market`）、恐懼貪婪 proxy（融資增減＋VIX＋期貨未平倉方向）。
+> ⚠️ **漲跌家數 A/D 無乾淨單一 dataset**（見 `data-layer §10`）→ 階段3 以 proxy（外資期貨淨未平倉方向／P/C／VIX／融資）替代，**不可假設有乾淨 A/D**，並在 regime 輸出標註用 proxy。
 
 ### 1.3 波段 action 對映（初始門檻，回測可調）
 | swing_score | action |
@@ -144,7 +145,7 @@ watchlist 自動帶入老王 `mentioned_stocks`（+ 引擎自選），對每檔�
 
 ## 5. 未盡事項（往後階段）
 
-- [ ] 新聞情緒的實際數據來源與情緒模型（階段 4）。
+- [~] 新聞情緒數據源階段2 已接（`/data/news`）；階段3 做輕量極性，**情緒模型/語料庫留階段 4**。
 - [ ] 當沖具體進出規則、停損、處置股/流動性過濾門檻（階段 3）。
 - [ ] 各子訊號 → 0~100 的正規化細節（z-score vs 分位數）（階段 3）。
 - [ ] regime gate 連續函數 vs 分段（階段 3 回測決定）。
