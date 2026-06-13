@@ -18,7 +18,11 @@
 ## 1. 已定案的關鍵決策
 
 1. **架構**：Node 內容線保留不動；新增 **Python FastAPI 引擎**（`engine/`）做數據/因子/回測/agent；Node 當 gateway；前端獨立。三者走 HTTP。
-2. **「七維度」作廢** → 改 **多因子評分模型**（`docs/scoring-model.md`，第 1 階段定案）。因子用真實台股數據，權重不寫死、用回測調：
+2. **「七維度」作廢** → 改 **多因子評分模型**（`docs/scoring-model.md`，第 1 階段**已定案：方案 C 雙引擎分離**）。因子用真實台股數據，權重不寫死、用回測調：
+   - **波段引擎（可回測）**：技術 0.40 + 籌碼 0.40 + 情緒 0.20，再 × 大盤環境閘門 0.5~1.1（避免逆風接刀）。
+   - **當沖引擎（live-only，不回測）**：盤口 0.45 + 當日技術 0.35 + 大盤當日 0.20；籌碼僅作「能否當沖」過濾、不計分。
+   - watchlist 對每檔同時給 `swing_score` 與 `daytrade_prob`，各自排序。
+   - 五大資料維度：
    - 技術面（RSI/MA/三陽開泰/乖離/量能）← OHLCV
    - 籌碼面（三大法人買賣超、融資融券）← FinMind
    - 盤口/主力（內外盤、五檔委買賣、大單）← 富果 Fugle **（live-only，不進回測）**
@@ -41,7 +45,7 @@
 
 | # | 階段 | 產出 | 依賴 | 狀態 |
 |---|---|---|---|---|
-| 1 | 架構地基 + 資料契約 | FastAPI 骨架、Node↔Python、**多因子模型定案**、共用 schema、收尾規範 | — | ⬜ 未開始 |
+| 1 | 架構地基 + 資料契約 | FastAPI 骨架、Node↔Python、**多因子模型定案（方案C 雙引擎）**、共用 schema、收尾規範 | — | ✅ 完成 2026-06-13 |
 | 2 | 台股數據層 | FinMind + 富果 Fugle + yfinance + 快取 | 1 | ⬜ |
 | 3 | 多因子引擎 + 回測核心 | 確定性訊號（波段＋當沖）+ 向量化回測 | 1,2 | ⬜ |
 | 4 | 老王整合 + 觀察清單 | 老王融合訊號 + 自動觀察清單（潛力/當沖排序） | 3 | ⬜ |
@@ -74,6 +78,18 @@
 
 ## 5. 仍待定案（執行到對應階段時決定）
 
-- [ ] 多因子最終因子組合與初始權重（第 1 階段提方案讓我選）
+- [x] 多因子最終因子組合與初始權重 → **階段1定案：方案 C 雙引擎**（見 `docs/scoring-model.md`）
+- [ ] 各子訊號 → 0~100 的正規化細節、regime gate 連續/分段（第 3 階段回測決定）
+- [ ] 新聞情緒實際數據來源與情緒模型（第 4 階段）
 - [ ] 當沖訊號的具體進出規則與風控（第 3 階段）
 - [ ] Oracle VM vs GitHub Actions 各跑哪一段（第 8 階段細分）
+
+---
+
+## 6. 階段 1 完成紀錄（2026-06-13）
+
+- `engine/` FastAPI 分層 package 骨架，`GET /health` 回 200；pytest 2 passed。
+- `scripts/engine_healthcheck.cjs`：Node 呼叫 engine /health 成功（HTTP 200，✅ 串接）。
+- 多因子定案 **方案 C 雙引擎**（`docs/scoring-model.md`）。
+- 共用契約：`docs/contracts/{StockSignal,FactorScore,DailySnapshot,Watchlist,BacktestResult}.md` + `dev-conventions.md`。
+- 收尾規範與目錄結構入檔（`dev-conventions.md`）。

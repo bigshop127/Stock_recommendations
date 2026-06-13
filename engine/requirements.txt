@@ -1,0 +1,19 @@
+# 財經引擎相依（階段 1：只需 FastAPI 三件套即可起 /health）
+fastapi>=0.115
+uvicorn[standard]>=0.30
+pydantic>=2.7
+
+# 測試（FastAPI TestClient 需要 httpx）
+httpx>=0.27
+pytest>=8.0
+
+# ── 階段 2+ 解除註解 ──
+# pandas>=2.2
+# pandas-ta
+# FinMind
+# fugle-marketdata
+# yfinance
+# pyarrow            # parquet 快取
+# ── 階段 5 ──
+# langgraph
+# langchain

@@ -73,3 +73,11 @@ data/puhui_urls_paginated_dated.json
 data/oracle_metadata.json
 data/oracle_shape_config.json
 data/oracle_source_details.json
+
+# === Added 2026-06-13 (Phase 1: Python engine) ===
+# Python 引擎虛擬環境與快取（可重建，不進 repo）
+engine/.venv/
+engine/**/__pycache__/
+engine/.pytest_cache/
+engine/**/*.pyc
+data/engine_cache/
