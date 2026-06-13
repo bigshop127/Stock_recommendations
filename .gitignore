@@ -81,3 +81,8 @@ engine/**/__pycache__/
 engine/.pytest_cache/
 engine/**/*.pyc
 data/engine_cache/
+
+# === Added 2026-06-13 (Phase 2: 台股數據層) ===
+# 引擎本地數據快取（parquet，可重建，不進 repo）
+engine/data_cache/
+# .env 已由上方 Secrets 區塊涵蓋（.env 任何目錄皆 ignore）

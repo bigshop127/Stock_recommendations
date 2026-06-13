@@ -46,7 +46,7 @@
 | # | 階段 | 產出 | 依賴 | 狀態 |
 |---|---|---|---|---|
 | 1 | 架構地基 + 資料契約 | FastAPI 骨架、Node↔Python、**多因子模型定案（方案C 雙引擎）**、共用 schema、收尾規範 | — | ✅ 完成 2026-06-13 |
-| 2 | 台股數據層 | FinMind + 富果 Fugle + yfinance + 快取 | 1 | ⬜ |
+| 2 | 台股數據層 | FinMind + TWSE MIS + TAIFEX + 鉅亨/Google News + FRED + yfinance（富果可選）+ 快取 | 1 | ✅ 完成 2026-06-13 |
 | 3 | 多因子引擎 + 回測核心 | 確定性訊號（波段＋當沖）+ 向量化回測 | 1,2 | ⬜ |
 | 4 | 老王整合 + 觀察清單 | 老王融合訊號 + 自動觀察清單（潛力/當沖排序） | 3 | ⬜ |
 | 5 | 多 agent LLM 決策層 | 分析師→多空辯論→交易員→風控 | 3,4 | ⬜ |
@@ -80,7 +80,7 @@
 
 - [x] 多因子最終因子組合與初始權重 → **階段1定案：方案 C 雙引擎**（見 `docs/scoring-model.md`）
 - [ ] 各子訊號 → 0~100 的正規化細節、regime gate 連續/分段（第 3 階段回測決定）
-- [ ] 新聞情緒實際數據來源與情緒模型（第 4 階段）
+- [~] 新聞情緒數據來源 → 階段2 已預接免費源（鉅亨 Anue JSON + Google News RSS，`/data/news`）；情緒模型/語料庫留階段4
 - [ ] 當沖訊號的具體進出規則與風控（第 3 階段）
 - [ ] Oracle VM vs GitHub Actions 各跑哪一段（第 8 階段細分）
 
@@ -93,3 +93,33 @@
 - 多因子定案 **方案 C 雙引擎**（`docs/scoring-model.md`）。
 - 共用契約：`docs/contracts/{StockSignal,FactorScore,DailySnapshot,Watchlist,BacktestResult}.md` + `dev-conventions.md`。
 - 收尾規範與目錄結構入檔（`dev-conventions.md`）。
+
+---
+
+## 7. 階段 2 完成紀錄（2026-06-13）
+
+詳見 `docs/data-layer.md`。重點：
+
+**架構升級（取代部分付費 API 的免費替代方案，使用者確認）**：原訂「富果為唯一即時源」
+改為 **TWSE MIS（官方公開 JSON，免金鑰）為 `/data/book` 預設**、富果降為可選 adapter
+（`BOOK_SOURCE=auto`：有富果 key 才用，否則 MIS）。並把後續階段要用的免費官方源**先建好骨架**：
+TAIFEX 期貨（regime）、鉅亨/Google News（情緒）、FRED（總經）。原則：優先官方開放資料/公開 JSON，
+不做第三方網站 HTML 爬蟲。
+
+**8 個 `/data/*` 端點**（FastAPI，`engine/app/api/data.py`）：
+- 可回測：`/data/ohlcv`、`/data/chips`（FinMind）、`/data/futures`（TAIFEX）、`/data/macro`（FRED）
+- live-only：`/data/book`（MIS 預設/富果可選）、`/data/intraday`（富果）、`/data/news`（鉅亨/Google）
+- 環境：`/data/market`（yfinance）
+
+**資料源 client**（`engine/app/data/`）：`finmind_client`、`twse_mis_client`、`taifex_client`、
+`news_client`、`fred_client`、`fugle_client`、`yfinance_client` + `cache`（parquet, gap-based 浮水印）+
+`http`（retry/get_json/get_text/post_text）+ `service`（編排）。
+
+**測試/驗收**：pytest **16 passed**（mock，不打網路）。免金鑰源 2026-06-13 實測通過：
+MIS 2330 五檔（last 2310、bid 2305/ask 2310）、TAIFEX 三大法人期貨未平倉＋P/C、
+鉅亨＋Google News、yfinance 六指數。需金鑰源（FinMind OHLCV/籌碼、FRED 總經）待填 `engine/.env` 後 smoke 驗。
+
+**金鑰**：`FINMIND_TOKEN`（建議必填）、`FUGLE_API_KEY`（可選）、`FRED_API_KEY`（/data/macro 才需）；
+皆走 `engine/.env`（gitignored）。`engine/data_cache/` 已加 .gitignore。`puhui_daily.cjs` 未更動。
+
+**已知缺口**：分點主力（乾淨自動化難，暫緩）、漲跌家數 A/D（階段3 proxy）、富果分K 回溯範圍（無富果 key 未量測）、新聞情緒歷史語料（階段4）。

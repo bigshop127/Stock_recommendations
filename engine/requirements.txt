@@ -1,4 +1,5 @@
-# 財經引擎相依（階段 1：只需 FastAPI 三件套即可起 /health）
+# 財經引擎相依
+# ── 階段 1：FastAPI 三件套即可起 /health ──
 fastapi>=0.115
 uvicorn[standard]>=0.30
 pydantic>=2.7
@@ -7,13 +8,17 @@ pydantic>=2.7
 httpx>=0.27
 pytest>=8.0
 
-# ── 階段 2+ 解除註解 ──
-# pandas>=2.2
-# pandas-ta
-# FinMind
-# fugle-marketdata
-# yfinance
-# pyarrow            # parquet 快取
+# ── 階段 2：台股數據層 ──
+pandas>=2.2
+pyarrow>=16.0        # parquet 快取
+yfinance>=0.2.40     # 美股指數/費半（大盤環境）
+requests>=2.31       # FinMind / 富果 REST
+pydantic-settings>=2.2  # 讀 engine/.env（金鑰、快取路徑）
+tenacity>=8.2        # API retry（頻率限制）
+
+# 註：FinMind / 富果 皆以 requests 直打 REST（X-API-KEY / token），
+#     不裝其官方 SDK，降低相依重量與版本風險。
+
 # ── 階段 5 ──
 # langgraph
 # langchain
