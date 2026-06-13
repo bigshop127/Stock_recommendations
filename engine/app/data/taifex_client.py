@@ -70,14 +70,44 @@ def _to_num(series: pd.Series) -> pd.Series:
 _PRODUCT_ALIAS = {"TX": "TXF", "TAIEX": "TXF"}
 
 
-# ── 三大法人期貨未平倉淨額 → regime ─────────────────────────────────────────
-def fetch_institutional_futures(code: str, start: str, end: str, product: str = "TXF") -> pd.DataFrame:
-    """三大法人在指定期貨契約（預設臺股期貨 TXF）的未平倉淨口數。
+# ── 長區間分段查詢（TAIFEX 下載端點對查詢窗有上限，跨數月會回 HTML）────────────
+def _date_windows(start: str, end: str, chunk_days: int):
+    """把 [start,end] 切成連續 ≤chunk_days 的小窗（含端點）。"""
+    from datetime import date as _d, timedelta as _td
+    cur, last = _d.fromisoformat(start), _d.fromisoformat(end)
+    while cur <= last:
+        w_end = min(cur + _td(days=chunk_days - 1), last)
+        yield cur.isoformat(), w_end.isoformat()
+        cur = w_end + _td(days=1)
 
-    回傳：date, foreign_oi_net, trust_oi_net, dealer_oi_net（多空未平倉口數淨額）。
-    `code` 參數為 cache.get_timeseries 介面所需，實際以 `product` 篩選契約。
+
+def _fetch_chunked(one_fn, start: str, end: str, chunk_days: int, label: str) -> pd.DataFrame:
+    """對 [start,end] 分段呼叫 one_fn(s,e) 並串接；容忍個別窗失敗（部分成功仍回）。
+
+    全部窗皆失敗才拋 DataSourceError（多為查詢窗超限/被拒）。以 date 去重排序。
     """
-    commodity = _PRODUCT_ALIAS.get(product.upper(), product)
+    frames, errors, total = [], 0, 0
+    for s, e in _date_windows(start, end, chunk_days):
+        total += 1
+        try:
+            df = one_fn(s, e)
+        except DataSourceError:
+            errors += 1
+            continue
+        if df is not None and not df.empty:
+            frames.append(df)
+    if not frames:
+        if total and errors == total:
+            raise DataSourceError(f"TAIFEX {label} 所有區間查詢失敗（多為查詢窗超限或被拒）。")
+        return pd.DataFrame()
+    return (
+        pd.concat(frames, ignore_index=True)
+        .drop_duplicates(subset=["date"]).sort_values("date").reset_index(drop=True)
+    )
+
+
+# ── 三大法人期貨未平倉淨額 → regime ─────────────────────────────────────────
+def _institutional_window(start: str, end: str, commodity: str) -> pd.DataFrame:
     text = post_text(
         FUT_CONTRACTS_DOWN,
         data={"queryStartDate": _ymd(start), "queryEndDate": _ymd(end), "commodityId": commodity},
@@ -117,9 +147,22 @@ def fetch_institutional_futures(code: str, start: str, end: str, product: str = 
     return out[cols].sort_values("date").reset_index(drop=True)
 
 
+def fetch_institutional_futures(code: str, start: str, end: str, product: str = "TXF") -> pd.DataFrame:
+    """三大法人在指定期貨契約（預設臺股期貨 TXF）的未平倉淨口數。
+
+    回傳：date, foreign_oi_net, trust_oi_net, dealer_oi_net（多空未平倉口數淨額）。
+    `code` 參數為 cache.get_timeseries 介面所需，實際以 `product` 篩選契約。
+    長區間自動分段（futContractsDateDown 端點查詢窗約 ≤半年；以 100 日窗串接）。
+    """
+    commodity = _PRODUCT_ALIAS.get(product.upper(), product)
+    return _fetch_chunked(
+        lambda s, e: _institutional_window(s, e, commodity),
+        start, end, chunk_days=100, label=f"期貨未平倉({commodity})",
+    )
+
+
 # ── Put/Call Ratio → 選擇權情緒 ─────────────────────────────────────────────
-def fetch_pc_ratio(code: str, start: str, end: str) -> pd.DataFrame:
-    """台指選擇權 Put/Call Ratio。回傳：date, pc_volume_ratio, pc_oi_ratio。"""
+def _pc_window(start: str, end: str) -> pd.DataFrame:
     text = post_text(
         PCRATIO_DOWN,
         data={"queryStartDate": _ymd(start), "queryEndDate": _ymd(end)},
@@ -141,3 +184,11 @@ def fetch_pc_ratio(code: str, start: str, end: str) -> pd.DataFrame:
     out["pc_volume_ratio"] = _to_num(df[c_vol]) if c_vol else pd.NA
     out["pc_oi_ratio"] = _to_num(df[c_oi]) if c_oi else pd.NA
     return out[cols].sort_values("date").reset_index(drop=True)
+
+
+def fetch_pc_ratio(code: str, start: str, end: str) -> pd.DataFrame:
+    """台指選擇權 Put/Call Ratio。回傳：date, pc_volume_ratio, pc_oi_ratio。
+
+    pcRatioDown 端點查詢窗更窄 → 以 20 日小窗分段串接（容忍個別窗失敗）。
+    """
+    return _fetch_chunked(_pc_window, start, end, chunk_days=20, label="P/C ratio")

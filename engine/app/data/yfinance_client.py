@@ -21,6 +21,34 @@ INDICES: dict[str, str] = {
 }
 
 
+def fetch_stock_ohlcv(code: str, start: str, end: str) -> pd.DataFrame:
+    """個股**還原**日 OHLCV（auto_adjust=True：含除權息＋分割還原）→ 回測價源。
+
+    FinMind 免費級只給未還原 TaiwanStockPrice（除權/分割有斷點，回測會失真），故回測/benchmark/
+    regime 趨勢改用 yfinance 還原價。代號先試上市 `.TW`，無則試上櫃 `.TWO`。
+    回傳乾淨欄位：date(str), open, high, low, close, volume —— 與 finmind fetch_ohlcv 對齊。
+    """
+    cols = ["date", "open", "high", "low", "close", "volume"]
+    end_excl = (pd.Timestamp(end) + pd.Timedelta(days=1)).date().isoformat()  # yfinance end 為開區間
+    for suffix in (".TW", ".TWO"):
+        try:
+            hist = yf.Ticker(code + suffix).history(start=start, end=end_excl, auto_adjust=True)
+        except Exception:
+            hist = pd.DataFrame()
+        if hist is None or hist.empty:
+            continue
+        out = pd.DataFrame({
+            "date": hist.index.strftime("%Y-%m-%d"),
+            "open": hist["Open"].astype(float),
+            "high": hist["High"].astype(float),
+            "low": hist["Low"].astype(float),
+            "close": hist["Close"].astype(float),
+            "volume": hist["Volume"].astype("int64"),
+        })
+        return out.sort_values("date").reset_index(drop=True)[cols]
+    return pd.DataFrame(columns=cols)
+
+
 def _last_two_closes(symbol: str, on_or_before: str | None) -> tuple[float, float] | None:
     """取 <= 指定日的最後兩個收盤（用來算當日漲跌幅）。"""
     end = pd.Timestamp(on_or_before) + pd.Timedelta(days=1) if on_or_before else None

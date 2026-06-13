@@ -10,17 +10,21 @@
 from fastapi import FastAPI
 
 from app import __version__
+from app.api.backtest import router as backtest_router
 from app.api.data import router as data_router
 from app.api.health import router as health_router
+from app.api.signal import router as signal_router
 
 app = FastAPI(
     title="Finance Engine",
-    description="台股多因子量化 + 回測 + 多 agent 引擎（階段 2：台股數據層）",
+    description="台股多因子量化 + 回測 + 多 agent 引擎（階段 3：多因子引擎 + 回測核心）",
     version=__version__,
 )
 
 app.include_router(health_router)
 app.include_router(data_router)
+app.include_router(signal_router)
+app.include_router(backtest_router)
 
 
 @app.get("/", tags=["root"])

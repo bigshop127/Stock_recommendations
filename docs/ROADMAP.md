@@ -49,7 +49,7 @@
 |---|---|---|---|---|
 | 1 | 架構地基 + 資料契約 | FastAPI 骨架、Node↔Python、**多因子模型定案（方案C 雙引擎）**、共用 schema、收尾規範 | — | ✅ 完成 2026-06-13 |
 | 2 | 台股數據層 | FinMind + TWSE MIS + TAIFEX + 鉅亨/Google News + FRED + yfinance（富果可選）+ 快取 | 1 | ✅ 完成 2026-06-13 |
-| 3 | 多因子引擎 + 回測核心 | 確定性訊號（波段＋當沖）+ 向量化回測 | 1,2 | ⬜ |
+| 3 | 多因子引擎 + 回測核心 | 確定性訊號（波段＋當沖）+ 向量化回測 | 1,2 | ✅ 完成 2026-06-13 |
 | 4 | 老王整合 + 觀察清單 | 老王融合訊號 + 自動觀察清單（潛力/當沖排序） | 3 | ⬜ |
 | 5 | 多 agent LLM 決策層 | 分析師→多空辯論→交易員→風控 | 3,4 | ⬜ |
 | 6 | 統一 API 層 | Node gateway，吐 報告/訊號/水位/回測/agent決策 | 3,4,5 | ⬜ |
@@ -125,3 +125,30 @@ MIS 2330 五檔（last 2310、bid 2305/ask 2310）、TAIFEX 三大法人期貨�
 皆走 `engine/.env`（gitignored）。`engine/data_cache/` 已加 .gitignore。`puhui_daily.cjs` 未更動。
 
 **已知缺口**：分點主力（乾淨自動化難，暫緩）、漲跌家數 A/D（階段3 proxy）、富果分K 回溯範圍（無富果 key 未量測）、新聞情緒歷史語料（階段4）。
+
+---
+
+## 8. 階段 3 完成紀錄（2026-06-13）
+
+詳見 `engine/reports/backtest_swing_v1.md`。重點：
+
+**交付**：確定性多因子引擎（無 LLM）＋向量化回測核心。程式 `engine/app/{factors,backtest,api}`：
+- `factors/`：`config`（唯一權重設定物件，禁散落）、`normalize`（**滾動分位數**為主，使用者定案）、
+  `technical`/`chips`/`sentiment`/`regime`/`swing`/`daytrade`。
+- `backtest/`：`engine`（向量化、**T 收盤計分→T+1 開盤成交**、扣台股成本 round-trip 0.585%、0050 benchmark）、`grid`（權重網格）。
+- `api/`：`GET /signal?mode=swing|daytrade`、`POST /backtest`＋`/backtest/grid`。pytest **28 passed**。
+
+**關鍵決策（階段3 定案）**：
+- 子訊號→0~100 用**滾動分位數**（無未來函數）＋門檻映射；regime gate 用**非對稱分段線性**（逆風重罰 0.5~1.0、順風緩獎 1.0~1.1）。
+- 情緒因子**只進 live `/signal`、不進回測**（無歷史語料）；回測 technical/chips 重正規化。盤口/分K live_only 不回測。
+- 權重 v1 回填（網格最佳 tech0.6/chips0.4、entry70/exit40）入 `config.py`，標注單期可能過擬合。
+
+**重大數據修正（影響回測可信度）**：
+- FinMind 免費級無還原股價（`TaiwanStockPriceAdj` 需付費）→ 0050 因 2025 分割價格斷點害 benchmark 假 −40%。
+  **回測/benchmark/regime 趨勢改用 yfinance `auto_adjust` 還原價**（新增 `service.get_ohlcv_adj`，走快取）；籌碼仍 FinMind。
+- TAIFEX 下載端點查詢窗有上限（跨數月回 HTML）→ `taifex_client` 內部**分段查詢串接**（期貨 100 日窗、P/C 20 日窗）。
+
+**回測結果（8 檔大型權值股、2024-06~2026-06、還原價）**：策略 **+63.2%／年化 +28.6%／Sharpe 2.12／MaxDD −7.6%／勝率 53%／60 筆** vs 0050 buy&hold **+150%**。
+誠實揭露：大多頭裡 regime gate＋出場偏保守 → 絕對報酬輸 buy&hold、但回撤波動遠低。FRED 未填 key → regime 少殖利率/VIX、信心 0.75。
+
+**未盡（階段4+）**：趨勢盤吃不滿需多期/樣本外調參；老王 watchlist/情緒語料整合（階段4）；當沖只能 forward 驗證；FRED key 可補強 regime。

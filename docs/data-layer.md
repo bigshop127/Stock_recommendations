@@ -106,6 +106,9 @@ REST v1.0：`https://api.fugle.com.tw/marketdata/v1.0/stock`，header `X-API-KEY
 
 - **解析坑（已處理）**：P/C CSV 資料列有尾端逗號（欄數比表頭多 1），pandas 會誤把首欄當索引 → 用 `index_col=False` 修正；契約代號用 `TXF`（`TX`/`TAIEX` 自動轉）；身分欄為「身份別」。
 - 欄名/版面期交所偶調 → client 以關鍵字容錯抓欄，回 HTML（代號錯）時拋 502。
+- **查詢窗上限（階段3 處理）**：下載端點對日期區間有上限，**跨數月查詢會回 HTML**（`futContractsDateDown` 約 ≤半年、`pcRatioDown` 更窄 ~數週）。
+  client 內部**分段查詢串接**（`_fetch_chunked`：期貨 100 日窗、P/C 20 日窗，以 date 去重排序，容忍個別窗失敗、全失敗才拋 502），
+  regime（階段3）才能取得回測所需的整段期貨史。
 
 ### ✅ 2026-06-13 免金鑰實測（近一週）
 P/C ratio 5 筆日期/比率正確；三大法人期貨未平倉 6/12：外資 −65,039 口（偏空）、投信 +57,111、自營 +3,568。→ 兩 feed 可用。
@@ -144,6 +147,14 @@ P/C ratio 5 筆日期/比率正確；三大法人期貨未平倉 6/12：外資 �
 ## 7. yfinance（`yfinance_client.py`）
 
 `/data/market` 每指數回 `{close, prev_close, change_pct}`：`^TWII`(台股加權)、`^GSPC`/`^IXIC`/`^DJI`(美股四大)、`^SOX`(費半)、`^VIX`。
+
+### 7.1 還原個股日線（階段3 新增，`service.get_ohlcv_adj`）
+
+**為何**：FinMind 免費級 `TaiwanStockPrice` 為**未還原**原始股價，遇分割/除權有價格斷點（例：0050 在 2025 分割
+173→52），會讓**回測 benchmark 與 regime 趨勢嚴重失真**；FinMind 還原集 `TaiwanStockPriceAdj` 需付費等級。
+**解法**：`yfinance_client.fetch_stock_ohlcv(code,start,end)` 以 `auto_adjust=True` 取**還原日線**（含除權息＋分割），
+代號試 `.TW`→`.TWO`。`service.get_ohlcv_adj` 包裝、走 parquet 快取，schema 與 `get_ohlcv` 對齊（少 turnover）。
+**用途**：階段3 回測價源、0050 benchmark、regime 0050 趨勢、`/signal` 指標計算。**籌碼仍走 FinMind `/data/chips`**（不受影響）。
 
 ---
 

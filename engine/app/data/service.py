@@ -45,6 +45,26 @@ def get_ohlcv(code: str, start: str, end: str) -> dict:
     }
 
 
+def get_ohlcv_adj(code: str, start: str, end: str) -> dict:
+    """**還原**日 OHLCV（yfinance auto_adjust：含除權息＋分割）→ 回測/benchmark/regime 趨勢用。
+
+    FinMind 免費級 TaiwanStockPrice 未還原，遇分割/除權有斷點會讓回測失真；本端點以 yfinance 還原價
+    取代。schema 與 get_ohlcv 對齊（少 turnover）。走 parquet 快取。
+    """
+    df, meta = cache.get_timeseries("ohlcv_adj", code, start, end, yfinance_client.fetch_stock_ohlcv)
+    return {
+        "code": code,
+        "name": finmind_client.get_stock_name(code),
+        "start": start,
+        "end": end,
+        "source": "yfinance 還原日線（auto_adjust，含除權息/分割）",
+        "live_only": False,
+        "cache": meta,
+        "rows": meta["rows"],
+        "data": _records(df),
+    }
+
+
 def get_chips(code: str, start: str, end: str) -> dict:
     """三大法人 + 融資券，合併同一日期軸。"""
     inst, m_inst = cache.get_timeseries("chips_inst", code, start, end, finmind_client.fetch_institutional)
