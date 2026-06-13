@@ -35,7 +35,7 @@
 2. 更新 Obsidian：`...\財經APP開發\階段7-完成紀錄.md` + `開發進度.md`（附畫面截圖說明）。
 3. 更新記憶 + `MEMORY.md`。
 4. 程式放 `web/`。
-5. git commit（`phase7: APP 前端`），先別 push 等我確認。
+5. **git commit & push**（`phase7: APP 前端`）：commit 後直接 push。
 
 ## 開始方式
 先讀 `docs/ROADMAP.md`、`docs/api.md`、一篇 reports，提出前端頁面結構與元件設計（含一張 ASCII 線框）讓我確認，再動手。

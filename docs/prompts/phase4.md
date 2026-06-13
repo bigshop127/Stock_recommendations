@@ -43,7 +43,7 @@
 2. 更新 Obsidian：`...\財經APP開發\階段4-完成紀錄.md` + `開發進度.md`。
 3. 更新記憶 + `MEMORY.md`。
 4. 程式放 `engine/`，規則文件放 `docs/`。
-5. git commit（`phase4: 老王整合與觀察清單`），先別 push 等我確認。
+5. **git commit & push**（`phase4: 老王整合與觀察清單`）：commit 後直接 push。
 
 ## 開始方式
 先讀 `docs/ROADMAP.md`、`data/puhui_analysis` 幾個 json、`data/puhui_cache.json`、階段 3 `/signal`，提出融合規則與觀察清單排序方案讓我選，再動手。

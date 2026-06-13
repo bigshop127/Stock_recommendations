@@ -39,7 +39,7 @@
 6. **LLM 政策**：**Gemini CLI 主 → 當天額度用完切 Claude CLI**；多 agent 只在每日盤後對觀察清單（≤10 檔）跑，不進回測。需可在無頭雲端 VM 跑。
 7. **雲端**：**Oracle Cloud Always-Free ARM VM 為主**（24h 常開、保留 CLI 訂閱登入態），**GitHub Actions** 跑無 LLM 的數據/回測刷新。解決「不能 24h 開機」+ 既有 puhui_daily 本機單點故障。
 8. **TradingAgents**：沿用其 agent 架構與提示詞設計，數據層換台股（不直接用其美股數據層）。
-9. **每階段收尾規範（DoD）**：完成後必須同步 (a) `docs/ROADMAP.md` 進度 (b) Obsidian `C:\obsidian\儲存庫\財經APP開發\` (c) 記憶 `.claude\projects\C--CC-AI-Agent\memory\` (d) 程式/文件放對位置。
+9. **每階段收尾規範（DoD）**：完成後必須同步 (a) `docs/ROADMAP.md` 進度 (b) Obsidian `C:\obsidian\儲存庫\財經APP開發\` (c) 記憶 `.claude\projects\C--CC-AI-Agent\memory\` (d) 程式/文件放對位置 (e) **git commit & push** 上 GitHub。（2026-06-13 起每階段完成自動 commit & push，不再等確認；`.env` gitignored。）
 
 ---
 

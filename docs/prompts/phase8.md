@@ -40,7 +40,7 @@
 2. 更新 Obsidian：`...\財經APP開發\階段8-完成紀錄.md` + `開發進度.md`（標全案完成）。
 3. 更新記憶 + `MEMORY.md`。
 4. 部署腳本/設定放 `deploy/`，runbook 放 `docs/runbook.md`。
-5. git commit（`phase8: 雲端部署與排程`）。
+5. **git commit & push**（`phase8: 雲端部署與排程`）。
 
 ## 開始方式
 先讀 `docs/ROADMAP.md`、`.github/workflows/puhui_daily.yml`、`scripts/puhui_daily.cjs`，提出部署架構（哪段跑 Oracle VM、哪段跑 GitHub Actions）+ 我需要自己手動做的步驟清單，讓我確認，再動手。

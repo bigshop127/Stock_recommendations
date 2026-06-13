@@ -72,7 +72,7 @@
 2. 更新 Obsidian：`C:\obsidian\儲存庫\財經APP開發\階段3-完成紀錄.md` + `開發進度.md`（附回測績效）。
 3. 更新記憶 `.claude\projects\C--CC-AI-Agent\memory\` + `MEMORY.md`。
 4. 程式放 `engine/`（因子 `app/factors/`、回測 `app/backtest/`、API `app/api/`），回測報告放 `docs/` 或 `engine/reports/`。
-5. git commit（`phase3: 多因子引擎與回測`），**先別 push 等我確認**。
+5. **git commit & push**（`phase3: 多因子引擎與回測`）：commit 後直接 `git push origin master`（2026-06-13 定案：每階段完成自動 push）。
 
 ## 開始方式
 先讀 `docs/ROADMAP.md`、`docs/scoring-model.md`、`docs/data-layer.md`、契約三件，**提出引擎與回測的模組設計**讓我確認，再動手。設計需明確交代：

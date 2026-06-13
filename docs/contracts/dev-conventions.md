@@ -40,7 +40,7 @@
 3. **更新 Obsidian**：`C:\obsidian\儲存庫\財經APP開發\` 內更新 `開發進度.md` 與 `階段N-完成紀錄.md`（做了什麼、關鍵決策、怎麼用）。
 4. **更新記憶**：`C:\CC AI Agent\.claude\projects\C--CC-AI-Agent\memory\` 內相關 `.md` + `MEMORY.md` 索引。
 5. **程式/文件放對位置**（engine/ 程式、docs/ 規格、scripts/ 串接）。
-6. **git commit**（訊息 `phaseN: <摘要>`），**先別 push**，等使用者確認。
+6. **git commit + push**（訊息 `phaseN: <摘要>`）：每階段完成即 commit 並 `git push origin master` 上 GitHub 備份。`.env` 已 gitignored、不會外洩金鑰。（2026-06-13 使用者定案：改為自動 push，不再等確認。）
 
 ### 關鍵位置速查
 - Obsidian 開發筆記：`C:\obsidian\儲存庫\財經APP開發\`

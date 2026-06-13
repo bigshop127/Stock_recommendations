@@ -37,7 +37,7 @@
 2. 更新 Obsidian：`...\財經APP開發\階段6-完成紀錄.md` + `開發進度.md`。
 3. 更新記憶 + `MEMORY.md`。
 4. 程式改 `server.cjs`（或拆 `routes/`），API 文件放 `docs/api.md`。
-5. git commit（`phase6: 統一 API gateway`），先別 push 等我確認。
+5. **git commit & push**（`phase6: 統一 API gateway`）：commit 後直接 push。
 
 ## 開始方式
 先讀 `docs/ROADMAP.md`、`server.cjs`、engine 各 API、`docs/contracts`，提出 gateway 路由設計讓我確認，再動手。

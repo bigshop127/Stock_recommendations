@@ -37,7 +37,7 @@
 2. 更新 Obsidian：`...\財經APP開發\階段5-完成紀錄.md` + `開發進度.md`。
 3. 更新記憶 + `MEMORY.md`。
 4. 程式放 `engine/`（agent 模組獨立資料夾），提示詞放 `engine/agents/prompts/`。
-5. git commit（`phase5: 多 agent LLM 決策層`），先別 push 等我確認。
+5. **git commit & push**（`phase5: 多 agent LLM 決策層`）：commit 後直接 push。
 
 ## 開始方式
 先讀 `docs/ROADMAP.md`、階段 3/4 engine API，並上網看 TradingAgents 的 agent 結構，提出我們的 agent graph 設計 + LLM 切換模組設計讓我確認，再動手。
