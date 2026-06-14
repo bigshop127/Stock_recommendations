@@ -106,6 +106,27 @@ class PuhuiConfig:
     watchlist_min_lots: int = 1000
 
 
+# ── 多 agent LLM 決策層（階段5，使用者 2026-06-14 定案：輕量自寫/3 分析師/1 輪辯論）──
+@dataclass(frozen=True)
+class AgentConfig:
+    # 流程結構（設計確認時定案）
+    analysts: tuple[str, ...] = ("technical", "news_sentiment", "puhui")
+    debate_rounds: int = 1               # 多空研究員辯論輪數（成本主要槓桿）
+    watchlist_top_n: int = 10            # codes 省略時取 /watchlist 前 N（≤10）
+    # LLM provider 政策：Gemini CLI 主 → 額度用完切 Claude CLI
+    primary_provider: str = "gemini"
+    fallback_provider: str = "claude"
+    gemini_model: str = ""              # 空 = CLI 預設模型
+    claude_model: str = ""             # 空 = CLI 預設模型
+    llm_timeout_s: int = 180           # 單次 CLI 呼叫逾時
+    max_input_chars: int = 3500        # 結構化輸入截斷（控 token）
+    max_news_items: int = 8            # 餵情緒分析師的新聞則數上限
+    # 成本估算（CLI 訂閱制 → 主要看 token 用量＋耗時；金額為粗估，預設 0）
+    est_usd_per_1k_tokens: float = 0.0
+    # token 估算：CJK 約 1 token≈1.7 char，英數混合用此粗略除數
+    est_chars_per_token: float = 2.2
+
+
 # ── action 門檻（scoring-model §1.3，回測可調）────────────────────────────────
 @dataclass(frozen=True)
 class ActionThresholds:
@@ -155,6 +176,7 @@ class FactorConfig:
     regime: RegimeConfig = field(default_factory=RegimeConfig)
     daytrade: DaytradeWeights = field(default_factory=DaytradeWeights)
     puhui: PuhuiConfig = field(default_factory=PuhuiConfig)
+    agents: AgentConfig = field(default_factory=AgentConfig)
     thresholds: ActionThresholds = field(default_factory=ActionThresholds)
     cost: CostConfig = field(default_factory=CostConfig)
     normalize: NormalizeConfig = field(default_factory=NormalizeConfig)

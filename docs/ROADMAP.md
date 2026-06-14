@@ -57,7 +57,7 @@
 | 2 | 台股數據層 | FinMind + TWSE MIS + TAIFEX + 鉅亨/Google News + FRED + yfinance（富果可選）+ 快取 | 1 | ✅ 完成 2026-06-13 |
 | 3 | 多因子引擎 + 回測核心 | 確定性訊號（波段＋當沖）+ 向量化回測 | 1,2 | ✅ 完成 2026-06-13 |
 | 4 | 老王整合 + 觀察清單 | 老王融合訊號 + 自動觀察清單（潛力/當沖排序） | 3 | ✅ 完成 2026-06-14 |
-| 5 | 多 agent LLM 決策層 | 分析師→多空辯論→交易員→風控 | 3,4 | ⬜ |
+| 5 | 多 agent LLM 決策層 | 分析師→多空辯論→交易員→風控 | 3,4 | ✅ 完成 2026-06-14 |
 | 6 | 統一 API 層 | Node gateway，吐 報告/訊號/水位/回測/agent決策 | 3,4,5 | ⬜ |
 | 7 | APP 前端 + 端到端整合 | Vite+React 儀表板 + 當沖候選 | 6 | ⬜ |
 | 8 | 雲端部署 + 每日排程 | Oracle VM（主）+ GitHub Actions；runbook | 7 | ⬜ |
@@ -70,7 +70,7 @@
 
 - 引擎：Python 3.11+ / FastAPI / uvicorn；TA：pandas + pandas-ta；回測：純 pandas 向量化（避免未來函數）
 - 數據：FinMind、fugle-marketdata（富果）、yfinance；快取 parquet 或 sqlite
-- 多 agent：LangGraph + langchain；LLM 走 Gemini CLI → Claude CLI
+- 多 agent：**輕量自寫編排**（階段5 定案，棄 LangGraph：LLM 走 CLI subprocess 非 API key，自寫更省/好測）；LLM 走 Gemini CLI 主 → Claude CLI 備
 - Gateway：Node Express（server.cjs）
 - 前端：Vite + React + TypeScript + Tailwind + lightweight-charts（行動友善）
 - 雲端：Oracle Cloud Always-Free（ARM Ampere）+ GitHub Actions
@@ -189,3 +189,41 @@ rich（16 篇，`### <span>🔴 股名（代號）</span>`＋表格）、legacy�
 **限制/未盡（階段5+）**：仍**無 LLM、不新增回測**（老王為 live/近期導向，與階段3 可回測核心分流）；
 否定詞守門為輕量啟發式（非完整 NLP）；factor 自選宇宙先用少量權值股佔位；`/watchlist`、`/signal/blended`
 需 FinMind/yfinance 取數（線上）；多 agent 深度辯論留階段5。
+
+---
+
+## 10. 階段 5 完成紀錄（2026-06-14）
+
+詳見 `docs/agents-layer.md`。重點：
+
+**設計確認（使用者 2026-06-14）**：**輕量自寫編排 / 3 分析師 / 1 輪辯論**（三個設計分叉皆採建議案）。
+
+**Step 0 實查對齊**：實打 `/puhui/view`（200，9 檔，confirm `signal/stance/reason` 而非 emoji）、
+讀 `blend.py`/`swing.py`/`watchlist.py` 確認真實欄位（**沒有 `strategy_insights`**），`/signal/blended`
+已做掉確定性融合 → **agent 吃這顆當不可變事實底座、不重做融合**。沿用 TradingAgents
+（分析師→多空辯論→交易員→風控），數據改吃台股結構化輸出、不吃原始 K 線、不餵原始 emoji。
+
+**交付**：`engine/app/agents/`：`llm_cli`（provider 切換＋遙測）、`inputs`（每股結構化精簡輸入，
+in-process 呼叫階段3/4 builder）、`parsing`（LLM 輸出容錯）、`roles`（3 分析師＋多空研究員＋交易員＋風控）、
+`orchestrator`（有向流程＋一致性守門＋`decide_one/decide_many`）、`prompts/*.md`（7 份繁中提示詞）。
+API：`POST /agents/decide {codes?,date?}`（codes 省略→ /watchlist 前 N≤10）。
+
+**LLM 切換模組（成本核心）**：Gemini CLI 主 → 額度/速率用盡自動切 Claude CLI。
+- **無頭**：`gemini --skip-trust -p`、`claude -p`；**整段 prompt 走 stdin**（不放 argv）。
+- 🚨 **兩個實戰坑**：(1) Windows npm `.CMD` 殼以 `%*` 轉發 → **多行 prompt 當命令列參數會被打爛**
+  （實測 7 呼叫全失敗）→ 改 stdin 解決；(2) gemini 在臨時 cwd 需 `--skip-trust` 否則 **rc=55** trust 失敗。
+- **額度偵測**：成功判定只掃 stderr（不掃 stdout 答案內容避免誤判）；非零 exit / 精確片語命中 → 切備援記事件。
+- **遙測**：token 估算/耗時/provider → `UsageLog` 匯總（CLI 訂閱制 → 主軸用量＋耗時、金額粗估）。
+
+**一致性守門（確定性）**：最終決策方向背離量化 blended 卻沒被點名 → 系統強制標 `warning`，
+落實「背離有被點名、非被無視硬翻」。
+
+**驗收**：pytest **57 passed**（44 既有＋13 新，mock/stub 不打網路、**不燒真實 LLM 額度**）；含
+gemini 額度用盡→切 claude（注入假 runner）、兩者皆失敗降級不崩、遙測匯總、輸出容錯解析、一致性守門專測。
+**真實實測**（單股 2330、canned inputs）：gemini 主 7 呼叫 / est ≈4,890 tokens / ≈187s / 0 切換；
+備援路徑 gemini 全失敗→7 次自動切 claude / completion ≈1,261 tokens / ≈113s、流程不中斷；
+決策與 blended_score 對照一致（trader rationale 明引 blended_score 72/agreement=aligned）。
+
+**限制/未盡（階段6+）**：LLM 偶發不回 JSON → 容錯降中性占位；`/agents/decide` 線上需 FinMind/yfinance
+＋CLI 登入態；portfolio manager 持倉層、多輪自適應辯論、agent 長期記憶留後；階段6 Node gateway 統一吐，
+階段8 上 Oracle VM 無頭跑（CLI 預登入）。
