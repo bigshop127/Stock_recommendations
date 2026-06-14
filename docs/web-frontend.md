@@ -19,7 +19,7 @@
 
 ## 關鍵設計
 - **K 線**：個股頁三分頁——「日K·還原」（`?adjust=1`，**預設**）／「日K·原始」（FinMind 未還原，標註失真）／「盤中分K」。
-- **盤中分K 優雅降級**：富果未設金鑰 → engine 502 `缺少 FUGLE_API_KEY` → 前端顯示「🔌 需富果金鑰」佔位，**不破圖**；日K 與五檔（MIS）不受影響。填入 `FUGLE_API_KEY`（`engine/.env`）即啟用。
+- **盤中分K**：✅ 2026-06-14 已設定 `FUGLE_API_KEY`（`engine/.env`）→ 盤中分K 已啟用（富果，實測 5 分K 54 根）。**降級仍是 fallback**：若金鑰移除/失效 → engine 502 `缺少 FUGLE_API_KEY` → 前端顯示「🔌 需富果金鑰」佔位、**不破圖**，日K 與五檔不受影響。
 - **多 agent 決策很貴**：`AgentsPanel` **只在按鈕觸發**，跑完落地 `localStorage`（`agents:decide:<code>`），重整不重算；長 loading 計時。**絕不**自動觸發。
 - **emoji 語意相反**：🔴=看多／🟢=看空／🟠=中性（與股市紅漲綠跌相反）。報告原文用作者自有配色；量化 action badge 用直覺 UI 配色（買進=綠、賣出=紅），兩者分開不混。
 - **降級**：`/api/health` engine:down → 全域降級橫幅；dashboard `degraded:true` → 降級卡；個股/清單拿到 503 → 友善錯誤卡（非白畫面）；報告頁不受 engine 影響。

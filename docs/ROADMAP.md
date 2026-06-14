@@ -130,7 +130,7 @@ MIS 2330 五檔（last 2310、bid 2305/ask 2310）、TAIFEX 三大法人期貨�
 **金鑰**：`FINMIND_TOKEN`（建議必填）、`FUGLE_API_KEY`（可選）、`FRED_API_KEY`（/data/macro 才需）；
 皆走 `engine/.env`（gitignored）。`engine/data_cache/` 已加 .gitignore。`puhui_daily.cjs` 未更動。
 
-**已知缺口**：分點主力（乾淨自動化難，暫緩）、漲跌家數 A/D（階段3 proxy）、富果分K 回溯範圍（無富果 key 未量測）、新聞情緒歷史語料（階段4）。
+**已知缺口**：分點主力（乾淨自動化難，暫緩）、漲跌家數 A/D（階段3 proxy）、~~富果分K 回溯範圍（無富果 key 未量測）~~（**2026-06-14 已接富果 key**：盤中分K/五檔內外盤啟用、host 修正 `api.fugle.tw`）、新聞情緒歷史語料（階段4）。
 
 ---
 
@@ -277,4 +277,4 @@ gemini 額度用盡→切 claude（注入假 runner）、兩者皆失敗降級�
 - `/api/stocks/2330/ohlcv?adjust=1`→yfinance 還原（30 列、6/12 close 2310）；`ohlcv`（未還原）→FinMind；`/intraday`→**502 `缺少 FUGLE_API_KEY`**（前端佔位）；`/book`→TWSE MIS（last 2310、五檔）；`/dashboard`→水位0.5/情緒50/regime risk_on/watchlist 10；`/stocks/2330`→swing add66/blended hold51。
 - **engine 關**：`/health`→engine:down、`/dashboard`→`degraded:true`、`/reports/list`→18 照常、`/stocks/2330` 與 `/ohlcv`→**503**。
 
-**限制/未盡（階段8）**：bundle 單檔 ~678KB（未 code-split，可後續 manualChunks）；`/api/health` 只開頁探一次（engine 中途復原不自動重探）；觀察清單手動增刪未做（需另建儲存層）；盤中分K 待富果金鑰；雲端無頭部署（Oracle VM build+serve）＋每日排程＝階段8。
+**限制/未盡（階段8）**：bundle 單檔 ~678KB（未 code-split，可後續 manualChunks）；`/api/health` 只開頁探一次（engine 中途復原不自動重探）；觀察清單手動增刪未做（需另建儲存層）；~~盤中分K 待富果金鑰~~（**2026-06-14 已接富果 key→盤中分K+五檔內外盤啟用**，修 host `api.fugle.com.tw`→`api.fugle.tw`）；雲端無頭部署（Oracle VM build+serve）＋每日排程＝階段8。

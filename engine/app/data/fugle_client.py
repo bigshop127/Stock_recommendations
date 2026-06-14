@@ -1,6 +1,6 @@
 """富果 Fugle 數據源 client（live / 當沖；玉山）。
 
-REST v1.0：https://api.fugle.com.tw/marketdata/v1.0/stock，header `X-API-KEY`。
+REST v1.0：https://api.fugle.tw/marketdata/v1.0/stock，header `X-API-KEY`。
 金鑰走 settings.fugle_api_key（engine/.env）。
 
 對應 scoring-model.md §2（當沖引擎，全部 live_only）：
@@ -18,7 +18,7 @@ import pandas as pd
 from app.core.config import settings
 from app.data.http import DataSourceError, get_json
 
-BASE = "https://api.fugle.com.tw/marketdata/v1.0/stock"
+BASE = "https://api.fugle.tw/marketdata/v1.0/stock"
 
 
 def _headers() -> dict:

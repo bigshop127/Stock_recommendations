@@ -103,14 +103,15 @@ engine 掛掉也回 200（`engine:"down"`）。
 > 前端 K 線**預設走 `adjust=1` 還原價**；另提供「原始」分頁並標註失真風險。仍只轉發、不重算。
 
 ### `GET /api/stocks/:code/book`
-即時最佳五檔（engine `/data/book` 透傳，當沖盤口/強弱用）。**預設 TWSE MIS（官方免金鑰）**，設定 `FUGLE_API_KEY` + `BOOK_SOURCE=fugle` 才走富果。回 `{ code, source, live_only:true, book:{ last_price, bids[], asks[], total, ... } }`。
+即時最佳五檔（engine `/data/book` 透傳，當沖盤口/強弱用）。`BOOK_SOURCE=auto`（預設）下：**有 `FUGLE_API_KEY` 走富果（含內外盤 `inner_outer`），否則 TWSE MIS（官方免金鑰）**；亦可強制 `mis`/`fugle`。回 `{ code, source, live_only:true, book:{ last_price, bids[], asks[], total, inner_outer, ... } }`。
 
 > live-only、不可回測；盤口為近即時（延遲數秒），供訊號評分非下單執行。
+> ✅ 2026-06-14 已設定 `FUGLE_API_KEY`（auto 預設下 book 自動升級富果，回內外盤 at_bid/at_ask）。
 
 ### `GET /api/stocks/:code/intraday?date=&timeframe=`
 盤中分K（engine `/data/intraday` 透傳）。`timeframe` ∈ `1/5/10/15/30/60`（預設 `1`）；`date` 省略=今日 live、過去日=歷史（受富果回溯限制）。回 `{ code, date, timeframe, source, rows, data[] }`。
 
-> **需 `FUGLE_API_KEY`**（富果為唯一盤中分K源）。未設金鑰 → engine 回 502 → gateway `ENGINE_ERROR`。
+> **需 `FUGLE_API_KEY`**（富果為唯一盤中分K源）。未設金鑰 → engine 回 502 → gateway `ENGINE_ERROR`（前端顯示「🔌 需富果金鑰」佔位、不破圖）。✅ 2026-06-14 已設定金鑰 → 盤中分K 已啟用（實測 5 分K 54 根）。
 
 ---
 

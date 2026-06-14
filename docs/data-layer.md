@@ -81,8 +81,9 @@ REST v4：`GET https://api.finmindtrade.com/api/v4/data`，參數 `dataset/data_
 
 ## 3. 富果 Fugle（`fugle_client.py`，可選，live-only）
 
-REST v1.0：`https://api.fugle.com.tw/marketdata/v1.0/stock`，header `X-API-KEY`。
+REST v1.0：`https://api.fugle.tw/marketdata/v1.0/stock`，header `X-API-KEY`。
 **非必填**：不設 `FUGLE_API_KEY` 時 `/data/book` 自動走 MIS。要用富果把 `BOOK_SOURCE=fugle`（或 auto+填 key）。
+> ⚠️ host 修正（2026-06-14）：舊版誤寫 `api.fugle.com.tw`（DNS 不存在），正確為 **`api.fugle.tw`**。富果 Marketdata API Key 即建立後拿到的那串 base64（結尾 `==`）**原樣**當 `X-API-KEY`，**不要** base64-decode（decode 後會 401）。
 
 | 用途 | endpoint | engine API |
 |---|---|---|
@@ -91,7 +92,8 @@ REST v1.0：`https://api.fugle.com.tw/marketdata/v1.0/stock`，header `X-API-KEY
 | 歷史分K | `historical/candles/{code}` | `/data/intraday`（過去日） |
 
 - 歷史盤口/tick 拿不到（同 MIS）；分鐘級 `historical/candles` 回溯範圍有限。
-- 最早可取 1 分K 日期：**需富果 key 後由 smoke 第 8 段實測**（本機未設富果 key，暫未量測）。
+- 最早可取 1 分K 日期：**需富果 key 後由 smoke 第 8 段實測**。
+- ✅ 2026-06-14 已設定 `FUGLE_API_KEY` 並實測：`/data/book`（含內外盤 at_bid/at_ask）、`/data/intraday`（5 分K 54 根）皆走富果回 200；`BOOK_SOURCE=auto` 預設下有 key 即自動升級富果。
 
 ---
 
