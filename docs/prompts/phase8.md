@@ -17,10 +17,13 @@
 - **多 agent CLI 串接已跨平台**：`engine/app/agents/llm_cli.py` 用 `shutil.which` 解析 `gemini`/`claude`，Windows 取 `.CMD`、**Linux 取無副檔名執行檔同段碼通用**；多行 prompt 走 **stdin**、gemini 臨時 cwd 須 `--skip-trust`（見 [[phase5-agents-layer]]）。雲端只要 CLI 有登入態即可。
 - **富果 Marketdata 金鑰已接上**（2026-06-14）：`engine/.env` 的 `FUGLE_API_KEY` 已填、host 修正為 `api.fugle.tw`，盤中分K/五檔內外盤可用。**VM 上的 `engine/.env` 記得帶這顆**（見「需使用者本人做的事」）。
 - **Telegram 安全網已存在**：`scripts/puhui_daily.cjs` 內 `sendTelegram()`、`.env` 有 `TELEGRAM_BOT_TOKEN/CHAT_ID`，且 `oracle_capacity_grab.ps1` 也用同組。**重用、不要重造**。
-- **Oracle 帳號 / OCI CLI / 網路已設定好**：`scripts/oracle_capacity_grab.ps1` 正在輪詢搶 **A1.Flex（ARM Ampere）2 OCPU / 12 GB**、display name `puhui-daily` 的 Always-Free 機。compartment / subnet / image / SSH key 都已配在 `.env`。→ **「開帳號」這步免了**。
+- **Oracle 帳號 / OCI API 憑證 / 網路已設定好**（→「開帳號 / 設 API」這步免了），但資訊散在兩處、根 `.env` 不見了（見「Oracle 資產盤點」）：
+  - **API 簽章憑證在 `C:\Users\bigsh\.oci\`**：`config`（tenancy/user OCID、fingerprint、**region=`ap-tokyo-1` 東京**、key_file）＋`oci_api_key.pem`（🔐私鑰，勿外流、勿進 git）＋`oci_api_key_public.pem`。OCI CLI / Terraform 可直接用。
+  - **VM 啟動參數在 `C:\Users\bigsh\Downloads\ocid1.ormjob.oc1.ap-tokyo-1.…log`**（2026-05-27 的 Resource Manager / Terraform plan，完整 OCID 值在該檔，亦記於記憶 [[oracle-cloud-access]]）。
+  - 搶機路徑有兩條：raw `scripts/oracle_capacity_grab.ps1`（loop `oci compute instance launch`，預設 2 OCPU/12 GB、display name `puhui-daily`）與 ORM/Terraform stack（log 那次試 1 OCPU/6 GB）。
 
 **尚未發生 / 待辦的真相**
-- **VM 還沒搶到**：`data/oracle_grab_state.json`、`data/oracle_metadata.json` 都還不存在 → 容量還沒到手。**部署的第 0 步是「把 VM 搶到並拿到對外 IP/SSH」**（使用者跑 grab script），不是建帳號。
+- **VM 還沒搶到，且根 `.env` 不見了**：`data/oracle_grab_state.json`、`oracle_metadata.json` 都不存在 → 容量還沒到手；專案根 `.env`（grab/test 腳本要讀的 `OCI_*` 啟動參數來源）**目前不存在，需先從 `~/.oci/config` ＋ Downloads 的 ORM log 重建**。ORM log 末行寫明失敗主因＝**`Error: 500-InternalError, Out of host capacity.`**（東京 AD-1 免費 A1 缺貨，**不是設定錯**）。**部署第 0 步＝重建根 `.env` → 跑 grab 直到搶到 → 拿對外 IP/SSH**，不是建帳號。
 - **原提示詞「在 VM 上一次性登入 Gemini/Claude CLI 就能 cron 直接用」是最大未驗證假設**，務必當「決策點」處理，別當已知事實（見下「LLM 在雲端」）。
 
 **更正原提示詞的錯誤假設**
@@ -28,6 +31,21 @@
 - `puhui_daily.yml` 停用的真因：**CI 路徑只走 Gemini API key，而那 3 顆 free key 已 quota=0（全死）**；CI 又沒有 `claude` CLI。所以雲端 LLM 這條目前是斷的。
 - **`IS_CI` 旗標把兩件事綁在一起**：`!IS_CI` 同時代表「用 Claude CLI」**且**「寫進 Obsidian vault（Windows 路徑）」；`IS_CI` 同時代表「只用 Gemini」**且**「寫進 `reports/`」。**Oracle VM 兩者都不符**（要 Claude CLI、但沒有 Obsidian vault、要寫 `reports/` 並 git push）→ **需要小重構**（見「具體工作項 §A」），不能單純設 `CI=true` 或 `false`。
 - `puhui_daily.cjs` 有 **Windows 硬路徑**：`CLAUDE_BIN`（預設 `C:\Users\bigsh\.local\bin\claude.exe`，且註解「不可用 claude.cmd」是 **Windows-only 坑**）、Playwright chromium fallback 路徑。兩者都有 env 覆寫（`CLAUDE_BIN`、`PLAYWRIGHT_CHROMIUM_PATH`），Linux 設好即可。
+
+### Oracle 資產盤點（執行 phase 8 第 0 步用；raw OCID 值在來源檔，不寫進此 git 檔）
+| 項目 | 值 / 位置 | 備註 |
+|---|---|---|
+| API 簽章設定 | `C:\Users\bigsh\.oci\config` | tenancy/user OCID、fingerprint、region、key_file |
+| API 私鑰 / 公鑰 | `C:\Users\bigsh\.oci\oci_api_key.pem` / `oci_api_key_public.pem` | 🔐 私鑰勿外流、勿進 git |
+| Region | `ap-tokyo-1`（東京） | home region 固定，無法換 |
+| Availability Domain | `FYJv:AP-TOKYO-1-AD-1` | 東京僅 1 個 AD |
+| Compartment | = tenancy 根 compartment | OCID 見 ORM log / `.oci/config` 的 tenancy |
+| Subnet / Image OCID | 見 Downloads ORM log | `ocid1.subnet…` / `ocid1.image…`（Ubuntu/Oracle Linux ARM 映像） |
+| Shape | `VM.Standard.A1.Flex` | Always-Free 上限 4 OCPU/24 GB；建議 2-4 OCPU/12-24 GB 跑 engine+gateway |
+| SSH 公鑰 | `ssh-key-2026-05-26`（在 ORM log） | 對應私鑰由使用者本人確認 |
+| 來源檔 | `~/.oci/`＋`C:\Users\bigsh\Downloads\ocid1.ormjob.oc1.ap-tokyo-1.…log` | 完整值在此兩處；亦記於記憶 [[oracle-cloud-access]] |
+| 搶機腳本 | `scripts/oracle_capacity_grab.ps1`（＋ `oracle_test*.ps1` 連線測試） | 讀根 `.env` 的 `OCI_*`；**根 `.env` 目前不存在需重建** |
+| 已知阻擋 | **`500-InternalError, Out of host capacity`** | 東京免費 A1 缺貨；解法＝持續 grab 或升級 PAYG |
 
 ---
 
@@ -73,7 +91,9 @@
 > **時區坑**：`puhui_daily.cjs` 的 `TARGET_DATE` 已用 `Asia/Taipei` 算日期（OK），但 **cron 觸發時間**仍受 VM 系統 TZ 影響（Oracle 預設多為 UTC）。請**設 VM TZ=Asia/Taipei** 或在 cron 換算（盤後刷新對齊收盤後、老王摘要對齊文章發布傍晚時段；可參考本機 `setup_scheduler.ps1` 的時間，但以該檔為準勿臆測）。
 
 ## 需要使用者本人做的事（請寫成清楚的編號步驟清單讓他自己做，不要假設你能代登入）
-1. **搶到 VM**：跑 `scripts/oracle_capacity_grab.ps1` 直到成功（拿到 public IP + SSH）；把 IP/連線資訊給執行者。
+1. **重建根 `.env` → 搶到 VM**：執行者會用 `~/.oci/config` ＋ Downloads 的 ORM log，把 `OCI_COMPARTMENT_ID / OCI_AVAILABILITY_DOMAIN / OCI_SUBNET_ID / OCI_IMAGE_ID / OCI_SSH_PUBLIC_KEY`（＋ `TELEGRAM_*`）填回專案根 `.env`（**不進 git**）；接著跑 `scripts/oracle_capacity_grab.ps1` 直到搶到，拿 public IP + SSH 給執行者。
+   - ⚠️ **持續 out-of-capacity 的對策（只有你本人能做）**：東京免費 A1 長期缺貨。最有效解＝**在 Oracle Console 把帳號升級 Pay-As-You-Go（PAYG）**（仍保留 Always-Free 額度、容量優先權大增），再跑 grab 就好搶很多；或接受 grab 迴圈長時間重試。
+   - SSH **私鑰**位置請你本人確認（公鑰 `ssh-key-2026-05-26` 在 ORM log；對應私鑰執行者不碰）。
 2. **VM 開埠 / 安全**：Oracle Security List + VM 防火牆只開必要埠（建議只開 SSH；前端對外再評估，見原則）。
 3. **CLI 登入**（若採 B1）：SSH 進 VM，依執行者寫的步驟登入 `gemini`、`claude`，並回報是否需要瀏覽器 OAuth。
 4. **提供祕密**：把 `engine/.env`（FINMIND_TOKEN、**FUGLE_API_KEY**、FRED_API_KEY）與根 `.env`（GOOGLE_*、GEMINI_*、TELEGRAM_*、PressPlay cookies）安全帶上 VM（scp/手貼，**不進 git**）。
