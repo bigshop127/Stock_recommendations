@@ -13,7 +13,8 @@
 ## ⚠️ 對齊現況（執行前必讀 — 2026-06-14 實查 gateway 與 engine 後補）
 > 動工前先讀 `routes/gateway.js`、`engine/app/api/data.py` 確認以下仍成立，別照本檔字面臆測。
 
-1. **🔴 硬缺口：gateway 還沒轉發任何 `/data/*`。** K線圖要的 `/data/ohlcv`、即時盤口要的 `/data/book`、盤中分K要的 `/data/intraday` 在 **engine 有、gateway 無**。本階段鐵律是「前端只透過 gateway、不直接打 engine」→ **必須先在 gateway 補這幾個轉發端點**（建議 `GET /api/stocks/:code/ohlcv`、`/api/stocks/:code/book`、`/api/stocks/:code/intraday`，沿用階段6 的錯誤格式/timeout/degradation 慣例），否則 K線頁與當沖頁無資料可接。這層一樣**只轉發、不重算**。
+1. **✅ 缺口A 已補（phase7-prep，commit `f603360`）：gateway 已轉發 `/data/*`。** `GET /api/stocks/:code/ohlcv`（日K）、`/api/stocks/:code/book`（即時五檔，TWSE MIS 預設）、`/api/stocks/:code/intraday`（盤中分K，需富果 key）皆已在 `routes/gateway.js` 上線、實測通過（engine 開→200、缺富果 key→502、engine 關→503）。動工時讀 `routes/gateway.js` 確認仍在即可，**不必再加**。
+   - ⚠️ **唯一未開**：K線**還原價**。`/data/ohlcv` 是 FinMind 未還原（0050 等分割股會失真）；engine 的 `service.get_ohlcv_adj`（yfinance 還原）**已存在但沒掛 HTTP 路由**。若要正確 K 線 → 先在 engine `app/api/data.py` 開 `GET /data/ohlcv_adj`，再讓 gateway 加一條 `/api/stocks/:code/ohlcv?adjust=1` 轉發（仍只轉發、不重算）。這是動工時要先和我確認的決策之一。
 2. **即時盤口預設是 TWSE MIS（官方免費），富果是可選**（階段2 決策）。本檔提到「富果即時盤口」一律當成「即時盤口（TWSE MIS 預設／富果可選）」。
 3. **`/api/agents/decide` 很貴**（每股 7×LLM ≈187s、燒額度、gateway 同步阻塞 1200s）→ 個股頁**絕不**自動觸發，只在使用者明確按鈕時呼叫，且**結果要落地快取**（算過就讀、避免重複燒、避開瀏覽器/反向代理 timeout）。
 4. **watchlist 是 engine 自動產生、唯讀**（從老王 mentioned_stocks 帶入，無增刪 API、無持久化）。「觀察清單管理」MVP 先做「檢視＋波段/當沖排序切換」；使用者手動增刪需另建儲存層（前端 localStorage 或後端檔＋端點），列為可選。
@@ -23,7 +24,7 @@
 
 ## 本階段目標
 1. 建前端（建議 Vite + React + TypeScript + Tailwind + lightweight-charts）放 `web/`，**行動裝置友善**（常用手機看）。
-2. **先補 gateway `/data/*` 轉發**（見上「對齊現況」第 1 點）：`/api/stocks/:code/ohlcv`、`/api/stocks/:code/book`、`/api/stocks/:code/intraday`，沿用階段6 慣例。這是 K線頁/當沖頁的前置。
+2. gateway `/data/*` 轉發**已備妥**（ohlcv/book/intraday，見「對齊現況」第 1 點）；本階段只需**決定要不要再開 `/data/ohlcv_adj` 還原價 K 線**（建議開），其餘直接接前端。
 3. 畫面：
    - **儀表板**：當日水位、market_regime、市場情緒、觀察清單訊號（沿用 🟢🟠🔴，注意語意 🔴=看多）；engine 降級時顯示橫幅。
    - **當沖候選頁**：watchlist 依 `rank_daytrade` 排序的當沖候選 + **即時盤口/強弱（TWSE MIS 預設，富果可選）**（盤中用，走新 `/api/stocks/:code/book`）。
@@ -55,4 +56,4 @@
 5. **git commit & push**（`phase7: APP 前端`）：commit 後直接 push。
 
 ## 開始方式
-先讀 `docs/ROADMAP.md`、`docs/api.md`、`routes/gateway.js`、`engine/app/api/data.py`、一篇 reports，提出（a）gateway 要新增的 `/data/*` 轉發端點清單、（b）前端頁面結構與元件設計（含一張 ASCII 線框），讓我確認，再動手。
+先讀 `docs/ROADMAP.md`、`docs/api.md`、`routes/gateway.js`、`engine/app/api/data.py`、一篇 reports，提出（a）是否在 engine 開 `/data/ohlcv_adj` 還原價 K 線 + gateway 加轉發（其餘 `/data` 端點已備妥）、（b）前端頁面結構與元件設計（含一張 ASCII 線框），讓我確認，再動手。
