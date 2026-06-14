@@ -58,7 +58,7 @@
 | 3 | 多因子引擎 + 回測核心 | 確定性訊號（波段＋當沖）+ 向量化回測 | 1,2 | ✅ 完成 2026-06-13 |
 | 4 | 老王整合 + 觀察清單 | 老王融合訊號 + 自動觀察清單（潛力/當沖排序） | 3 | ✅ 完成 2026-06-14 |
 | 5 | 多 agent LLM 決策層 | 分析師→多空辯論→交易員→風控 | 3,4 | ✅ 完成 2026-06-14 |
-| 6 | 統一 API 層 | Node gateway，吐 報告/訊號/水位/回測/agent決策 | 3,4,5 | ⬜ |
+| 6 | 統一 API 層 | Node gateway，吐 報告/訊號/水位/回測/agent決策 | 3,4,5 | ✅ 完成 2026-06-14 |
 | 7 | APP 前端 + 端到端整合 | Vite+React 儀表板 + 當沖候選 | 6 | ⬜ |
 | 8 | 雲端部署 + 每日排程 | Oracle VM（主）+ GitHub Actions；runbook | 7 | ⬜ |
 
@@ -227,3 +227,34 @@ gemini 額度用盡→切 claude（注入假 runner）、兩者皆失敗降級�
 **限制/未盡（階段6+）**：LLM 偶發不回 JSON → 容錯降中性占位；`/agents/decide` 線上需 FinMind/yfinance
 ＋CLI 登入態；portfolio manager 持倉層、多輪自適應辯論、agent 長期記憶留後；階段6 Node gateway 統一吐，
 階段8 上 Oracle VM 無頭跑（CLI 預登入）。
+
+---
+
+## 11. 階段 6 完成紀錄（2026-06-14）
+
+詳見 `docs/api.md`。重點：
+
+**設計確認（使用者 2026-06-14）**：照提議設計開工 / **拆 `routes/` + `lib/engine.js`** / water_level 等**正規化成數值並更新契約**（三問皆採推薦案）。
+
+**Step 0 實查對齊**（非照舊提示詞臆測）：
+- engine 路由全掛 **root**（`/signal`/`/signal/blended`/`/watchlist`/`/puhui/view`/`/backtest*`/`/agents/decide`/`/data/*`）→ gateway 一律加 `/api` 前綴轉發。
+- `server.cjs` 的 `cors` 已 require 但**沒 `app.use`** → 本階段補啟用。
+- **Node v22 → 內建 global `fetch`**；`axios`/`dotenv`/`node-fetch` 其實**沒裝**（只有 `express`/`cors`）→ 改用 `fetch`+`AbortController` 做代理與 timeout、自寫極簡 `.env` loader，**零新依賴、免 npm install**。
+- 🚨 **型別分歧**：engine `/puhui/view` 的 `water_level` 是 **float 0~1**、`market_sentiment.score` 是 **0~100**；degraded 的 `puhui_cache.json` 是**中文「五成」**＋score **1~10**。gateway 對外**正規化**（數值 0~1 + `water_level_text`、sentiment 0~100），同步更新 `DailySnapshot` 契約。
+
+**交付**：
+- `lib/engine.js`（代理：`ENGINE_BASE_URL` env、per-call timeout、503/504/502/404/400 統一轉譯、`engineHealthy` 探活）、`lib/errors.js`、`lib/reports.js`（純 FS 掃 `reports/**/*.md`）、`lib/puhui_cache.js`（degraded + 中文水位→數值）、`lib/loadEnv.js`。
+- `routes/finance.js`（既有 3 端點原樣搬出，行為不變）、`routes/gateway.js`（新 `/api/*`）。`server.cjs` 改成 app 組裝：補 `cors`、`.env`、掛 router。
+- `docs/api.md`（所有端點/參數/回傳/degradation/錯誤格式/emoji 語意）。
+
+**端點**：`/api/{health,dashboard,stocks/:code,watchlist,reports,reports/list,backtest,backtest/grid,agents/decide}`。
+- 🚨 `/api/agents/decide` 很貴（每股 7×LLM ≈187s）→ **只在前端明確 POST 時呼叫**，**絕不**在 dashboard/stocks 內自動觸發（timeout 放 1200s）。
+- `/api/stocks/:code` 迷你回測預設**關**（`?backtest=1` 才跑）；`daytrade` 盤後無盤口 → `unavailable:true` 不拖垮整體；老王未提及該股 → `puhui:null`（404 容忍）。
+- dashboard 的 `market_regime` 取代表股 swing 訊號的 `regime` 欄位（market-wide，**不重算**）。
+
+**驗收（curl 實測，2026-06-14）**：
+- **engine 開**：`/api/health`→engine:up；`/api/dashboard`→水位0.5/五成、情緒中性50、regime risk_on(gate1.1)、watchlist 10 檔；`/api/stocks/2330`→swing add 66 + daytrade + blended + regime；`/api/watchlist`→10 檔雙排序；`POST /api/backtest`→swing_v1 metrics+benchmark+72點；`/api/backtest/grid`→{best,grid}；`POST /api/agents/decide` 壞 body→400 轉譯（**不燒 LLM 額度**，真實 LLM 跑已於階段5 驗）。
+- **engine 關**：`/api/reports*` 照常（18 篇）；`/api/dashboard`→`degraded:true`（有 cache 讀水位/情緒、無 cache 回空殼）；`/api/watchlist`、`/api/stocks/:code` 等→明確 **503**。
+- **CORS** `Access-Control-Allow-Origin: *` 生效；既有 `/api/finance/status`、`/api/run-script`(403) 不破壞。
+
+**限制/未盡（階段7+）**：CORS 先全開（上線需收斂 origin 白名單）；`/api/agents/decide` 長流程為同步阻塞（未做非同步/輪詢，階段7/8 視需要再上）；degraded dashboard 只有全域水位/情緒（cache 無個股代號/買賣）；前端儀表板（Vite+React）＝階段7；雲端無頭部署＝階段8。
