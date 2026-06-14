@@ -32,7 +32,7 @@
    - 技術面（RSI/MA/三陽開泰/乖離/量能）← OHLCV
    - 籌碼面（三大法人買賣超、融資融券）← FinMind
    - 盤口/主力（五檔委買賣、大單；內外盤需富果）← **TWSE MIS 預設（免金鑰）／富果可選** **（live-only，不進回測）**（階段2 改版，詳 §7）
-   - 消息情緒面（新聞情緒 + 老王 strategy_insights）
+   - 消息情緒面（新聞情緒 + 老王報告解析：`market_sentiment` ＋ 個股 `signal`/`reason`，階段4。⚠️ 舊版誤寫 `strategy_insights`＝不存在的幻想 JSON 欄位）
    - 大盤環境（0050/大盤 regime、漲跌家數/恐懼貪婪 proxy）
 3. **數據源**：
    - **FinMind**（免費）：歷史 OHLCV + 三大法人 + 融資融券 → **回測主力**。
