@@ -93,10 +93,14 @@ engine 掛掉也回 200（`engine:"down"`）。
 
 ---
 
-### `GET /api/stocks/:code/ohlcv?start=&end=`
-日K OHLCV（engine `/data/ohlcv` 透傳，供前端畫 K 線）。`start`/`end` 省略 → engine 預設近一年。回 `{ code, name, source, rows, data:[{date,open,high,low,close,volume,turnover}] }`。
+### `GET /api/stocks/:code/ohlcv?start=&end=&adjust=`
+日K OHLCV（供前端畫 K 線）。`start`/`end` 省略 → engine 預設近一年。回 `{ code, name, source, rows, data:[{date,open,high,low,close,volume,turnover}] }`。
 
-> 🚨 **K線還原價**：此源為 **FinMind 未還原價**，含分割/除權的個股（如 0050）會有斷點失真（階段3 已踩過）。前端畫 K 線需標註，或日後在 engine 開 `/data/ohlcv_adj`（yfinance 還原；`service.get_ohlcv_adj` 已存在但**尚未掛 HTTP 路由**）後改走還原價。
+- `adjust` 省略/0 → 透傳 engine **`/data/ohlcv`**（FinMind **未還原價**）。
+- `adjust=1`（或 `true`/`yes`/`on`）→ 透傳 engine **`/data/ohlcv_adj`**（yfinance `auto_adjust` **還原價**，含除權息/分割；無 turnour 欄）。**階段7 新增**：`service.get_ohlcv_adj` 已掛上 HTTP 路由。
+
+> 🚨 **K線還原價**：未還原源（`adjust` 省略）對含分割/除權的個股（如 0050）會有斷點失真（階段3 已踩過）。
+> 前端 K 線**預設走 `adjust=1` 還原價**；另提供「原始」分頁並標註失真風險。仍只轉發、不重算。
 
 ### `GET /api/stocks/:code/book`
 即時最佳五檔（engine `/data/book` 透傳，當沖盤口/強弱用）。**預設 TWSE MIS（官方免金鑰）**，設定 `FUGLE_API_KEY` + `BOOK_SOURCE=fugle` 才走富果。回 `{ code, source, live_only:true, book:{ last_price, bids[], asks[], total, ... } }`。

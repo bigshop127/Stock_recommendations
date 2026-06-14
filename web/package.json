@@ -1,0 +1,32 @@
+{
+  "name": "puhui-web",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "description": "階段7 前端：老王投資儀表板（Vite + React + TS + Tailwind + lightweight-charts）。只透過 Node gateway /api 取數。",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "typecheck": "tsc --noEmit",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "lightweight-charts": "^4.2.3",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-markdown": "^9.0.1",
+    "react-router-dom": "^6.26.2",
+    "rehype-raw": "^7.0.0",
+    "remark-gfm": "^4.0.0"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.5",
+    "@types/react-dom": "^18.3.0",
+    "@vitejs/plugin-react": "^4.3.1",
+    "autoprefixer": "^10.4.20",
+    "postcss": "^8.4.47",
+    "tailwindcss": "^3.4.13",
+    "typescript": "^5.5.4",
+    "vite": "^5.4.8"
+  }
+}

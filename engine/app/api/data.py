@@ -43,6 +43,17 @@ def ohlcv(
     return _guard(service.get_ohlcv, code, start or d_start, end or d_end)
 
 
+@router.get("/ohlcv_adj", summary="還原日K OHLCV（yfinance auto_adjust：含除權息/分割，可回測）")
+def ohlcv_adj(
+    code: str = Query(..., description="台股代號，例 2330"),
+    start: str | None = Query(None, description="起日 YYYY-MM-DD（預設近一年）"),
+    end: str | None = Query(None, description="迄日 YYYY-MM-DD（預設今日）"),
+):
+    """FinMind 免費級未還原（0050 等分割股會失真）→ 本端點以 yfinance 還原價取代，供前端正確畫 K 線。"""
+    d_start, d_end = _default_range()
+    return _guard(service.get_ohlcv_adj, code, start or d_start, end or d_end)
+
+
 @router.get("/chips", summary="籌碼：三大法人 + 融資券（FinMind，可回測）")
 def chips(
     code: str = Query(..., description="台股代號，例 2330"),

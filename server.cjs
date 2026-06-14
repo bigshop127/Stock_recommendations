@@ -15,6 +15,9 @@ require('./lib/loadEnv').loadEnv();
 const express = require('express');
 const cors = require('cors');
 
+const path = require('path');
+const fs = require('fs');
+
 const app = express();
 const port = process.env.PORT || 3000;
 
@@ -25,7 +28,20 @@ app.use(express.static('public'));
 app.use(require('./routes/finance'));
 app.use(require('./routes/gateway'));
 
+// 階段 7：直接 serve 前端 build（web/dist）。同源免 CORS、鋪路階段8 無頭雲端部署。
+// 未 build 時略過（dev 模式前端走 Vite dev server 5173 → 打 gateway 3000 走 CORS）。
+const webDist = path.join(__dirname, 'web', 'dist');
+if (fs.existsSync(webDist)) {
+  app.use(express.static(webDist));
+  // SPA fallback：非 /api、非既有路由 → 回 index.html（前端 client-side routing）
+  app.get(/^(?!\/api(?:\/|$)).*/, (req, res, next) => {
+    if (req.method !== 'GET') return next();
+    res.sendFile(path.join(webDist, 'index.html'));
+  });
+}
+
 app.listen(port, () => {
   console.log(`Puhui finance API gateway: http://localhost:${port}`);
   console.log(`  engine base: ${process.env.ENGINE_BASE_URL || 'http://127.0.0.1:8000'}`);
+  console.log(`  web build: ${fs.existsSync(webDist) ? 'serving web/dist' : '(not built — dev via vite 5173)'}`);
 });

@@ -9,7 +9,7 @@
  * | GET  /api/health            | gateway + 探 engine            | — |
  * | GET  /api/dashboard         | /puhui/view + /watchlist + regime | DailySnapshot |
  * | GET  /api/stocks/:code      | /signal(swing+daytrade) + /signal/blended + /puhui/view | StockSignal×2 + blended |
- * | GET  /api/stocks/:code/ohlcv| /data/ohlcv 透傳（日K，FinMind 未還原）| — |
+ * | GET  /api/stocks/:code/ohlcv| /data/ohlcv 透傳（日K；?adjust=1 → /data/ohlcv_adj yfinance 還原）| — |
  * | GET  /api/stocks/:code/book | /data/book 透傳（即時五檔，TWSE MIS 預設）| — |
  * | GET  /api/stocks/:code/intraday | /data/intraday 透傳（盤中分K，富果）| — |
  * | GET  /api/watchlist         | /watchlist 透傳                | Watchlist[] |
@@ -191,16 +191,18 @@ router.get('/api/stocks/:code', async (req, res) => {
   }
 });
 
-// ── GET /api/stocks/:code/ohlcv?start=&end= ── 日K 透傳（缺口A：K線圖資料）──────
-// engine /data/ohlcv 為 FinMind **未還原價**：含分割/除權的個股（如 0050）會失真，
-// 前端畫 K 線需標註（見 docs/api.md「K線還原價」）。engine 掛掉 → engineGet 丟 503。
+// ── GET /api/stocks/:code/ohlcv?start=&end=&adjust= ── 日K 透傳（缺口A：K線圖資料）──
+// 預設走 /data/ohlcv（FinMind **未還原價**：含分割/除權的個股如 0050 會失真）；
+// `adjust=1` → 走 /data/ohlcv_adj（yfinance 還原，含除權息/分割，前端 K 線正確）。
+// 仍只轉發、不重算。engine 掛掉 → engineGet 丟 503。
 router.get('/api/stocks/:code/ohlcv', async (req, res) => {
   const { start, end } = req.query;
+  const adjust = ['1', 'true', 'yes', 'on'].includes(String(req.query.adjust || '').toLowerCase());
   const params = { code: req.params.code };
   if (start) params.start = start;
   if (end) params.end = end;
   try {
-    res.json(await engineGet('/data/ohlcv', params, T.ohlcv));
+    res.json(await engineGet(adjust ? '/data/ohlcv_adj' : '/data/ohlcv', params, T.ohlcv));
   } catch (err) {
     sendError(res, err);
   }

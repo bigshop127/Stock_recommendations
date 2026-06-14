@@ -1,0 +1,100 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: #0f172a;
+  color: #e2e8f0;
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", "Noto Sans TC",
+    "Microsoft JhengHei", sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ── 老王報告 markdown 渲染（rehype-raw 允許原文內嵌 HTML：<span style>、<mark>）─── */
+.report-md {
+  line-height: 1.7;
+  word-break: break-word;
+}
+.report-md h1 {
+  font-size: 1.35rem;
+  font-weight: 800;
+  margin: 0.8rem 0 0.4rem;
+  color: #f8fafc;
+}
+.report-md h2 {
+  font-size: 1.1rem;
+  font-weight: 700;
+  margin: 1.1rem 0 0.4rem;
+  color: #f1f5f9;
+}
+.report-md h3 {
+  font-size: 1rem;
+  font-weight: 700;
+  margin: 1rem 0 0.3rem;
+}
+.report-md p {
+  margin: 0.5rem 0;
+}
+.report-md ul {
+  margin: 0.4rem 0;
+  padding-left: 1.2rem;
+  list-style: disc;
+}
+.report-md li {
+  margin: 0.2rem 0;
+}
+.report-md a {
+  color: #60a5fa;
+  text-decoration: underline;
+}
+.report-md hr {
+  border: none;
+  border-top: 1px solid #1e293b;
+  margin: 1rem 0;
+}
+.report-md table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 0.6rem 0;
+  font-size: 0.85rem;
+  display: block;
+  overflow-x: auto;
+}
+.report-md th,
+.report-md td {
+  border: 1px solid #1e293b;
+  padding: 0.4rem 0.55rem;
+  text-align: left;
+  vertical-align: top;
+}
+.report-md th {
+  background: #1e293b;
+  white-space: nowrap;
+}
+/* 內嵌 <mark> 螢光重點：報告用淺色背景，深色主題下文字補深色 */
+.report-md mark {
+  color: #0f172a;
+  padding: 0 0.15rem;
+  border-radius: 3px;
+}
+.report-md blockquote {
+  border-left: 4px solid #475569;
+  background: #1e293b66;
+  margin: 0.6rem 0;
+  padding: 0.5rem 0.8rem;
+  border-radius: 0 6px 6px 0;
+}
+.report-md blockquote p {
+  margin: 0.3rem 0;
+}

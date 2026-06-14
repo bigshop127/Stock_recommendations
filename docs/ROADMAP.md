@@ -59,7 +59,7 @@
 | 4 | 老王整合 + 觀察清單 | 老王融合訊號 + 自動觀察清單（潛力/當沖排序） | 3 | ✅ 完成 2026-06-14 |
 | 5 | 多 agent LLM 決策層 | 分析師→多空辯論→交易員→風控 | 3,4 | ✅ 完成 2026-06-14 |
 | 6 | 統一 API 層 | Node gateway，吐 報告/訊號/水位/回測/agent決策 | 3,4,5 | ✅ 完成 2026-06-14 |
-| 7 | APP 前端 + 端到端整合 | Vite+React 儀表板 + 當沖候選 | 6 | ⬜ |
+| 7 | APP 前端 + 端到端整合 | Vite+React 儀表板 + 當沖候選 | 6 | ✅ 完成 2026-06-14 |
 | 8 | 雲端部署 + 每日排程 | Oracle VM（主）+ GitHub Actions；runbook | 7 | ⬜ |
 
 執行節奏：第 1 定契約最關鍵；第 3 完成＝有可回測策略硬核；第 5 才上 LLM；第 7 接前端；第 8 上雲。
@@ -258,3 +258,23 @@ gemini 額度用盡→切 claude（注入假 runner）、兩者皆失敗降級�
 - **CORS** `Access-Control-Allow-Origin: *` 生效；既有 `/api/finance/status`、`/api/run-script`(403) 不破壞。
 
 **限制/未盡（階段7+）**：CORS 先全開（上線需收斂 origin 白名單）；`/api/agents/decide` 長流程為同步阻塞（未做非同步/輪詢，階段7/8 視需要再上）；degraded dashboard 只有全域水位/情緒（cache 無個股代號/買賣）；前端儀表板（Vite+React）＝階段7；雲端無頭部署＝階段8。
+
+---
+
+## 12. 階段 7 完成紀錄（2026-06-14）
+
+詳見 `docs/web-frontend.md`。重點：
+
+**設計確認（使用者 2026-06-14）**：（a）**開還原價 K 線**＝在 engine 開 `GET /data/ohlcv_adj`（`service.get_ohlcv_adj` yfinance 還原已存在、本階段只補掛路由）＋ gateway `/api/stocks/:code/ohlcv?adjust=1` 轉發（仍只轉發不重算）；（b）**盤中分K 優雅降級**＝不補富果金鑰（遍尋 `engine/.env`、舊專案 `C:\財經APP\.env` 皆無 Marketdata `X-API-KEY`，只有失效的 trading SDK config path），前端對 502 顯示「需富果金鑰」佔位、不破圖。
+
+**交付**：
+- **engine**：`app/api/data.py` 新增 `GET /data/ohlcv_adj`（還原日K）。
+- **gateway**：`routes/gateway.js` 的 `/api/stocks/:code/ohlcv` 支援 `?adjust=1` → 轉 `/data/ohlcv_adj`；`server.cjs` 偵測 `web/dist` → `express.static` + SPA fallback（同源 serve 前端，鋪路階段8）。
+- **前端 `web/`**：Vite+React+TS+Tailwind+lightweight-charts。5 頁（儀表板/當沖候選/觀察清單/老王報告/個股詳情）＋底部 4 分頁、手機單欄。報告用 react-markdown+rehype-raw 渲染（內嵌 HTML + Obsidian callout 轉 emoji 標題）。**多 agent 決策只按鈕觸發 + `localStorage` 快取（重整不重算）**；K線預設還原價、另有原始/盤中分K 分頁；盤中分K 無金鑰優雅降級。
+
+**驗收（curl + build 實測，2026-06-14，engine+gateway 同開）**：
+- `npm run build` 通過、`tsc --noEmit` 零錯；gateway 偵測 `web/dist` → `/` 回 SPA（title「老王投資儀表板」）、deep-link `/stock/2330` fallback 回 index.html。
+- `/api/stocks/2330/ohlcv?adjust=1`→yfinance 還原（30 列、6/12 close 2310）；`ohlcv`（未還原）→FinMind；`/intraday`→**502 `缺少 FUGLE_API_KEY`**（前端佔位）；`/book`→TWSE MIS（last 2310、五檔）；`/dashboard`→水位0.5/情緒50/regime risk_on/watchlist 10；`/stocks/2330`→swing add66/blended hold51。
+- **engine 關**：`/health`→engine:down、`/dashboard`→`degraded:true`、`/reports/list`→18 照常、`/stocks/2330` 與 `/ohlcv`→**503**。
+
+**限制/未盡（階段8）**：bundle 單檔 ~678KB（未 code-split，可後續 manualChunks）；`/api/health` 只開頁探一次（engine 中途復原不自動重探）；觀察清單手動增刪未做（需另建儲存層）；盤中分K 待富果金鑰；雲端無頭部署（Oracle VM build+serve）＋每日排程＝階段8。
