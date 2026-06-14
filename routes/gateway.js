@@ -9,6 +9,9 @@
  * | GET  /api/health            | gateway + 探 engine            | — |
  * | GET  /api/dashboard         | /puhui/view + /watchlist + regime | DailySnapshot |
  * | GET  /api/stocks/:code      | /signal(swing+daytrade) + /signal/blended + /puhui/view | StockSignal×2 + blended |
+ * | GET  /api/stocks/:code/ohlcv| /data/ohlcv 透傳（日K，FinMind 未還原）| — |
+ * | GET  /api/stocks/:code/book | /data/book 透傳（即時五檔，TWSE MIS 預設）| — |
+ * | GET  /api/stocks/:code/intraday | /data/intraday 透傳（盤中分K，富果）| — |
  * | GET  /api/watchlist         | /watchlist 透傳                | Watchlist[] |
  * | GET  /api/reports/list      | 純 FS                          | — |
  * | GET  /api/reports           | 純 FS                          | — |
@@ -34,6 +37,9 @@ const T = {
   puhui: 30000,
   backtest: 180000,
   agents: 1200000,
+  ohlcv: 60000,   // FinMind 一年日K（有 parquet 快取，首抓較久）
+  book: 15000,    // 即時五檔 live snapshot（TWSE MIS，快）
+  intraday: 45000, // 富果盤中分K
 };
 
 const dateParams = (date) => (date ? { date } : {});
@@ -180,6 +186,45 @@ router.get('/api/stocks/:code', async (req, res) => {
     }
     out.generated_at = new Date().toISOString();
     res.json(out);
+  } catch (err) {
+    sendError(res, err);
+  }
+});
+
+// ── GET /api/stocks/:code/ohlcv?start=&end= ── 日K 透傳（缺口A：K線圖資料）──────
+// engine /data/ohlcv 為 FinMind **未還原價**：含分割/除權的個股（如 0050）會失真，
+// 前端畫 K 線需標註（見 docs/api.md「K線還原價」）。engine 掛掉 → engineGet 丟 503。
+router.get('/api/stocks/:code/ohlcv', async (req, res) => {
+  const { start, end } = req.query;
+  const params = { code: req.params.code };
+  if (start) params.start = start;
+  if (end) params.end = end;
+  try {
+    res.json(await engineGet('/data/ohlcv', params, T.ohlcv));
+  } catch (err) {
+    sendError(res, err);
+  }
+});
+
+// ── GET /api/stocks/:code/book ── 即時最佳五檔 透傳（缺口A：當沖盤口；TWSE MIS 預設）──
+// live-only：盤後/非交易時段資料可能為空殼或 502（數據源錯誤），由 engine 決定。
+router.get('/api/stocks/:code/book', async (req, res) => {
+  try {
+    res.json(await engineGet('/data/book', { code: req.params.code }, T.book));
+  } catch (err) {
+    sendError(res, err);
+  }
+});
+
+// ── GET /api/stocks/:code/intraday?date=&timeframe= ── 盤中分K 透傳（缺口A：盤中圖）──
+// 富果源：今日/省略=live；過去日=歷史（受富果回溯限制）。
+router.get('/api/stocks/:code/intraday', async (req, res) => {
+  const { date, timeframe } = req.query;
+  const params = { code: req.params.code };
+  if (date) params.date = date;
+  if (timeframe) params.timeframe = timeframe;
+  try {
+    res.json(await engineGet('/data/intraday', params, T.intraday));
   } catch (err) {
     sendError(res, err);
   }

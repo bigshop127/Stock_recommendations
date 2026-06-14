@@ -93,6 +93,23 @@ engine 掛掉也回 200（`engine:"down"`）。
 
 ---
 
+### `GET /api/stocks/:code/ohlcv?start=&end=`
+日K OHLCV（engine `/data/ohlcv` 透傳，供前端畫 K 線）。`start`/`end` 省略 → engine 預設近一年。回 `{ code, name, source, rows, data:[{date,open,high,low,close,volume,turnover}] }`。
+
+> 🚨 **K線還原價**：此源為 **FinMind 未還原價**，含分割/除權的個股（如 0050）會有斷點失真（階段3 已踩過）。前端畫 K 線需標註，或日後在 engine 開 `/data/ohlcv_adj`（yfinance 還原；`service.get_ohlcv_adj` 已存在但**尚未掛 HTTP 路由**）後改走還原價。
+
+### `GET /api/stocks/:code/book`
+即時最佳五檔（engine `/data/book` 透傳，當沖盤口/強弱用）。**預設 TWSE MIS（官方免金鑰）**，設定 `FUGLE_API_KEY` + `BOOK_SOURCE=fugle` 才走富果。回 `{ code, source, live_only:true, book:{ last_price, bids[], asks[], total, ... } }`。
+
+> live-only、不可回測；盤口為近即時（延遲數秒），供訊號評分非下單執行。
+
+### `GET /api/stocks/:code/intraday?date=&timeframe=`
+盤中分K（engine `/data/intraday` 透傳）。`timeframe` ∈ `1/5/10/15/30/60`（預設 `1`）；`date` 省略=今日 live、過去日=歷史（受富果回溯限制）。回 `{ code, date, timeframe, source, rows, data[] }`。
+
+> **需 `FUGLE_API_KEY`**（富果為唯一盤中分K源）。未設金鑰 → engine 回 502 → gateway `ENGINE_ERROR`。
+
+---
+
 ### `GET /api/watchlist?date=`
 自動觀察清單（engine `/watchlist` 透傳）。`items[]` 為 **`Watchlist`** 元素（`swing_score`/`daytrade_prob`/`rank_*`/`source`/`puhui_*`/`tags`），波段與當沖各自排序。
 
@@ -147,7 +164,7 @@ engine 掛掉也回 200（`engine:"down"`）。
 | `GET /api/health` | 200，`engine:"down"` |
 | `GET /api/reports/list`、`GET /api/reports` | **照常可用**（純檔案系統，不依賴 engine） |
 | `GET /api/dashboard` | **degraded 200**：水位/情緒退讀 `data/puhui_cache.json`（僅全域 `water_level`/`puhui_sentiment`，**無個股清單**）、`market_regime:null`、`watchlist:[]`、**`degraded:true`** + `notes`。連 cache 都沒 → 仍 200，欄位 `null` |
-| `GET /api/stocks/:code`、`GET /api/watchlist`、`POST /api/backtest`、`POST /api/backtest/grid`、`POST /api/agents/decide` | **明確 503** `ENGINE_UNAVAILABLE`（不假裝成功、不吐殘缺數字） |
+| `GET /api/stocks/:code`、`GET /api/stocks/:code/{ohlcv,book,intraday}`、`GET /api/watchlist`、`POST /api/backtest`、`POST /api/backtest/grid`、`POST /api/agents/decide` | **明確 503** `ENGINE_UNAVAILABLE`（不假裝成功、不吐殘缺數字） |
 
 degraded dashboard 範例（engine down + 有 cache）：
 ```json
@@ -185,6 +202,9 @@ cd "C:\CC AI Agent"; node server.cjs    # http://localhost:3000
 curl http://localhost:3000/api/health
 curl http://localhost:3000/api/dashboard
 curl http://localhost:3000/api/stocks/2330
+curl "http://localhost:3000/api/stocks/2330/ohlcv?start=2026-06-06&end=2026-06-13"
+curl http://localhost:3000/api/stocks/2330/book          # 即時五檔（TWSE MIS 預設）
+curl "http://localhost:3000/api/stocks/2330/intraday?timeframe=5"  # 需 FUGLE_API_KEY
 curl http://localhost:3000/api/reports/list
 curl -X POST http://localhost:3000/api/backtest -H "Content-Type: application/json" -d '{"codes":["2330"],"start":"2026-03-01","end":"2026-06-12"}'
 ```
