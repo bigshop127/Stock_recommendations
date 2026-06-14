@@ -28,7 +28,7 @@ core_swing = 0.40·F_technical + 0.40·F_chips + 0.20·F_sentiment      # 各因
 |---|---|---|---|---|
 | `technical` | 技術面 | FinMind 日 OHLCV | 0.40 | 否 |
 | `chips` | 籌碼面 | FinMind 三大法人 / 融資融券 | 0.40 | 否 |
-| `sentiment` | 消息情緒面 | 新聞情緒 + 老王 `strategy_insights`/`mentioned_stocks` | 0.20 | 否 |
+| `sentiment` | 消息情緒面 | 新聞情緒 + **老王報告解析**（`engine/app/puhui` 讀 `reports/**/*.md`，階段4） | 0.20 | 否 |
 
 #### F_technical（子訊號 → 0~100）
 | 子訊號 | 計算 | 數據 |
@@ -50,9 +50,12 @@ core_swing = 0.40·F_technical + 0.40·F_chips + 0.20·F_sentiment      # 各因
 #### F_sentiment（子訊號 → 0~100）
 | 子訊號 | 計算 | 數據 |
 |---|---|---|
-| 新聞情緒 | 個股新聞情緒分數 −1..+1 → 映射 0~100 | 階段2 已接 `/data/news`（鉅亨/Google）；階段3 做輕量關鍵字/詞典極性，情緒模型/語料庫階段4 |
-| 老王訊號 | `mentioned_stocks[].signal`（買/續抱/觀察/賣）映射分數 | `data/puhui_analysis/*.json` |
-| 老王 insights | `strategy_insights` 中與該股相關的多空語意 | 同上 |
+| 新聞情緒 | 個股新聞情緒分數 −1..+1 → 映射 0~100 | 階段2 已接 `/data/news`（鉅亨/Google）；階段3 做輕量關鍵字/詞典極性 |
+| 老王訊號 | 報告個股 emoji 色碼（**🔴看多/🟢看空，語意與股市相反**）＋操作建議關鍵詞 → `signal/score` | **階段4：`engine/app/puhui` 解析 `reports/**/*.md`**（見 `blend-rules.md`） |
+
+> ⚠️ **修正**：舊版這裡寫的老王來源 `data/puhui_analysis/*.json` **從未存在**。
+> 階段4 改由確定性解析器（`app.puhui.repo.get_stock_score`）供應 `puhui` 子訊號；
+> 當日未提及/報告過舊（超 fallback 視窗）→ 子訊號退出加權、對 news 重正規化、降信心。**仍 live_only、不進回測。**
 
 ### 1.2 大盤環境閘門（regime gate）
 
@@ -148,5 +151,5 @@ watchlist 自動帶入老王 `mentioned_stocks`（+ 引擎自選），對每檔�
 - [x] 各子訊號 → 0~100 正規化：**階段3 定案＝滾動分位數（rolling percentile, 252日）為主**＋結構/布林用門檻映射；皆 causal 無未來函數。
 - [x] regime gate 連續 vs 分段：**階段3 定案＝非對稱分段線性**（score<0 斜率0.5 重罰→0.5~1.0；score≥0 斜率0.1 緩獎→1.0~1.1）。
 - [x] 權重：**階段3 網格回填 v1**（回測 tech0.6/chips0.4、entry70/exit40；live 三因子 0.48/0.32/0.20），存 `engine/app/factors/config.py`。單期可能過擬合，待多期驗證。
-- [~] 新聞情緒：階段3 做**輕量關鍵字詞典極性**（只進 live `/signal`、不進回測）；**情緒模型/語料庫＋老王深度融合留階段 4**（老王分析 JSON 現 repo 未存在）。
+- [x] 新聞情緒：階段3 輕量關鍵字詞典極性（只進 live、不進回測）；**老王融合階段4 完成**＝確定性解析 `reports/**/*.md`（非舊提的 JSON，該檔從未存在），見 `blend-rules.md`。情緒模型/語料庫深化仍可留後。
 - [~] 當沖進出規則：階段3 出 `daytrade_prob`（sigmoid）＋**流動性籌碼過濾 gate**；**處置股/券源過濾門檻待補**（另需來源）。

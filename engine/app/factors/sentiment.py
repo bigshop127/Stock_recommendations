@@ -2,34 +2,27 @@
 
 子訊號：
 - 新聞極性（次）：對 service.get_news 標題/摘要做輕量中文關鍵字詞典極性 −1..+1 → 0~100。
-- 老王訊號（主，可選）：data/puhui_analysis/*.json 的 mentioned_stocks[].signal / strategy_insights。
-  **本 repo 目前無此檔（階段4 才深度整合）** → 缺檔時該子訊號退出加權、重正規化、降信心、note 標註。
+- 老王訊號（主，可選）：**階段4 改由 `app.puhui.repo` 供應**——確定性解析 `reports/**/*.md`
+  得到的個股 0~100 分（emoji 色碼語意相反、操作建議關鍵詞映射，見 puhui/mapping.py）。
+  **舊版讀 `data/puhui_analysis/*.json` 的路徑已廢**（該檔從未存在、且 gitignored）。
+  老王當日未提及 / 報告過舊（超 fallback 視窗）→ 該子訊號退出加權、重正規化、降信心、note 標註。
 
 重要分流：新聞/老王皆**無乾淨歷史語料** → `live_only=True`、**不進回測**（回測由 swing 引擎排除 sentiment、
-對 technical/chips 重正規化）。情緒完整模型/語料庫留階段 4。
+對 technical/chips 重正規化）。
 """
 from __future__ import annotations
-
-import json
-from pathlib import Path
 
 import pandas as pd
 
 from app.factors.base import FactorSeries
 from app.factors.config import FactorConfig
+from app.puhui import repo as puhui_repo
 
 # 輕量中文財經極性詞典（階段3 暫用；階段4 換語料庫/模型）
 _POS = ["利多", "看好", "看多", "成長", "突破", "創高", "創新高", "大漲", "強勢", "買超",
         "樂觀", "上修", "調升", "受惠", "訂單", "暢旺", "旺季", "漲停", "噴出", "轉強", "回升", "獲利"]
 _NEG = ["利空", "看壞", "看空", "衰退", "跌破", "重挫", "大跌", "弱勢", "賣超", "悲觀",
         "下修", "調降", "虧損", "示警", "跌停", "違約", "賣壓", "疑慮", "踩雷", "轉弱", "下滑", "停損"]
-
-# 老王 signal → 分數
-_PUHUI_MAP = {"買": 90.0, "買進": 90.0, "加碼": 88.0, "續抱": 75.0, "持有": 70.0,
-              "觀察": 50.0, "中立": 50.0, "減碼": 30.0, "賣": 20.0, "賣出": 20.0, "出場": 20.0}
-
-# 老王分析檔目錄（可被設定覆寫；目前 repo 多半不存在 → 觸發降級）
-PUHUI_DIR = Path(__file__).resolve().parents[3] / "data" / "puhui_analysis"
 
 
 def _news_polarity(items: list[dict]) -> tuple[float | None, int]:
@@ -51,35 +44,26 @@ def _news_polarity(items: list[dict]) -> tuple[float | None, int]:
     return sum(scores) / len(scores), used
 
 
-def _read_puhui_signal(code: str, puhui_dir: Path | None = None) -> float | None:
-    """從老王分析 JSON 找該股最新 signal → 分數；缺檔/查無回 None（觸發降級）。"""
-    d = puhui_dir or PUHUI_DIR
-    if not d.exists():
+def _read_puhui_signal(code: str, as_of: str, cfg: FactorConfig) -> float | None:
+    """老王個股分數（0~100）— 階段4 由 puhui repo（reports/*.md 解析）供應。
+
+    含缺日 fallback（沿用最近前一篇 ≤fallback_max_days）；當日未提及 / 太舊 → None（觸發降級）。
+    """
+    try:
+        return puhui_repo.get_stock_score(code, as_of, cfg=cfg)
+    except Exception:
         return None
-    files = sorted(d.glob("*.json"))
-    for f in reversed(files):           # 由新到舊找最近一筆提及
-        try:
-            data = json.loads(f.read_text(encoding="utf-8"))
-        except Exception:
-            continue
-        for ms in data.get("mentioned_stocks", []):
-            if str(ms.get("code")) == str(code):
-                sig = str(ms.get("signal", "")).strip()
-                for k, v in _PUHUI_MAP.items():
-                    if k in sig:
-                        return v
-    return None
 
 
 def compute_sentiment(as_of: str, code: str, news_items: list[dict],
-                      cfg: FactorConfig, puhui_dir: Path | None = None) -> FactorSeries:
+                      cfg: FactorConfig) -> FactorSeries:
     """單日情緒快照（live_only）。回 FactorSeries（單列 index=as_of）。"""
     name = "消息情緒面"
     idx = pd.Index([as_of], name="date")
     w = cfg.sentiment_sub
 
     news_score, news_n = _news_polarity(news_items)
-    puhui_score = _read_puhui_signal(code, puhui_dir)
+    puhui_score = _read_puhui_signal(code, as_of, cfg)
 
     parts, weights, notes = {}, {}, []
     if news_score is not None:
@@ -91,7 +75,7 @@ def compute_sentiment(as_of: str, code: str, news_items: list[dict],
         parts["puhui"], weights["puhui"] = puhui_score, w.puhui
         notes.append("老王訊號")
     else:
-        notes.append("老王資料缺（階段4整合）→ 退出重正規化")
+        notes.append("老王當日未提及/報告過舊 → 退出重正規化")
 
     wsum = sum(weights.values())
     if wsum == 0:

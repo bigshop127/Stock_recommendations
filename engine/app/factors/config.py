@@ -80,6 +80,32 @@ class DaytradeWeights:
     market_today: float = 0.20
 
 
+# ── 老王整合（階段4，使用者 2026-06-14 定案；見 docs/blend-rules.md）────────────
+@dataclass(frozen=True)
+class PuhuiConfig:
+    # 缺當日報告：沿用最近前一篇（決策5）。calendar 天數 ≈ 5 交易日。
+    fallback_max_days: int = 7
+    stale_conf_factor: float = 0.85    # 沿用舊報告 → 信心 ×
+    legacy_conf_factor: float = 0.5    # 舊版單表格模板 → 信心 ×（含佔位假資料）
+    # 融合（決策3）：同向加成 / 背離降信心（不蓋掉量化分）
+    agree_conf_boost: float = 0.08
+    conflict_conf_penalty: float = 0.18
+    conf_floor: float = 0.1
+    # 量化方向判定門檻（swing_score）
+    quant_bull_th: float = 55.0
+    quant_bear_th: float = 45.0
+    # 老王方向判定門檻（puhui score 0~100）
+    puhui_bull_th: float = 60.0
+    puhui_bear_th: float = 40.0
+    # water_level（持股水位 0~1）→ 大盤過濾乘數，與 regime gate「取較嚴 min」（決策3）
+    water_gate_slope: float = 0.70     # gate = clamp(intercept + slope·water, floor, cap)
+    water_gate_intercept: float = 0.50
+    water_gate_floor: float = 0.6
+    water_gate_cap: float = 1.05
+    # 觀察清單：當沖候選最低流動性（近20日均量，張）
+    watchlist_min_lots: int = 1000
+
+
 # ── action 門檻（scoring-model §1.3，回測可調）────────────────────────────────
 @dataclass(frozen=True)
 class ActionThresholds:
@@ -128,6 +154,7 @@ class FactorConfig:
     sentiment_sub: SentimentSubWeights = field(default_factory=SentimentSubWeights)
     regime: RegimeConfig = field(default_factory=RegimeConfig)
     daytrade: DaytradeWeights = field(default_factory=DaytradeWeights)
+    puhui: PuhuiConfig = field(default_factory=PuhuiConfig)
     thresholds: ActionThresholds = field(default_factory=ActionThresholds)
     cost: CostConfig = field(default_factory=CostConfig)
     normalize: NormalizeConfig = field(default_factory=NormalizeConfig)

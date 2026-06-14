@@ -128,3 +128,35 @@ def get_stock_name(code: str) -> str | None:
         name = str(raw.iloc[-1]["stock_name"])
         _name_cache[code] = name
     return name
+
+
+# ── 股名 → 代號 反查（階段4 老王次要個股常只有股名）───────────────────────────
+# phase4：用「同一份 TaiwanStockInfo」建 name→code 映射（記憶體快取）；
+# 查不到（例：美股 美光/英特爾）→ None，由上層降級標 code=null、不硬猜。
+_name_code_map: dict[str, str] | None = None
+
+
+def _load_name_code_map() -> dict[str, str]:
+    global _name_code_map
+    if _name_code_map is not None:
+        return _name_code_map
+    try:
+        raw = _finmind_get("TaiwanStockInfo", "", "2000-01-01", "2100-01-01")
+    except DataSourceError:
+        return {}
+    m: dict[str, str] = {}
+    if not raw.empty and {"stock_id", "stock_name"} <= set(raw.columns):
+        for sid, nm in zip(raw["stock_id"].astype(str), raw["stock_name"].astype(str)):
+            nm, sid = nm.strip(), sid.strip()
+            # 只收一般上市櫃股票代號（4~6 碼，可帶尾字母），首見為準
+            if nm and sid and nm not in m and 4 <= len(sid.rstrip("ABCDEFGHIJKLMNOPQRSTUVWXYZ")) <= 6:
+                m[nm] = sid
+    _name_code_map = m
+    return m
+
+
+def get_code_by_name(name: str) -> str | None:
+    """股名 → 台股代號；查不到回 None。結果記憶體快取（建一次全表）。"""
+    if not name:
+        return None
+    return _load_name_code_map().get(name.strip())
