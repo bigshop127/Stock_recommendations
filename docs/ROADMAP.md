@@ -60,7 +60,7 @@
 | 5 | 多 agent LLM 決策層 | 分析師→多空辯論→交易員→風控 | 3,4 | ✅ 完成 2026-06-14 |
 | 6 | 統一 API 層 | Node gateway，吐 報告/訊號/水位/回測/agent決策 | 3,4,5 | ✅ 完成 2026-06-14 |
 | 7 | APP 前端 + 端到端整合 | Vite+React 儀表板 + 當沖候選 | 6 | ✅ 完成 2026-06-14 |
-| 8 | 雲端部署 + 每日排程 | Oracle VM（主）+ GitHub Actions；runbook | 7 | 🟡 Track1✅本機驗收 2026-06-15／**Track2＝新堆疊部署到既有 VM `140.238.48.197`**（🚨 VM 早已上線在跑老王、非搶機，見 `phase9`） |
+| 8 | 雲端部署 + 每日排程 | Oracle VM（主）+ GitHub Actions；runbook | 7 | ✅ **完成 2026-06-15（实机落地）**：engine/gateway/前端/盤後刷新/健康檢查已部署到既有 VM `140.238.48.197` 並無人值守驗收（重開機自起）；老王 cron 切 `RUN_TARGET=vm`；`/agents/decide` VM 實測。見 §14 |
 
 執行節奏：第 1 定契約最關鍵；第 3 完成＝有可回測策略硬核；第 5 才上 LLM；第 7 接前端；第 8 上雲。
 
@@ -90,7 +90,7 @@
 - [ ] 各子訊號 → 0~100 的正規化細節、regime gate 連續/分段（第 3 階段回測決定）
 - [~] 新聞情緒數據來源 → 階段2 已預接免費源（鉅亨 Anue JSON + Google News RSS，`/data/news`）；情緒模型/語料庫留階段4
 - [ ] 當沖訊號的具體進出規則與風控（第 3 階段）
-- [x] Oracle VM vs GitHub Actions 各跑哪一段 → **階段8定案**：VM 跑 engine/gateway/前端/盤後刷新/健康檢查（無 LLM 第一層）；GitHub Actions 跑無 LLM 回歸+數據 smoke 備援；老王摘要＝本機 Task Scheduler（B2，預設）、VM cron（B1，加值）。見 `docs/runbook.md`。
+- [x] Oracle VM vs GitHub Actions 各跑哪一段 → **階段8定案 ＋ 階段9实机修正（2026-06-15）**：VM 跑 engine/gateway/前端/盤後刷新/健康檢查（無 LLM 第一層，**已部署常駐、重開機自起**）；GitHub Actions 跑無 LLM 回歸+數據 smoke 備援；**老王摘要＝VM cron B1（`RUN_TARGET=vm`，已生產運作 ~18 天 + 2026-06-15 实机驗收，不寫 Obsidian、不雙跑）**，本機 Task Scheduler B2 退為離線備援。見 `docs/runbook.md`。
 
 ---
 
@@ -306,3 +306,45 @@ gemini 額度用盡→切 claude（注入假 runner）、兩者皆失敗降級�
 **本機驗收（2026-06-15）**：§A 回歸 15 passed；engine offline pytest **57 passed**；`smoke_data.py` live `/health`+`/data/book`(MIS)+`/data/market`(yfinance) 全 200；deploy `.sh` `bash -n` 全過；根 `.env` `git check-ignore` 通過；`npm install dotenv` 零 repo 足跡。
 
 **未盡（Track 2／phase9，需使用者+VM；VM 已在、非搶機）**：VM＝`140.238.48.197`、repo `/home/ubuntu/Stock_recommendations`、git push deploy key 已備。工作＝`bootstrap.sh APP_DIR=/home/ubuntu/Stock_recommendations RUN_USER=ubuntu` → scp `engine/.env`（FINMIND/FUGLE/FRED，VM 上不存在）→ 驗收第一層常駐（重開機自起/盤後刷新/健康檢查）→ 把既有 13:00 老王 wrapper 改 `RUN_TARGET=vm`（不寫 Obsidian、不雙跑、不弄壞手機在 pull 的 reports/）。🚨 **bootstrap 裝 cron 別清掉既有 `0 13 * * 1-5 puhui_daily_cron.sh`**。B1 token 續命已被生產實測（老王早就在 VM 跑 Claude CLI）。ARM pandas/pyarrow wheel 仍需 VM 實裝確認。**完整續作提示詞＝`docs/prompts/phase9.md`**（已重寫成部署到既有 VM 版）。
+
+---
+
+## 14. 階段 8/9 實機落地完成紀錄（2026-06-15）＝ 🎉 全案完成
+
+詳見 `docs/runbook.md`（已補實機發現）、`docs/prompts/phase9.md`、`deploy/`。階段 8 的部署資產（phase8 Track1 本機就緒）於本日**真正落到既有 Oracle VM 上跑起來並無人值守驗收**，全 8 階段藍圖至此收尾。
+
+**部署環境（实机）**：Oracle `VM.Standard.A1.Flex` 2 OCPU/12GB、Ubuntu 22.04.5 **aarch64**、`140.238.48.197`、repo `/home/ubuntu/Stock_recommendations`、TZ Asia/Taipei、node v20 / `/usr/bin/claude` 2.1.152 / python3.10。**生產機**（手機在 pull `reports/`），全程先 SSH 唯讀確認再單步驗收。
+
+**第一層（無 LLM 常駐，必達 ✅ 全數實測通過）**：
+- `sudo APP_DIR=/home/ubuntu/Stock_recommendations RUN_USER=ubuntu INSTALL_PLAYWRIGHT=0 ./bootstrap.sh`：ARM 上 pandas 2.3.3 / pyarrow 24 / numpy 2.2（**全走 aarch64 wheel，零編譯**）；npm ci + vite build 出 `web/dist`；systemd `puhui-engine`(127.0.0.1:8000) + `puhui-gateway`(:3000) **active + enabled**。
+- scp `engine/.env`（FINMIND/FUGLE/FRED）上 VM → `/api/health` 回 `engine:up`。
+- **重開機自起**：`sudo reboot` → 兩服務自動 active、`engine:up`、**無需手動介入**。
+- **盤後刷新**：`refresh.sh` → `reports/signals/2026-06-15.json`（1802B）push 成功（`a483c7b`）。
+- **健康檢查失效切換**：停 engine → `healthcheck.sh` 偵測 → 自動 restart（~1s 回復）→ Telegram 失敗+恢復告警（去抖動）實測通過。
+- **前端**：SPA（「老王投資儀表板」）+ client-route fallback + `/api/{health,dashboard,watchlist,reports/list}` 全 200。安全＝只開 SSH，前端走 `ssh -L 3000:localhost:3000` tunnel。
+- **共存鐵則達成**：bootstrap 只動 `# >>> puhui phase8 >>>` 區塊，既有 `0 13 * * 1-5 puhui_daily_cron.sh` 老王行 bootstrap 後＋reboot 後皆**原樣保留**；refresh 14:00 / healthcheck */15 與老王 13:00 錯開。
+
+**第二層（LLM，✅）**：
+- **老王 B1 早已是生產事實**：VM 自 05-28 起每工作日用 `/usr/bin/claude` 無頭跑老王，cron log 證實 2026-06-15 13:05 由 **VM 自身**產報告（OAuth 過期→Playwright fallback→Claude 摘要 5856 字→push）。phase9 只把 VM-local wrapper `~/puhui_daily_cron.sh` 加 `export RUN_TARGET=vm`＋`CLAUDE_BIN=/usr/bin/claude`：`--force` 实测確認 Claude 摘要→寫 `reports/`→push、**不寫 Obsidian**（obsidian-copy mtime 不變為證）、**不雙跑**（單一 cron 行、已產出即 skip）。回歸 `test_puhui_run_target.cjs` 15 passed。
+- **`/agents/decide` VM 实测**：前端路徑 `POST /api/agents/decide {codes:[2330]}` → 202s、7 次 LLM **全由 claude 接手**（gemini 未裝→fallback 觸發、符合設計）、決策 2330 HOLD@0.65 → 確認 VM Claude CLI 登入態端到端可用。
+
+**实机發現（已補進 runbook）**：
+- VM 根 `.env` 早含 `CLAUDE_BIN=/usr/bin/claude`、`OBSIDIAN_DIR=/home/ubuntu/obsidian_reports`、`PLAYWRIGHT_CHROMIUM_PATH` → 解釋為何 local 模式也能在 Linux 正常跑。
+- **VM 的 Google OAuth refresh token 已過期/撤銷**（`invalid_grant`）→ Gmail 路徑失效、自動走 Playwright fallback（報告不受影響、會 Telegram 預警）；要修需重跑 `oauth_reauth`。
+- `gemini` CLI 未裝在 VM → agents 一律 claude（成本/穩定皆可接受）。
+- deploy `*.sh` 在 repo 補上可執行位（`git update-index --chmod=+x`），避免 VM 上 chmod 後工作樹變髒。
+
+**終局架構（誰跑在哪）**：
+```
+手機 ──git pull──> GitHub repo <──push── Oracle VM（24h 常駐，生產機）
+                      reports/**            ├─ systemd puhui-engine   (FastAPI 127.0.0.1:8000；多因子/回測/agents，無對外)
+                      reports/signals/      ├─ systemd puhui-gateway  (Node :3000；/api/* + 同源 web/dist 前端)
+瀏覽器 ─ssh -L 3000─> gateway              ├─ cron 13:00  老王 B1     (RUN_TARGET=vm：抓文→Claude CLI 摘要→reports/→push)
+                                           ├─ cron 14:00  refresh.sh  (暖快取→reports/signals/<date>.json→push，無 LLM)
+                                           └─ cron */15   healthcheck (/api/health 失敗→restart+Telegram 去抖動)
+GitHub Actions data_refresh.yml ── 無 LLM 數據/回歸 smoke 備援（VM 掛掉的 backstop）
+```
+
+**全 8 階段回顧**：(1) FastAPI 地基+資料契約+多因子方案C定案 → (2) 台股數據層（FinMind/TWSE MIS/TAIFEX/News/FRED/yfinance+富果）→ (3) 確定性多因子引擎+向量化回測 → (4) 老王報告解析+融合+觀察清單 → (5) 多 agent LLM 決策層（分析師→辯論→交易員→風控）→ (6) Node 統一 API gateway → (7) Vite+React 手機前端 → (8/9) Oracle VM 雲端部署+無人值守排程。**內容線鐵則（不改壞 `puhui_daily.cjs` 既有產出與 `reports/` push）全程守住。**
+
+**維運入口**：`docs/runbook.md`（部署/救援/重授權/cron/Telegram 告警/指令速查）。**未盡/後續**（非阻塞，視需要）：GitHub repo secrets 設好後 `data_refresh.yml` 跑綠燈（使用者操作）；VM Google OAuth 重授權；對外公開前端需鎖來源 IP；agent 持倉層/多輪辯論/長期記憶為未來增強。

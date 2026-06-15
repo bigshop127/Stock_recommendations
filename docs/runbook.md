@@ -1,8 +1,31 @@
-# Runbook — 雲端部署與每日排程（階段8）
+# Runbook — 雲端部署與每日排程（階段8／9 实机落地）
 
 > 目標：使用者不開電腦也能每天自動產訊號/報告。本檔是維運手冊：怎麼部署、怎麼救、怎麼重授權。
-> 對齊現況：階段1-7 已完成、可端到端跑；**VM 目前尚未搶到（東京免費 A1 缺貨）**，故下分兩部分：
-> 「不需 VM 的本機作業」與「搶到 VM 後的部署」。
+> **現況（2026-06-15 实机落地）：全 8 階段完成。VM 已上線並部署完整堆疊、無人值守驗收通過。**
+> ⚠️ 本檔保留「搶機（§2）」「初次部署（§3）」段落作**歷史/重建參考**——VM 早於 2026-05-28 上線，**不需再搶機**。
+
+---
+
+## 实机現況速覽（2026-06-15，⭐先讀這段）
+
+| 項目 | 值 |
+|---|---|
+| VM | Oracle `VM.Standard.A1.Flex` 2 OCPU/12GB、Ubuntu 22.04.5 **aarch64**、TZ Asia/Taipei |
+| 連線 | `ssh -i C:\Users\bigsh\.ssh\oracle_puhui.key ubuntu@140.238.48.197` |
+| repo 路徑 | `/home/ubuntu/Stock_recommendations`（**非 "CC AI Agent"**；bootstrap 要帶 `APP_DIR`） |
+| 常駐服務 | systemd `puhui-engine`(127.0.0.1:8000) + `puhui-gateway`(:3000)，**enabled 重開機自起** |
+| cron | `0 13` 老王 B1（`RUN_TARGET=vm`）／`0 14` `refresh.sh`／`*/15` `healthcheck.sh`（皆週一~五，台北時間） |
+| 老王 wrapper | `/home/ubuntu/puhui_daily_cron.sh`（**VM-local 非 repo 檔**，已加 `export RUN_TARGET=vm` + `CLAUDE_BIN=/usr/bin/claude`；舊版備份 `.bak.pre-phase9-*`） |
+| LLM | 老王＝VM `/usr/bin/claude` 無頭（**B1 已生產運作 ~18 天**）；`/agents/decide`＝前端按鈕，VM 上 gemini 未裝→一律 claude fallback |
+| 前端 | 走 `ssh -L 3000:localhost:3000` tunnel 看；只開 SSH(22) 對外 |
+| 帳單 | PAYG 但用量在 Always-Free 內、月費 $0；**勿多開 instance/LB/volume** |
+
+**实机踩到 / 要知道的事：**
+- ARM(aarch64)：pandas/pyarrow/numpy 全有 aarch64 wheel，bootstrap 零編譯即裝好。`INSTALL_PLAYWRIGHT=0` 即可（老王沿用既有 `~/.cache/ms-playwright` chromium，`npm ci` 不會清掉）。
+- VM 根 `.env` 早含 `CLAUDE_BIN=/usr/bin/claude`、`OBSIDIAN_DIR=/home/ubuntu/obsidian_reports`、`PLAYWRIGHT_CHROMIUM_PATH`（這就是 local 模式也能在 Linux 跑的原因）。`engine/.env` 在 VM **不存在**、需 scp。
+- **VM Google OAuth refresh token 已過期/撤銷（`invalid_grant`）** → Gmail 路徑失效、自動走 Playwright fallback 抓文（報告不受影響，每次會 Telegram 預警）。要修：本機重跑 `node scripts/oauth_reauth.cjs` 後把新 token scp 上 VM。
+- **與既有 13:00 老王 cron 共存**：`bootstrap.sh` 只增刪 `# >>> puhui phase8 >>>` 標記區塊（refresh+healthcheck），**不碰** `0 13` 老王行；動前已備份 `~/crontab.backup.pre-phase9-*`。三方（老王/refresh/本機）寫同 repo 都 `git pull --rebase`、排程時間錯開。
+- 老王 B1 遷移：只改 VM-local wrapper 加 `RUN_TARGET=vm`（不寫 Obsidian、以 repo `reports/` 判斷已產出、不雙跑）。**勿啟用 `crontab.example` 裡 18:30 的 B1 行**（會與 13:00 雙跑）。
 
 ---
 
@@ -14,12 +37,12 @@
 | gateway + 前端（Node :3000，serve `web/dist`） | Oracle VM | 否 | systemd `puhui-gateway` |
 | 盤後數據/訊號刷新 + push `reports/signals/` | Oracle VM | 否 | cron `refresh.sh`（14:00 週一~五） |
 | 健康檢查 + 自動 restart + 告警 | Oracle VM | 否 | cron `healthcheck.sh`（每 15 分） |
-| 老王每日摘要（`puhui_daily.cjs`） | **本機（B2，預設）** 或 VM cron（B1，選用） | 是 | 本機 Task Scheduler / VM cron |
+| 老王每日摘要（`puhui_daily.cjs`） | **Oracle VM cron（B1，預設，已生產運作）**；本機（B2）為離線備援 | 是 | VM cron 13:00（`RUN_TARGET=vm`）／本機 Task Scheduler 備援 |
 | `/agents/decide` 多 agent | 前端按鈕觸發（打 VM gateway） | 是 | 手動（很貴） |
 | 數據層回歸/健康備援 | GitHub Actions `data_refresh.yml` | 否 | 排程（VM 掛掉的 backstop） |
 | LLM 版老王 `puhui_daily.yml` | **停用** | 是 | Gemini free key quota=0 |
 
-**LLM 決策點（已定案 2026-06-15）**：預設 **B2**（老王留本機，Claude 訂閱最穩）；同步完成 §A 解耦讓 VM **具備**跑老王的能力（`RUN_TARGET=vm`），B1 等 VM 到手後再實測 CLI 登入態續命。**A 必達、B 加值**。
+**LLM 決策點（階段9 实机修正 2026-06-15）**：老王摘要＝**B1（VM cron `RUN_TARGET=vm`）為預設且已生產運作**——SSH 盤點+cron log 證實 VM 自 2026-05-28 起每工作日用 `/usr/bin/claude` 無頭跑老王、至今成功，「headless CLI token 續命」已被 ~18 天生產實測證實（不再是未知風險）。本機 B2 退為離線備援。`/agents/decide` 維持前端按鈕觸發（VM 上 gemini 未裝→claude fallback）。
 
 ---
 
@@ -104,9 +127,13 @@ ssh -L 3000:localhost:3000 <user>@<VM_IP>
 
 ---
 
-## 6. LLM 在雲端（B1，選用——VM 到手後再做）
+## 6. LLM 在雲端（B1，**已生產運作**；下列為重新登入/排錯用）
 
-未驗證假設：headless Linux 上 `claude`/`gemini` CLI 的**登入態能否長期續命**。先測再承諾。
+> 2026-06-15 实机確認：VM `/usr/bin/claude` 無頭登入態自 05-28 起每工作日跑老王成功，B1 已是既成事實。
+> 老王 wrapper `~/puhui_daily_cron.sh` 已設 `RUN_TARGET=vm` + `CLAUDE_BIN=/usr/bin/claude`。下列步驟供**登入態失效時重新授權**。
+> 注意：VM 上 **未裝 gemini**，`/agents/decide` 一律走 claude（fallback），無需 gemini 登入。
+
+當 CLI 登入態失效（claude 報未授權）時：
 1. SSH 進 VM，登入 CLI（可能需瀏覽器 OAuth；claude 吃 Pro/Max 訂閱、gemini 吃 Google 登入）：
    ```bash
    claude            # 依指示完成登入；登入態存 ~/.claude
