@@ -1,0 +1,13 @@
+# 浦惠 VM cron 範本（階段8）。時間＝台北時間（bootstrap 已設 VM TZ=Asia/Taipei）。
+# bootstrap.sh 會把 @APP_DIR@ 換成實值、並只安裝「未註解」的行（老王 B1 預設停用）。
+# 手動安裝：crontab -e 後貼上（記得把 @APP_DIR@ 換成實際路徑）。
+
+# 盤後無 LLM 數據/訊號刷新 + push（收盤 13:30 後，14:00 週一~五）
+0 14 * * 1-5 @APP_DIR@/deploy/refresh.sh >> @APP_DIR@/data/cron_refresh.log 2>&1
+
+# 健康檢查（每 15 分鐘；連續失敗才 Telegram 告警 + 自動 restart）
+*/15 * * * * @APP_DIR@/deploy/healthcheck.sh >> @APP_DIR@/data/cron_health.log 2>&1
+
+# 老王每日摘要（B1＝在 VM 跑，需先 claude/gemini CLI 登入）。預設停用＝B2 留本機。
+# 啟用 B1：先確認 CLI 登入態，再取消下行註解（18:30 週一~五，對齊本機 setup_scheduler）。
+# 30 18 * * 1-5 cd @APP_DIR@ && RUN_TARGET=vm /usr/bin/node scripts/puhui_daily.cjs >> @APP_DIR@/data/cron_puhui.log 2>&1

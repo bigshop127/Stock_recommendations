@@ -1,0 +1,6 @@
+# 階段8：在 Linux VM 上由 bash 執行、被 systemd/cron 讀取的檔案強制 LF 行尾。
+# Windows autocrlf=true 會塞 CRLF → 害 bash「bad interpreter: /usr/bin/env bash^M」、
+# systemd/cron 解析失敗。這些檔一律 LF，不論誰在哪個平台 clone。
+*.sh            text eol=lf
+*.service       text eol=lf
+crontab.example text eol=lf

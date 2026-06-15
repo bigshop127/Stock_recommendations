@@ -1,0 +1,23 @@
+# systemd unit 範本（階段8）— Node gateway + 同源前端（web/dist）。
+# bootstrap.sh 會把 @佔位@ 換成實值後安裝到 /etc/systemd/system/puhui-gateway.service。
+# 日誌：journalctl -u puhui-gateway -f
+[Unit]
+Description=Puhui finance API gateway + web frontend (Node/Express)
+After=network-online.target puhui-engine.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=@RUN_USER@
+WorkingDirectory=@APP_DIR@
+# server.cjs 自會用 lib/loadEnv 讀根 .env（不覆蓋已存在 env），故下列 Environment 優先生效：
+Environment=PORT=3000
+Environment=ENGINE_BASE_URL=http://127.0.0.1:8000
+ExecStart=@NODE_BIN@ @APP_DIR@/server.cjs
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

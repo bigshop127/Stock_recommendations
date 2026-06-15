@@ -60,7 +60,7 @@
 | 5 | 多 agent LLM 決策層 | 分析師→多空辯論→交易員→風控 | 3,4 | ✅ 完成 2026-06-14 |
 | 6 | 統一 API 層 | Node gateway，吐 報告/訊號/水位/回測/agent決策 | 3,4,5 | ✅ 完成 2026-06-14 |
 | 7 | APP 前端 + 端到端整合 | Vite+React 儀表板 + 當沖候選 | 6 | ✅ 完成 2026-06-14 |
-| 8 | 雲端部署 + 每日排程 | Oracle VM（主）+ GitHub Actions；runbook | 7 | ⬜ |
+| 8 | 雲端部署 + 每日排程 | Oracle VM（主）+ GitHub Actions；runbook | 7 | 🟡 雲端就緒 2026-06-15（Track1✅本機驗收／Track2 待搶 VM） |
 
 執行節奏：第 1 定契約最關鍵；第 3 完成＝有可回測策略硬核；第 5 才上 LLM；第 7 接前端；第 8 上雲。
 
@@ -90,7 +90,7 @@
 - [ ] 各子訊號 → 0~100 的正規化細節、regime gate 連續/分段（第 3 階段回測決定）
 - [~] 新聞情緒數據來源 → 階段2 已預接免費源（鉅亨 Anue JSON + Google News RSS，`/data/news`）；情緒模型/語料庫留階段4
 - [ ] 當沖訊號的具體進出規則與風控（第 3 階段）
-- [ ] Oracle VM vs GitHub Actions 各跑哪一段（第 8 階段細分）
+- [x] Oracle VM vs GitHub Actions 各跑哪一段 → **階段8定案**：VM 跑 engine/gateway/前端/盤後刷新/健康檢查（無 LLM 第一層）；GitHub Actions 跑無 LLM 回歸+數據 smoke 備援；老王摘要＝本機 Task Scheduler（B2，預設）、VM cron（B1，加值）。見 `docs/runbook.md`。
 
 ---
 
@@ -278,3 +278,31 @@ gemini 額度用盡→切 claude（注入假 runner）、兩者皆失敗降級�
 - **engine 關**：`/health`→engine:down、`/dashboard`→`degraded:true`、`/reports/list`→18 照常、`/stocks/2330` 與 `/ohlcv`→**503**。
 
 **限制/未盡（階段8）**：bundle 單檔 ~678KB（未 code-split，可後續 manualChunks）；`/api/health` 只開頁探一次（engine 中途復原不自動重探）；觀察清單手動增刪未做（需另建儲存層）；~~盤中分K 待富果金鑰~~（**2026-06-14 已接富果 key→盤中分K+五檔內外盤啟用**，修 host `api.fugle.com.tw`→`api.fugle.tw`）；雲端無頭部署（Oracle VM build+serve）＋每日排程＝階段8。
+
+---
+
+## 13. 階段 8 完成紀錄（雲端就緒，2026-06-15）
+
+詳見 `docs/runbook.md`、`deploy/README.md`。
+
+> **誠實狀態**：部署/排程**程式與資產 100% 就緒並本機驗收**，但 **VM 尚未實際部署**——唯一卡點＝Oracle 東京免費 A1 **`Out of host capacity`**（缺貨，非設定錯）。搶到 VM 後跑一支 `deploy/bootstrap.sh` 即上線。故狀態標「🟡 雲端就緒」而非「全案完成」。
+
+**決策點定案（使用者 2026-06-15）**：
+- **LLM 在雲端＝預設 B2、同步備好 B1**：老王摘要留**本機 Task Scheduler**（Claude 訂閱最穩）；§A 解耦讓 VM **具備**跑老王能力（`RUN_TARGET=vm`），B1（VM cron 實測 CLI 登入態續命）等 VM 到手後選擇性開啟。`/agents/decide` 維持前端按鈕觸發。**A 必達、B 加值**。
+- **立即範圍＝全部 Track 1（不需 VM、可本機驗收）＋重建根 `.env` 解鎖搶機**。
+
+**架構切分（誰跑在哪）**：
+- **VM 常駐（無 LLM，第一層必達）**：engine(127.0.0.1:8000, systemd) + gateway/前端(:3000, systemd, serve `web/dist`) + 盤後 `refresh.sh`(cron) + `healthcheck.sh`(cron)。
+- **LLM 層（第二層）**：老王摘要本機 B2（預設）／VM B1（選用）；`/agents/decide` 前端按鈕。
+- **GitHub Actions**：`data_refresh.yml` 無 LLM 回歸+數據 smoke 備援；`puhui_daily.yml` 維持停用（Gemini free key quota=0）。
+
+**交付物**：
+- **§A 解耦 `puhui_daily.cjs` 的 `IS_CI`**（上 VM 前提）：原本一個旗標綁四件事（用 Claude CLI／寫 Obsidian／git push／告警）→ 拆成 `RUN_TARGET=local|vm|ci` ＋衍生 `IS_CI`/`WRITE_OBSIDIAN`/`EXISTING_OUTPUT_PATH`。**相容性**：未設 `RUN_TARGET`→`CI=true`→ci、否則→local，**本機/CI 行為完全不變**。回歸測試 `scripts/test_puhui_run_target.cjs`：**15 passed**。
+- **`deploy/`**（冪等一鍵化）：`bootstrap.sh`（apt/dnf 偵測→Node20/Python venv/相依→build→systemd→cron→TZ）、`puhui-engine.service`/`puhui-gateway.service`、`refresh.sh`、`healthcheck.sh`、`crontab.example`、`README.md`。
+- **GitHub Actions 備援**：`.github/workflows/data_refresh.yml` + `engine/scripts/smoke_data.py`（免金鑰 live smoke）。
+- **`docs/runbook.md`**：架構/祕密配置/搶機(PAYG)/部署/SSH tunnel/日常 cron/B1 步驟/故障排除/Telegram 告警一覽/指令速查。
+- **重建 Windows 根 `.env`**（gitignored）：`OCI_*`(ORM log+`~/.oci`)＋`TELEGRAM_*`(舊專案)，解鎖 `oracle_capacity_grab.ps1`。
+
+**本機驗收（2026-06-15）**：§A 回歸 15 passed；engine offline pytest **57 passed**；`smoke_data.py` live `/health`+`/data/book`(MIS)+`/data/market`(yfinance) 全 200；deploy `.sh` `bash -n` 全過；根 `.env` `git check-ignore` 通過；`npm install dotenv` 零 repo 足跡。
+
+**未盡（Track 2，需使用者+VM）**：搶到 VM（升 PAYG 最有效）→ `bootstrap.sh` → scp 祕密 → git deploy key → B1 實測 CLI token 續命（不穩則誠實回退 B2）。ARM 套件（pandas/pyarrow wheel、playwright `--with-deps`）VM 上仍需實裝確認。

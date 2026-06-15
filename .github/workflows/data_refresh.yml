@@ -1,0 +1,53 @@
+# 數據層健康/回歸備援（無 LLM）— 階段8
+# 用途：Oracle VM 掛掉時的備援，確認「數據層 + 訊號核心」仍可運作（offline 回歸測試 + live 數據 smoke）。
+# 不產報告、不碰 LLM。LLM 版老王（puhui_daily.yml）維持停用（Gemini free key quota=0）。
+name: Data Layer Health (no-LLM backup)
+
+on:
+  schedule:
+    - cron: '30 6 * * 1-5'   # 06:30 UTC = 14:30 台北（盤後），週一~五
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  data-health:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+          cache-dependency-path: engine/requirements.txt
+
+      - name: Install engine deps
+        run: pip install -r engine/requirements.txt
+
+      - name: Offline tests (回歸 backstop — 失敗即告警)
+        working-directory: engine
+        run: python -m pytest -q
+
+      - name: Live data smoke (免金鑰公開源；best-effort 不擋 CI)
+        id: smoke
+        continue-on-error: true
+        working-directory: engine
+        env:
+          FINMIND_TOKEN: ${{ secrets.FINMIND_TOKEN }}
+          FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
+          FUGLE_API_KEY: ${{ secrets.FUGLE_API_KEY }}
+        run: python scripts/smoke_data.py
+
+      - name: Telegram on failure (回歸測試掛了才發)
+        if: failure()
+        env:
+          TG: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          CHAT: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          [ -z "$TG" ] && exit 0
+          curl -s -m 10 "https://api.telegram.org/bot$TG/sendMessage" \
+            --data-urlencode "chat_id=$CHAT" \
+            --data-urlencode "text=⚠️ GitHub Actions 數據層備援檢查失敗（run ${{ github.run_id }}）：engine 回歸測試未通過，請查 Actions log。" >/dev/null || true

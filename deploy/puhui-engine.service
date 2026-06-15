@@ -1,0 +1,20 @@
+# systemd unit 範本（階段8）— FastAPI 引擎。bootstrap.sh 會把 @佔位@ 換成實值後安裝到
+# /etc/systemd/system/puhui-engine.service。日誌：journalctl -u puhui-engine -f
+[Unit]
+Description=Puhui finance engine (FastAPI/uvicorn)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=@RUN_USER@
+WorkingDirectory=@APP_DIR@/engine
+# 綁 127.0.0.1：engine 不對外，只給同機 gateway 連（金鑰由 pydantic 讀 engine/.env，免 EnvironmentFile）
+ExecStart=@APP_DIR@/engine/.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

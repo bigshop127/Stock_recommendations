@@ -1,17 +1,23 @@
 /**
- * puhui_daily.js — 浦惠投顧每日摘要自動化
+ * puhui_daily.cjs — 浦惠投顧每日摘要自動化
  *
  * 流程：
- *   1. 檢查今日 Obsidian 筆記是否已存在 → 存在即退出
+ *   1. 檢查今日輸出（本機 Obsidian 筆記 / VM repo 報告）是否已存在 → 存在即退出
  *   2. 測試 Google OAuth 健康狀態 → 失敗則 Telegram 告警
  *   3. 搜尋 Gmail 取得今日每日摘要郵件
  *   4. 若無郵件 → 從通知信取 PressPlay URL → Playwright 無頭抓取
- *   5. 用 Gemini 摘要文章（3 key 輪換：flash → flash-lite）
- *   6. 格式化為 Obsidian Markdown
- *   7. 寫入 Obsidian
- *   8. Telegram 通知
+ *   5. AI 摘要：本機/VM = Claude CLI 主力 → Gemini fallback；雲端 CI = 只用 Gemini
+ *   6. 格式化為 Markdown
+ *   7. 寫入輸出：本機寫 Obsidian + repo reports/；VM/CI 只寫 repo reports/
+ *   8. git push reports/（本機 + VM；CI 由 workflow 另外 push）＋ Telegram 安全網告警
  *
- * 執行：node scripts/puhui_daily.js [YYYY-MM-DD]（無參數則用今天）
+ * 執行環境（RUN_TARGET，階段8 §A 解耦原本黏在 IS_CI 的多個面向）：
+ *   local（預設）= Claude CLI + 寫 Obsidian + git push + 告警   ← Windows 本機 Task Scheduler
+ *   vm           = Claude CLI + 不寫 Obsidian + git push + 告警  ← Oracle Linux VM cron（B1）
+ *   ci           = 只用 Gemini + 不寫 Obsidian + 不在腳本內 push ← GitHub Actions
+ *   相容性：未設 RUN_TARGET 時，CI=true→ci、否則→local，與舊行為完全一致。
+ *
+ * 執行：node scripts/puhui_daily.cjs [YYYY-MM-DD] [URL]（無參數則用今天）
  */
 
 require('dotenv').config({ path: require('path').join(__dirname, '..', '.env') });
@@ -27,7 +33,15 @@ const { execSync, spawnSync } = require('child_process');
 const TARGET_DATE = process.argv[2] || new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Taipei' }).format(new Date());
 const FORCE_REGENERATE = process.argv.includes('--force');
 const ARTICLE_URL_OVERRIDE = (process.argv[3] && !process.argv[3].startsWith('--')) ? process.argv[3] : null;
-const IS_CI = process.env.CI === 'true';
+
+// ── 執行環境解耦（階段8 §A）────────────────────────────────
+// 原本 IS_CI 一個旗標綁了四件事：用 Claude CLI / 寫 Obsidian / git push / 發告警。
+// Oracle VM 兩者都不符（要 Claude CLI＋push＋告警，但沒有 Obsidian），故拆成 RUN_TARGET。
+// 相容性：未設 RUN_TARGET → CI=true 視為 'ci'、否則 'local'，本機與 CI 行為完全不變。
+const RUN_TARGET = (process.env.RUN_TARGET || (process.env.CI === 'true' ? 'ci' : 'local')).toLowerCase();
+const IS_CI = RUN_TARGET === 'ci';             // 只用 Gemini、不寫 Obsidian、push 由 workflow 處理
+const WRITE_OBSIDIAN = RUN_TARGET === 'local'; // 只有本機寫 Obsidian vault（VM/CI 不寫）
+// 其餘沿用 !IS_CI 語意（local + vm）：用 Claude CLI 主力、會 git push、會發 Telegram 告警。
 const [Y, M, D] = TARGET_DATE.split('-');
 const DATE_DISPLAY = `${Y}/${M}/${D}`;
 
@@ -58,6 +72,11 @@ const WEEK_FOLDER = `W${weekOfMonth}`;
 const OBSIDIAN_DIR = process.env.OBSIDIAN_DIR || 'C:\\obsidian\\儲存庫\\浦惠投顧報告整理';
 const NOTE_DIR = path.join(OBSIDIAN_DIR, MONTH_FOLDER, WEEK_FOLDER);
 const NOTE_PATH = path.join(NOTE_DIR, `${TARGET_DATE}.md`);
+// repo reports/（手機透過 GitHub pull 讀取；本機 + VM + CI 都寫這裡）
+const REPORT_DIR = path.join(__dirname, '..', 'reports', MONTH_FOLDER, WEEK_FOLDER);
+const REPORT_PATH = path.join(REPORT_DIR, `${TARGET_DATE}.md`);
+// 「今天是否已產出」判斷：本機看 Obsidian 筆記、VM 看 repo 報告（CI 永不跳過）
+const EXISTING_OUTPUT_PATH = WRITE_OBSIDIAN ? NOTE_PATH : REPORT_PATH;
 const COOKIES_PATH = path.join(__dirname, '..', 'data', 'pressplay_cookies.json');
 const LOG_PATH = path.join(__dirname, '..', 'data', 'puhui_daily.log');
 const PUHUI_CACHE_PATH = path.join(__dirname, '..', 'data', 'puhui_cache.json');
@@ -940,9 +959,10 @@ async function main() {
     }
   } catch (_) {}
 
-  // 1. 檢查筆記是否已存在（CI 環境略過，--force 時強制重新生成）
-  if (!IS_CI && !FORCE_REGENERATE && fs.existsSync(NOTE_PATH)) {
-    log(`筆記已存在: ${NOTE_PATH} → 跳過`);
+  // 1. 檢查今日輸出是否已存在（CI 環境略過，--force 時強制重新生成）
+  //    本機看 Obsidian 筆記、VM 看 repo 報告（EXISTING_OUTPUT_PATH）
+  if (!IS_CI && !FORCE_REGENERATE && fs.existsSync(EXISTING_OUTPUT_PATH)) {
+    log(`輸出已存在: ${EXISTING_OUTPUT_PATH} → 跳過`);
     return;
   }
 
@@ -1070,9 +1090,9 @@ async function main() {
       log(`抓取結果: ${fetched.content.length} 字${isPaywall ? ' ⚠️ 疑似 paywall teaser' : ' ✅ 正常'}`);
 
       if (isPaywall) {
-        // 若已有完整筆記（長度 > 1000），保留現有筆記，不覆蓋
-        if (!IS_CI && fs.existsSync(NOTE_PATH)) {
-          const existingLen = fs.readFileSync(NOTE_PATH, 'utf-8').length;
+        // 若已有完整輸出（長度 > 1000），保留現有檔案，不覆蓋（本機看筆記、VM 看報告）
+        if (!IS_CI && fs.existsSync(EXISTING_OUTPUT_PATH)) {
+          const existingLen = fs.readFileSync(EXISTING_OUTPUT_PATH, 'utf-8').length;
           if (existingLen > 1000) {
             log(`paywall 偵測，現有筆記完整（${existingLen} 字） → 保留，略過覆蓋`);
             return;
@@ -1141,21 +1161,19 @@ async function main() {
   extractPuhuiCache(markdown);
 
   // 7. 寫入報告
-  if (!IS_CI) {
-    // 本機：寫入 Obsidian vault（PC 讀取）
+  if (WRITE_OBSIDIAN) {
+    // 本機：寫入 Obsidian vault（PC 讀取）；VM/CI 不寫（無 vault）
     fs.mkdirSync(NOTE_DIR, { recursive: true });
     fs.writeFileSync(NOTE_PATH, markdown, 'utf-8');
     log(`筆記寫入完成: ${NOTE_PATH} (${WEEK_FOLDER})`);
   }
 
-  // 本機 & CI：都寫入 repo reports/（手機透過 GitHub pull 讀取）
-  const REPORT_DIR = path.join(__dirname, '..', 'reports', MONTH_FOLDER, WEEK_FOLDER);
-  const REPORT_PATH = path.join(REPORT_DIR, `${TARGET_DATE}.md`);
+  // 本機 & VM & CI：都寫入 repo reports/（手機透過 GitHub pull 讀取；REPORT_DIR/PATH 已於頂部宣告）
   fs.mkdirSync(REPORT_DIR, { recursive: true });
   fs.writeFileSync(REPORT_PATH, markdown, 'utf-8');
   log(`報告寫入 repo: reports/${MONTH_FOLDER}/${WEEK_FOLDER}/${TARGET_DATE}.md`);
 
-  // 本機：自動 git push，讓手機可 pull 到最新報告
+  // 本機 & VM：自動 git push，讓手機可 pull 到最新報告（CI 由 workflow 的 commit/push step 處理）
   // push 被 reject (non-fast-forward) 時自動 pull --rebase 重試一次，避免 VM/本機雙寫分岔。
   if (!IS_CI) {
     const repoDir = path.join(__dirname, '..');
@@ -1186,8 +1204,14 @@ async function main() {
   log('===== puhui_daily 完成 =====');
 }
 
-main().catch(async e => {
-  log(`未捕捉錯誤: ${e.message}\n${e.stack}`);
-  await notify('puhui_daily 崩潰', `🚨 puhui_daily 崩潰\n\n${e.message}`);
-  process.exit(1);
-});
+// 直接執行才跑 main()；被 require（回歸測試讀 RUN_TARGET 等旗標）時不自動執行。
+if (require.main === module) {
+  main().catch(async e => {
+    log(`未捕捉錯誤: ${e.message}\n${e.stack}`);
+    await notify('puhui_daily 崩潰', `🚨 puhui_daily 崩潰\n\n${e.message}`);
+    process.exit(1);
+  });
+}
+
+// 供回歸測試讀取環境解耦旗標（不影響直接執行）
+module.exports = { RUN_TARGET, IS_CI, WRITE_OBSIDIAN, TARGET_DATE, NOTE_PATH, REPORT_PATH, EXISTING_OUTPUT_PATH };
