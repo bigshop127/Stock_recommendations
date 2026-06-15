@@ -60,7 +60,7 @@
 | 5 | 多 agent LLM 決策層 | 分析師→多空辯論→交易員→風控 | 3,4 | ✅ 完成 2026-06-14 |
 | 6 | 統一 API 層 | Node gateway，吐 報告/訊號/水位/回測/agent決策 | 3,4,5 | ✅ 完成 2026-06-14 |
 | 7 | APP 前端 + 端到端整合 | Vite+React 儀表板 + 當沖候選 | 6 | ✅ 完成 2026-06-14 |
-| 8 | 雲端部署 + 每日排程 | Oracle VM（主）+ GitHub Actions；runbook | 7 | 🟡 雲端就緒 2026-06-15（Track1✅本機驗收／Track2 待搶 VM＝`phase9`） |
+| 8 | 雲端部署 + 每日排程 | Oracle VM（主）+ GitHub Actions；runbook | 7 | 🟡 Track1✅本機驗收 2026-06-15／**Track2＝新堆疊部署到既有 VM `140.238.48.197`**（🚨 VM 早已上線在跑老王、非搶機，見 `phase9`） |
 
 執行節奏：第 1 定契約最關鍵；第 3 完成＝有可回測策略硬核；第 5 才上 LLM；第 7 接前端；第 8 上雲。
 
@@ -285,7 +285,7 @@ gemini 額度用盡→切 claude（注入假 runner）、兩者皆失敗降級�
 
 詳見 `docs/runbook.md`、`deploy/README.md`。
 
-> **誠實狀態**：部署/排程**程式與資產 100% 就緒並本機驗收**，但 **VM 尚未實際部署**——唯一卡點＝Oracle 東京免費 A1 **`Out of host capacity`**（缺貨，非設定錯）。搶到 VM 後跑一支 `deploy/bootstrap.sh` 即上線。故狀態標「🟡 雲端就緒」而非「全案完成」。
+> **誠實狀態（2026-06-15 SSH 實機盤點修正）**：部署/排程**程式與資產 100% 就緒並本機驗收**。原寫「VM 尚未部署＝卡東京免費 A1 缺貨要搶機」**已作廢**——VM 其實 **2026-05-27 升 PAYG、05-28 就上線**，`140.238.48.197` 至今 24h 在跑老王每日報告（含 Claude CLI 無頭，B1 token 續命已被生產實測）。**Track2 的真正工作＝把新 engine/gateway 堆疊部署到這台既有 VM**（非搶機），且與既有 13:00 老王 cron 共存。詳 `docs/prompts/phase9.md`。故仍標「🟡」而非「全案完成」。
 
 **決策點定案（使用者 2026-06-15）**：
 - **LLM 在雲端＝預設 B2、同步備好 B1**：老王摘要留**本機 Task Scheduler**（Claude 訂閱最穩）；§A 解耦讓 VM **具備**跑老王能力（`RUN_TARGET=vm`），B1（VM cron 實測 CLI 登入態續命）等 VM 到手後選擇性開啟。`/agents/decide` 維持前端按鈕觸發。**A 必達、B 加值**。
@@ -305,4 +305,4 @@ gemini 額度用盡→切 claude（注入假 runner）、兩者皆失敗降級�
 
 **本機驗收（2026-06-15）**：§A 回歸 15 passed；engine offline pytest **57 passed**；`smoke_data.py` live `/health`+`/data/book`(MIS)+`/data/market`(yfinance) 全 200；deploy `.sh` `bash -n` 全過；根 `.env` `git check-ignore` 通過；`npm install dotenv` 零 repo 足跡。
 
-**未盡（Track 2，需使用者+VM）**：搶到 VM（升 PAYG 最有效）→ `bootstrap.sh` → scp 祕密 → git deploy key → B1 實測 CLI token 續命（不穩則誠實回退 B2）。ARM 套件（pandas/pyarrow wheel、playwright `--with-deps`）VM 上仍需實裝確認。**完整續作提示詞＝`docs/prompts/phase9.md`**（開新對話讀它接續）。
+**未盡（Track 2／phase9，需使用者+VM；VM 已在、非搶機）**：VM＝`140.238.48.197`、repo `/home/ubuntu/Stock_recommendations`、git push deploy key 已備。工作＝`bootstrap.sh APP_DIR=/home/ubuntu/Stock_recommendations RUN_USER=ubuntu` → scp `engine/.env`（FINMIND/FUGLE/FRED，VM 上不存在）→ 驗收第一層常駐（重開機自起/盤後刷新/健康檢查）→ 把既有 13:00 老王 wrapper 改 `RUN_TARGET=vm`（不寫 Obsidian、不雙跑、不弄壞手機在 pull 的 reports/）。🚨 **bootstrap 裝 cron 別清掉既有 `0 13 * * 1-5 puhui_daily_cron.sh`**。B1 token 續命已被生產實測（老王早就在 VM 跑 Claude CLI）。ARM pandas/pyarrow wheel 仍需 VM 實裝確認。**完整續作提示詞＝`docs/prompts/phase9.md`**（已重寫成部署到既有 VM 版）。
