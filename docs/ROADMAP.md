@@ -60,7 +60,7 @@
 | 5 | 多 agent LLM 決策層 | 分析師→多空辯論→交易員→風控 | 3,4 | ✅ 完成 2026-06-14 |
 | 6 | 統一 API 層 | Node gateway，吐 報告/訊號/水位/回測/agent決策 | 3,4,5 | ✅ 完成 2026-06-14 |
 | 7 | APP 前端 + 端到端整合 | Vite+React 儀表板 + 當沖候選 | 6 | ✅ 完成 2026-06-14 |
-| 8 | 雲端部署 + 每日排程 | Oracle VM（主）+ GitHub Actions；runbook | 7 | 🟡 雲端就緒 2026-06-15（Track1✅本機驗收／Track2 待搶 VM） |
+| 8 | 雲端部署 + 每日排程 | Oracle VM（主）+ GitHub Actions；runbook | 7 | 🟡 雲端就緒 2026-06-15（Track1✅本機驗收／Track2 待搶 VM＝`phase9`） |
 
 執行節奏：第 1 定契約最關鍵；第 3 完成＝有可回測策略硬核；第 5 才上 LLM；第 7 接前端；第 8 上雲。
 
@@ -79,7 +79,7 @@
 
 ## 4. 各階段提示詞檔案
 
-放在 `docs/prompts/phase1.md … phase8.md`。
+放在 `docs/prompts/phase1.md … phase9.md`（phase9＝完成階段8 Track2 實機上雲 + 全案收尾）。
 使用方式：開新對話 →「請幫我閱讀 docs/prompts/phaseN.md 然後按照裡面的說明進行。」
 
 ---
@@ -305,4 +305,4 @@ gemini 額度用盡→切 claude（注入假 runner）、兩者皆失敗降級�
 
 **本機驗收（2026-06-15）**：§A 回歸 15 passed；engine offline pytest **57 passed**；`smoke_data.py` live `/health`+`/data/book`(MIS)+`/data/market`(yfinance) 全 200；deploy `.sh` `bash -n` 全過；根 `.env` `git check-ignore` 通過；`npm install dotenv` 零 repo 足跡。
 
-**未盡（Track 2，需使用者+VM）**：搶到 VM（升 PAYG 最有效）→ `bootstrap.sh` → scp 祕密 → git deploy key → B1 實測 CLI token 續命（不穩則誠實回退 B2）。ARM 套件（pandas/pyarrow wheel、playwright `--with-deps`）VM 上仍需實裝確認。
+**未盡（Track 2，需使用者+VM）**：搶到 VM（升 PAYG 最有效）→ `bootstrap.sh` → scp 祕密 → git deploy key → B1 實測 CLI token 續命（不穩則誠實回退 B2）。ARM 套件（pandas/pyarrow wheel、playwright `--with-deps`）VM 上仍需實裝確認。**完整續作提示詞＝`docs/prompts/phase9.md`**（開新對話讀它接續）。
