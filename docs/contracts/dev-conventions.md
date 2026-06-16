@@ -8,7 +8,7 @@
 |---|---|
 | `engine/` | Python FastAPI 引擎（分層 package，見 `engine/README.md`）：`app/{api,core,data,factors,backtest,agents}` |
 | `web/` | 前端（階段7，Vite+React+TS+Tailwind+lightweight-charts） |
-| `docs/` | 規格文件：`ROADMAP.md`、`scoring-model.md`、`contracts/*.md`、`prompts/phaseN.md` |
+| `docs/` | 規格文件：`ROADMAP.md`、`scoring-model.md`、`contracts/*.md`、`runbook.md`（階段提示詞 `prompts/` 已於全案完成後清理） |
 | `docs/contracts/` | 全系統共用 JSON 契約 + 本規範 |
 | `scripts/` | 既有 Node 內容線（**不動**）+ 新增串接工具（如 `engine_healthcheck.cjs`） |
 | `data/` | 既有 Node 產物（gitignored 的快取/分析）+ 引擎快取 `data/engine_cache/`（gitignored） |
@@ -45,4 +45,4 @@
 ### 關鍵位置速查
 - Obsidian 開發筆記：`C:\obsidian\儲存庫\財經APP開發\`
 - 記憶檔：`C:\CC AI Agent\.claude\projects\C--CC-AI-Agent\memory\`
-- 階段提示詞：`docs/prompts/phaseN.md`
+- 階段提示詞：`docs/prompts/`（全案完成後已清理；如需回溯見 git 歷史）

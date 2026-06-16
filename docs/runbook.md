@@ -173,7 +173,7 @@ ssh -L 3000:localhost:3000 <user>@<VM_IP>
 
 老王（`puhui_daily.cjs`）抓文靠 `data/pressplay_cookies.json`（gitignored、含 `JAccessToken` JWT）。約每月更新一次（exp ≤5 天會 Telegram 預警）。
 
-**🚫 為何舊法失效（別再走）**：`refresh_pressplay_cookies.cjs` / `export_pressplay_cookies.js` 用 Playwright 自帶 Chromium，PressPlay 走 Google OAuth 登入時被 Google 自動化偵測擋（「目前無法登入帳戶／瀏覽器可能有安全疑慮」）。Chrome 149 用 App-Bound Encryption→直接讀 cookie DB 也不行；整包複製 profile + Local State 主金鑰會被安全守門擋（等同盜所有站點 token）。
+**🚫 為何舊法失效（別再走）**：`refresh_pressplay_cookies.cjs`（及已移除的 export/interactive 變體）用 Playwright 自帶 Chromium，PressPlay 走 Google OAuth 登入時被 Google 自動化偵測擋（「目前無法登入帳戶／瀏覽器可能有安全疑慮」）。Chrome 149 用 App-Bound Encryption→直接讀 cookie DB 也不行；整包複製 profile + Local State 主金鑰會被安全守門擋（等同盜所有站點 token）。
 
 **✅ 新法 = 真實 Chrome + 遠端除錯 + CDP 抓 cookies**（真 Chrome 不被 Google 擋）：
 

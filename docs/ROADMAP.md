@@ -79,8 +79,7 @@
 
 ## 4. 各階段提示詞檔案
 
-放在 `docs/prompts/phase1.md … phase9.md`（phase9＝完成階段8 Track2 實機上雲 + 全案收尾）。
-使用方式：開新對話 →「請幫我閱讀 docs/prompts/phaseN.md 然後按照裡面的說明進行。」
+~~放在 `docs/prompts/phase1.md … phase9.md`~~ —— **全 9 階段已完成，提示詞檔已於 2026-06-16 收尾清理移除**（建置脈絡保留在本 ROADMAP 各階段段落與各 `docs/*.md` 規格文件）。如需回溯，可從 git 歷史取回。
 
 ---
 
@@ -285,7 +284,7 @@ gemini 額度用盡→切 claude（注入假 runner）、兩者皆失敗降級�
 
 詳見 `docs/runbook.md`、`deploy/README.md`。
 
-> **誠實狀態（2026-06-15 SSH 實機盤點修正）**：部署/排程**程式與資產 100% 就緒並本機驗收**。原寫「VM 尚未部署＝卡東京免費 A1 缺貨要搶機」**已作廢**——VM 其實 **2026-05-27 升 PAYG、05-28 就上線**，`140.238.48.197` 至今 24h 在跑老王每日報告（含 Claude CLI 無頭，B1 token 續命已被生產實測）。**Track2 的真正工作＝把新 engine/gateway 堆疊部署到這台既有 VM**（非搶機），且與既有 13:00 老王 cron 共存。詳 `docs/prompts/phase9.md`。故仍標「🟡」而非「全案完成」。
+> **誠實狀態（2026-06-15 SSH 實機盤點修正）**：部署/排程**程式與資產 100% 就緒並本機驗收**。原寫「VM 尚未部署＝卡東京免費 A1 缺貨要搶機」**已作廢**——VM 其實 **2026-05-27 升 PAYG、05-28 就上線**，`140.238.48.197` 至今 24h 在跑老王每日報告（含 Claude CLI 無頭，B1 token 續命已被生產實測）。**Track2 的真正工作＝把新 engine/gateway 堆疊部署到這台既有 VM**（非搶機），且與既有 13:00 老王 cron 共存。故仍標「🟡」而非「全案完成」。
 
 **決策點定案（使用者 2026-06-15）**：
 - **LLM 在雲端＝預設 B2、同步備好 B1**：老王摘要留**本機 Task Scheduler**（Claude 訂閱最穩）；§A 解耦讓 VM **具備**跑老王能力（`RUN_TARGET=vm`），B1（VM cron 實測 CLI 登入態續命）等 VM 到手後選擇性開啟。`/agents/decide` 維持前端按鈕觸發。**A 必達、B 加值**。
@@ -305,13 +304,13 @@ gemini 額度用盡→切 claude（注入假 runner）、兩者皆失敗降級�
 
 **本機驗收（2026-06-15）**：§A 回歸 15 passed；engine offline pytest **57 passed**；`smoke_data.py` live `/health`+`/data/book`(MIS)+`/data/market`(yfinance) 全 200；deploy `.sh` `bash -n` 全過；根 `.env` `git check-ignore` 通過；`npm install dotenv` 零 repo 足跡。
 
-**未盡（Track 2／phase9，需使用者+VM；VM 已在、非搶機）**：VM＝`140.238.48.197`、repo `/home/ubuntu/Stock_recommendations`、git push deploy key 已備。工作＝`bootstrap.sh APP_DIR=/home/ubuntu/Stock_recommendations RUN_USER=ubuntu` → scp `engine/.env`（FINMIND/FUGLE/FRED，VM 上不存在）→ 驗收第一層常駐（重開機自起/盤後刷新/健康檢查）→ 把既有 13:00 老王 wrapper 改 `RUN_TARGET=vm`（不寫 Obsidian、不雙跑、不弄壞手機在 pull 的 reports/）。🚨 **bootstrap 裝 cron 別清掉既有 `0 13 * * 1-5 puhui_daily_cron.sh`**。B1 token 續命已被生產實測（老王早就在 VM 跑 Claude CLI）。ARM pandas/pyarrow wheel 仍需 VM 實裝確認。**完整續作提示詞＝`docs/prompts/phase9.md`**（已重寫成部署到既有 VM 版）。
+**未盡（Track 2／phase9，需使用者+VM；VM 已在、非搶機）**：VM＝`140.238.48.197`、repo `/home/ubuntu/Stock_recommendations`、git push deploy key 已備。工作＝`bootstrap.sh APP_DIR=/home/ubuntu/Stock_recommendations RUN_USER=ubuntu` → scp `engine/.env`（FINMIND/FUGLE/FRED，VM 上不存在）→ 驗收第一層常駐（重開機自起/盤後刷新/健康檢查）→ 把既有 13:00 老王 wrapper 改 `RUN_TARGET=vm`（不寫 Obsidian、不雙跑、不弄壞手機在 pull 的 reports/）。🚨 **bootstrap 裝 cron 別清掉既有 `0 13 * * 1-5 puhui_daily_cron.sh`**。B1 token 續命已被生產實測（老王早就在 VM 跑 Claude CLI）。ARM pandas/pyarrow wheel 仍需 VM 實裝確認。（續作提示詞 `docs/prompts/phase9.md` 已隨收尾清理移除。）
 
 ---
 
 ## 14. 階段 8/9 實機落地完成紀錄（2026-06-15）＝ 🎉 全案完成
 
-詳見 `docs/runbook.md`（已補實機發現）、`docs/prompts/phase9.md`、`deploy/`。階段 8 的部署資產（phase8 Track1 本機就緒）於本日**真正落到既有 Oracle VM 上跑起來並無人值守驗收**，全 8 階段藍圖至此收尾。
+詳見 `docs/runbook.md`（已補實機發現）、`deploy/`。階段 8 的部署資產（phase8 Track1 本機就緒）於本日**真正落到既有 Oracle VM 上跑起來並無人值守驗收**，全 8 階段藍圖至此收尾。
 
 **部署環境（实机）**：Oracle `VM.Standard.A1.Flex` 2 OCPU/12GB、Ubuntu 22.04.5 **aarch64**、`140.238.48.197`、repo `/home/ubuntu/Stock_recommendations`、TZ Asia/Taipei、node v20 / `/usr/bin/claude` 2.1.152 / python3.10。**生產機**（手機在 pull `reports/`），全程先 SSH 唯讀確認再單步驗收。
 

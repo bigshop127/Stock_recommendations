@@ -47,7 +47,7 @@ class Settings(BaseSettings):
     # 即時五檔來源：auto=有富果 key 才用富果，否則 MIS；亦可強制 mis / fugle
     book_source: str = "auto"
 
-    # 快取（依 phase2.md 放 engine/data_cache/；可用 ENGINE_CACHE_DIR 覆寫）
+    # 快取（依 docs/data-layer.md 放 engine/data_cache/；可用 ENGINE_CACHE_DIR 覆寫）
     engine_cache_dir: str = str(ENGINE_DIR / "data_cache")
 
     # 對外 HTTP

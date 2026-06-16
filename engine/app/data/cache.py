@@ -1,6 +1,6 @@
 """本地 parquet 時序快取（階段 2）。
 
-設計目標（對應 phase2.md 驗收「重跑命中快取、不重打 API」）：
+設計目標（對應 docs/data-layer.md 驗收「重跑命中快取、不重打 API」）：
 - 以 `(dataset, key)` 為單位存一個 parquet 檔：`data_cache/{dataset}/{key}.parquet`。
 - 時序資料（OHLCV、法人、融資券）以日期欄為主鍵，支援：
     1) 抓歷史區間：`get_timeseries(..., start, end)`。
