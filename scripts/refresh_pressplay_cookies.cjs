@@ -1,6 +1,11 @@
 /**
  * refresh_pressplay_cookies.cjs
  *
+ * 🚫 已棄用（2026-06-16）：本腳本用 Playwright 自帶 Chromium，PressPlay 走 Google OAuth
+ *    登入時會被 Google 擋（「目前無法登入帳戶／瀏覽器可能有安全疑慮」）。請改用
+ *    scripts/extract_pressplay_cookies_cdp.cjs（真實 Chrome + CDP）。詳見 docs/runbook.md §7.1。
+ *    保留此檔僅供歷史參考。
+ *
  * 開啟有頭 Chromium 讓你手動登入 PressPlay，
  * 登入完成後按 Enter，自動儲存 cookies 到 data/pressplay_cookies.json
  *

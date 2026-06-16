@@ -161,11 +161,44 @@ ssh -L 3000:localhost:3000 <user>@<VM_IP>
 | `/api/health` engine:down | engine 掛了：`journalctl -u puhui-engine -n 100`（多半是 `engine/.env` 缺金鑰或 ARM 套件問題）；`sudo systemctl restart puhui-engine` |
 | ARM 套件裝不起來 | `cd engine && ./.venv/bin/pip install -r requirements.txt`（pandas/pyarrow 有 aarch64 wheel；若 pip 太舊先 `pip install -U pip wheel`） |
 | cron 沒 push | 看 `data/cron_refresh.log`；多半 git 認證（§3 deploy key/PAT）或分岔（腳本已 `pull --rebase` 重試一次） |
-| PressPlay cookies 失效 | 老王會 Telegram 預警（≤5 天）/ 失效告警。更新：本機 `node scripts/refresh_pressplay_cookies.cjs`（或 `export_pressplay_cookies.js`）重存 `data/pressplay_cookies.json`，B1 再 scp 上 VM |
+| PressPlay cookies 失效 | 老王 Telegram 預警（≤5 天）/失效告警。**`refresh_pressplay_cookies.cjs` 已被 Google 擋自動化登入、勿再用**；改走 §7.1 新法（真 Chrome + CDP）重存 `data/pressplay_cookies.json`，再 scp 上 VM |
 | CLI 授權失效（B1） | 重跑 §6 步驟 1-2 重新登入；長期不穩就回退 B2 |
 | VM 重開機後 | systemd 已 `enable`，engine/gateway 開機自啟；驗證 `systemctl is-active puhui-engine puhui-gateway` + `curl /api/health`。cron 由 crond 自動恢復 |
 | 想重跑部署 | `bootstrap.sh` 冪等，可直接重跑（更新碼後 `git pull` 再 `sudo ./bootstrap.sh`） |
 | 更新前端 | `git pull && cd web && npm ci && npm run build && sudo systemctl restart puhui-gateway` |
+
+---
+
+## 7.1 PressPlay cookies 更新 SOP（2026-06-16 新法）
+
+老王（`puhui_daily.cjs`）抓文靠 `data/pressplay_cookies.json`（gitignored、含 `JAccessToken` JWT）。約每月更新一次（exp ≤5 天會 Telegram 預警）。
+
+**🚫 為何舊法失效（別再走）**：`refresh_pressplay_cookies.cjs` / `export_pressplay_cookies.js` 用 Playwright 自帶 Chromium，PressPlay 走 Google OAuth 登入時被 Google 自動化偵測擋（「目前無法登入帳戶／瀏覽器可能有安全疑慮」）。Chrome 149 用 App-Bound Encryption→直接讀 cookie DB 也不行；整包複製 profile + Local State 主金鑰會被安全守門擋（等同盜所有站點 token）。
+
+**✅ 新法 = 真實 Chrome + 遠端除錯 + CDP 抓 cookies**（真 Chrome 不被 Google 擋）：
+
+1. 啟真實 Chrome（獨立 profile，可與日常 Chrome 並存）：
+   ```powershell
+   Start-Process "C:\Program Files\Google\Chrome\Application\chrome.exe" `
+     -ArgumentList '--remote-debugging-port=9222','--user-data-dir=C:\Temp\pp-debug-profile','--no-first-run','https://www.pressplay.cc/login'
+   ```
+   在該視窗用 **email/密碼**登入（**別點 Google 登入**，否則一樣被擋）。
+2. **務必打開一篇付費文章並確認讀得到內文** → PressPlay 才會發 `JAccessToken`（純登入/會員頁只有 PHPSESSID/pp_identify/salt，不會發 JAccessToken）。
+3. 抓 cookies（只取 pressplay 網域、寫成陣列格式、只印 exp 日期不印 token）：
+   ```bash
+   node scripts/extract_pressplay_cookies_cdp.cjs
+   ```
+   找不到 JAccessToken 會 exit 5 且**不覆寫**舊檔（→ 回步驟 2 打開付費文章再重跑）。
+4. 驗證（這才是 puhui `checkArticleReadable` 真正用的路徑）：打 `og-web.pressplay.cc/timeline/{articleId}/info`（帶整串 Cookie + `pp-*` headers）看 `canReadTimeline:true`。
+   > ⚠️ `list_pressplay_articles.cjs` 的頁面爬蟲在 headless 會回「0 篇」，是假象、別當失敗。
+5. scp 上 VM 整檔覆蓋（獨立 JSON、整檔覆蓋安全；PowerShell 用相對路徑避免 scp 把 `C:` 當主機）：
+   ```bash
+   scp -i C:\Users\bigsh\.ssh\oracle_puhui.key data\pressplay_cookies.json ubuntu@140.238.48.197:/home/ubuntu/Stock_recommendations/data/pressplay_cookies.json
+   ```
+   VM 上可再跑一次 canReadTimeline 驗證（read-only、不燒 LLM、不 push）。
+6. 收尾：殺掉 `pp-debug-profile` 的 chrome（**按 cmdline 篩、別動日常 Chrome**）+ 刪 temp profile。
+
+**鐵律**：祕密/token 一律不印；`data/pressplay_cookies.json` 已 gitignore、**絕不可 commit**。
 
 ---
 
