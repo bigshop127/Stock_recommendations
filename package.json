@@ -5,9 +5,7 @@
   "main": "server.cjs",
   "scripts": {
     "start": "node server.cjs",
-    "pipeline": "node scripts/puhui_pipeline.js",
     "daily": "node scripts/puhui_daily.cjs",
-    "synthesize": "node scripts/puhui_synthesize.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],

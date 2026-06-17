@@ -186,16 +186,6 @@ degraded dashboard 範例（engine down + 有 cache）：
 
 ---
 
-## 既有端點（不破壞，`routes/finance.js`）
-
-| 方法 | 端點 | 說明 |
-|---|---|---|
-| GET | `/api/finance/status` | 讀 `data/finance_progress.json` |
-| POST | `/api/finance/update` | 更新單筆任務進度（body `{id,status,progress?,message?}`） |
-| POST | `/api/run-script` | 白名單跑 `puhui_synthesize.js`/`sync_to_obsidian.js`（其餘 403） |
-
----
-
 ## 本機啟動 / 驗收
 
 ```powershell

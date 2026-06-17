@@ -254,7 +254,7 @@ gemini 額度用盡→切 claude（注入假 runner）、兩者皆失敗降級�
 **驗收（curl 實測，2026-06-14）**：
 - **engine 開**：`/api/health`→engine:up；`/api/dashboard`→水位0.5/五成、情緒中性50、regime risk_on(gate1.1)、watchlist 10 檔；`/api/stocks/2330`→swing add 66 + daytrade + blended + regime；`/api/watchlist`→10 檔雙排序；`POST /api/backtest`→swing_v1 metrics+benchmark+72點；`/api/backtest/grid`→{best,grid}；`POST /api/agents/decide` 壞 body→400 轉譯（**不燒 LLM 額度**，真實 LLM 跑已於階段5 驗）。
 - **engine 關**：`/api/reports*` 照常（18 篇）；`/api/dashboard`→`degraded:true`（有 cache 讀水位/情緒、無 cache 回空殼）；`/api/watchlist`、`/api/stocks/:code` 等→明確 **503**。
-- **CORS** `Access-Control-Allow-Origin: *` 生效；既有 `/api/finance/status`、`/api/run-script`(403) 不破壞。
+- **CORS** `Access-Control-Allow-Origin: *` 生效。
 
 **限制/未盡（階段7+）**：CORS 先全開（上線需收斂 origin 白名單）；`/api/agents/decide` 長流程為同步阻塞（未做非同步/輪詢，階段7/8 視需要再上）；degraded dashboard 只有全域水位/情緒（cache 無個股代號/買賣）；前端儀表板（Vite+React）＝階段7；雲端無頭部署＝階段8。
 
