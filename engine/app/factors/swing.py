@@ -150,7 +150,13 @@ def build_swing_signal(code: str, date: str | None = None,
     if tech.available:
         factor_latest["technical"] = float(tech.score.reindex([as_of]).ffill().iloc[-1]) if as_of in tech.score.index else float(tech.score.iloc[-1])
     if chp.available:
-        factor_latest["chips"] = float(chp.score.reindex([as_of]).ffill().iloc[-1]) if not chp.score.empty else 50.0
+        # chips（法人籌碼）盤後才公布、常落後股價一天以上：as_of 不在籌碼序列時
+        # 沿用最近一次已知的籌碼分（carry-forward），不可讓單格 reindex 變 NaN 污染 core。
+        factor_latest["chips"] = (
+            float(chp.score.reindex([as_of]).ffill().iloc[-1]) if as_of in chp.score.index
+            else float(chp.score.iloc[-1]) if not chp.score.empty
+            else 50.0
+        )
     if sent.available:
         factor_latest["sentiment"] = float(sent.score.iloc[-1])
 
