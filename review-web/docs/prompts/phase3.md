@@ -85,7 +85,7 @@ engine **已有可直接複用**（`engine/app/data/finmind_client.py`）：
 - `get_stock_name(code)` → `name`。
 
 engine **需新增**：
-- `fetch_shareholding(code, start, end)`（新函式）取外資持股比率 → FinMind dataset `TaiwanStockShareholding`（欄位 `ForeignInvestmentSharesRatio` 或同義），回 `date, foreign_holding_ratio`。**若一時接不上可先回 `null`**，不擋其他兩塊上線。
+- `fetch_shareholding(code, start, end)`（新函式）取外資持股比率 → FinMind dataset `TaiwanStockShareholding`，回 `date, foreign_holding_ratio`。**🔎 pre-flight 已實測（2330，2026-06-22）確認欄位＝`ForeignInvestmentSharesRatio`（=70.04，外資已持股佔比 %）；別誤用 `ForeignInvestmentRemainRatio`（=29.95，那是「尚可投資餘額」佔比，意義相反）。** 該 dataset 另有 `stock_name`/`ForeignInvestmentShares` 等欄。**若一時接不上可先回 `null`**，不擋其他兩塊上線。
 - 聚合層：以 `date` 為鍵 **outer-join** 三組（institutional 換張、margin、shareholding），組成 `data[]`；缺值補 `null`（法人那天無資料就 0 還是 null？→ 法人無買賣＝0；持股率無資料＝null）。
 
 **備援 / 不建議當主源**（免金鑰但對「個股時序」很差）：TWSE `T86`(法人買賣超)、`MI_MARGN`(融資券)、`MI_QFIIS`(外資持股) 都是**全市場單日**報表 → 要建單檔 N 日趨勢得抓 N 份日報再濾代號（同 Phase 1 institutional 連發坑）。僅在 FinMind 額度撞牆時，當「補當日最新一筆」的 fallback。OTC（櫃買）個股 FinMind 同樣覆蓋，不必切 TPEx 端點。
