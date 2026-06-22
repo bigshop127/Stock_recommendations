@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
+import { Link } from 'react-router-dom';
 import { api } from '../lib/api';
-import type { MarketIndices, MarketBreadth, MarketSectors, MarketInstitutional } from '../lib/api';
+import type { MarketIndices, MarketBreadth, MarketSectors, MarketInstitutional, WatchItem } from '../lib/api';
 import { Activity, BarChart3, TrendingUp, Users, RefreshCw } from 'lucide-react';
 
 export const Dashboard: React.FC = () => {
@@ -8,6 +9,7 @@ export const Dashboard: React.FC = () => {
   const [breadthState, setBreadthState] = useState<{ data: MarketBreadth | null; loading: boolean; error: string | null }>({ data: null, loading: true, error: null });
   const [sectorsState, setSectorsState] = useState<{ data: MarketSectors | null; loading: boolean; error: string | null }>({ data: null, loading: true, error: null });
   const [institutionalState, setInstitutionalState] = useState<{ data: MarketInstitutional | null; loading: boolean; error: string | null }>({ data: null, loading: true, error: null });
+  const [watchlistState, setWatchlistState] = useState<{ data: WatchItem[] | null; loading: boolean; error: string | null }>({ data: null, loading: true, error: null });
   
   const [range, setRange] = useState<'1d' | '5d' | '1m'>('1d');
 
@@ -130,7 +132,7 @@ export const Dashboard: React.FC = () => {
         { name: '電子零組件', change_pct: -0.65, turnover: 18200000000, source: 'TWSE' },
         { name: '金融保險', change_pct: 0.35, turnover: 18200000000, source: 'TWSE' },
         { name: '航運', change_pct: -1.82, turnover: 32000000000, source: 'TWSE' },
-        { name: '鋼鐵', change_pct: -0.95, turnover: 850000000, source: 'TWSE' },
+        { name: '鋼鐵', change_pct: -0.95, turnover: 850000005, source: 'TWSE' },
         { name: '電機機械', change_pct: 2.10, turnover: 14500000000, source: 'TWSE' }
       ]
     };
@@ -200,15 +202,37 @@ export const Dashboard: React.FC = () => {
     }
   };
 
+  const fetchWatchlist = async () => {
+    setWatchlistState(prev => ({ ...prev, loading: true, error: null }));
+    try {
+      let data: WatchItem[];
+      if (useMock) {
+        data = [
+          { code: '2330', name: '台積電', source: ['TWSE'], swing_score: 75, daytrade_prob: 0.82, rank_swing: 1, rank_daytrade: 2, tags: ['權值股', '半導體'] },
+          { code: '2454', name: '聯發科', source: ['TWSE'], swing_score: 68, daytrade_prob: 0.75, rank_swing: 2, rank_daytrade: 4, tags: ['高價股', 'IC設計'] },
+          { code: '2317', name: '鴻海', source: ['TWSE'], swing_score: 82, daytrade_prob: 0.68, rank_swing: 3, rank_daytrade: 1, tags: ['蘋果概念', '代工'] }
+        ];
+      } else {
+        const res = await api.watchlist();
+        data = res.items || [];
+      }
+      setWatchlistState({ data, loading: false, error: null });
+    } catch (err: any) {
+      setWatchlistState({ data: null, loading: false, error: err.message || '無法取得自選清單' });
+    }
+  };
+
   const fetchAllData = () => {
     if (useMock) {
       loadMockData();
+      fetchWatchlist();
       return;
     }
     fetchIndices();
     fetchBreadth();
     fetchSectors();
     fetchInstitutional();
+    fetchWatchlist();
   };
 
   useEffect(() => {
@@ -600,6 +624,75 @@ export const Dashboard: React.FC = () => {
                 </div>
               )}
             </div>
+          )}
+        </div>
+
+        {/* 5. 自選與焦點個股審查清單 */}
+        <div className="bg-card border border-border rounded-xl p-6 lg:col-span-2">
+          <div className="flex items-center justify-between mb-4 border-b border-border/60 pb-3">
+            <div className="flex items-center gap-2">
+              <Activity className="w-5 h-5 text-primary" />
+              <h3 className="font-semibold text-sm text-zinc-200">自選與焦點審查清單 (Watchlist)</h3>
+            </div>
+          </div>
+          {watchlistState.loading ? (
+            <div className="h-32 flex items-center justify-center text-xs text-zinc-500 animate-pulse">載入自選清單中...</div>
+          ) : watchlistState.error ? (
+            <div className="h-32 flex flex-col items-center justify-center text-center p-4 border border-red-500/20 bg-red-500/5 rounded-lg">
+              <span className="text-xs text-red-400 font-semibold mb-2">無法取得自選清單</span>
+              <span className="text-[10px] text-zinc-500 font-mono mb-4">{watchlistState.error}</span>
+              <button onClick={fetchWatchlist} className="px-3 py-1 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded text-[10px] transition">重試</button>
+            </div>
+          ) : watchlistState.data && watchlistState.data.length > 0 ? (
+            <div className="overflow-x-auto">
+              <table className="w-full text-xs text-left">
+                <thead>
+                  <tr className="text-zinc-500 border-b border-border/60 font-mono">
+                    <th className="pb-2 font-semibold">代號</th>
+                    <th className="pb-2 font-semibold">股名</th>
+                    <th className="pb-2 font-semibold text-right">波段評分</th>
+                    <th className="pb-2 font-semibold text-right">當沖機率</th>
+                    <th className="pb-2 font-semibold text-right">波段排名</th>
+                    <th className="pb-2 font-semibold text-right">當沖排名</th>
+                    <th className="pb-2 font-semibold">標籤</th>
+                    <th className="pb-2 font-semibold text-center">操作</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {watchlistState.data.map((item) => (
+                    <tr key={item.code} className="border-b border-border/30 last:border-0 hover:bg-zinc-850/40 transition duration-150">
+                      <td className="py-3 font-mono text-zinc-300 font-bold">{item.code}</td>
+                      <td className="py-3 text-zinc-200">{item.name}</td>
+                      <td className="py-3 text-right font-mono text-zinc-300">{item.swing_score}分</td>
+                      <td className="py-3 text-right font-mono text-zinc-300">
+                        {item.daytrade_prob !== null ? `${(item.daytrade_prob * 100).toFixed(0)}%` : '--'}
+                      </td>
+                      <td className="py-3 text-right font-mono text-zinc-400">#{item.rank_swing}</td>
+                      <td className="py-3 text-right font-mono text-zinc-400">#{item.rank_daytrade}</td>
+                      <td className="py-3">
+                        <div className="flex flex-wrap gap-1">
+                          {item.tags?.map((tag: string) => (
+                            <span key={tag} className="text-[9px] bg-zinc-800 text-zinc-400 px-1.5 py-0.5 rounded font-mono">
+                              {tag}
+                            </span>
+                          ))}
+                        </div>
+                      </td>
+                      <td className="py-3 text-center">
+                        <Link
+                          to={`/stock/${item.code}`}
+                          className="px-2.5 py-1 bg-primary/10 text-primary hover:bg-primary/20 text-[10px] font-semibold rounded-md border border-primary/20 transition"
+                        >
+                          進入審查
+                        </Link>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <div className="h-32 flex items-center justify-center text-xs text-zinc-500">尚無自選個股</div>
           )}
         </div>
 

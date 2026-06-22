@@ -1,7 +1,7 @@
 # 個股全面審視網 — 專案總綱 ROADMAP
 
 > 單一事實來源（SSOT）。任何進度／更新／優化都先改這份，再同步 Obsidian vault `C:\obsidian\儲存庫\個股全面審視網` 與 `.claude` 記憶。
-> 建立日：2026-06-21。狀態：**Phase 0–1 ✅ 完工。Phase 1（盤勢總覽首頁＋4 端點）2026-06-22 實作完成並通過 Claude review（live 實測 4 端點 200、pytest 62、build 過、snake_case+逐區塊降級債清掉）。下一步 Phase 2（個股殼＋報價頭部＋K線）。**
+> 建立日：2026-06-21。狀態：**Phase 0–2 ✅ 完工。Phase 2（個股殼＋報價頭部＋K線）2026-06-22 實作完成並通過 Claude review（§4 全項實測 + build 過：lightweight-charts v4 日K/分K切換、五檔買紅賣綠+5s poll、6 區塊真實降級、首頁 watchlist 導航）。下一步 Phase 3（個股籌碼面）。**
 
 ---
 
@@ -86,7 +86,7 @@ Python engine  FastAPI :8000         ← 既有，本案會新增 /data 或 /mar
 |---|---|---|---|---|
 | **0** | 骨架與契約盤點 | Vite 腳手架、Tailwind/設計 token、RWD 斷點策略、路由（`/` 首頁 + `/stock/:code`）、`/api` client、PWA 殼、正式版契約盤點文件 | 無（純盤點） | ✅ 已完工 |
 | **1** | 盤勢總覽（完整） | 首頁：指數卡(+sparkline)、大盤水位、廣度/強弱(+20/50MA)、**類股熱力圖**、**市場三大法人買賣超總覽(近N日趨勢)**、自選/焦點股入口；順手收 snake_case 遷移 + mock 降級債 | `engine` + `gateway`：`/api/market/{indices,breadth,sectors,institutional}`（snake_case、indices 含 intraday/history、institutional 含 trend、breadth 含 limit_up/down+total） | ✅ 已完工 (2026-06-22) |
-| **2** | 個股殼＋報價頭部＋K線 | `/stock/:code` 多欄殼、報價頭部、K線（還原價/日K/分K切換、五檔） | 沿用既有（市值/PE 留 Phase 4） | — |
+| **2** | 個股殼＋報價頭部＋K線 | `/stock/:code` 多欄殼、報價頭部、K線（還原價/日K/分K切換、五檔） | 沿用既有（市值/PE 留 Phase 4） | ✅ 已完工 (2026-06-22) |
 | **3** | 個股籌碼面（重點） | 三大法人買賣超日/累計趨勢、融資券、（可選借券/大戶持股） | `/api/stocks/:code/chips` | — |
 | **4** | 基本面・財報 | 估值 PE/PB/殖利率、營收 YoY/MoM、EPS 趨勢、財報摘要；回填報價頭部市值/PE | `/api/stocks/:code/fundamentals` | — |
 | **5** | 技術面 | MA/MACD/KD/RSI/布林疊圖、量價、型態標註、技術因子分呈現 | 多由前端用 `ohlcv` 自算（必要時補端點） | — |
