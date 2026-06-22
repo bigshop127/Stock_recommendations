@@ -1,7 +1,7 @@
 # 個股全面審視網 — 專案總綱 ROADMAP
 
 > 單一事實來源（SSOT）。任何進度／更新／優化都先改這份，再同步 Obsidian vault `C:\obsidian\儲存庫\個股全面審視網` 與 `.claude` 記憶。
-> 建立日：2026-06-21。狀態：**Phase 0 ✅ 完工（骨架+契約盤點），Phase 1（盤勢總覽）已校正放行。**
+> 建立日：2026-06-21。狀態：**Phase 0–1 ✅ 完工。Phase 1（盤勢總覽首頁＋4 端點）2026-06-22 實作完成並通過 Claude review（live 實測 4 端點 200、pytest 62、build 過、snake_case+逐區塊降級債清掉）。下一步 Phase 2（個股殼＋報價頭部＋K線）。**
 
 ---
 
@@ -85,7 +85,7 @@ Python engine  FastAPI :8000         ← 既有，本案會新增 /data 或 /mar
 | Phase | 主題 | 前端交付 | 後端工（既有 repo） | 狀態 |
 |---|---|---|---|---|
 | **0** | 骨架與契約盤點 | Vite 腳手架、Tailwind/設計 token、RWD 斷點策略、路由（`/` 首頁 + `/stock/:code`）、`/api` client、PWA 殼、正式版契約盤點文件 | 無（純盤點） | ✅ 已完工 |
-| **1** | 盤勢總覽（完整） | 首頁：指數卡(+sparkline)、大盤水位、廣度/強弱(+20/50MA)、**類股熱力圖**、**市場三大法人買賣超總覽(近N日趨勢)**、自選/焦點股入口；順手收 snake_case 遷移 + mock 降級債 | `engine` + `gateway`：`/api/market/{indices,breadth,sectors,institutional}`（snake_case、indices 含 intraday/history、institutional 含 trend、breadth 含 limit_up/down+total） | ✅ 提示詞已校正放行 |
+| **1** | 盤勢總覽（完整） | 首頁：指數卡(+sparkline)、大盤水位、廣度/強弱(+20/50MA)、**類股熱力圖**、**市場三大法人買賣超總覽(近N日趨勢)**、自選/焦點股入口；順手收 snake_case 遷移 + mock 降級債 | `engine` + `gateway`：`/api/market/{indices,breadth,sectors,institutional}`（snake_case、indices 含 intraday/history、institutional 含 trend、breadth 含 limit_up/down+total） | ✅ 已完工 (2026-06-22) |
 | **2** | 個股殼＋報價頭部＋K線 | `/stock/:code` 多欄殼、報價頭部、K線（還原價/日K/分K切換、五檔） | 沿用既有（市值/PE 留 Phase 4） | — |
 | **3** | 個股籌碼面（重點） | 三大法人買賣超日/累計趨勢、融資券、（可選借券/大戶持股） | `/api/stocks/:code/chips` | — |
 | **4** | 基本面・財報 | 估值 PE/PB/殖利率、營收 YoY/MoM、EPS 趨勢、財報摘要；回填報價頭部市值/PE | `/api/stocks/:code/fundamentals` | — |
@@ -116,10 +116,13 @@ Python engine  FastAPI :8000         ← 既有，本案會新增 /data 或 /mar
 
 ## 7. 沿用既有系統的坑（務必帶進每階段 review）
 
-- 老王報告 **emoji 與股市相反**：🔴=看多 / 🟢=看空 / 🟠=中性；`/api/reports` 是 raw markdown，前端勿反向上色。
+- 老王報告 **emoji 與股市相反**：🔴=看多 / 🟢=看空 / 🟠=中性觀望（與股市紅漲綠跌相反）；`/api/reports` 是 raw markdown，前端勿反向上色。
 - 型別分歧：`water_level` float 0~1（另有中文 `water_level_text`）、`puhui_sentiment.score` 0~100。
 - K線**預設還原價**（`ohlcv?adjust=1`）；未還原源對除權息/分割股（如 0050）會斷點失真。
 - 分K/內外盤需 `FUGLE_API_KEY`（已設）；未設要優雅降級不破圖。
 - `agents/decide` **很貴**，只前端明確觸發、別放進首頁或個股自動載入。
 - engine 掛掉要 graceful degradation（沿用既有降級語意）。
 - 不動既有 `web/`、不改壞 `puhui_daily.cjs`、不重接資料源。
+- 電子/金融指數折衷：首頁表頭資料為官方指數即時值（`t13`/`t17`），但走勢圖（Sparkline）採用 ETF 還原線（`0053.TW`/`0055.TW`），漲跌幅與走勢形狀可能存在微幅背離。
+- 台指期 (TX) 走勢圖：分時與歷史走勢圖由加權現貨 `^TWII` 按比例線性縮放 (Trend Scaling) 生成，具有 `intraday_proxy: true` 標記。
+- 🚨 TWSE MIS 回傳的 `ch` **無 `tse_`/`otc_` 前綴**（`t13.tw`），但 `MIS_CHANNELS` 的查詢值**帶前綴**（`tse_t13.tw`）→ 任何拿 `MIS_CHANNELS` 值去 join MIS 回傳（如 sectors 漲跌幅）查表前**必須 strip 前綴**，否則永遠 miss 並靜默落 `0/null`（Phase 1 sectors 全平盤 bug 根因，已修）。

@@ -225,34 +225,52 @@ export interface DecideResp {
   config?: Record<string, unknown>;
 }
 
-// === Phase 0 新增 API 介面定義 (市場資訊與個股多維度資料) ===
+// === Phase 1 新增 API 介面定義 (市場資訊與個股多維度資料) ===
+export interface SparklinePoint {
+  t: string;
+  v: number;
+}
+export interface HistorySparklinePoint {
+  date: string;
+  close: number;
+}
 export interface IndexRow {
+  key: string;
   name: string;
-  price: number;
-  change: number;
-  changePercent: number;
-  volume: number;
+  price: number | null;
+  change: number | null;
+  change_pct: number | null;
+  volume: number | null;
+  intraday?: SparklinePoint[];
+  history?: HistorySparklinePoint[];
   source: string;
 }
 export interface MarketIndices {
   date: string;
+  as_of: string;
   indices: IndexRow[];
 }
 
 export interface MarketBreadth {
   date: string;
-  advance: number;
-  decline: number;
-  flat: number;
-  above20MaRatio: number;
-  above50MaRatio: number;
+  advancing: number;
+  declining: number;
+  unchanged: number;
+  limit_up: number;
+  limit_down: number;
+  total: number;
+  advancing_pct: number;
+  above_ma20_ratio: number;
+  above_ma50_ratio: number;
+  universe: string;
+  sample_size: number;
   source: string;
 }
 
 export interface SectorPerformance {
   name: string;
-  changePercent: number;
-  netAmount: number;
+  change_pct: number;
+  turnover: number;
   source: string;
 }
 export interface MarketSectors {
@@ -261,25 +279,27 @@ export interface MarketSectors {
 }
 
 export interface InstitutionalTrades {
-  foreignNetBuy: number;
-  investmentTrustNetBuy: number;
-  dealerNetBuy: number;
-  totalNetBuy: number;
-  source: string;
+  foreign: number;
+  investment_trust: number;
+  dealer: number;
+  total: number;
 }
 export interface MarketInstitutional {
   date: string;
-  trades: InstitutionalTrades;
+  unit: string;
+  latest: InstitutionalTrades;
+  trend: Array<InstitutionalTrades & { date: string }>;
+  source: string;
 }
 
 export interface ChipRow {
   date: string;
-  foreignHoldingRatio: number;
-  investmentTrustNetBuyQty: number;
-  foreignNetBuyQty: number;
-  dealerNetBuyQty: number;
-  marginBalance: number;
-  shortBalance: number;
+  foreign_holding_ratio: number;
+  investment_trust_net_buy_qty: number;
+  foreign_net_buy_qty: number;
+  dealer_net_buy_qty: number;
+  margin_balance: number;
+  short_balance: number;
   source: string;
 }
 export interface StockChips {
@@ -289,10 +309,10 @@ export interface StockChips {
 
 export interface FundamentalMetric {
   date: string;
-  peRatio: number;
-  pbRatio: number;
-  dividendYield: number;
-  revenueYoY: number;
+  pe_ratio: number;
+  pb_ratio: number;
+  dividend_yield: number;
+  revenue_yoy: number;
   eps: number;
   source: string;
 }
@@ -308,7 +328,7 @@ export interface NewsItem {
   url: string;
   summary: string;
   sentiment: 'positive' | 'negative' | 'neutral';
-  sentimentScore: number; // 0 - 100
+  sentiment_score: number; // 0 - 100
   source: string;
 }
 export interface StockNews {
@@ -344,11 +364,11 @@ export const api = {
       body: JSON.stringify({ codes }),
     }),
 
-  // Phase 0 新增 API 端點
-  marketIndices: () => req<MarketIndices>('/market/indices'),
-  marketBreadth: () => req<MarketBreadth>('/market/breadth'),
-  marketSectors: () => req<MarketSectors>('/market/sectors'),
-  marketInstitutional: () => req<MarketInstitutional>('/market/institutional'),
+  // Phase 1 新增 API 端點
+  marketIndices: (o?: { range?: '1d' | '5d' | '1m' }) => req<MarketIndices>(`/market/indices${qs(o)}`),
+  marketBreadth: (o?: { date?: string }) => req<MarketBreadth>(`/market/breadth${qs(o)}`),
+  marketSectors: (o?: { date?: string }) => req<MarketSectors>(`/market/sectors${qs(o)}`),
+  marketInstitutional: (o?: { date?: string; days?: number }) => req<MarketInstitutional>(`/market/institutional${qs(o)}`),
   stockChips: (code: string) => req<StockChips>(`/stocks/${code}/chips`),
   stockFundamentals: (code: string) => req<StockFundamentals>(`/stocks/${code}/fundamentals`),
   stockNews: (code: string) => req<StockNews>(`/stocks/${code}/news`),

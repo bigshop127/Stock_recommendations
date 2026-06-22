@@ -25,6 +25,7 @@ app.use(express.json());
 app.use(express.static('public'));
 
 app.use(require('./routes/gateway'));
+app.use(require('./routes/market'));
 
 // 階段 7：直接 serve 前端 build（web/dist）。同源免 CORS、鋪路階段8 無頭雲端部署。
 // 未 build 時略過（dev 模式前端走 Vite dev server 5173 → 打 gateway 3000 走 CORS）。

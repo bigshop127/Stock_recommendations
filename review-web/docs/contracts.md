@@ -1,6 +1,6 @@
-# API 規格與契約合約 (Phase 0)
+# API 規格與契約合約 (Phase 1 snake_case)
 
-本文件定義台股籌碼審查網站（`review-web`）所需之 API 端點規格，包含既有端點之適配以及 Phase 0 盤點新增之 7 個端點。
+本文件定義台股籌碼審查網站（`review-web`）所需之 API 端點規格，包含既有端點之適配以及 Phase 1 重新梳理為 snake_case 的大盤與個股端點。
 
 ## 1. 模組劃分與前端需求端點
 
@@ -22,55 +22,72 @@
 
 ---
 
-## 2. 新增端點合約 Schema 草擬
+## 2. 端點合約 Schema
 
-### 2.1 取得大盤與主要指數 `/api/market/indices`
+### 2.1 取得大盤與主要指數 `/api/market/indices?range=1d|5d|1m`
 * **Method**: `GET`
-* **Description**: 取得加權指數、櫃買指數及台指期即時報價。
+* **Description**: 取得加權指數、櫃買指數及台指期即時報價，並提供對應區間的走勢數據。
 * **Response Schema (200 OK)**:
 ```json
 {
   "date": "2026-06-19",
+  "as_of": "2026-06-19T05:30:00Z",
   "indices": [
     {
-      "name": "加權指數 (TAIEX)",
+      "key": "TWSE",
+      "name": "加權指數",
       "price": 22845.81,
       "change": 182.42,
-      "changePercent": 0.81,
+      "change_pct": 0.81,
       "volume": 382400000000,
+      "intraday": [
+        { "t": "09:05", "v": 22810.2 }
+      ],
+      "history": [],
       "source": "TWSE MIS"
     },
     {
-      "name": "櫃買指數 (OTC)",
-      "price": 268.45,
-      "change": -1.25,
-      "changePercent": -0.46,
-      "volume": 82400000000,
-      "source": "TWSE MIS"
+      "key": "TX",
+      "name": "台指期",
+      "price": 22860.00,
+      "change": 195.00,
+      "change_pct": 0.86,
+      "volume": 120000,
+      "intraday": [
+        { "t": "09:05", "v": 22820.0 }
+      ],
+      "history": [],
+      "source": "TAIFEX"
     }
   ]
 }
 ```
 
-### 2.2 取得市場多空寬度 `/api/market/breadth`
+### 2.2 取得市場多空寬度 `/api/market/breadth?date=`
 * **Method**: `GET`
-* **Description**: 取得全市場站上均線比例及上漲下跌家數分布。
+* **Description**: 取得全市場（依 watchlist 聯集 0050 成分股）站上均線比例及上漲下跌家數分布。當日無資料時，自動往前尋找最近一個有效交易日。
 * **Response Schema (200 OK)**:
 ```json
 {
   "date": "2026-06-19",
-  "advance": 582,
-  "decline": 324,
-  "flat": 92,
-  "above20MaRatio": 0.625,
-  "above50MaRatio": 0.584,
+  "advancing": 582,
+  "declining": 324,
+  "unchanged": 92,
+  "limit_up": 12,
+  "limit_down": 3,
+  "total": 998,
+  "advancing_pct": 0.583,
+  "above_ma20_ratio": 0.625,
+  "above_ma50_ratio": 0.584,
+  "universe": "watchlist_union_0050",
+  "sample_size": 95,
   "source": "TWSE"
 }
 ```
 
-### 2.3 取得產業類股表現排行 `/api/market/sectors`
+### 2.3 取得產業類股表現排行 `/api/market/sectors?date=`
 * **Method**: `GET`
-* **Description**: 取得當日各細分產業類股的漲跌幅與資金流入額排行。
+* **Description**: 取得當日各細分產業類股的即時漲跌幅與成交金額排行。當日無資料時，自動往前尋找最近一個有效交易日。
 * **Response Schema (200 OK)**:
 ```json
 {
@@ -78,34 +95,44 @@
   "sectors": [
     {
       "name": "半導體",
-      "changePercent": 1.45,
-      "netAmount": 12450000000,
+      "change_pct": 1.45,
+      "turnover": 12450000000,
       "source": "TWSE"
     },
     {
-      "name": "航運業",
-      "changePercent": -1.82,
-      "netAmount": -3200000000,
+      "name": "航運",
+      "change_pct": -1.82,
+      "turnover": 3200000000,
       "source": "TWSE"
     }
   ]
 }
 ```
 
-### 2.4 取得三大法人大盤買賣超 `/api/market/institutional`
+### 2.4 取得三大法人大盤買賣超 `/api/market/institutional?date=&days=20`
 * **Method**: `GET`
-* **Description**: 取得外資、投信、自營商在加權市場現貨之合計買賣超金額。
+* **Description**: 取得外資、投信、自營商在加權市場現貨之合計買賣超金額，並提供近 N 日歷史趨勢。當日無資料時，自動往前尋找最近一個有效交易日。
 * **Response Schema (200 OK)**:
 ```json
 {
   "date": "2026-06-19",
-  "trades": {
-    "foreignNetBuy": 8520000000,
-    "investmentTrustNetBuy": 2410000000,
-    "dealerNetBuy": -1540000000,
-    "totalNetBuy": 9390000000,
-    "source": "TWSE"
-  }
+  "unit": "元",
+  "latest": {
+    "foreign": 8520000000,
+    "investment_trust": 2410000000,
+    "dealer": -1540000000,
+    "total": 9390000000
+  },
+  "trend": [
+    {
+      "date": "2026-06-19",
+      "foreign": 8520000000,
+      "investment_trust": 2410000000,
+      "dealer": -1540000000,
+      "total": 9390000000
+    }
+  ],
+  "source": "TWSE"
 }
 ```
 
@@ -119,12 +146,12 @@
   "data": [
     {
       "date": "2026-06-19",
-      "foreignHoldingRatio": 74.2,
-      "investmentTrustNetBuyQty": 1200,
-      "foreignNetBuyQty": 3500,
-      "dealerNetBuyQty": -450,
-      "marginBalance": 12500,
-      "shortBalance": 820,
+      "foreign_holding_ratio": 74.2,
+      "investment_trust_net_buy_qty": 1200,
+      "foreign_net_buy_qty": 3500,
+      "dealer_net_buy_qty": -450,
+      "margin_balance": 12500,
+      "short_balance": 820,
       "source": "TWSE"
     }
   ]
@@ -141,10 +168,10 @@
   "metrics": [
     {
       "date": "2026-Q1",
-      "peRatio": 24.5,
-      "pbRatio": 6.8,
-      "dividendYield": 2.45,
-      "revenueYoY": 15.4,
+      "pe_ratio": 24.5,
+      "pb_ratio": 6.8,
+      "dividend_yield": 2.45,
+      "revenue_yoy": 15.4,
       "eps": 8.7,
       "source": "TWSE"
     }
@@ -167,7 +194,7 @@
       "url": "#",
       "summary": "半導體供應鏈指出，台積電 3 奈米製程持續滿載，訂單已排至明年。",
       "sentiment": "positive",
-      "sentimentScore": 92,
+      "sentiment_score": 92,
       "source": "Anue 鉅亨"
     }
   ]

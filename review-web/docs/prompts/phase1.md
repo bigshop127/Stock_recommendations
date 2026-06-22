@@ -3,6 +3,7 @@
 > 你（Claude）正在協助使用者開發「**個股全面審視網**」。本檔是 Phase 1 工作說明。
 > **互動模式：你提供「希望看到的內容＋驗收標準＋schema 規格」並解答疑問；使用者自己寫 code；寫完你 review。不要你直接寫產品程式碼。**
 > ✅ 本檔已於 **2026-06-21 依 Phase 0 實際產出校正**（contracts.md / api.ts / Dashboard.tsx 都讀過）。下方 schema 為 Phase 1 權威規格，以本檔為準。
+> ✅ **2026-06-22：4 端點資料源已 Claude 實打驗證**，schema 含 C3/C4 修正，另列 5 處必修＋實作備註於 **§2.5**（開工前必讀）。
 
 ## 0. 先讀
 
@@ -54,7 +55,7 @@ GET /api/market/indices?range=1d|5d|1m
       "price": 22845.81,
       "change": 182.42,
       "change_pct": 0.81,
-      "volume": 382400000000,
+      "volume": 382400000000,   // ⚠️C4：MIS 指數頻道 v=null。只加權/櫃買有全市場成交值(MI_INDEX/OTC)，電子/金融/台指期 → null（optional，別硬湊）
       "intraday": [ { "t": "09:05", "v": 22810.2 } ],     // range=1d 用，無金鑰源可空陣列→sparkline 降級
       "history": [ { "date": "2026-06-12", "close": 22600.1 } ], // range=5d|1m 用
       "source": "TWSE MIS"
@@ -77,7 +78,8 @@ GET /api/market/breadth?date=
 GET /api/market/sectors?date=
 {
   "date": "YYYY-MM-DD",
-  "sectors": [ { "name": "半導體", "change_pct": 1.45, "net_amount": 12450000000, "source": "TWSE" } ]
+  // ⚠️C3：官方無「類股淨流入」乾淨來源 → net_amount 改 turnover(成交金額, BFIAMU)，或 Phase 1 先省
+  "sectors": [ { "name": "半導體", "change_pct": 1.45, "turnover": 12450000000, "source": "TWSE" } ]
 }
 
 GET /api/market/institutional?date=&days=20
@@ -90,11 +92,31 @@ GET /api/market/institutional?date=&days=20
 }
 ```
 
-**資料源建議**（實作時確認，能用官方免金鑰就別用 FinMind）：
-- 指數現值 → TWSE MIS（免金鑰）；台指期 → TAIFEX；sparkline `intraday` → TWSE MIS 當日分時；`history` → TWSE/yfinance(`^TWII`) 日收。
-- 廣度漲跌/漲跌停家數 → TWSE 每日收盤行情；MA 比例 → 沿用 Phase 0 算法。
-- 類股 → TWSE 分類指數日報。
-- 三大法人 → TWSE 三大法人買賣金額日報（免金鑰），`trend` 取近 `days` 個交易日。
+## 2.5 資料源實測確認與 5 處修正（2026-06-22，Claude 實打驗證）
+
+> 上面 §2 schema 已含 C3/C4 修正。下方為 4 端點資料源的**逐源實測結論**（用真實交易日 20260618/20260622 打過），全部可取、無死路。能用官方免金鑰就別用 FinMind。
+
+**✅ 實測可用（直接照用）**
+- **indices 指數現值** → TWSE MIS 指數頻道：`t00`加權 / `o00`櫃買 / `t13`電子工業 / `t17`金融保險（四個皆有效值，免金鑰）。
+- **台指期** → TAIFEX `getQuotes?objId=2`：回 `TX` 台指期，外加 `TE` 電子期、`TF` 金融期（電子/金融可用真期貨，不必縮放）。
+- **history 日收** → yfinance `^TWII`(加權) / `^TWOII`(櫃買) / `^TFNI`(金融) / `0053.TW`(電子ETF) / `0055.TW`(金融ETF)。
+- **breadth 漲跌家數** → TWSE `MI_INDEX?type=MS`，**表 7「漲跌證券數合計」取「股票」欄**（非「整體市場」），格式 `574(58)` → advancing=574 / limit_up=58。MA 比例沿用 Phase 0 算法（見 C-impl ⑥）。
+- **institutional 三大法人** → TWSE `BFI82U`（三大法人買賣金額日報，免金鑰，金額單位**元**）。
+
+**⚠️ 5 處必修（不改第一版上線當天就出事）**
+- **C1　電子/金融 sparkline 來源**：`^TELI`(電子) 5 天只回 1 根、5m 分時幾乎必空 → 電子改用 `0053.TW`/MIS `t13`/TAIFEX `TE`；金融 `^TFNI` 正常但建議比照 `0055.TW`/`TF`。無分時源時 sparkline 優雅降級不破版。
+- **C2（最大坑）即時 vs 盤後日期落差**：同一時刻 MIS/TAIFEX/yfinance=今日 live，但 TWSE 盤後報表（breadth/institutional/sectors）**最新只到前一交易日**（實測 06-22 當下只到 06-18）。每個盤後端點必須：打 today → 若 `stat!="OK"`（回「很抱歉，沒有符合條件的資料!」）→ **回溯到最近有資料的交易日** → 回傳實際解析到的 `date`。前端各區塊各顯示自己的 as-of 日（不一致是正常）。**不處理 → 盤後資料出爐前整頁像壞掉。**
+- **C3　sectors 來源要換**（schema 已改）：`type=MS` **沒有類股表**。各類股 change% → MIS 產業頻道 `tse_t11..t31`（z vs y 算，一次回約 21 個產業；**t 編號有缺號，用白名單對照別盲掃**）；各類股成交值 → TWSE `BFIAMU`。淨流入官方無乾淨源 → `net_amount`→`turnover` 或先省。
+- **C4　指數 volume**（schema 已改）：MIS 指數頻道 `v=null`（實測）。只有加權(MI_INDEX 大盤統計成交金額)、櫃買(OTC 對應報表) 有全市場成交值；電子/金融/台指期 → `volume:null`（optional）。
+- **C5　全域 NaN/Inf→null sanitizer**：依記憶 `engine-nan-json-500`，response 層至今**無**全域守衛（`/api/dashboard` 曾因此 500）。這批新端點更易生 NaN（prev=0 算漲跌幅、sparkline 缺洞、類股缺收盤）→ 在 FastAPI response 邊界加**一個**遞迴 NaN/Inf→null sanitizer（自訂 JSONResponse 或 middleware），別每端點各清；順手回頭保護舊端點。
+
+**🔧 較小實作備註（省來回）**
+- ① 欄名統一既有 `change_pct`/`prev_close`（engine `yfinance_client.get_market_snapshot` 已用此拼法），別出現 `change_percent`。
+- ② 架構分工：抓取一律 engine（新 client + `/market/*` router），gateway **只薄轉發** `/api/market/*`（比照現有 `/data` 透傳，**別在 Node 直打 TWSE**，違反 phase6「gateway 不重算」）。
+- ③ 可重用：MIS 指數/產業頻道重用 `twse_mis_client._ensure_cookie`/`get_json`（加 `get_index_quote(channels)`）；breadth/法人/類股成交值是全新盤後源 → 新開 `twse_report_client.py`（MI_INDEX/BFI82U/BFIAMU，目前皆不存在）。
+- ④ TAIFEX getQuotes 是 **JSON list、price/updown 是含逗號字串**（"48,145"）要 strip，與既有 `taifex_client` 的 CSV 下載是不同函式；跌日請確認 `updown` 帶負號（實測當天為漲日無法證實負號）。
+- ⑤ BFI82U 解析：自營=自營商(自行買賣)+自營商(避險) **兩列相加**；外資=外資及陸資(+外資自營商)；投信=投信；total=合計。`trend[]` 逐交易日迴圈（過去日不可變→快取）或用 FinMind `TaiwanStockTotalInstitutionalInvestors` 避免 N 次 HTTP。
+- ⑥ **`above_ma20/50_ratio` 範圍要誠實**：engine K線快取**只有被查過的股**（watchlist+臨時查），**非全市場 ~1800 檔**。要嘛明確定義 universe（0050 成分/watchlist）並標註，要嘛 Phase 1 先緩——別宣稱全市場卻只算幾檔。
 
 ## 3. 技術約束
 

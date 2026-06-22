@@ -90,3 +90,55 @@ def get_market_snapshot(on_date: str | None = None) -> dict:
         # 階段 3 regime gate 才實際運算；A/D 漲跌家數待補（FinMind 無乾淨單一集）
         "notes": "regime gate 於階段 3 計算；漲跌家數 A/D proxy 待補。",
     }
+
+
+def fetch_intraday_sparkline(symbol: str) -> list[dict]:
+    """獲取 yfinance 單日 5 分鐘 K 線，用於分時 sparkline (1d)。"""
+    try:
+        ticker = yf.Ticker(symbol)
+        df = ticker.history(period="1d", interval="5m", auto_adjust=True)
+        if df is None or df.empty:
+            return []
+        
+        # 轉成台北時間
+        try:
+            df.index = df.index.tz_convert("Asia/Taipei")
+        except Exception:
+            pass
+            
+        out = []
+        for t, row in df.iterrows():
+            close_val = row["Close"]
+            if pd.isna(close_val):
+                continue
+            out.append({
+                "t": t.strftime("%H:%M"),
+                "v": round(float(close_val), 2)
+            })
+        return out
+    except Exception:
+        return []
+
+
+def fetch_history_sparkline(symbol: str, range_str: str) -> list[dict]:
+    """獲取歷史收盤價，用於 5d 或 1m sparkline。"""
+    try:
+        period = "5d" if range_str == "5d" else "1mo"
+        ticker = yf.Ticker(symbol)
+        df = ticker.history(period=period, interval="1d", auto_adjust=True)
+        if df is None or df.empty:
+            return []
+            
+        out = []
+        for t, row in df.iterrows():
+            close_val = row["Close"]
+            if pd.isna(close_val):
+                continue
+            out.append({
+                "date": t.strftime("%Y-%m-%d"),
+                "close": round(float(close_val), 2)
+            })
+        return out
+    except Exception:
+        return []
+

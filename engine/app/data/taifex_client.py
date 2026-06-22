@@ -192,3 +192,44 @@ def fetch_pc_ratio(code: str, start: str, end: str) -> pd.DataFrame:
     pcRatioDown 端點查詢窗更窄 → 以 20 日小窗分段串接（容忍個別窗失敗）。
     """
     return _fetch_chunked(_pc_window, start, end, chunk_days=20, label="P/C ratio")
+
+
+def get_live_quotes() -> dict[str, dict]:
+    """取得台指期 (TX)、電子期 (TE)、金融期 (TF) 等近月即時合約報價。"""
+    from app.data.http import get_json
+    url = "https://www.taifex.com.tw/cht/quotesApi/getQuotes?objId=2"
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) financeapp-engine/2",
+        "Referer": "https://www.taifex.com.tw/cht/3/futContractsDate",
+    }
+    try:
+        payload = get_json(url, headers=headers)
+    except Exception as exc:
+        raise DataSourceError(f"TAIFEX quotes 請求失敗：{exc}") from exc
+        
+    if not isinstance(payload, list):
+        raise DataSourceError(f"TAIFEX quotes 非預期回應：{str(payload)[:200]}")
+    
+    out = {}
+    for item in payload:
+        contract = item.get("contract", "")
+        for prefix in ("TX", "TE", "TF"):
+            if contract.startswith(prefix) and prefix not in out:
+                try:
+                    price_val = float(item.get("price", "0").replace(",", ""))
+                    change_val = float(item.get("updown", "0").replace(",", ""))
+                    prev_close = price_val - change_val
+                    change_pct = (change_val / prev_close * 100) if prev_close != 0 else 0.0
+                    vol_val = float(item.get("ttlvol", "0").replace(",", ""))
+                except Exception:
+                    continue
+                out[prefix] = {
+                    "contract": contract,
+                    "name": item.get("contractName", ""),
+                    "price": price_val,
+                    "change": change_val,
+                    "change_pct": round(change_pct, 4),
+                    "volume": vol_val,
+                }
+    return out
+

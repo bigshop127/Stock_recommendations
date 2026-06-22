@@ -76,25 +76,25 @@ export const StockDetail: React.FC = () => {
     setChips({
       code: c,
       data: [
-        { date: '2026-06-19', foreignHoldingRatio: 74.2, investmentTrustNetBuyQty: 1200, foreignNetBuyQty: 3500, dealerNetBuyQty: -450, marginBalance: 12500, shortBalance: 820, source: 'TWSE' },
-        { date: '2026-06-18', foreignHoldingRatio: 74.1, investmentTrustNetBuyQty: 850, foreignNetBuyQty: -1200, dealerNetBuyQty: 120, marginBalance: 12350, shortBalance: 780, source: 'TWSE' },
-        { date: '2026-06-17', foreignHoldingRatio: 74.2, investmentTrustNetBuyQty: -320, foreignNetBuyQty: 4800, dealerNetBuyQty: 50, marginBalance: 12100, shortBalance: 900, source: 'TWSE' }
+        { date: '2026-06-19', foreign_holding_ratio: 74.2, investment_trust_net_buy_qty: 1200, foreign_net_buy_qty: 3500, dealer_net_buy_qty: -450, margin_balance: 12500, short_balance: 820, source: 'TWSE' },
+        { date: '2026-06-18', foreign_holding_ratio: 74.1, investment_trust_net_buy_qty: 850, foreign_net_buy_qty: -1200, dealer_net_buy_qty: 120, margin_balance: 12350, short_balance: 780, source: 'TWSE' },
+        { date: '2026-06-17', foreign_holding_ratio: 74.2, investment_trust_net_buy_qty: -320, foreign_net_buy_qty: 4800, dealer_net_buy_qty: 50, margin_balance: 12100, short_balance: 900, source: 'TWSE' }
       ]
     });
 
     setFundamentals({
       code: c,
       metrics: [
-        { date: '2026-Q1', peRatio: 24.5, pbRatio: 6.8, dividendYield: 2.45, revenueYoY: 15.4, eps: 8.7, source: 'TWSE' }
+        { date: '2026-Q1', pe_ratio: 24.5, pb_ratio: 6.8, dividend_yield: 2.45, revenue_yoy: 15.4, eps: 8.7, source: 'TWSE' }
       ]
     });
 
     setNews({
       code: c,
       news: [
-        { id: '1', title: '台積電 3 奈米產能供不應求，傳蘋果與超微包下產能', date: '2026-06-20', url: '#', summary: '半導體供應鏈指出，台積電 3 奈米製程持續滿載，訂單已排至明年。', sentiment: 'positive', sentimentScore: 92, source: 'Anue 鉅亨' },
-        { id: '2', title: '外資持續回流！單日大舉買超台積電逾 3,500 張', date: '2026-06-19', url: '#', summary: '受到美股 ADR 大漲鼓舞，外資現貨市場再度成為推升台積電股價的主力。', sentiment: 'positive', sentimentScore: 88, source: '經濟日報' },
-        { id: '3', title: '地緣政治風險升溫，分析師示警供應鏈過度集中之疑慮', date: '2026-06-18', url: '#', summary: '地緣政治智庫指出，雖然台積電技術領先，但集中在台海的製造產能仍面臨宏觀風險挑戰。', sentiment: 'neutral', sentimentScore: 50, source: '工商時報' }
+        { id: '1', title: '台積電 3 奈米產能供不應求，傳蘋果與超微包下產能', date: '2026-06-20', url: '#', summary: '半導體供應鏈指出，台積電 3 奈米製程持續滿載，訂單已排至明年。', sentiment: 'positive', sentiment_score: 92, source: 'Anue 鉅亨' },
+        { id: '2', title: '外資持續回流！單日大舉買超台積電逾 3,500 張', date: '2026-06-19', url: '#', summary: '受到美股 ADR 大漲鼓舞，外資現貨市場再度成為推升台積電股價的主力。', sentiment: 'positive', sentiment_score: 88, source: '經濟日報' },
+        { id: '3', title: '地緣政治風險升溫，分析師示警供應鏈過度集中之疑慮', date: '2026-06-18', url: '#', summary: '地緣政治智庫指出，雖然台積電技術領先，但集中在台海的製造產能仍面臨宏觀風險挑戰。', sentiment: 'neutral', sentiment_score: 50, source: '工商時報' }
       ]
     });
   };
@@ -134,7 +134,7 @@ export const StockDetail: React.FC = () => {
           </div>
           {isMock && (
             <span className="text-[10px] bg-neutral/10 border border-neutral/20 text-neutral px-2 py-1 rounded-md font-mono">
-              Phase 0: Mock Mode
+              Phase 1: Mock Mode
             </span>
           )}
           <button
@@ -154,7 +154,7 @@ export const StockDetail: React.FC = () => {
         </div>
       ) : (
         <div className="space-y-6">
-          {/* 主區塊 1: 輕量 K 線圖佔位與基本資訊 */}
+          {/* 主區塊 1: K 線圖佔位與基本資訊 */}
           <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
             {/* K 線圖 */}
             <div className="xl:col-span-2 bg-card border border-border rounded-xl p-6 flex flex-col justify-between min-h-[350px]">
@@ -228,14 +228,14 @@ export const StockDetail: React.FC = () => {
                     {chips?.data.map((row) => (
                       <tr key={row.date} className="border-b border-border/30 last:border-0 hover:bg-zinc-800/10">
                         <td className="py-2.5 font-mono text-zinc-300">{row.date}</td>
-                        <td className={`py-2.5 text-right font-mono font-medium ${row.investmentTrustNetBuyQty >= 0 ? 'text-bull' : 'text-bear'}`}>
-                          {row.investmentTrustNetBuyQty > 0 ? '+' : ''}{row.investmentTrustNetBuyQty}
+                        <td className={`py-2.5 text-right font-mono font-medium ${row.investment_trust_net_buy_qty >= 0 ? 'text-bull' : 'text-bear'}`}>
+                          {row.investment_trust_net_buy_qty > 0 ? '+' : ''}{row.investment_trust_net_buy_qty}
                         </td>
-                        <td className={`py-2.5 text-right font-mono font-medium ${row.foreignNetBuyQty >= 0 ? 'text-bull' : 'text-bear'}`}>
-                          {row.foreignNetBuyQty > 0 ? '+' : ''}{row.foreignNetBuyQty}
+                        <td className={`py-2.5 text-right font-mono font-medium ${row.foreign_net_buy_qty >= 0 ? 'text-bull' : 'text-bear'}`}>
+                          {row.foreign_net_buy_qty > 0 ? '+' : ''}{row.foreign_net_buy_qty}
                         </td>
-                        <td className="py-2.5 text-right font-mono text-zinc-300">{row.foreignHoldingRatio}%</td>
-                        <td className="py-2.5 text-right font-mono text-zinc-400">{row.marginBalance.toLocaleString()}</td>
+                        <td className="py-2.5 text-right font-mono text-zinc-300">{row.foreign_holding_ratio}%</td>
+                        <td className="py-2.5 text-right font-mono text-zinc-400">{row.margin_balance.toLocaleString()}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -253,19 +253,19 @@ export const StockDetail: React.FC = () => {
                 <div className="grid grid-cols-2 gap-4">
                   <div className="bg-zinc-950/40 p-4 rounded-lg border border-border/30">
                     <div className="text-[10px] text-zinc-500">本益比 (PE Ratio)</div>
-                    <div className="text-base font-semibold font-mono text-zinc-100 mt-1">{fundamentals.metrics[0].peRatio}x</div>
+                    <div className="text-base font-semibold font-mono text-zinc-100 mt-1">{fundamentals.metrics[0].pe_ratio}x</div>
                   </div>
                   <div className="bg-zinc-950/40 p-4 rounded-lg border border-border/30">
                     <div className="text-[10px] text-zinc-500">股淨比 (PB Ratio)</div>
-                    <div className="text-base font-semibold font-mono text-zinc-100 mt-1">{fundamentals.metrics[0].pbRatio}x</div>
+                    <div className="text-base font-semibold font-mono text-zinc-100 mt-1">{fundamentals.metrics[0].pb_ratio}x</div>
                   </div>
                   <div className="bg-zinc-950/40 p-4 rounded-lg border border-border/30">
                     <div className="text-[10px] text-zinc-500">現金殖利率 (Yield)</div>
-                    <div className="text-base font-semibold font-mono text-zinc-100 mt-1">{fundamentals.metrics[0].dividendYield}%</div>
+                    <div className="text-base font-semibold font-mono text-zinc-100 mt-1">{fundamentals.metrics[0].dividend_yield}%</div>
                   </div>
                   <div className="bg-zinc-950/40 p-4 rounded-lg border border-border/30">
                     <div className="text-[10px] text-zinc-500">單季營收年增率 (YoY)</div>
-                    <div className="text-base font-semibold font-mono text-bull mt-1">+{fundamentals.metrics[0].revenueYoY}%</div>
+                    <div className="text-base font-semibold font-mono text-bull mt-1">+{fundamentals.metrics[0].revenue_yoy}%</div>
                   </div>
                 </div>
               )}
@@ -284,7 +284,7 @@ export const StockDetail: React.FC = () => {
                   <div className={`shrink-0 text-[10px] font-semibold px-2 py-1 rounded ${
                     item.sentiment === 'positive' ? 'bg-bull/10 text-bull' : item.sentiment === 'negative' ? 'bg-bear/10 text-bear' : 'bg-zinc-800 text-zinc-400'
                   }`}>
-                    {item.sentiment.toUpperCase()} ({item.sentimentScore}分)
+                    {item.sentiment.toUpperCase()} ({item.sentiment_score}分)
                   </div>
                   <div className="space-y-1">
                     <h4 className="text-xs font-semibold text-zinc-200 hover:text-primary transition">
