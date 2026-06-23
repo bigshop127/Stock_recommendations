@@ -42,6 +42,7 @@ const T = {
   chips: 60000,   // FinMind 個股籌碼時序
   book: 15000,    // 即時五檔 live snapshot（TWSE MIS，快）
   intraday: 45000, // 富果盤中分K
+  fundamentals: 90000, // 給長一點 timeout，多 dataset 首抓慢
 };
 
 const dateParams = (date) => (date ? { date } : {});
@@ -220,6 +221,15 @@ router.get('/api/stocks/:code/chips', async (req, res) => {
   if (end) params.end = end;
   try {
     res.json(await engineGet('/data/chips', params, T.chips));
+  } catch (err) {
+    sendError(res, err);
+  }
+});
+
+// ── GET /api/stocks/:code/fundamentals ── 個股基本面聚合（估值/營收/EPS/股利/summary）──
+router.get('/api/stocks/:code/fundamentals', async (req, res) => {
+  try {
+    res.json(await engineGet('/data/fundamentals', { code: req.params.code }, T.fundamentals));
   } catch (err) {
     sendError(res, err);
   }

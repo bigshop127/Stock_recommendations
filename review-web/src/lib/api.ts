@@ -317,18 +317,58 @@ export interface StockChips {
   source: string;
 }
 
-export interface FundamentalMetric {
-  date: string;
-  pe_ratio: number;
-  pb_ratio: number;
-  dividend_yield: number;
-  revenue_yoy: number;
-  eps: number;
-  source: string;
+export interface FundamentalSummary {
+  pe_ratio: number | null;
+  pb_ratio: number | null;
+  dividend_yield: number | null;
+  market_cap: number | null;
+  eps_ttm: number | null;
 }
+
+export interface ValuationRow {
+  date: string;
+  pe_ratio: number | null;
+  pb_ratio: number | null;
+  dividend_yield: number | null;
+}
+
+export interface RevenueRow {
+  month: string;
+  revenue: number | null;
+  yoy: number | null;
+  mom: number | null;
+}
+
+export interface FinancialsRow {
+  quarter: string;
+  eps: number | null;
+  gross_margin: number | null;
+  operating_margin: number | null;
+  net_margin: number | null;
+}
+
+export interface DividendRow {
+  year: string;
+  cash_dividend: number | null;
+  stock_dividend: number | null;
+}
+
 export interface StockFundamentals {
   code: string;
-  metrics: FundamentalMetric[];
+  name: string | null;
+  as_of: string;
+  summary: FundamentalSummary;
+  valuation: ValuationRow[];
+  revenue: RevenueRow[];
+  financials: FinancialsRow[];
+  dividend: DividendRow[];
+  unit: {
+    revenue: string;
+    market_cap: string;
+    dividend: string;
+    ratio: string;
+  };
+  source: string;
 }
 
 export interface NewsItem {

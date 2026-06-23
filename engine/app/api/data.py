@@ -64,6 +64,13 @@ def chips(
     return _guard(service.get_chips_series, code, start, end, days)
 
 
+@router.get("/fundamentals", summary="基本面：估值 + 月營收 + 獲利能力 + 股利政策（FinMind，可回測）")
+def fundamentals(
+    code: str = Query(..., description="台股代號，例 2330"),
+):
+    return _guard(service.get_fundamentals, code)
+
+
 
 @router.get("/book", summary="即時最佳五檔（預設 TWSE MIS 免費；富果可選；live-only）")
 def book(code: str = Query(..., description="台股代號，例 2330")):

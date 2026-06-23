@@ -1,7 +1,7 @@
 # 個股全面審視網 — 專案總綱 ROADMAP
 
 > 單一事實來源（SSOT）。任何進度／更新／優化都先改這份，再同步 Obsidian vault `C:\obsidian\儲存庫\個股全面審視網` 與 `.claude` 記憶。
-> 建立日：2026-06-21。狀態：**Phase 0–2 ✅ 完工。Phase 2（個股殼＋報價頭部＋K線）2026-06-22 實作完成並通過 Claude review（§4 全項實測 + build 過：lightweight-charts v4 日K/分K切換、五檔買紅賣綠+5s poll、6 區塊真實降級、首頁 watchlist 導航）。下一步 Phase 3（個股籌碼面）。**
+> 建立日：2026-06-21。狀態：**Phase 0–4 ✅ 完工。Phase 4（基本面・財報）2026-06-23 實作完成並通過 Claude review：`/api/stocks/:code/fundamentals`（估值日/月營收/季財報/年股利 + summary），修正兩個快取增量正確性缺陷（股利年度加總、營收 YoY/MoM 一律移至 service 層對完整序列計算）、補真實單元測試（pivot/三率/YoY/股利加總）；engine pytest 65 passed、review-web build 過。下一步 Phase 5（技術面 MA/MACD/KD/RSI/布林）。**
 
 ---
 
@@ -87,8 +87,8 @@ Python engine  FastAPI :8000         ← 既有，本案會新增 /data 或 /mar
 | **0** | 骨架與契約盤點 | Vite 腳手架、Tailwind/設計 token、RWD 斷點策略、路由（`/` 首頁 + `/stock/:code`）、`/api` client、PWA 殼、正式版契約盤點文件 | 無（純盤點） | ✅ 已完工 |
 | **1** | 盤勢總覽（完整） | 首頁：指數卡(+sparkline)、大盤水位、廣度/強弱(+20/50MA)、**類股熱力圖**、**市場三大法人買賣超總覽(近N日趨勢)**、自選/焦點股入口；順手收 snake_case 遷移 + mock 降級債 | `engine` + `gateway`：`/api/market/{indices,breadth,sectors,institutional}`（snake_case、indices 含 intraday/history、institutional 含 trend、breadth 含 limit_up/down+total） | ✅ 已完工 (2026-06-22) |
 | **2** | 個股殼＋報價頭部＋K線 | `/stock/:code` 多欄殼、報價頭部、K線（還原價/日K/分K切換、五檔） | 沿用既有（市值/PE 留 Phase 4） | ✅ 已完工 (2026-06-22) |
-| **3** | 個股籌碼面（重點） | 三大法人買賣超日/累計趨勢、融資券、（可選借券/大戶持股） | `/api/stocks/:code/chips` | — |
-| **4** | 基本面・財報 | 估值 PE/PB/殖利率、營收 YoY/MoM、EPS 趨勢、財報摘要；回填報價頭部市值/PE | `/api/stocks/:code/fundamentals` | — |
+| **3** | 個股籌碼面（重點） | 三大法人買賣超日/累計趨勢、融資券、（可選借券/大戶持股） | `/api/stocks/:code/chips` | ✅ 已完工 (2026-06-23) |
+| **4** | 基本面・財報 | 估值 PE/PB/殖利率、營收 YoY/MoM、EPS 趨勢、財報摘要；回填報價頭部市值/PE | `/api/stocks/:code/fundamentals` | ✅ 已完工 (2026-06-23) |
 | **5** | 技術面 | MA/MACD/KD/RSI/布林疊圖、量價、型態標註、技術因子分呈現 | 多由前端用 `ohlcv` 自算（必要時補端點） | — |
 | **6** | 新聞輿情・情緒 | 新聞列表、情緒標記、事件時間線 | `/api/stocks/:code/news` | — |
 | **7** | AI 全面審視（招牌） | 複用 `agents/decide` 多 agent 敘事+評分，分段（公司/基本面/技術/籌碼/新聞/風險），按鈕觸發+localStorage 快取 | 沿用既有（必要時加輕量摘要端點省 token） | — |

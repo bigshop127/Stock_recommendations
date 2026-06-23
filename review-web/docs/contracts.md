@@ -166,24 +166,37 @@
 
 ### 2.6 取得個股基本面診斷 `/api/stocks/:code/fundamentals`
 * **Method**: `GET`
-* **Description**: 取得本益比、股價淨值比、殖利率及營收年增率。
+* **Description**: 取得個股估值（日頻）、月營收（月頻）、獲利 EPS（季頻）、股利（年頻）與最新 summary 快照。
 * **Response Schema (200 OK)**:
 ```json
 {
   "code": "2330",
-  "metrics": [
-    {
-      "date": "2026-Q1",
-      "pe_ratio": 24.5,
-      "pb_ratio": 6.8,
-      "dividend_yield": 2.45,
-      "revenue_yoy": 15.4,
-      "eps": 8.7,
-      "source": "TWSE"
-    }
-  ]
+  "name": "台積電",
+  "as_of": "2026-06-19",
+  "summary": {
+    "pe_ratio": 24.5,
+    "pb_ratio": 6.8,
+    "dividend_yield": 2.45,
+    "market_cap": 18250000000000,
+    "eps_ttm": 42.1
+  },
+  "valuation": [
+    { "date": "2026-06-19", "pe_ratio": 24.5, "pb_ratio": 6.8, "dividend_yield": 2.45 }
+  ],
+  "revenue": [
+    { "month": "2026-05", "revenue": 250000000000, "yoy": 15.4, "mom": -2.1 }
+  ],
+  "financials": [
+    { "quarter": "2026-Q1", "eps": 8.7, "gross_margin": 56.2, "operating_margin": 42.1, "net_margin": 38.5 }
+  ],
+  "dividend": [
+    { "year": "2025", "cash_dividend": 13.5, "stock_dividend": 0.0 }
+  ],
+  "unit": { "revenue": "元", "market_cap": "元", "dividend": "元/股", "ratio": "%" },
+  "source": "FinMind"
 }
 ```
+
 
 ### 2.7 取得個股即時新聞與輿情 `/api/stocks/:code/news`
 * **Method**: `GET`

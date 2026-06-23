@@ -17,6 +17,12 @@ export const StockDetail: React.FC = () => {
   const [chipsState, setChipsState] = useState<{ data: StockChips | null; loading: boolean; error: string | null }>({ data: null, loading: true, error: null });
   const [fundamentalsState, setFundamentalsState] = useState<{ data: StockFundamentals | null; loading: boolean; error: string | null }>({ data: null, loading: true, error: null });
   const [newsState, setNewsState] = useState<{ data: StockNews | null; loading: boolean; error: string | null }>({ data: null, loading: true, error: null });
+  const [fundTab, setFundTab] = useState<'valuation' | 'revenue' | 'financials' | 'dividend'>('valuation');
+  const [fundHoverIdx, setFundHoverIdx] = useState<number | null>(null);
+
+  useEffect(() => {
+    setFundHoverIdx(null);
+  }, [fundTab, activeCode]);
 
   // Refresh & Polling
   const [autoPoll, setAutoPoll] = useState(false);
@@ -104,9 +110,55 @@ export const StockDetail: React.FC = () => {
   const getMockFundamentals = (c: string): StockFundamentals => {
     return {
       code: c,
-      metrics: [
-        { date: '2026-Q1', pe_ratio: 24.5, pb_ratio: 6.8, dividend_yield: 2.45, revenue_yoy: 15.4, eps: 8.7, source: 'TWSE' }
-      ]
+      name: c === '2330' ? '台積電' : c === '2454' ? '聯發科' : '鴻海',
+      as_of: '2026-06-19',
+      summary: {
+        pe_ratio: 24.5,
+        pb_ratio: 6.8,
+        dividend_yield: 2.45,
+        market_cap: c === '2330' ? 18250000000000 : c === '2454' ? 2200000000000 : 2900000000000,
+        eps_ttm: 42.1
+      },
+      valuation: [
+        { date: '2025-06-19', pe_ratio: 22.0, pb_ratio: 6.0, dividend_yield: 2.70 },
+        { date: '2025-09-19', pe_ratio: 23.1, pb_ratio: 6.3, dividend_yield: 2.60 },
+        { date: '2025-12-19', pe_ratio: 23.5, pb_ratio: 6.4, dividend_yield: 2.55 },
+        { date: '2026-03-19', pe_ratio: 24.0, pb_ratio: 6.6, dividend_yield: 2.50 },
+        { date: '2026-06-19', pe_ratio: 24.5, pb_ratio: 6.8, dividend_yield: 2.45 }
+      ],
+      revenue: [
+        { month: '2025-10', revenue: 235000000000, yoy: 12.5, mom: 5.2 },
+        { month: '2025-11', revenue: 240000000000, yoy: 14.1, mom: 2.1 },
+        { month: '2025-12', revenue: 245000000000, yoy: 15.0, mom: 2.08 },
+        { month: '2026-01', revenue: 230000000000, yoy: 11.2, mom: -6.1 },
+        { month: '2026-02', revenue: 220000000000, yoy: 9.8, mom: -4.3 },
+        { month: '2026-03', revenue: 240000000000, yoy: 13.4, mom: 9.1 },
+        { month: '2026-04', revenue: 245000000000, yoy: 14.2, mom: 2.08 },
+        { month: '2026-05', revenue: 250000000000, yoy: 15.4, mom: 2.04 }
+      ],
+      financials: [
+        { quarter: '2024-Q3', eps: 7.2, gross_margin: 54.1, operating_margin: 40.2, net_margin: 36.1 },
+        { quarter: '2024-Q4', eps: 8.1, gross_margin: 54.8, operating_margin: 40.8, net_margin: 36.9 },
+        { quarter: '2025-Q1', eps: 8.3, gross_margin: 55.0, operating_margin: 41.0, net_margin: 37.1 },
+        { quarter: '2025-Q2', eps: 8.5, gross_margin: 55.5, operating_margin: 41.5, net_margin: 37.8 },
+        { quarter: '2025-Q3', eps: 9.2, gross_margin: 56.0, operating_margin: 42.0, net_margin: 38.2 },
+        { quarter: '2025-Q4', eps: 9.5, gross_margin: 55.8, operating_margin: 41.8, net_margin: 38.0 },
+        { quarter: '2026-Q1', eps: 8.7, gross_margin: 56.2, operating_margin: 42.1, net_margin: 38.5 }
+      ],
+      dividend: [
+        { year: '2021', cash_dividend: 11.0, stock_dividend: 0.0 },
+        { year: '2022', cash_dividend: 11.0, stock_dividend: 0.0 },
+        { year: '2023', cash_dividend: 11.5, stock_dividend: 0.0 },
+        { year: '2024', cash_dividend: 13.0, stock_dividend: 0.0 },
+        { year: '2025', cash_dividend: 13.5, stock_dividend: 0.0 }
+      ],
+      unit: {
+        revenue: '元',
+        market_cap: '元',
+        dividend: '元/股',
+        ratio: '%'
+      },
+      source: 'FinMind (Mock)'
     };
   };
 
@@ -387,6 +439,18 @@ export const StockDetail: React.FC = () => {
       return 'text-zinc-400';
     };
 
+    const fundamentals = fundamentalsState.data;
+    const pe = fundamentals?.summary?.pe_ratio;
+    const mc = fundamentals?.summary?.market_cap;
+    const peValText = pe !== undefined && pe !== null ? `${pe.toFixed(1)}x` : '--';
+    const marketCapText = mc !== undefined && mc !== null
+      ? mc >= 1e12
+        ? `${(mc / 1e12).toFixed(2)} 兆`
+        : mc >= 1e8
+          ? `${(mc / 1e8).toFixed(1)} 億`
+          : `${mc.toLocaleString()} 元`
+      : '—';
+
     return (
       <div className="flex items-center justify-between flex-wrap gap-4 w-full bg-card border border-border rounded-xl p-4 sm:p-6">
         <div className="flex items-center gap-3">
@@ -414,7 +478,7 @@ export const StockDetail: React.FC = () => {
           </div>
         </div>
 
-        <div className="grid grid-cols-2 sm:grid-cols-5 gap-x-6 gap-y-2 border-t sm:border-t-0 sm:border-l border-border/80 pt-3 sm:pt-0 sm:pl-6 text-xs font-mono w-full sm:w-auto">
+        <div className="grid grid-cols-2 sm:grid-cols-7 gap-x-4 gap-y-2 border-t sm:border-t-0 sm:border-l border-border/80 pt-3 sm:pt-0 sm:pl-6 text-xs font-mono w-full sm:w-auto">
           <div>
             <div className="text-zinc-500 text-[10px]">開盤</div>
             <div className={`font-semibold mt-0.5 ${book?.day?.open ? getPriceColor(book.day.open) : 'text-zinc-400'}`}>
@@ -439,7 +503,19 @@ export const StockDetail: React.FC = () => {
               {book?.day?.prev_close?.toFixed(1) || '--'}
             </div>
           </div>
-          <div className="col-span-2 sm:col-span-1">
+          <div>
+            <div className="text-zinc-500 text-[10px]">本益比</div>
+            <div className="text-zinc-300 font-semibold mt-0.5">
+              {peValText}
+            </div>
+          </div>
+          <div>
+            <div className="text-zinc-500 text-[10px]">市值</div>
+            <div className="text-zinc-300 font-semibold mt-0.5 whitespace-nowrap">
+              {marketCapText}
+            </div>
+          </div>
+          <div>
             <div className="text-zinc-500 text-[10px]">成交量</div>
             <div className="text-zinc-300 font-semibold mt-0.5">
               {book?.total?.trade_volume !== undefined && book?.total?.trade_volume !== null ? `${book.total.trade_volume.toLocaleString()} 張` : '--'}
@@ -537,6 +613,957 @@ export const StockDetail: React.FC = () => {
             <div className="bg-bull h-full transition-all duration-300" style={{ width: `${bidPct}%` }} />
             <div className="bg-bear h-full transition-all duration-300" style={{ width: `${askPct}%` }} />
           </div>
+        </div>
+      </div>
+    );
+  };
+
+  const renderFundamentals = () => {
+    if (fundamentalsState.loading) {
+      return <div className="text-xs text-zinc-500 animate-pulse text-center py-16">載入基本面資料中...</div>;
+    }
+    if (fundamentalsState.error) {
+      return (
+        <div className="p-6 border border-bull/20 bg-bull/5 rounded-lg text-center">
+          <p className="text-xs text-bull font-semibold mb-2">無法取得基本面資料</p>
+          <p className="text-[10px] text-zinc-500 font-mono mb-4">{fundamentalsState.error}</p>
+          <button
+            onClick={fetchFundamentals}
+            className="px-3 py-1 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded text-xs transition border border-border"
+          >
+            重試
+          </button>
+        </div>
+      );
+    }
+    const data = fundamentalsState.data;
+    if (!data) return <div className="text-xs text-zinc-500 text-center py-16">無基本面資料</div>;
+
+    // Helper to calculate percentile label
+    const getPercentileLabel = (current: number | null | undefined, history: (number | null)[]) => {
+      if (current === undefined || current === null) return null;
+      const validHistory = history.filter((v): v is number => v !== null && v !== undefined);
+      if (validHistory.length === 0) return null;
+      const sorted = [...validHistory].sort((a, b) => a - b);
+      const index = sorted.findIndex(v => v >= current);
+      const pct = (index / sorted.length) * 100;
+      if (pct < 25) return { label: '近一年偏低', pct, color: 'text-zinc-400 bg-zinc-800 border-zinc-700' };
+      if (pct > 75) return { label: '近一年偏高', pct, color: 'text-zinc-300 bg-zinc-800 border-zinc-700' };
+      return { label: '近一年適中', pct, color: 'text-zinc-400 bg-zinc-850 border-zinc-800' };
+    };
+
+    const formatMC = (mc: number | null | undefined) => {
+      if (mc === undefined || mc === null) return '—';
+      if (mc >= 1e12) return `${(mc / 1e12).toFixed(2)} 兆`;
+      if (mc >= 1e8) return `${(mc / 1e8).toFixed(1)} 億`;
+      return `${mc.toLocaleString()} 元`;
+    };
+
+    const fmt = (v: number) => {
+      if (Math.abs(v) >= 1000000000000) return `${(v / 1000000000000).toFixed(2)}T`;
+      if (Math.abs(v) >= 100000000) return `${(v / 100000000).toFixed(1)}Y`;
+      if (Math.abs(v) >= 1000) return `${(v / 1000).toFixed(0)}k`;
+      return v.toFixed(0);
+    };
+
+    return (
+      <div className="flex flex-col h-full justify-between">
+        {/* Tab selection */}
+        <div className="flex border-b border-border/60 mb-4 bg-zinc-950/20 p-0.5 rounded-lg shrink-0">
+          {(['valuation', 'revenue', 'financials', 'dividend'] as const).map((tab) => (
+            <button
+              key={tab}
+              onClick={() => { setFundTab(tab); setFundHoverIdx(null); }}
+              className={`flex-1 py-1.5 text-xs font-medium rounded-md transition-all ${
+                fundTab === tab
+                  ? 'bg-zinc-800 text-zinc-100 shadow-sm'
+                  : 'text-zinc-400 hover:text-zinc-200'
+              }`}
+            >
+              {tab === 'valuation' && '估值分析'}
+              {tab === 'revenue' && '月營收趨勢'}
+              {tab === 'financials' && '獲利能力'}
+              {tab === 'dividend' && '股利政策'}
+            </button>
+          ))}
+        </div>
+
+        {/* Tab Content */}
+        <div className="flex-1 flex flex-col justify-between min-h-[220px]">
+          {fundTab === 'valuation' && (() => {
+            const valuation = data.valuation || [];
+            if (valuation.length === 0) {
+              return <div className="text-xs text-zinc-500 text-center py-16">估值分析資料尚未提供</div>;
+            }
+            const pe = data.summary?.pe_ratio;
+            const pb = data.summary?.pb_ratio;
+            const dy = data.summary?.dividend_yield;
+            const mc = data.summary?.market_cap;
+
+            const peLabel = getPercentileLabel(pe, valuation.map(v => v.pe_ratio));
+            const pbLabel = getPercentileLabel(pb, valuation.map(v => v.pb_ratio));
+
+            const svgWidth = 520;
+            const svgHeight = 150;
+            const paddingLeft = 45;
+            const paddingRight = 15;
+            const paddingTop = 15;
+            const paddingBottom = 20;
+            const plotWidth = svgWidth - paddingLeft - paddingRight;
+            const plotHeight = svgHeight - paddingTop - paddingBottom;
+            const stepX = plotWidth / (valuation.length - 1 || 1);
+
+            const peVals = valuation.map(v => v.pe_ratio).filter((v): v is number => v !== null);
+            const maxPE = peVals.length > 0 ? Math.max(...peVals) : 35;
+            const minPE = peVals.length > 0 ? Math.min(...peVals) : 10;
+            const peDiff = maxPE - minPE || 1;
+            const peMaxY = maxPE + peDiff * 0.1;
+            const peMinY = Math.max(0, minPE - peDiff * 0.1);
+
+            const hoverRow = fundHoverIdx !== null ? valuation[fundHoverIdx] : null;
+
+            return (
+              <div className="space-y-4">
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                  <div className="bg-zinc-950/40 p-3 rounded-lg border border-border/30">
+                    <div className="text-[10px] text-zinc-500 font-medium">本益比 (PE)</div>
+                    <div className="text-sm font-semibold mt-1 font-mono text-zinc-100 flex items-baseline gap-1.5 flex-wrap">
+                      {pe !== null ? `${pe.toFixed(1)}x` : '—'}
+                      {peLabel && (
+                        <span className={`text-[9px] px-1.5 py-0.5 rounded border leading-none ${peLabel.color}`}>
+                          {peLabel.label}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                  <div className="bg-zinc-950/40 p-3 rounded-lg border border-border/30">
+                    <div className="text-[10px] text-zinc-500 font-medium">股淨比 (PB)</div>
+                    <div className="text-sm font-semibold mt-1 font-mono text-zinc-100 flex items-baseline gap-1.5 flex-wrap">
+                      {pb !== null ? `${pb.toFixed(1)}x` : '—'}
+                      {pbLabel && (
+                        <span className={`text-[9px] px-1.5 py-0.5 rounded border leading-none ${pbLabel.color}`}>
+                          {pbLabel.label}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                  <div className="bg-zinc-950/40 p-3 rounded-lg border border-border/30">
+                    <div className="text-[10px] text-zinc-500 font-medium">殖利率</div>
+                    <div className="text-sm font-semibold mt-1 font-mono text-zinc-100">
+                      {dy !== null ? `${dy.toFixed(2)}%` : '—'}
+                    </div>
+                  </div>
+                  <div className="bg-zinc-950/40 p-3 rounded-lg border border-border/30">
+                    <div className="text-[10px] text-zinc-500 font-medium">市值</div>
+                    <div className="text-sm font-semibold mt-1 font-mono text-zinc-100">
+                      {formatMC(mc)}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="relative bg-zinc-950/30 rounded-xl border border-border/40 p-2 h-[150px]">
+                  <svg
+                    width="100%"
+                    height="100%"
+                    viewBox={`0 0 ${svgWidth} ${svgHeight}`}
+                    preserveAspectRatio="xMidYMid meet"
+                    className="overflow-visible select-none cursor-crosshair"
+                    onMouseMove={(e) => {
+                      const svgRect = e.currentTarget.getBoundingClientRect();
+                      const mouseX = e.clientX - svgRect.left - paddingLeft;
+                      if (mouseX < -stepX / 2 || mouseX > plotWidth + stepX / 2) {
+                        setFundHoverIdx(null);
+                        return;
+                      }
+                      const idx = Math.max(0, Math.min(valuation.length - 1, Math.round(mouseX / stepX)));
+                      setFundHoverIdx(idx);
+                    }}
+                    onMouseLeave={() => setFundHoverIdx(null)}
+                  >
+                    {/* Grid lines */}
+                    {[0, 0.25, 0.5, 0.75, 1].map((val) => {
+                      const y = paddingTop + val * plotHeight;
+                      return (
+                        <line
+                          key={val}
+                          x1={paddingLeft}
+                          y1={y}
+                          x2={svgWidth - paddingRight}
+                          y2={y}
+                          stroke="#27272a"
+                          strokeWidth="1"
+                          strokeDasharray="2,2"
+                        />
+                      );
+                    })}
+
+                    {/* Y-axis labels */}
+                    <text x={paddingLeft - 8} y={paddingTop + 4} textAnchor="end" className="fill-zinc-500 font-mono text-[9px]">
+                      {peMaxY.toFixed(1)}x
+                    </text>
+                    <text x={paddingLeft - 8} y={paddingTop + plotHeight + 3} textAnchor="end" className="fill-zinc-500 font-mono text-[9px]">
+                      {peMinY.toFixed(1)}x
+                    </text>
+
+                    {/* PE line */}
+                    {(() => {
+                      const points = valuation.map((v, idx) => {
+                        const val = v.pe_ratio ?? peMinY;
+                        const x = paddingLeft + idx * stepX;
+                        const y = paddingTop + plotHeight - ((val - peMinY) / (peMaxY - peMinY || 1)) * plotHeight;
+                        return `${x},${y}`;
+                      }).join(' ');
+                      return <polyline points={points} fill="none" stroke="#6366f1" strokeWidth="1.75" opacity={fundHoverIdx === null ? 0.9 : 0.4} />;
+                    })()}
+
+                    {/* Active dot */}
+                    {valuation.map((v, idx) => {
+                      if (fundHoverIdx !== idx || v.pe_ratio === null) return null;
+                      const x = paddingLeft + idx * stepX;
+                      const y = paddingTop + plotHeight - ((v.pe_ratio - peMinY) / (peMaxY - peMinY || 1)) * plotHeight;
+                      return (
+                        <circle key={`pe-dot-${idx}`} cx={x} cy={y} r="4" fill="#6366f1" stroke="#09090b" strokeWidth="1" />
+                      );
+                    })}
+
+                    {/* X-axis labels */}
+                    {(() => {
+                      const count = valuation.length;
+                      const indices = [0, Math.floor(count / 2), count - 1];
+                      return indices.map((idx) => {
+                        const row = valuation[idx];
+                        if (!row) return null;
+                        const x = paddingLeft + idx * stepX;
+                        let textAnchor: 'start' | 'middle' | 'end' = 'middle';
+                        if (idx === 0) textAnchor = 'start';
+                        if (idx === count - 1) textAnchor = 'end';
+                        return (
+                          <text key={`lbl-${idx}`} x={x} y={paddingTop + plotHeight + 14} textAnchor={textAnchor} className="fill-zinc-500 font-mono text-[9px]">
+                            {row.date.slice(5)}
+                          </text>
+                        );
+                      });
+                    })()}
+
+                    {/* Vertical Tracker */}
+                    {fundHoverIdx !== null && (
+                      <line
+                        x1={paddingLeft + fundHoverIdx * stepX}
+                        y1={paddingTop}
+                        x2={paddingLeft + fundHoverIdx * stepX}
+                        y2={paddingTop + plotHeight}
+                        stroke="#52525b"
+                        strokeWidth="1.2"
+                        strokeDasharray="3,3"
+                      />
+                    )}
+                  </svg>
+
+                  {/* Tooltip */}
+                  {fundHoverIdx !== null && hoverRow && (
+                    <div
+                      className={`absolute top-2 z-10 p-2.5 rounded-lg border border-border bg-zinc-950/95 shadow-xl text-[10px] w-[140px] pointer-events-none flex flex-col gap-1 ${
+                        fundHoverIdx > valuation.length / 2 ? 'left-12' : 'right-12'
+                      }`}
+                    >
+                      <div className="font-mono text-zinc-400 font-bold border-b border-border/50 pb-1">
+                        {hoverRow.date}
+                      </div>
+                      <div className="flex justify-between font-mono">
+                        <span className="text-zinc-500">本益比 PE</span>
+                        <span className="text-indigo-400 font-semibold">{hoverRow.pe_ratio !== null ? `${hoverRow.pe_ratio.toFixed(1)}x` : '—'}</span>
+                      </div>
+                      <div className="flex justify-between font-mono">
+                        <span className="text-zinc-500">股淨比 PB</span>
+                        <span className="text-zinc-300 font-semibold">{hoverRow.pb_ratio !== null ? `${hoverRow.pb_ratio.toFixed(2)}x` : '—'}</span>
+                      </div>
+                      <div className="flex justify-between font-mono">
+                        <span className="text-zinc-500">殖利率</span>
+                        <span className="text-zinc-300 font-semibold">{hoverRow.dividend_yield !== null ? `${hoverRow.dividend_yield.toFixed(2)}%` : '—'}</span>
+                      </div>
+                    </div>
+                  )}
+                </div>
+                <div className="flex justify-between items-center text-[10px] text-zinc-500 font-mono mt-1 px-1">
+                  <span>線圖: 近一年 PER 日頻走勢 (藍)</span>
+                  <span>資料來源: {data.source}</span>
+                </div>
+              </div>
+            );
+          })()}
+
+          {fundTab === 'revenue' && (() => {
+            const revenue = data.revenue || [];
+            if (revenue.length === 0) {
+              return <div className="text-xs text-zinc-500 text-center py-16">營收資料尚未提供</div>;
+            }
+            const latest = revenue[revenue.length - 1];
+            const revVal = latest.revenue;
+            const yoyVal = latest.yoy;
+            const momVal = latest.mom;
+
+            const formatRev = (val: number | null | undefined) => {
+              if (val === undefined || val === null) return '—';
+              if (val >= 1e12) return `${(val / 1e12).toFixed(2)} 兆元`;
+              if (val >= 1e8) return `${(val / 1e8).toFixed(1)} 億元`;
+              return `${val.toLocaleString()} 元`;
+            };
+
+            const svgWidth = 520;
+            const svgHeight = 150;
+            const paddingLeft = 45;
+            const paddingRight = 40;
+            const paddingTop = 15;
+            const paddingBottom = 20;
+            const plotWidth = svgWidth - paddingLeft - paddingRight;
+            const plotHeight = svgHeight - paddingTop - paddingBottom;
+            const stepX = plotWidth / (revenue.length - 1 || 1);
+
+            const revVals = revenue.map(r => r.revenue).filter((v): v is number => v !== null);
+            const maxRev = revVals.length > 0 ? Math.max(...revVals) : 1e10;
+            const revMaxY = maxRev * 1.15;
+
+            const yoyVals = revenue.map(r => r.yoy).filter((v): v is number => v !== null);
+            const maxYoY = yoyVals.length > 0 ? Math.max(...yoyVals) : 20;
+            const minYoY = yoyVals.length > 0 ? Math.min(...yoyVals) : -10;
+            const yoyDiff = maxYoY - minYoY || 1;
+            const yoyMaxY = maxYoY + yoyDiff * 0.15;
+            const yoyMinY = minYoY - yoyDiff * 0.15;
+
+            const hoverRow = fundHoverIdx !== null ? revenue[fundHoverIdx] : null;
+
+            return (
+              <div className="space-y-4">
+                <div className="grid grid-cols-3 gap-3">
+                  <div className="bg-zinc-950/40 p-3 rounded-lg border border-border/30">
+                    <div className="text-[10px] text-zinc-500 font-medium">當月營收 ({latest.month})</div>
+                    <div className="text-sm font-semibold mt-1 font-mono text-zinc-100">
+                      {formatRev(revVal)}
+                    </div>
+                  </div>
+                  <div className="bg-zinc-950/40 p-3 rounded-lg border border-border/30">
+                    <div className="text-[10px] text-zinc-500 font-medium">年增率 (YoY)</div>
+                    <div className={`text-sm font-semibold mt-1 font-mono flex items-center gap-1 ${yoyVal === null ? 'text-zinc-400' : (yoyVal >= 0 ? 'text-bull' : 'text-bear')}`}>
+                      {yoyVal !== null ? `${yoyVal >= 0 ? '▲' : '▼'} ${Math.abs(yoyVal).toFixed(2)}%` : '—'}
+                    </div>
+                  </div>
+                  <div className="bg-zinc-950/40 p-3 rounded-lg border border-border/30">
+                    <div className="text-[10px] text-zinc-500 font-medium">月增率 (MoM)</div>
+                    <div className={`text-sm font-semibold mt-1 font-mono flex items-center gap-1 ${momVal === null ? 'text-zinc-400' : (momVal >= 0 ? 'text-bull' : 'text-bear')}`}>
+                      {momVal !== null ? `${momVal >= 0 ? '▲' : '▼'} ${Math.abs(momVal).toFixed(2)}%` : '—'}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="relative bg-zinc-950/30 rounded-xl border border-border/40 p-2 h-[150px]">
+                  <svg
+                    width="100%"
+                    height="100%"
+                    viewBox={`0 0 ${svgWidth} ${svgHeight}`}
+                    preserveAspectRatio="xMidYMid meet"
+                    className="overflow-visible select-none cursor-crosshair"
+                    onMouseMove={(e) => {
+                      const svgRect = e.currentTarget.getBoundingClientRect();
+                      const mouseX = e.clientX - svgRect.left - paddingLeft;
+                      if (mouseX < -stepX / 2 || mouseX > plotWidth + stepX / 2) {
+                        setFundHoverIdx(null);
+                        return;
+                      }
+                      const idx = Math.max(0, Math.min(revenue.length - 1, Math.round(mouseX / stepX)));
+                      setFundHoverIdx(idx);
+                    }}
+                    onMouseLeave={() => setFundHoverIdx(null)}
+                  >
+                    {/* Grid lines */}
+                    {[0, 0.25, 0.5, 0.75, 1].map((val) => {
+                      const y = paddingTop + val * plotHeight;
+                      return (
+                        <line
+                          key={val}
+                          x1={paddingLeft}
+                          y1={y}
+                          x2={svgWidth - paddingRight}
+                          y2={y}
+                          stroke="#27272a"
+                          strokeWidth="1"
+                          strokeDasharray="2,2"
+                        />
+                      );
+                    })}
+
+                    {/* YoY zero line */}
+                    {yoyMinY < 0 && yoyMaxY > 0 && (() => {
+                      const y = paddingTop + plotHeight - ((-yoyMinY) / (yoyMaxY - yoyMinY)) * plotHeight;
+                      return <line x1={paddingLeft} y1={y} x2={svgWidth - paddingRight} y2={y} stroke="#3f3f46" strokeWidth="1" />;
+                    })()}
+
+                    {/* Y-axis Left (Revenue) */}
+                    <text x={paddingLeft - 8} y={paddingTop + 4} textAnchor="end" className="fill-zinc-500 font-mono text-[9px]">
+                      {fmt(revMaxY)}
+                    </text>
+                    <text x={paddingLeft - 8} y={paddingTop + plotHeight + 3} textAnchor="end" className="fill-zinc-500 font-mono text-[9px]">
+                      0
+                    </text>
+
+                    {/* Y-axis Right (YoY) */}
+                    <text x={svgWidth - paddingRight + 8} y={paddingTop + 4} textAnchor="start" className="fill-zinc-500 font-mono text-[9px]">
+                      {yoyMaxY.toFixed(0)}%
+                    </text>
+                    <text x={svgWidth - paddingRight + 8} y={paddingTop + plotHeight + 3} textAnchor="start" className="fill-zinc-500 font-mono text-[9px]">
+                      {yoyMinY.toFixed(0)}%
+                    </text>
+
+                    {/* Revenue Bars */}
+                    {revenue.map((r, idx) => {
+                      if (r.revenue === null) return null;
+                      const x = paddingLeft + idx * stepX;
+                      const barWidth = Math.max(3, Math.min(10, stepX * 0.45));
+                      const h = (r.revenue / revMaxY) * plotHeight;
+                      const rectY = paddingTop + plotHeight - h;
+                      return (
+                        <rect
+                          key={`rev-bar-${idx}`}
+                          x={x - barWidth / 2}
+                          y={rectY}
+                          width={barWidth}
+                          height={Math.max(1, h)}
+                          fill="#3f3f46"
+                          opacity={fundHoverIdx === null || fundHoverIdx === idx ? 0.7 : 0.3}
+                        />
+                      );
+                    })}
+
+                    {/* YoY Line */}
+                    {(() => {
+                      const points = revenue.map((r, idx) => {
+                        const val = r.yoy ?? yoyMinY;
+                        const x = paddingLeft + idx * stepX;
+                        const y = paddingTop + plotHeight - ((val - yoyMinY) / (yoyMaxY - yoyMinY || 1)) * plotHeight;
+                        return `${x},${y}`;
+                      }).join(' ');
+                      return <polyline points={points} fill="none" stroke="#f59e0b" strokeWidth="1.75" opacity={fundHoverIdx === null ? 0.9 : 0.4} />;
+                    })()}
+
+                    {/* YoY Dots */}
+                    {revenue.map((r, idx) => {
+                      if (r.yoy === null) return null;
+                      const x = paddingLeft + idx * stepX;
+                      const y = paddingTop + plotHeight - ((r.yoy - yoyMinY) / (yoyMaxY - yoyMinY || 1)) * plotHeight;
+                      return (
+                        <circle
+                          key={`yoy-dot-${idx}`}
+                          cx={x}
+                          cy={y}
+                          r={fundHoverIdx === idx ? 3.5 : 2}
+                          fill="#f59e0b"
+                          stroke="#09090b"
+                          strokeWidth="1"
+                        />
+                      );
+                    })}
+
+                    {/* X-axis labels */}
+                    {(() => {
+                      const count = revenue.length;
+                      const indices = [0, Math.floor(count / 2), count - 1];
+                      return indices.map((idx) => {
+                        const row = revenue[idx];
+                        if (!row) return null;
+                        const x = paddingLeft + idx * stepX;
+                        let textAnchor: 'start' | 'middle' | 'end' = 'middle';
+                        if (idx === 0) textAnchor = 'start';
+                        if (idx === count - 1) textAnchor = 'end';
+                        return (
+                          <text key={`rev-lbl-${idx}`} x={x} y={paddingTop + plotHeight + 14} textAnchor={textAnchor} className="fill-zinc-500 font-mono text-[9px]">
+                            {row.month.slice(2)}
+                          </text>
+                        );
+                      });
+                    })()}
+
+                    {/* Vertical Tracker */}
+                    {fundHoverIdx !== null && (
+                      <line
+                        x1={paddingLeft + fundHoverIdx * stepX}
+                        y1={paddingTop}
+                        x2={paddingLeft + fundHoverIdx * stepX}
+                        y2={paddingTop + plotHeight}
+                        stroke="#52525b"
+                        strokeWidth="1.2"
+                        strokeDasharray="3,3"
+                      />
+                    )}
+                  </svg>
+
+                  {/* Tooltip */}
+                  {fundHoverIdx !== null && hoverRow && (
+                    <div
+                      className={`absolute top-2 z-10 p-2.5 rounded-lg border border-border bg-zinc-950/95 shadow-xl text-[10px] w-[150px] pointer-events-none flex flex-col gap-1 ${
+                        fundHoverIdx > revenue.length / 2 ? 'left-12' : 'right-12'
+                      }`}
+                    >
+                      <div className="font-mono text-zinc-400 font-bold border-b border-border/50 pb-1">
+                        {hoverRow.month}
+                      </div>
+                      <div className="flex justify-between font-mono">
+                        <span className="text-zinc-500">月營收</span>
+                        <span className="text-zinc-300 font-semibold">{formatRev(hoverRow.revenue)}</span>
+                      </div>
+                      <div className="flex justify-between font-mono">
+                        <span className="text-zinc-500">年增 YoY</span>
+                        <span className={`font-semibold ${hoverRow.yoy === null ? 'text-zinc-400' : (hoverRow.yoy >= 0 ? 'text-bull' : 'text-bear')}`}>
+                          {hoverRow.yoy !== null ? `${hoverRow.yoy > 0 ? '+' : ''}${hoverRow.yoy}%` : '—'}
+                        </span>
+                      </div>
+                      <div className="flex justify-between font-mono">
+                        <span className="text-zinc-500">月增 MoM</span>
+                        <span className={`font-semibold ${hoverRow.mom === null ? 'text-zinc-400' : (hoverRow.mom >= 0 ? 'text-bull' : 'text-bear')}`}>
+                          {hoverRow.mom !== null ? `${hoverRow.mom > 0 ? '+' : ''}${hoverRow.mom}%` : '—'}
+                        </span>
+                      </div>
+                    </div>
+                  )}
+                </div>
+                <div className="flex justify-between items-center text-[10px] text-zinc-500 font-mono mt-1 px-1">
+                  <span>圖例: 柱狀 = 月營收 (灰)，折線 = YoY (橘)</span>
+                  <span>資料來源: {data.source}</span>
+                </div>
+              </div>
+            );
+          })()}
+
+          {fundTab === 'financials' && (() => {
+            const financials = data.financials || [];
+            if (financials.length === 0) {
+              return <div className="text-xs text-zinc-500 text-center py-16">獲利資料尚未提供</div>;
+            }
+            const latest = financials[financials.length - 1];
+            const epsVal = latest.eps;
+            const gm = latest.gross_margin;
+            const om = latest.operating_margin;
+            const nm = latest.net_margin;
+
+            const svgWidth = 520;
+            const svgHeight = 150;
+            const paddingLeft = 40;
+            const paddingRight = 40;
+            const paddingTop = 15;
+            const paddingBottom = 20;
+            const plotWidth = svgWidth - paddingLeft - paddingRight;
+            const plotHeight = svgHeight - paddingTop - paddingBottom;
+            const stepX = plotWidth / (financials.length - 1 || 1);
+
+            const epsVals = financials.map(f => f.eps).filter((v): v is number => v !== null);
+            const maxEps = epsVals.length > 0 ? Math.max(...epsVals) : 5;
+            const minEps = epsVals.length > 0 ? Math.min(...epsVals) : 0;
+            const epsMaxY = maxEps * 1.15;
+            const epsMinY = Math.min(0, minEps - 0.5);
+
+            const hasMargins = financials.some(f => f.gross_margin !== null);
+
+            const hoverRow = fundHoverIdx !== null ? financials[fundHoverIdx] : null;
+
+            return (
+              <div className="space-y-4">
+                <div className="grid grid-cols-4 gap-2">
+                  <div className="bg-zinc-950/40 p-2 rounded-lg border border-border/30">
+                    <div className="text-[9px] text-zinc-500 font-medium">單季 EPS ({latest.quarter})</div>
+                    <div className="text-xs font-semibold mt-0.5 font-mono text-zinc-100">
+                      {epsVal !== null ? `${epsVal.toFixed(2)} 元` : '—'}
+                    </div>
+                  </div>
+                  <div className="bg-zinc-950/40 p-2 rounded-lg border border-border/30">
+                    <div className="text-[9px] text-zinc-500 font-medium">毛利率</div>
+                    <div className="text-xs font-semibold mt-0.5 font-mono text-pink-400">
+                      {gm !== null ? `${gm.toFixed(1)}%` : '—'}
+                    </div>
+                  </div>
+                  <div className="bg-zinc-950/40 p-2 rounded-lg border border-border/30">
+                    <div className="text-[9px] text-zinc-500 font-medium">營益率</div>
+                    <div className="text-xs font-semibold mt-0.5 font-mono text-teal-400">
+                      {om !== null ? `${om.toFixed(1)}%` : '—'}
+                    </div>
+                  </div>
+                  <div className="bg-zinc-950/40 p-2 rounded-lg border border-border/30">
+                    <div className="text-[9px] text-zinc-500 font-medium">淨利率</div>
+                    <div className="text-xs font-semibold mt-0.5 font-mono text-indigo-400">
+                      {nm !== null ? `${nm.toFixed(1)}%` : '—'}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="relative bg-zinc-950/30 rounded-xl border border-border/40 p-2 h-[150px]">
+                  <svg
+                    width="100%"
+                    height="100%"
+                    viewBox={`0 0 ${svgWidth} ${svgHeight}`}
+                    preserveAspectRatio="xMidYMid meet"
+                    className="overflow-visible select-none cursor-crosshair"
+                    onMouseMove={(e) => {
+                      const svgRect = e.currentTarget.getBoundingClientRect();
+                      const mouseX = e.clientX - svgRect.left - paddingLeft;
+                      if (mouseX < -stepX / 2 || mouseX > plotWidth + stepX / 2) {
+                        setFundHoverIdx(null);
+                        return;
+                      }
+                      const idx = Math.max(0, Math.min(financials.length - 1, Math.round(mouseX / stepX)));
+                      setFundHoverIdx(idx);
+                    }}
+                    onMouseLeave={() => setFundHoverIdx(null)}
+                  >
+                    {/* Grid lines */}
+                    {[0, 0.25, 0.5, 0.75, 1].map((val) => {
+                      const y = paddingTop + val * plotHeight;
+                      return (
+                        <line
+                          key={val}
+                          x1={paddingLeft}
+                          y1={y}
+                          x2={svgWidth - paddingRight}
+                          y2={y}
+                          stroke="#27272a"
+                          strokeWidth="1"
+                          strokeDasharray="2,2"
+                        />
+                      );
+                    })}
+
+                    {/* Y-axis Left (EPS) */}
+                    <text x={paddingLeft - 8} y={paddingTop + 4} textAnchor="end" className="fill-zinc-500 font-mono text-[9px]">
+                      {epsMaxY.toFixed(1)}
+                    </text>
+                    <text x={paddingLeft - 8} y={paddingTop + plotHeight + 3} textAnchor="end" className="fill-zinc-500 font-mono text-[9px]">
+                      {epsMinY.toFixed(1)}
+                    </text>
+
+                    {/* Y-axis Right (Margins %) */}
+                    <text x={svgWidth - paddingRight + 8} y={paddingTop + 4} textAnchor="start" className="fill-zinc-500 font-mono text-[9px]">
+                      100%
+                    </text>
+                    <text x={svgWidth - paddingRight + 8} y={paddingTop + plotHeight + 3} textAnchor="start" className="fill-zinc-500 font-mono text-[9px]">
+                      0%
+                    </text>
+
+                    {/* EPS Bars */}
+                    {financials.map((f, idx) => {
+                      if (f.eps === null) return null;
+                      const x = paddingLeft + idx * stepX;
+                      const barWidth = Math.max(3, Math.min(10, stepX * 0.45));
+                      const h = ((f.eps - epsMinY) / (epsMaxY - epsMinY || 1)) * plotHeight;
+                      const rectY = paddingTop + plotHeight - h;
+                      return (
+                        <rect
+                          key={`eps-bar-${idx}`}
+                          x={x - barWidth / 2}
+                          y={rectY}
+                          width={barWidth}
+                          height={Math.max(1, h)}
+                          fill="#3b82f6"
+                          opacity={fundHoverIdx === null || fundHoverIdx === idx ? 0.7 : 0.3}
+                        />
+                      );
+                    })}
+
+                    {/* Margin lines */}
+                    {hasMargins && (() => {
+                      const createLine = (key: 'gross_margin' | 'operating_margin' | 'net_margin', color: string) => {
+                        const points = financials.map((f, idx) => {
+                          const val = f[key] ?? 0;
+                          const x = paddingLeft + idx * stepX;
+                          const y = paddingTop + plotHeight - (val / 100) * plotHeight;
+                          return `${x},${y}`;
+                        }).join(' ');
+                        return <polyline points={points} fill="none" stroke={color} strokeWidth="1.25" opacity={fundHoverIdx === null ? 0.85 : 0.35} />;
+                      };
+                      return (
+                        <>
+                          {createLine('gross_margin', '#f472b6')}
+                          {createLine('operating_margin', '#2dd4bf')}
+                          {createLine('net_margin', '#818cf8')}
+                        </>
+                      );
+                    })()}
+
+                    {/* Active Dots for Margins */}
+                    {fundHoverIdx !== null && hoverRow && hasMargins && (() => {
+                      const x = paddingLeft + fundHoverIdx * stepX;
+                      const renderDot = (val: number | null, color: string) => {
+                        if (val === null) return null;
+                        const y = paddingTop + plotHeight - (val / 100) * plotHeight;
+                        return <circle cx={x} cy={y} r="3" fill={color} stroke="#09090b" strokeWidth="1" />;
+                      };
+                      return (
+                        <g>
+                          {renderDot(hoverRow.gross_margin, '#f472b6')}
+                          {renderDot(hoverRow.operating_margin, '#2dd4bf')}
+                          {renderDot(hoverRow.net_margin, '#818cf8')}
+                        </g>
+                      );
+                    })()}
+
+                    {/* X-axis labels */}
+                    {(() => {
+                      const count = financials.length;
+                      const indices = [0, Math.floor(count / 2), count - 1];
+                      return indices.map((idx) => {
+                        const row = financials[idx];
+                        if (!row) return null;
+                        const x = paddingLeft + idx * stepX;
+                        let textAnchor: 'start' | 'middle' | 'end' = 'middle';
+                        if (idx === 0) textAnchor = 'start';
+                        if (idx === count - 1) textAnchor = 'end';
+                        return (
+                          <text key={`fin-lbl-${idx}`} x={x} y={paddingTop + plotHeight + 14} textAnchor={textAnchor} className="fill-zinc-500 font-mono text-[9px]">
+                            {row.quarter.slice(2)}
+                          </text>
+                        );
+                      });
+                    })()}
+
+                    {/* Vertical Tracker */}
+                    {fundHoverIdx !== null && (
+                      <line
+                        x1={paddingLeft + fundHoverIdx * stepX}
+                        y1={paddingTop}
+                        x2={paddingLeft + fundHoverIdx * stepX}
+                        y2={paddingTop + plotHeight}
+                        stroke="#52525b"
+                        strokeWidth="1.2"
+                        strokeDasharray="3,3"
+                      />
+                    )}
+                  </svg>
+
+                  {/* Tooltip */}
+                  {fundHoverIdx !== null && hoverRow && (
+                    <div
+                      className={`absolute top-2 z-10 p-2.5 rounded-lg border border-border bg-zinc-950/95 shadow-xl text-[10px] w-[145px] pointer-events-none flex flex-col gap-1 ${
+                        fundHoverIdx > financials.length / 2 ? 'left-12' : 'right-12'
+                      }`}
+                    >
+                      <div className="font-mono text-zinc-400 font-bold border-b border-border/50 pb-1">
+                        {hoverRow.quarter}
+                      </div>
+                      <div className="flex justify-between font-mono">
+                        <span className="text-zinc-500 font-medium">單季 EPS</span>
+                        <span className="text-blue-400 font-bold">{hoverRow.eps !== null ? `${hoverRow.eps.toFixed(2)}元` : '—'}</span>
+                      </div>
+                      <div className="flex justify-between font-mono">
+                        <span className="text-zinc-500">毛利率</span>
+                        <span className="text-pink-400 font-semibold">{hoverRow.gross_margin !== null ? `${hoverRow.gross_margin.toFixed(1)}%` : '—'}</span>
+                      </div>
+                      <div className="flex justify-between font-mono">
+                        <span className="text-zinc-500">營益率</span>
+                        <span className="text-teal-400 font-semibold">{hoverRow.operating_margin !== null ? `${hoverRow.operating_margin.toFixed(1)}%` : '—'}</span>
+                      </div>
+                      <div className="flex justify-between font-mono">
+                        <span className="text-zinc-500">淨利率</span>
+                        <span className="text-indigo-400 font-semibold">{hoverRow.net_margin !== null ? `${hoverRow.net_margin.toFixed(1)}%` : '—'}</span>
+                      </div>
+                    </div>
+                  )}
+                </div>
+                <div className="flex justify-between items-center text-[10px] text-zinc-500 font-mono mt-1 px-1">
+                  <span>圖例: 柱狀 = EPS (藍，左軸)；折線 = 三率 (粉/綠/紫，右軸)</span>
+                  <span>資料來源: {data.source}</span>
+                </div>
+              </div>
+            );
+          })()}
+
+          {fundTab === 'dividend' && (() => {
+            const dividend = data.dividend || [];
+            if (dividend.length === 0) {
+              return <div className="text-xs text-zinc-500 text-center py-16">股利資料尚未提供</div>;
+            }
+            const latest = dividend[dividend.length - 1];
+
+            const svgWidth = 520;
+            const svgHeight = 150;
+            const paddingLeft = 45;
+            const paddingRight = 15;
+            const paddingTop = 15;
+            const paddingBottom = 20;
+            const plotWidth = svgWidth - paddingLeft - paddingRight;
+            const plotHeight = svgHeight - paddingTop - paddingBottom;
+            const stepX = plotWidth / (dividend.length - 1 || 1);
+
+            const totals = dividend.map(d => (d.cash_dividend || 0) + (d.stock_dividend || 0));
+            const maxDiv = totals.length > 0 ? Math.max(...totals) : 10;
+            const divMaxY = maxDiv * 1.15;
+
+            const hoverRow = fundHoverIdx !== null ? dividend[fundHoverIdx] : null;
+
+            return (
+              <div className="space-y-4">
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="bg-zinc-950/40 p-3 rounded-lg border border-border/30">
+                    <div className="text-[10px] text-zinc-500 font-medium">當前年度股利分配 ({latest.year})</div>
+                    <div className="text-sm font-semibold mt-1 font-mono text-zinc-100 flex gap-4">
+                      <span>現金: {latest.cash_dividend !== null ? `${latest.cash_dividend.toFixed(2)}元` : '—'}</span>
+                      <span>股票: {latest.stock_dividend !== null ? `${latest.stock_dividend.toFixed(2)}股` : '—'}</span>
+                    </div>
+                  </div>
+                  <div className="bg-zinc-950/40 p-3 rounded-lg border border-border/30">
+                    <div className="text-[10px] text-zinc-500 font-medium">總股利合計</div>
+                    <div className="text-sm font-semibold mt-1 font-mono text-primary">
+                      {latest.cash_dividend !== null && latest.stock_dividend !== null ? `${(latest.cash_dividend + latest.stock_dividend).toFixed(2)} 元` : '—'}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="relative bg-zinc-950/30 rounded-xl border border-border/40 p-2 h-[150px]">
+                  <svg
+                    width="100%"
+                    height="100%"
+                    viewBox={`0 0 ${svgWidth} ${svgHeight}`}
+                    preserveAspectRatio="xMidYMid meet"
+                    className="overflow-visible select-none cursor-crosshair"
+                    onMouseMove={(e) => {
+                      const svgRect = e.currentTarget.getBoundingClientRect();
+                      const mouseX = e.clientX - svgRect.left - paddingLeft;
+                      if (mouseX < -stepX / 2 || mouseX > plotWidth + stepX / 2) {
+                        setFundHoverIdx(null);
+                        return;
+                      }
+                      const idx = Math.max(0, Math.min(dividend.length - 1, Math.round(mouseX / stepX)));
+                      setFundHoverIdx(idx);
+                    }}
+                    onMouseLeave={() => setFundHoverIdx(null)}
+                  >
+                    {/* Grid lines */}
+                    {[0, 0.25, 0.5, 0.75, 1].map((val) => {
+                      const y = paddingTop + val * plotHeight;
+                      return (
+                        <line
+                          key={val}
+                          x1={paddingLeft}
+                          y1={y}
+                          x2={svgWidth - paddingRight}
+                          y2={y}
+                          stroke="#27272a"
+                          strokeWidth="1"
+                          strokeDasharray="2,2"
+                        />
+                      );
+                    })}
+
+                    {/* Y-axis labels */}
+                    <text x={paddingLeft - 8} y={paddingTop + 4} textAnchor="end" className="fill-zinc-500 font-mono text-[9px]">
+                      {divMaxY.toFixed(1)}元
+                    </text>
+                    <text x={paddingLeft - 8} y={paddingTop + plotHeight + 3} textAnchor="end" className="fill-zinc-500 font-mono text-[9px]">
+                      0
+                    </text>
+
+                    {/* Stacked Bars */}
+                    {dividend.map((d, idx) => {
+                      const cash = d.cash_dividend ?? 0;
+                      const stock = d.stock_dividend ?? 0;
+                      if (cash === 0 && stock === 0) return null;
+
+                      const x = paddingLeft + idx * stepX;
+                      const barWidth = Math.max(3, Math.min(10, stepX * 0.45));
+
+                      const hCash = (cash / divMaxY) * plotHeight;
+                      const hStock = (stock / divMaxY) * plotHeight;
+
+                      const cashY = paddingTop + plotHeight - hCash;
+                      const stockY = cashY - hStock;
+
+                      return (
+                        <g key={`div-bar-group-${idx}`} opacity={fundHoverIdx === null || fundHoverIdx === idx ? 1 : 0.4}>
+                          {/* Cash Bar (Teal) */}
+                          {cash > 0 && (
+                            <rect
+                              x={x - barWidth / 2}
+                              y={cashY}
+                              width={barWidth}
+                              height={Math.max(1, hCash)}
+                              fill="#14b8a6"
+                            />
+                          )}
+                          {/* Stock Bar (Indigo) */}
+                          {stock > 0 && (
+                            <rect
+                              x={x - barWidth / 2}
+                              y={stockY}
+                              width={barWidth}
+                              height={Math.max(1, hStock)}
+                              fill="#6366f1"
+                            />
+                          )}
+                        </g>
+                      );
+                    })}
+
+                    {/* X-axis labels */}
+                    {(() => {
+                      const count = dividend.length;
+                      const indices = [0, Math.floor(count / 2), count - 1];
+                      return indices.map((idx) => {
+                        const row = dividend[idx];
+                        if (!row) return null;
+                        const x = paddingLeft + idx * stepX;
+                        let textAnchor: 'start' | 'middle' | 'end' = 'middle';
+                        if (idx === 0) textAnchor = 'start';
+                        if (idx === count - 1) textAnchor = 'end';
+                        return (
+                          <text key={`div-lbl-${idx}`} x={x} y={paddingTop + plotHeight + 14} textAnchor={textAnchor} className="fill-zinc-500 font-mono text-[9px]">
+                            {row.year}年
+                          </text>
+                        );
+                      });
+                    })()}
+
+                    {/* Vertical Tracker */}
+                    {fundHoverIdx !== null && (
+                      <line
+                        x1={paddingLeft + fundHoverIdx * stepX}
+                        y1={paddingTop}
+                        x2={paddingLeft + fundHoverIdx * stepX}
+                        y2={paddingTop + plotHeight}
+                        stroke="#52525b"
+                        strokeWidth="1.2"
+                        strokeDasharray="3,3"
+                      />
+                    )}
+                  </svg>
+
+                  {/* Tooltip */}
+                  {fundHoverIdx !== null && hoverRow && (
+                    <div
+                      className={`absolute top-2 z-10 p-2.5 rounded-lg border border-border bg-zinc-950/95 shadow-xl text-[10px] w-[140px] pointer-events-none flex flex-col gap-1 ${
+                        fundHoverIdx > dividend.length / 2 ? 'left-12' : 'right-12'
+                      }`}
+                    >
+                      <div className="font-mono text-zinc-400 font-bold border-b border-border/50 pb-1">
+                        {hoverRow.year} 年度分配
+                      </div>
+                      <div className="flex justify-between font-mono">
+                        <span className="text-zinc-500">現金股利</span>
+                        <span className="text-teal-400 font-semibold">{hoverRow.cash_dividend !== null ? `${hoverRow.cash_dividend.toFixed(2)}元` : '—'}</span>
+                      </div>
+                      <div className="flex justify-between font-mono">
+                        <span className="text-zinc-500">股票股利</span>
+                        <span className="text-indigo-400 font-semibold">{hoverRow.stock_dividend !== null ? `${hoverRow.stock_dividend.toFixed(2)}股` : '—'}</span>
+                      </div>
+                      <div className="flex justify-between font-mono border-t border-border/30 pt-1 mt-0.5 font-bold">
+                        <span className="text-zinc-300">股利合計</span>
+                        <span className="text-primary font-bold">
+                          {hoverRow.cash_dividend !== null && hoverRow.stock_dividend !== null ? `${(hoverRow.cash_dividend + hoverRow.stock_dividend).toFixed(2)}元` : '—'}
+                        </span>
+                      </div>
+                    </div>
+                  )}
+                </div>
+                <div className="flex justify-between items-center text-[10px] text-zinc-500 font-mono mt-1 px-1">
+                  <span>圖例: 柱狀 = 現金股利 (綠)，股票股利 (藍) 堆疊顯示</span>
+                  <span>資料來源: {data.source}</span>
+                </div>
+              </div>
+            );
+          })()}
         </div>
       </div>
     );
@@ -727,37 +1754,7 @@ export const StockDetail: React.FC = () => {
               <DollarSign className="w-5 h-5 text-primary" />
               <h3 className="font-semibold text-sm text-zinc-200">基本面估值與增長率</h3>
             </div>
-            {fundamentalsState.loading ? (
-              <div className="text-xs text-zinc-500 animate-pulse text-center py-8">載入基本面資料中...</div>
-            ) : fundamentalsState.error ? (
-              <div className="p-4 border border-bull/20 bg-bull/5 rounded-lg text-center text-xs text-bull">
-                <div>{fundamentalsState.error}</div>
-                <button onClick={fetchFundamentals} className="mt-2 px-3 py-1 bg-zinc-800 hover:bg-zinc-700 rounded text-[10px] text-zinc-300">重試</button>
-              </div>
-            ) : fundamentalsState.data && fundamentalsState.data.metrics.length > 0 ? (
-              <div className="grid grid-cols-2 gap-4">
-                <div className="bg-zinc-950/40 p-4 rounded-lg border border-border/30">
-                  <div className="text-[10px] text-zinc-500 font-mono">本益比 (PE Ratio)</div>
-                  <div className="text-base font-semibold font-mono text-zinc-100 mt-1">{fundamentalsState.data.metrics[0].pe_ratio}x</div>
-                </div>
-                <div className="bg-zinc-950/40 p-4 rounded-lg border border-border/30">
-                  <div className="text-[10px] text-zinc-500 font-mono">股淨比 (PB Ratio)</div>
-                  <div className="text-base font-semibold font-mono text-zinc-100 mt-1">{fundamentalsState.data.metrics[0].pb_ratio}x</div>
-                </div>
-                <div className="bg-zinc-950/40 p-4 rounded-lg border border-border/30">
-                  <div className="text-[10px] text-zinc-500 font-mono">現金殖利率 (Yield)</div>
-                  <div className="text-base font-semibold font-mono text-zinc-100 mt-1">{fundamentalsState.data.metrics[0].dividend_yield}%</div>
-                </div>
-                <div className="bg-zinc-950/40 p-4 rounded-lg border border-border/30">
-                  <div className="text-[10px] text-zinc-500 font-mono">單季營收年增率 (YoY)</div>
-                  <div className={`text-base font-semibold font-mono mt-1 ${fundamentalsState.data.metrics[0].revenue_yoy >= 0 ? 'text-bull' : 'text-bear'}`}>
-                    {fundamentalsState.data.metrics[0].revenue_yoy >= 0 ? '+' : ''}{fundamentalsState.data.metrics[0].revenue_yoy}%
-                  </div>
-                </div>
-              </div>
-            ) : (
-              <div className="text-xs text-zinc-500 text-center py-8">無基本面資料</div>
-            )}
+            {renderFundamentals()}
           </div>
         </div>
 
