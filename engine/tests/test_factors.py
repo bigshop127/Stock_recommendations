@@ -78,3 +78,42 @@ def test_regime_gate_asymmetric():
     # 逆風端比順風端陡：|gate(-0.5)-1| > |gate(0.5)-1|
     assert abs(g.iloc[1] - 1.0) > abs(g.iloc[3] - 1.0)
     assert (g >= 0.5).all() and (g <= 1.1).all()
+
+
+def test_get_chips_integration_non_mocked(monkeypatch):
+    """驗證 get_chips 原始格式與 compute_chips 的集成，確保不會有欄位缺失或全為 NaN。"""
+    from app.data import service, finmind_client
+
+    monkeypatch.setattr(
+        finmind_client, "fetch_institutional",
+        lambda c, s, e: pd.DataFrame(
+            {"date": ["2026-01-02"], "foreign_net": [1.2e6], "trust_net": [3.0e5], "dealer_net": [-1.0e4]}
+        ),
+    )
+    monkeypatch.setattr(
+        finmind_client, "fetch_margin",
+        lambda c, s, e: pd.DataFrame(
+            {"date": ["2026-01-02"], "margin_balance": [50000.0], "margin_change": [-1200.0],
+             "short_balance": [8000.0], "short_change": [300.0]}
+        ),
+    )
+    monkeypatch.setattr(finmind_client, "get_stock_name", lambda code: "台積電")
+
+    # Get data using service.get_chips
+    resp = service.get_chips("2330", "2026-01-01", "2026-01-03")
+
+    # Re-use _df utility from swing to parse response
+    from app.factors.swing import _df
+    df_chips = _df(resp)
+
+    assert "foreign_net" in df_chips.columns
+    assert "trust_net" in df_chips.columns
+    assert "margin_change" in df_chips.columns
+    assert "margin_balance" in df_chips.columns
+    assert "short_balance" in df_chips.columns
+
+    # Feed it to compute_chips
+    fs = compute_chips(df_chips, DEFAULT_CONFIG)
+    assert fs.available
+    assert not df_chips["foreign_net"].isna().all()
+

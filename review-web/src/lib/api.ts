@@ -294,17 +294,27 @@ export interface MarketInstitutional {
 
 export interface ChipRow {
   date: string;
-  foreign_holding_ratio: number;
+  foreign_holding_ratio: number | null;
   investment_trust_net_buy_qty: number;
   foreign_net_buy_qty: number;
   dealer_net_buy_qty: number;
+  total_net_buy_qty: number;
   margin_balance: number;
+  margin_change: number;
   short_balance: number;
-  source: string;
+  short_change: number;
 }
 export interface StockChips {
   code: string;
+  name: string | null;
+  as_of: string | null;
+  unit: {
+    net_buy_qty: string;
+    balance: string;
+    holding_ratio: string;
+  };
   data: ChipRow[];
+  source: string;
 }
 
 export interface FundamentalMetric {
@@ -369,7 +379,7 @@ export const api = {
   marketBreadth: (o?: { date?: string }) => req<MarketBreadth>(`/market/breadth${qs(o)}`),
   marketSectors: (o?: { date?: string }) => req<MarketSectors>(`/market/sectors${qs(o)}`),
   marketInstitutional: (o?: { date?: string; days?: number }) => req<MarketInstitutional>(`/market/institutional${qs(o)}`),
-  stockChips: (code: string) => req<StockChips>(`/stocks/${code}/chips`),
+  stockChips: (code: string, o?: { days?: number; start?: string; end?: string }) => req<StockChips>(`/stocks/${code}/chips${qs(o)}`),
   stockFundamentals: (code: string) => req<StockFundamentals>(`/stocks/${code}/fundamentals`),
   stockNews: (code: string) => req<StockNews>(`/stocks/${code}/news`),
 };

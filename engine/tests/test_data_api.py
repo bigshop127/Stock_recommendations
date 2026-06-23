@@ -56,7 +56,7 @@ def test_ohlcv_clean_output(monkeypatch):
     assert body["cache"]["cache_hit"] is False
 
 
-def test_chips_merge(monkeypatch):
+def test_chips(monkeypatch):
     monkeypatch.setattr(
         finmind_client, "fetch_institutional",
         lambda c, s, e: pd.DataFrame(
@@ -70,12 +70,40 @@ def test_chips_merge(monkeypatch):
              "short_balance": [8000.0], "short_change": [300.0]}
         ),
     )
-    r = client.get("/data/chips", params={"code": "2330"})
+    monkeypatch.setattr(
+        finmind_client, "fetch_shareholding",
+        lambda c, s, e: pd.DataFrame(
+            {"date": ["2026-01-02"], "foreign_holding_ratio": [74.2]}
+        ),
+    )
+    r = client.get("/data/chips", params={"code": "2330", "start": "2026-01-01", "end": "2026-01-03", "days": 20})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["code"] == "2330"
+    assert body["name"] == "台積電"
+    assert body["as_of"] == "2026-01-02"
+    assert body["unit"]["net_buy_qty"] == "張"
+    row = body["data"][0]
+    assert row["foreign_net_buy_qty"] == 1200.0  # 1.2e6 / 1000
+    assert row["investment_trust_net_buy_qty"] == 300.0  # 3.0e5 / 1000
+    assert row["dealer_net_buy_qty"] == -10.0  # -1.0e4 / 1000
+    assert row["total_net_buy_qty"] == 1490.0  # 1200 + 300 - 10
+    assert row["margin_balance"] == 50000.0
+    assert row["margin_change"] == -1200.0
+    assert row["short_balance"] == 8000.0
+    assert row["short_change"] == 300.0
+    assert row["foreign_holding_ratio"] == 74.2
+
+    # 測試缺欄 null / 補 0 邏輯
+    monkeypatch.setattr(finmind_client, "fetch_shareholding", lambda c, s, e: pd.DataFrame())
+    r = client.get("/data/chips", params={"code": "2331", "start": "2026-01-01", "end": "2026-01-03", "days": 20})
     assert r.status_code == 200
     body = r.json()
     row = body["data"][0]
-    assert "foreign_net" in row and "margin_balance" in row  # 兩來源已合併同一日
-    assert body["live_only"] is False
+    assert row["foreign_holding_ratio"] is None
+
+
+
 
 
 def test_book_defaults_to_mis(monkeypatch):

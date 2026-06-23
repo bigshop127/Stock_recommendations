@@ -54,14 +54,15 @@ def ohlcv_adj(
     return _guard(service.get_ohlcv_adj, code, start or d_start, end or d_end)
 
 
-@router.get("/chips", summary="籌碼：三大法人 + 融資券（FinMind，可回測）")
+@router.get("/chips", summary="籌碼：三大法人 + 融資券 + 外資持股比率（FinMind，可回測）")
 def chips(
     code: str = Query(..., description="台股代號，例 2330"),
-    start: str | None = Query(None, description="起日 YYYY-MM-DD（預設近一年）"),
-    end: str | None = Query(None, description="迄日 YYYY-MM-DD（預設今日）"),
+    days: int | None = Query(None, description="天數，預設 20"),
+    start: str | None = Query(None, description="起日 YYYY-MM-DD"),
+    end: str | None = Query(None, description="迄日 YYYY-MM-DD"),
 ):
-    d_start, d_end = _default_range()
-    return _guard(service.get_chips, code, start or d_start, end or d_end)
+    return _guard(service.get_chips_series, code, start, end, days)
+
 
 
 @router.get("/book", summary="即時最佳五檔（預設 TWSE MIS 免費；富果可選；live-only）")

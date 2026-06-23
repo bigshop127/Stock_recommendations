@@ -6,6 +6,7 @@ live-only（富果，不快取或僅快取歷史日）：book、intraday。
 """
 from __future__ import annotations
 
+import datetime
 from datetime import date as _date
 
 import pandas as pd
@@ -66,7 +67,7 @@ def get_ohlcv_adj(code: str, start: str, end: str) -> dict:
 
 
 def get_chips(code: str, start: str, end: str) -> dict:
-    """三大法人 + 融資券，合併同一日期軸。"""
+    """三大法人 + 融資券，合併同一日期軸（因子原料用，勿改命名與單位）。"""
     inst, m_inst = cache.get_timeseries("chips_inst", code, start, end, finmind_client.fetch_institutional)
     margin, m_margin = cache.get_timeseries("chips_margin", code, start, end, finmind_client.fetch_margin)
 
@@ -79,6 +80,12 @@ def get_chips(code: str, start: str, end: str) -> dict:
     else:
         merged = inst.merge(margin, on="date", how="outer").sort_values("date").reset_index(drop=True)
 
+    records = merged.to_dict(orient="records")
+    for r in records:
+        for k, v in r.items():
+            if pd.isna(v):
+                r[k] = None
+
     return {
         "code": code,
         "name": finmind_client.get_stock_name(code),
@@ -88,7 +95,107 @@ def get_chips(code: str, start: str, end: str) -> dict:
         "live_only": False,
         "cache": {"institutional": m_inst, "margin": m_margin},
         "rows": int(len(merged)),
-        "data": _records(merged),
+        "data": records,
+    }
+
+
+def get_chips_series(
+    code: str,
+    start: str | None = None,
+    end: str | None = None,
+    days: int | None = None,
+) -> dict:
+    """三大法人 + 融資券 + 外資持股比率，合併同一日期軸，供前端圖表展示（做單位換算、特定欄位）。"""
+    # If start is None and days is None, default to days = 20
+    if start is None and days is None:
+        days = 20
+
+    if not end:
+        end_date = datetime.date.today()
+    else:
+        end_date = datetime.date.fromisoformat(end)
+
+    if not start:
+        n_days = days if days is not None else 20
+        # Fetch extra days to cover weekends and holidays
+        start_date = end_date - datetime.timedelta(days=n_days * 2 + 10)
+    else:
+        start_date = datetime.date.fromisoformat(start)
+
+    start_str = start_date.isoformat()
+    end_str = end_date.isoformat()
+
+    inst, m_inst = cache.get_timeseries("chips_inst", code, start_str, end_str, finmind_client.fetch_institutional)
+    margin, m_margin = cache.get_timeseries("chips_margin", code, start_str, end_str, finmind_client.fetch_margin)
+    shareholding, m_shareholding = cache.get_timeseries("chips_shareholding", code, start_str, end_str, finmind_client.fetch_shareholding)
+
+    if not inst.empty:
+        inst = inst.copy()
+        inst["foreign_net_buy_qty"] = inst["foreign_net"] / 1000.0
+        inst["investment_trust_net_buy_qty"] = inst["trust_net"] / 1000.0
+        inst["dealer_net_buy_qty"] = inst["dealer_net"] / 1000.0
+        inst["total_net_buy_qty"] = inst["foreign_net_buy_qty"] + inst["investment_trust_net_buy_qty"] + inst["dealer_net_buy_qty"]
+        inst = inst.drop(columns=["foreign_net", "trust_net", "dealer_net"])
+    else:
+        inst = pd.DataFrame(columns=["date", "foreign_net_buy_qty", "investment_trust_net_buy_qty", "dealer_net_buy_qty", "total_net_buy_qty"])
+
+    if margin.empty:
+        margin = pd.DataFrame(columns=["date", "margin_balance", "margin_change", "short_balance", "short_change"])
+
+    if shareholding.empty:
+        shareholding = pd.DataFrame(columns=["date", "foreign_holding_ratio"])
+
+    # Outer merge
+    merged = inst.merge(margin, on="date", how="outer").merge(shareholding, on="date", how="outer")
+
+    if not merged.empty:
+        merged = merged.sort_values("date").reset_index(drop=True)
+
+    # Fill NaNs for specific columns
+    expected_cols = {
+        "foreign_net_buy_qty": 0.0,
+        "investment_trust_net_buy_qty": 0.0,
+        "dealer_net_buy_qty": 0.0,
+        "total_net_buy_qty": 0.0,
+        "margin_balance": 0.0,
+        "margin_change": 0.0,
+        "short_balance": 0.0,
+        "short_change": 0.0,
+    }
+    for col, default in expected_cols.items():
+        if col not in merged.columns:
+            merged[col] = default
+        else:
+            merged[col] = merged[col].fillna(default)
+
+    if "foreign_holding_ratio" not in merged.columns:
+        merged["foreign_holding_ratio"] = None
+
+    # Slice to last days if days is specified
+    if days is not None and days > 0:
+        merged = merged.tail(days).reset_index(drop=True)
+
+    as_of = None
+    if not merged.empty:
+        as_of = str(merged.iloc[-1]["date"])
+
+    records = merged.to_dict(orient="records")
+    for r in records:
+        for k, v in r.items():
+            if pd.isna(v):
+                r[k] = None
+
+    return {
+        "code": code,
+        "name": finmind_client.get_stock_name(code),
+        "as_of": as_of,
+        "unit": {
+            "net_buy_qty": "張",
+            "balance": "張",
+            "holding_ratio": "%",
+        },
+        "data": records,
+        "source": "FinMind",
     }
 
 

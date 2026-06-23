@@ -10,6 +10,7 @@
  * | GET  /api/dashboard         | /puhui/view + /watchlist + regime | DailySnapshot |
  * | GET  /api/stocks/:code      | /signal(swing+daytrade) + /signal/blended + /puhui/view | StockSignal×2 + blended |
  * | GET  /api/stocks/:code/ohlcv| /data/ohlcv 透傳（日K；?adjust=1 → /data/ohlcv_adj yfinance 還原）| — |
+ * | GET  /api/stocks/:code/chips| /data/chips 透傳（個股籌碼時序）               | StockChips |
  * | GET  /api/stocks/:code/book | /data/book 透傳（即時五檔，TWSE MIS 預設）| — |
  * | GET  /api/stocks/:code/intraday | /data/intraday 透傳（盤中分K，富果）| — |
  * | GET  /api/watchlist         | /watchlist 透傳                | Watchlist[] |
@@ -38,6 +39,7 @@ const T = {
   backtest: 180000,
   agents: 1200000,
   ohlcv: 60000,   // FinMind 一年日K（有 parquet 快取，首抓較久）
+  chips: 60000,   // FinMind 個股籌碼時序
   book: 15000,    // 即時五檔 live snapshot（TWSE MIS，快）
   intraday: 45000, // 富果盤中分K
 };
@@ -203,6 +205,21 @@ router.get('/api/stocks/:code/ohlcv', async (req, res) => {
   if (end) params.end = end;
   try {
     res.json(await engineGet(adjust ? '/data/ohlcv_adj' : '/data/ohlcv', params, T.ohlcv));
+  } catch (err) {
+    sendError(res, err);
+  }
+});
+
+// ── GET /api/stocks/:code/chips?days=&start=&end= ── 個股籌碼面時序（三大法人/信用交易/外資持股）──
+// 透傳 /data/chips。
+router.get('/api/stocks/:code/chips', async (req, res) => {
+  const { days, start, end } = req.query;
+  const params = { code: req.params.code };
+  if (days) params.days = days;
+  if (start) params.start = start;
+  if (end) params.end = end;
+  try {
+    res.json(await engineGet('/data/chips', params, T.chips));
   } catch (err) {
     sendError(res, err);
   }

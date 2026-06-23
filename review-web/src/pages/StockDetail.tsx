@@ -4,6 +4,7 @@ import { api } from '../lib/api';
 import type { StockDetail as IStockDetail, StockChips, StockFundamentals, StockNews, Book, OhlcvRow } from '../lib/api';
 import { RefreshCw, BarChart2, TrendingUp, Cpu, Newspaper, DollarSign } from 'lucide-react';
 import { PriceChart } from '../components/PriceChart';
+import { ChipsCharts } from '../components/ChipsCharts';
 
 export const StockDetail: React.FC = () => {
   const { code } = useParams<{ code: string }>();
@@ -51,11 +52,52 @@ export const StockDetail: React.FC = () => {
   const getMockChips = (c: string): StockChips => {
     return {
       code: c,
+      name: c === '2330' ? '台積電' : c === '2454' ? '聯發科' : '鴻海',
+      as_of: '2026-06-19',
+      unit: {
+        net_buy_qty: '張',
+        balance: '張',
+        holding_ratio: '%',
+      },
       data: [
-        { date: '2026-06-19', foreign_holding_ratio: 74.2, investment_trust_net_buy_qty: 1200, foreign_net_buy_qty: 3500, dealer_net_buy_qty: -450, margin_balance: 12500, short_balance: 820, source: 'TWSE' },
-        { date: '2026-06-18', foreign_holding_ratio: 74.1, investment_trust_net_buy_qty: 850, foreign_net_buy_qty: -1200, dealer_net_buy_qty: 120, margin_balance: 12350, short_balance: 780, source: 'TWSE' },
-        { date: '2026-06-17', foreign_holding_ratio: 74.2, investment_trust_net_buy_qty: -320, foreign_net_buy_qty: 4800, dealer_net_buy_qty: 50, margin_balance: 12100, short_balance: 900, source: 'TWSE' }
-      ]
+        {
+          date: '2026-06-19',
+          foreign_holding_ratio: 74.2,
+          investment_trust_net_buy_qty: 1200,
+          foreign_net_buy_qty: 3500,
+          dealer_net_buy_qty: -450,
+          total_net_buy_qty: 4250,
+          margin_balance: 12500,
+          margin_change: 320,
+          short_balance: 820,
+          short_change: -45,
+        },
+        {
+          date: '2026-06-18',
+          foreign_holding_ratio: 74.1,
+          investment_trust_net_buy_qty: 850,
+          foreign_net_buy_qty: -1200,
+          dealer_net_buy_qty: 120,
+          total_net_buy_qty: -230,
+          margin_balance: 12350,
+          margin_change: -150,
+          short_balance: 780,
+          short_change: -40,
+        },
+        {
+          date: '2026-06-17',
+          foreign_holding_ratio: 74.2,
+          investment_trust_net_buy_qty: -320,
+          foreign_net_buy_qty: 4800,
+          dealer_net_buy_qty: 50,
+          total_net_buy_qty: 4530,
+          margin_balance: 12500,
+          margin_change: 150,
+          short_balance: 820,
+          short_change: 40,
+        }
+      ],
+      source: 'FinMind'
     };
   };
 
@@ -242,7 +284,7 @@ export const StockDetail: React.FC = () => {
       if (useMock) {
         data = getMockChips(activeCode);
       } else {
-        data = await api.stockChips(activeCode);
+        data = await api.stockChips(activeCode, { days: 20 });
       }
       setChipsState({ data, loading: false, error: null });
     } catch (err: any) {
@@ -669,34 +711,11 @@ export const StockDetail: React.FC = () => {
                 <button onClick={fetchChips} className="mt-2 px-3 py-1 bg-zinc-800 hover:bg-zinc-700 rounded text-[10px] text-zinc-300">重試</button>
               </div>
             ) : chipsState.data && chipsState.data.data.length > 0 ? (
-              <div className="overflow-x-auto">
-                <table className="w-full text-xs text-left">
-                  <thead>
-                    <tr className="text-zinc-500 border-b border-border/60 font-mono">
-                      <th className="pb-2 font-semibold">日期</th>
-                      <th className="pb-2 font-semibold text-right">投信買超 (張)</th>
-                      <th className="pb-2 font-semibold text-right">外資買超 (張)</th>
-                      <th className="pb-2 font-semibold text-right">外資持股比 (%)</th>
-                      <th className="pb-2 font-semibold text-right">融資餘額 (張)</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {chipsState.data.data.map((row) => (
-                      <tr key={row.date} className="border-b border-border/30 last:border-0 hover:bg-zinc-800/10">
-                        <td className="py-2.5 font-mono text-zinc-300">{row.date}</td>
-                        <td className={`py-2.5 text-right font-mono font-medium ${row.investment_trust_net_buy_qty >= 0 ? 'text-bull' : 'text-bear'}`}>
-                          {row.investment_trust_net_buy_qty > 0 ? '+' : ''}{row.investment_trust_net_buy_qty}
-                        </td>
-                        <td className={`py-2.5 text-right font-mono font-medium ${row.foreign_net_buy_qty >= 0 ? 'text-bull' : 'text-bear'}`}>
-                          {row.foreign_net_buy_qty > 0 ? '+' : ''}{row.foreign_net_buy_qty}
-                        </td>
-                        <td className="py-2.5 text-right font-mono text-zinc-300">{row.foreign_holding_ratio}%</td>
-                        <td className="py-2.5 text-right font-mono text-zinc-400">{row.margin_balance.toLocaleString()}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
+              <ChipsCharts
+                data={chipsState.data.data}
+                name={chipsState.data.name || chipsState.data.code}
+                asOf={chipsState.data.as_of || ''}
+              />
             ) : (
               <div className="text-xs text-zinc-500 text-center py-8">無籌碼資料</div>
             )}

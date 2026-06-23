@@ -143,18 +143,24 @@
 ```json
 {
   "code": "2330",
+  "name": "台積電",
+  "as_of": "2026-06-19",
+  "unit": { "net_buy_qty": "張", "balance": "張", "holding_ratio": "%" },
   "data": [
     {
       "date": "2026-06-19",
-      "foreign_holding_ratio": 74.2,
-      "investment_trust_net_buy_qty": 1200,
       "foreign_net_buy_qty": 3500,
+      "investment_trust_net_buy_qty": 1200,
       "dealer_net_buy_qty": -450,
+      "total_net_buy_qty": 4250,
       "margin_balance": 12500,
+      "margin_change": 320,
       "short_balance": 820,
-      "source": "TWSE"
+      "short_change": -45,
+      "foreign_holding_ratio": 74.2
     }
-  ]
+  ],
+  "source": "FinMind"
 }
 ```
 

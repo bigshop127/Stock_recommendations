@@ -111,6 +111,24 @@ def fetch_margin(code: str, start: str, end: str) -> pd.DataFrame:
     return out.sort_values("date").reset_index(drop=True)
 
 
+# ── 外資持股比率 → F_chips ───────────────────────────────────────────────────
+def fetch_shareholding(code: str, start: str, end: str) -> pd.DataFrame:
+    """外資持股比率：date, foreign_holding_ratio。"""
+    raw = _finmind_get("TaiwanStockShareholding", code, start, end)
+    cols = ["date", "foreign_holding_ratio"]
+    if raw.empty:
+        return pd.DataFrame(columns=cols)
+    if "ForeignInvestmentSharesRatio" not in raw.columns:
+        return pd.DataFrame(columns=cols)
+    out = pd.DataFrame(
+        {
+            "date": raw["date"].astype(str),
+            "foreign_holding_ratio": pd.to_numeric(raw["ForeignInvestmentSharesRatio"], errors="coerce"),
+        }
+    )
+    return out.sort_values("date").reset_index(drop=True)
+
+
 # ── 股名（補 StockSignal.name）──────────────────────────────────────────────
 _name_cache: dict[str, str] = {}
 
