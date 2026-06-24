@@ -216,13 +216,95 @@ export interface BacktestResult {
   [k: string]: unknown;
 }
 
+export interface LlmUsage {
+  provider: string;
+  switched: boolean;
+  elapsed_s: number;
+  est_tokens?: number;
+  error?: string | null;
+}
+
+export interface FactBase {
+  blended_score: number;
+  blended_action: string;
+  conflict: boolean;
+}
+
+export interface AnalystDetail {
+  stance: 'bull' | 'bullish' | 'bear' | 'bearish' | 'neutral';
+  confidence: number | null;
+  summary: string;
+  key_points: string[];
+  llm_failed?: boolean;
+  role: string;
+  _llm?: LlmUsage;
+}
+
+export interface DebateParticipant {
+  side: 'bull' | 'bear';
+  stance: 'bull' | 'bullish' | 'bear' | 'bearish' | 'neutral';
+  confidence: number | null;
+  summary: string;
+  key_points: string[];
+}
+
+export interface TraderDecision {
+  decision: string;
+  confidence: number | null;
+  rationale: string;
+  role: string;
+  _llm?: LlmUsage;
+}
+
+export interface RiskManagement {
+  final_decision: string;
+  confidence: number | null;
+  risk_notes: string;
+  conflict_acknowledged: boolean;
+  role: string;
+  _llm?: LlmUsage;
+}
+
+export interface ConsistencyStatus {
+  blended_direction: string;
+  agent_direction: string;
+  blended_conflict_quant_vs_puhui: boolean;
+  divergent_from_quant: boolean;
+  divergence_flagged: boolean;
+  warning: string | null;
+}
+
+export interface AgentDecision {
+  code: string;
+  name: string;
+  date: string;
+  fact_base: FactBase;
+  analysts: {
+    technical: AnalystDetail;
+    news_sentiment: AnalystDetail;
+    puhui: AnalystDetail;
+  };
+  debate: DebateParticipant[];
+  trader: TraderDecision;
+  risk: RiskManagement;
+  final_decision: string;
+  confidence: number | null;
+  consistency: ConsistencyStatus;
+  degraded?: string[];
+}
+
 export interface DecideResp {
   date: string;
   count: number;
-  decisions: Record<string, unknown>[];
-  errors: unknown[];
+  decisions: AgentDecision[];
+  errors: any[];
   usage?: Record<string, unknown>;
-  config?: Record<string, unknown>;
+  config?: {
+    analysts: string[];
+    debate_rounds: number;
+    primary_provider: string;
+    fallback_provider: string;
+  };
 }
 
 // === Phase 1 新增 API 介面定義 (市場資訊與個股多維度資料) ===
@@ -424,11 +506,11 @@ export const api = {
     }),
   reportsList: () => req<ReportsList>('/reports/list'),
   report: (date?: string) => req<Report>(`/reports${qs({ date })}`),
-  decide: (codes: string[]) =>
+  decide: (codes: string[], date?: string) =>
     req<DecideResp>('/agents/decide', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ codes }),
+      body: JSON.stringify({ codes, date }),
     }),
 
   // Phase 1 新增 API 端點

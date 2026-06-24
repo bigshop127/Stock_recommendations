@@ -231,3 +231,145 @@
   ]
 }
 ```
+
+### 2.8 啟動 AI 全面審視 (多 Agent 決策) `/api/agents/decide`
+* **Method**: `POST`
+* **Description**: 啟動多 agent LLM 決策流程，融合量化 facts、三個分析師（技術籌碼、消息情緒、老王在地專家）、多空辯論、交易員決策、風控審核。
+* **Request Body**:
+```json
+{
+  "codes": ["2330"],
+  "date": "2026-06-24"
+}
+```
+* **Response Schema (200 OK)**:
+```json
+{
+  "date": "2026-06-24",
+  "count": 1,
+  "decisions": [
+    {
+      "code": "2330",
+      "name": "台積電",
+      "date": "2026-06-24",
+      "fact_base": {
+        "blended_score": 62.1,
+        "blended_action": "BUY",
+        "conflict": false
+      },
+      "analysts": {
+        "technical": {
+          "stance": "bull",
+          "confidence": 0.7,
+          "summary": "技術面呈現偏多整理...",
+          "key_points": ["站穩季線", "成交量放大"],
+          "llm_failed": false,
+          "_llm": {
+            "provider": "gemini",
+            "switched": false,
+            "elapsed_s": 21.3,
+            "est_tokens": 700,
+            "error": null
+          },
+          "role": "technical_analyst"
+        },
+        "news_sentiment": {
+          "stance": "neutral",
+          "confidence": 0.5,
+          "summary": "市場輿論中規中矩...",
+          "key_points": ["產業前景佳但估值偏高"],
+          "_llm": {
+            "provider": "gemini",
+            "switched": false,
+            "elapsed_s": 15.2,
+            "est_tokens": 500,
+            "error": null
+          },
+          "role": "news_sentiment_analyst"
+        },
+        "puhui": {
+          "stance": "bull",
+          "confidence": 0.6,
+          "summary": "普惠觀點表示主力偏多吸籌...",
+          "key_points": ["老王指標轉強"],
+          "_llm": {
+            "provider": "gemini",
+            "switched": false,
+            "elapsed_s": 18.1,
+            "est_tokens": 600,
+            "error": null
+          },
+          "role": "puhui_expert"
+        }
+      },
+      "debate": [
+        {
+          "side": "bull",
+          "stance": "bull",
+          "confidence": 0.7,
+          "summary": "多方論點認為基本面強勁且技術指標向上...",
+          "key_points": ["營收創高"]
+        },
+        {
+          "side": "bear",
+          "stance": "bear",
+          "confidence": 0.6,
+          "summary": "空方論點認為目前評價偏高且外資有調節跡象...",
+          "key_points": ["本益比接近區間上緣"]
+        }
+      ],
+      "trader": {
+        "decision": "BUY",
+        "confidence": 0.65,
+        "rationale": "考量多方論點較具說服力且量化基本面良好，建議偏多操作。",
+        "_llm": {
+          "provider": "gemini",
+          "switched": false,
+          "elapsed_s": 25.4,
+          "est_tokens": 800,
+          "error": null
+        },
+        "role": "trader"
+      },
+      "risk": {
+        "final_decision": "HOLD",
+        "confidence": 0.6,
+        "risk_notes": "大盤近期水位相對偏高，且個股背離技術支撐，建議暫時觀望。",
+        "conflict_acknowledged": true,
+        "_llm": {
+          "provider": "gemini",
+          "switched": false,
+          "elapsed_s": 22.1,
+          "est_tokens": 900,
+          "error": null
+        },
+        "role": "risk_manager"
+      },
+      "final_decision": "HOLD",
+      "confidence": 0.6,
+      "consistency": {
+        "blended_direction": "bull",
+        "agent_direction": "neutral",
+        "blended_conflict_quant_vs_puhui": false,
+        "divergent_from_quant": false,
+        "divergence_flagged": true,
+        "warning": "最終決策背離量化 blended 方向，卻沒被風控/交易員點名"
+      },
+      "degraded": []
+    }
+  ],
+  "errors": [],
+  "usage": {
+    "llm_calls": 7,
+    "by_provider": { "gemini": 7, "claude": 0 },
+    "est_total_tokens": 4900,
+    "total_elapsed_s": 187
+  },
+  "config": {
+    "analysts": ["technical", "news_sentiment", "puhui"],
+    "debate_rounds": 1,
+    "primary_provider": "gemini",
+    "fallback_provider": "claude"
+  }
+}
+```

@@ -1,8 +1,8 @@
 import React, { useEffect, useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { api } from '../lib/api';
-import type { StockDetail as IStockDetail, StockChips, StockFundamentals, StockNews, Book, OhlcvRow } from '../lib/api';
-import { RefreshCw, BarChart2, TrendingUp, Cpu, Newspaper, DollarSign } from 'lucide-react';
+import type { StockDetail as IStockDetail, StockChips, StockFundamentals, StockNews, Book, OhlcvRow, AgentDecision, DebateParticipant } from '../lib/api';
+import { RefreshCw, BarChart2, TrendingUp, Cpu, Newspaper, DollarSign, AlertTriangle, Users, MessageSquare, Info, AlertCircle } from 'lucide-react';
 import { PriceChart } from '../components/PriceChart';
 import { ChipsCharts } from '../components/ChipsCharts';
 
@@ -26,6 +26,66 @@ export const StockDetail: React.FC = () => {
 
   // Refresh & Polling
   const [autoPoll, setAutoPoll] = useState(false);
+
+  // AI Global Review States
+  const [aiReviewState, setAiReviewState] = useState<{
+    data: AgentDecision | null;
+    usage: any;
+    config: any;
+    loading: boolean;
+    error: string | null;
+    elapsed: number;
+    lastFetched: string | null;
+  }>({
+    data: null,
+    usage: null,
+    config: null,
+    loading: false,
+    error: null,
+    elapsed: 0,
+    lastFetched: null
+  });
+
+  // Load AI Global Review from Cache
+  useEffect(() => {
+    const todayStr = new Date().toISOString().split('T')[0];
+    const cacheKey = `aiReview:${activeCode}:${todayStr}`;
+    const cached = localStorage.getItem(cacheKey);
+    if (cached) {
+      try {
+        const parsed = JSON.parse(cached);
+        setAiReviewState({
+          data: parsed.data,
+          usage: parsed.usage || null,
+          config: parsed.config || null,
+          loading: false,
+          error: null,
+          elapsed: parsed.elapsed || 0,
+          lastFetched: parsed.lastFetched || null
+        });
+      } catch (e) {
+        console.error('Failed to parse cached AI Review:', e);
+        localStorage.removeItem(cacheKey);
+        setAiReviewState({ data: null, usage: null, config: null, loading: false, error: null, elapsed: 0, lastFetched: null });
+      }
+    } else {
+      setAiReviewState({ data: null, usage: null, config: null, loading: false, error: null, elapsed: 0, lastFetched: null });
+    }
+  }, [activeCode]);
+
+  // Safe timer useEffect to increment elapsed seconds during loading
+  useEffect(() => {
+    if (!aiReviewState.loading) return;
+
+    const timer = setInterval(() => {
+      setAiReviewState(prev => {
+        if (!prev.loading) return prev;
+        return { ...prev, elapsed: prev.elapsed + 1 };
+      });
+    }, 1000);
+
+    return () => clearInterval(timer);
+  }, [aiReviewState.loading]);
 
   // Check if mock mode is requested in Dev env
   const isDev = import.meta.env.DEV;
@@ -183,6 +243,97 @@ export const StockDetail: React.FC = () => {
     };
   };
 
+  const getMockAgentDecision = (c: string): any => {
+    const blendedAction = signalState.data?.blended?.action || 'BUY';
+    const blendedScore = signalState.data?.blended?.score || 75.0;
+    const hasWarning = Math.random() > 0.4;
+    const finalDecision = hasWarning ? 'HOLD' : 'BUY';
+
+    return {
+      code: c,
+      name: c === '2330' ? '台積電' : c === '2454' ? '聯發科' : '鴻海',
+      date: new Date().toISOString().split('T')[0],
+      fact_base: {
+        blended_score: blendedScore,
+        blended_action: blendedAction,
+        conflict: false
+      },
+      analysts: {
+        technical: {
+          stance: 'bull',
+          confidence: 0.85,
+          summary: 'K線型態多頭排列，站穩所有均線之上。籌碼面上，外資與投信連續數日同步買超，量能溫和放大，具備強烈上攻動能。',
+          key_points: ['均線呈現多頭排列，技術指標 KD 高檔進度優良。', '法人籌碼高度集中，均量持續放大。'],
+          llm_failed: false,
+          role: 'technical_analyst',
+          _llm: { provider: 'gemini', switched: false, elapsed_s: 18.5, est_tokens: 720, error: null }
+        },
+        news_sentiment: {
+          stance: 'neutral',
+          confidence: 0.60,
+          summary: '近期市場新聞利多頻傳，包含產能滿載及大客戶包下製程等消息，但地緣政治風險及評價偏高的討論亦同時存在，整體輿論偏中性。',
+          key_points: ['利多消息聚焦產能擴增與先進封裝需求。', '地緣政治因素為潛在干擾，部分法人持觀望態度。'],
+          llm_failed: false,
+          role: 'news_sentiment_analyst',
+          _llm: { provider: 'gemini', switched: false, elapsed_s: 14.2, est_tokens: 510, error: null }
+        },
+        puhui: {
+          stance: 'bull',
+          confidence: 0.75,
+          summary: '普惠專家觀點指出，在地主力及特定分點有明顯的吃貨跡象，籌碼洗盤已臻尾聲。散戶持股比例下降，籌碼流向安定度高的主力手中。',
+          key_points: ['老王指標與大戶持股比例呈現黃金交叉。', '散戶融資餘額下降，籌碼沉澱完畢。'],
+          llm_failed: Math.random() > 0.8,
+          role: 'puhui_expert',
+          _llm: { provider: 'claude', switched: true, elapsed_s: 22.1, est_tokens: 650, error: 'gemini error fallback' }
+        }
+      },
+      debate: [
+        {
+          side: 'bull',
+          stance: 'bull',
+          confidence: 0.80,
+          summary: '多方強調，產業供需失衡的態勢短期難以扭轉，尤其是 AI 先進製程定價權完全在公司手中。量化底座 blended score 高達 75 分即是明證。技術面與籌碼面同步轉強，短線回檔皆是買點。',
+          key_points: ['AI 製程定價權強，基本面無虞。', '籌碼與技術指標共振向上。']
+        },
+        {
+          side: 'bear',
+          stance: 'bear',
+          confidence: 0.65,
+          summary: '空方反駁，雖然基本面無懈可擊，但目前本益比已處於歷史區間上緣，利多已大多反映在股價中。若大盤水位相對偏高而出現系統性修正，個股勢必面臨本益比修正的壓力，不宜盲目追高。',
+          key_points: ['估值（PE/PB）已至歷史高端。', '大盤水位相對高，需防範系統性修正風險。']
+        }
+      ],
+      trader: {
+        decision: 'BUY',
+        confidence: 0.70,
+        rationale: '綜合分析師與辯論觀點，量化底座表現強勁。空方所提之估值偏高雖屬事實，但在強勁基本面支撐與法人持續買超下，上行空間仍大。故維持 BUY 的決策，但建議分批佈局。',
+        role: 'trader',
+        _llm: { provider: 'gemini', switched: false, elapsed_s: 24.6, est_tokens: 780, error: null }
+      },
+      risk: {
+        final_decision: finalDecision,
+        confidence: 0.68,
+        risk_notes: finalDecision === 'HOLD'
+          ? '注意！量化 blended action 為 BUY，但考量到空方提及大盤水位相對偏高（水準值高於正常區間），且近期成交量能有失控之虞。為了資金安全與下行風險控制，風控部門強制將最終決策降級為 HOLD，建議等待拉回至均線支撐再行進場。'
+          : '評估空方之估值偏高風險，目前尚在合理溢價範圍內。且個股之融資餘額已處於低檔，發生踩踏爆倉機率低。同意交易員之 BUY 決策，維持正常倉位。',
+        conflict_acknowledged: true,
+        role: 'risk_manager',
+        _llm: { provider: 'gemini', switched: false, elapsed_s: 21.0, est_tokens: 830, error: null }
+      },
+      final_decision: finalDecision,
+      confidence: 0.68,
+      consistency: {
+        blended_direction: 'bull',
+        agent_direction: finalDecision === 'HOLD' ? 'neutral' : 'bull',
+        blended_conflict_quant_vs_puhui: false,
+        divergent_from_quant: finalDecision === 'HOLD',
+        divergence_flagged: true,
+        warning: finalDecision === 'HOLD' ? '最終決策背離量化 blended 方向 (BUY -> HOLD)，但已由風控部門說明合理降級原因。' : null
+      },
+      degraded: []
+    };
+  };
+
   const getMockBook = (c: string): Book => {
     const basePrice = c === '2330' ? 980 : c === '2454' ? 1420 : 210;
     const name = c === '2330' ? '台積電' : c === '2454' ? '聯發科' : '鴻海';
@@ -282,6 +433,85 @@ export const StockDetail: React.FC = () => {
       currentPrice = close;
     }
     return rows;
+  };
+
+  // AI Global Review Fetcher
+  const handleStartAiReview = async () => {
+    const todayStr = new Date().toISOString().split('T')[0];
+    const cacheKey = `aiReview:${activeCode}:${todayStr}`;
+
+    setAiReviewState(prev => ({
+      ...prev,
+      loading: true,
+      error: null,
+      elapsed: 0
+    }));
+
+    try {
+      let decision: any = null;
+      let usage: any = null;
+      let config: any = null;
+
+      if (useMock) {
+        await new Promise(resolve => setTimeout(resolve, 2000));
+        decision = getMockAgentDecision(activeCode);
+        usage = {
+          llm_calls: 7,
+          by_provider: { gemini: 7, claude: 0 },
+          est_total_tokens: 4900,
+          total_elapsed_s: 187
+        };
+        config = {
+          analysts: ["technical", "news_sentiment", "puhui"],
+          debate_rounds: 1,
+          primary_provider: "gemini",
+          fallback_provider: "claude"
+        };
+      } else {
+        const resp = await api.decide([activeCode]);
+        if (resp && resp.decisions && resp.decisions.length > 0) {
+          decision = resp.decisions[0];
+          usage = resp.usage || null;
+          config = resp.config || null;
+        } else {
+          throw new Error('API 回傳資料格式錯誤，無 decision 資料');
+        }
+      }
+
+      let finalElapsed = 0;
+      setAiReviewState(prev => {
+        finalElapsed = prev.elapsed;
+        return prev;
+      });
+
+      const lastFetched = new Date().toISOString();
+      const newState = {
+        data: decision,
+        usage,
+        config,
+        loading: false,
+        error: null,
+        elapsed: finalElapsed,
+        lastFetched
+      };
+
+      localStorage.setItem(cacheKey, JSON.stringify({
+        data: decision,
+        usage,
+        config,
+        elapsed: finalElapsed,
+        lastFetched
+      }));
+
+      setAiReviewState(newState);
+    } catch (err: any) {
+      console.error('AI 全面審視分析失敗:', err);
+      setAiReviewState(prev => ({
+        ...prev,
+        loading: false,
+        error: err.message || '分析失敗'
+      }));
+    }
   };
 
   // Fetch Functions
@@ -580,7 +810,7 @@ export const StockDetail: React.FC = () => {
           {sortedAsks.map((ask: any, idx: number) => {
             const pct = ((ask.size || 0) / maxVol) * 100;
             return (
-              <div key={`ask-${idx}`} className="relative flex justify-between items-center text-xs py-1 px-2 rounded hover:bg-zinc-850/40">
+              <div key={`ask-${idx}`} className="relative flex justify-between items-center text-xs py-1 px-2 rounded hover:bg-zinc-800/40">
                 <div className="absolute right-0 top-0 bottom-0 bg-bear/10 transition-all duration-300" style={{ width: `${pct}%`, zIndex: 0 }} />
                 <span className="text-zinc-500 z-10 font-mono">賣 {sortedAsks.length - idx}</span>
                 <span className={`${getPriceColor(ask.price)} z-10 font-mono`}>{ask.price?.toFixed(1) || '--'}</span>
@@ -604,7 +834,7 @@ export const StockDetail: React.FC = () => {
           {bids.map((bid: any, idx: number) => {
             const pct = ((bid.size || 0) / maxVol) * 100;
             return (
-              <div key={`bid-${idx}`} className="relative flex justify-between items-center text-xs py-1 px-2 rounded hover:bg-zinc-850/40">
+              <div key={`bid-${idx}`} className="relative flex justify-between items-center text-xs py-1 px-2 rounded hover:bg-zinc-800/40">
                 <div className="absolute right-0 top-0 bottom-0 bg-bull/10 transition-all duration-300" style={{ width: `${pct}%`, zIndex: 0 }} />
                 <span className="text-zinc-500 z-10 font-mono">買 {idx + 1}</span>
                 <span className={`${getPriceColor(bid.price)} z-10 font-mono`}>{bid.price?.toFixed(1) || '--'}</span>
@@ -659,7 +889,7 @@ export const StockDetail: React.FC = () => {
       const pct = (index / sorted.length) * 100;
       if (pct < 25) return { label: '近一年偏低', pct, color: 'text-zinc-400 bg-zinc-800 border-zinc-700' };
       if (pct > 75) return { label: '近一年偏高', pct, color: 'text-zinc-300 bg-zinc-800 border-zinc-700' };
-      return { label: '近一年適中', pct, color: 'text-zinc-400 bg-zinc-850 border-zinc-800' };
+      return { label: '近一年適中', pct, color: 'text-zinc-400 bg-zinc-800 border-zinc-700/60' };
     };
 
     const formatMC = (mc: number | null | undefined) => {
@@ -1611,6 +1841,411 @@ export const StockDetail: React.FC = () => {
     }
   };
 
+  const renderAiReviewSection = () => {
+    if (aiReviewState.loading) {
+      return (
+        <div className="bg-card border border-border rounded-xl p-6 space-y-6">
+          <div className="flex items-center gap-2 border-b border-border/60 pb-3">
+            <Cpu className="w-5 h-5 text-primary animate-pulse" />
+            <h3 className="font-semibold text-sm text-zinc-200">AI 全面審視（多 Agent 決策）</h3>
+          </div>
+          <div className="flex flex-col items-center justify-center py-16 space-y-4">
+            <div className="relative animate-pulse">
+              <div className="w-16 h-16 border-4 border-primary/20 border-t-primary rounded-full animate-spin" />
+              <div className="absolute inset-0 flex items-center justify-center text-xs font-bold text-primary font-mono">
+                {aiReviewState.elapsed}s
+              </div>
+            </div>
+            <div className="text-center space-y-1">
+              <p className="text-xs font-semibold text-zinc-300">多 Agent 協同分析中...</p>
+              <p className="text-[10px] text-zinc-500 font-mono">
+                呼叫 7×LLM (預計 2–3 分鐘)，請勿關閉或刷新分頁
+              </p>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    if (aiReviewState.error) {
+      return (
+        <div className="bg-card border border-border rounded-xl p-6 space-y-4">
+          <div className="flex items-center gap-2 border-b border-border/60 pb-3">
+            <Cpu className="w-5 h-5 text-primary" />
+            <h3 className="font-semibold text-sm text-zinc-200">AI 全面審視（多 Agent 決策）</h3>
+          </div>
+          <div className="p-6 border border-bull/20 bg-bull/5 rounded-lg text-center">
+            <AlertCircle className="w-8 h-8 text-bull mx-auto mb-2 animate-bounce" />
+            <p className="text-xs text-bull font-semibold mb-1">AI 全面審視分析失敗</p>
+            <p className="text-[10px] text-zinc-500 font-mono mb-4">{aiReviewState.error}</p>
+            <button
+              onClick={() => handleStartAiReview()}
+              className="px-4 py-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-200 rounded text-xs transition border border-border font-semibold"
+            >
+              重新嘗試分析
+            </button>
+          </div>
+        </div>
+      );
+    }
+
+    if (!aiReviewState.data) {
+      return (
+        <div className="bg-card border border-border rounded-xl p-6 space-y-6">
+          <div className="flex items-center gap-2 border-b border-border/60 pb-3">
+            <Cpu className="w-5 h-5 text-primary" />
+            <h3 className="font-semibold text-sm text-zinc-200">AI 全面審視（多 Agent 決策）</h3>
+          </div>
+          <div className="p-8 border border-dashed border-zinc-800 rounded-xl text-center max-w-xl mx-auto space-y-4">
+            <Cpu className="w-12 h-12 text-zinc-600 mx-auto" />
+            <div className="space-y-1">
+              <h4 className="text-sm font-semibold text-zinc-300">啟動多 Agent 決策審查</h4>
+              <p className="text-xs text-zinc-500 leading-relaxed">
+                本模組將模擬投顧公司架構，啟動「技術與籌碼分析師」、「消息輿情分析師」與「老王在地專家」進行評估，並經由「多空辯論」後由「交易員」與「風控經理」制定最終決策。
+              </p>
+            </div>
+            <div className="pt-2">
+              <button
+                onClick={() => handleStartAiReview()}
+                className="px-5 py-2.5 bg-primary hover:bg-primary/90 text-white rounded-lg text-xs font-semibold shadow-lg shadow-primary/20 transition flex items-center gap-2 mx-auto"
+              >
+                <Cpu className="w-4 h-4" />
+                啟動 AI 全面審視
+              </button>
+              <p className="text-[9px] text-zinc-500 mt-2">
+                * 每次呼叫約需花費 2-3 分鐘 (7×LLM)，分析完成後將會在本瀏覽器進行 localStorage 緩存。
+              </p>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    const d = aiReviewState.data;
+
+    const getStanceStyles = (stance: string) => {
+      const s = (stance || '').toLowerCase();
+      if (['bull', 'bullish', 'buy'].includes(s)) {
+        return { text: 'text-bull', bg: 'bg-bull/10 border border-bull/20', label: '看多 (Bullish)' };
+      } else if (['bear', 'bearish', 'sell'].includes(s)) {
+        return { text: 'text-bear', bg: 'bg-bear/10 border border-bear/20', label: '看空 (Bearish)' };
+      }
+      return { text: 'text-zinc-400', bg: 'bg-zinc-800/40 border border-zinc-700/50', label: '中性 (Neutral)' };
+    };
+
+    const finalDecisionStyles = getStanceStyles(d.final_decision);
+
+    return (
+      <div className="bg-card border border-border rounded-xl p-6 space-y-6">
+        {/* Section Header */}
+        <div className="flex items-center justify-between border-b border-border/60 pb-3 flex-wrap gap-3">
+          <div className="flex items-center gap-2">
+            <Cpu className="w-5 h-5 text-primary" />
+            <h3 className="font-semibold text-sm text-zinc-200">AI 全面審視（多 Agent 決策）</h3>
+          </div>
+          <div className="flex items-center gap-3 text-xs">
+            {aiReviewState.lastFetched && (
+              <span className="text-zinc-500 font-mono">
+                上次分析: {getRelativeTime(aiReviewState.lastFetched)}
+              </span>
+            )}
+            <button
+              onClick={() => handleStartAiReview()}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-zinc-800 text-xs hover:bg-zinc-700 text-zinc-300 transition font-semibold"
+            >
+              <RefreshCw className="w-3.5 h-3.5" />
+              重新分析
+            </button>
+          </div>
+        </div>
+
+        {/* 1. 一致性守門 warning */}
+        {d.consistency?.warning && (
+          <div className="bg-yellow-500/10 border border-yellow-500/30 text-neutral p-4 rounded-xl flex items-start gap-3">
+            <AlertTriangle className="w-5 h-5 shrink-0 mt-0.5 text-yellow-500" />
+            <div className="space-y-1">
+              <h4 className="text-xs font-bold text-zinc-200">一致性守門警示 (Consistency Warning)</h4>
+              <p className="text-[11px] leading-relaxed text-zinc-400 font-mono">
+                {d.consistency.warning}
+              </p>
+            </div>
+          </div>
+        )}
+
+        {/* 2. 最終決策 Banner */}
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 items-stretch">
+          <div className={`p-5 rounded-xl flex flex-col justify-between ${finalDecisionStyles.bg}`}>
+            <span className="text-[10px] text-zinc-400 uppercase font-semibold tracking-wider">AI 團隊最終決策</span>
+            <div className="my-2 flex items-baseline gap-2">
+              <span className={`text-2xl font-bold ${finalDecisionStyles.text}`}>{d.final_decision}</span>
+              <span className="text-xs text-zinc-400">信心度: {d.confidence != null ? `${(d.confidence * 100).toFixed(0)}%` : '無'}</span>
+            </div>
+            <div className="text-[10px] text-zinc-500 font-mono flex items-center gap-1">
+              <Info className="w-3.5 h-3.5" />
+              <span>基於 3 位分析師、多空辯論與風控防線之共識</span>
+            </div>
+          </div>
+
+          <div className="p-5 rounded-xl bg-zinc-950/20 border border-border/50 flex flex-col justify-between">
+            <span className="text-[10px] text-zinc-400 uppercase font-semibold tracking-wider">量化底座對比</span>
+            <div className="my-2 flex items-baseline gap-3">
+              <span className={`text-xl font-bold ${
+                d.fact_base.blended_action === 'BUY'
+                  ? 'text-bull'
+                  : d.fact_base.blended_action === 'SELL'
+                  ? 'text-bear'
+                  : 'text-zinc-400'
+              }`}>{d.fact_base.blended_action}</span>
+              <span className="text-xs text-zinc-400">量化融合分: {d.fact_base.blended_score.toFixed(1)}分</span>
+            </div>
+            <div className="text-[10px] text-zinc-500 font-mono">
+              量化指標不可變底座 (來自 /signal/blended)，由 Agent 團隊進行判讀
+            </div>
+          </div>
+        </div>
+
+        {/* 3. 三分析師卡片 */}
+        <div className="space-y-3">
+          <h4 className="text-xs font-semibold text-zinc-400 flex items-center gap-1.5">
+            <Users className="w-4 h-4 text-zinc-500" />
+            一、專業分析師研判
+          </h4>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            {/* Technical */}
+            {d.analysts?.technical && (() => {
+              const item = d.analysts.technical;
+              const s = getStanceStyles(item.stance);
+              return (
+                <div className="bg-zinc-950/20 border border-border/40 rounded-xl p-4 flex flex-col justify-between space-y-3">
+                  <div className="flex justify-between items-center">
+                    <span className="text-xs font-semibold text-zinc-300">技術與籌碼分析師</span>
+                    {item.llm_failed ? (
+                      <span className="text-[9px] font-semibold bg-zinc-800 text-zinc-500 px-1.5 py-0.5 rounded border border-zinc-700">LLM 失效佔位</span>
+                    ) : (
+                      <span className={`text-[10px] font-semibold px-2 py-0.5 rounded ${s.bg} ${s.text}`}>
+                        {s.label}{item.confidence != null ? ` (${Math.round(item.confidence * 100)}%)` : ''}
+                      </span>
+                    )}
+                  </div>
+                  <div className="text-[11px] text-zinc-400 leading-relaxed min-h-[50px]">
+                    {item.summary}
+                  </div>
+                  {item.key_points && item.key_points.length > 0 && (
+                    <ul className="text-[10px] text-zinc-500 space-y-1 pl-4 list-disc border-t border-border/20 pt-2 font-sans">
+                      {item.key_points.map((pt: string, i: number) => <li key={i}>{pt}</li>)}
+                    </ul>
+                  )}
+                  {item._llm && (
+                    <div className="text-[8px] text-zinc-500 font-mono text-right">
+                      {item._llm.provider} ({item._llm.elapsed_s}s)
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
+
+            {/* News Sentiment */}
+            {d.analysts?.news_sentiment && (() => {
+              const item = d.analysts.news_sentiment;
+              const s = getStanceStyles(item.stance);
+              return (
+                <div className="bg-zinc-950/20 border border-border/40 rounded-xl p-4 flex flex-col justify-between space-y-3">
+                  <div className="flex justify-between items-center">
+                    <span className="text-xs font-semibold text-zinc-300">消息情緒分析師</span>
+                    {item.llm_failed ? (
+                      <span className="text-[9px] font-semibold bg-zinc-800 text-zinc-500 px-1.5 py-0.5 rounded border border-zinc-700">LLM 失效佔位</span>
+                    ) : (
+                      <span className={`text-[10px] font-semibold px-2 py-0.5 rounded ${s.bg} ${s.text}`}>
+                        {s.label}{item.confidence != null ? ` (${Math.round(item.confidence * 100)}%)` : ''}
+                      </span>
+                    )}
+                  </div>
+                  <div className="text-[11px] text-zinc-400 leading-relaxed min-h-[50px]">
+                    {item.summary}
+                  </div>
+                  {item.key_points && item.key_points.length > 0 && (
+                    <ul className="text-[10px] text-zinc-500 space-y-1 pl-4 list-disc border-t border-border/20 pt-2 font-sans">
+                      {item.key_points.map((pt: string, i: number) => <li key={i}>{pt}</li>)}
+                    </ul>
+                  )}
+                  {item._llm && (
+                    <div className="text-[8px] text-zinc-500 font-mono text-right">
+                      {item._llm.provider} ({item._llm.elapsed_s}s)
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
+
+            {/* Puhui Expert */}
+            {d.analysts?.puhui && (() => {
+              const item = d.analysts.puhui;
+              const s = getStanceStyles(item.stance);
+              return (
+                <div className="bg-zinc-950/20 border border-border/40 rounded-xl p-4 flex flex-col justify-between space-y-3">
+                  <div className="flex justify-between items-center">
+                    <span className="text-xs font-semibold text-zinc-300">老王在地專家</span>
+                    {item.llm_failed ? (
+                      <span className="text-[9px] font-semibold bg-zinc-800 text-zinc-500 px-1.5 py-0.5 rounded border border-zinc-700">LLM 失效佔位</span>
+                    ) : (
+                      <span className={`text-[10px] font-semibold px-2 py-0.5 rounded ${s.bg} ${s.text}`}>
+                        {s.label}{item.confidence != null ? ` (${Math.round(item.confidence * 100)}%)` : ''}
+                      </span>
+                    )}
+                  </div>
+                  <div className="text-[11px] text-zinc-400 leading-relaxed min-h-[50px]">
+                    {item.summary}
+                  </div>
+                  {item.key_points && item.key_points.length > 0 && (
+                    <ul className="text-[10px] text-zinc-500 space-y-1 pl-4 list-disc border-t border-border/20 pt-2 font-sans">
+                      {item.key_points.map((pt: string, i: number) => <li key={i}>{pt}</li>)}
+                    </ul>
+                  )}
+                  {item._llm && (
+                    <div className="text-[8px] text-zinc-500 font-mono text-right">
+                      {item._llm.provider} ({item._llm.elapsed_s}s)
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
+          </div>
+        </div>
+
+        {/* 4. 多空辯論 */}
+        {d.debate && d.debate.length > 0 && (
+          <div className="space-y-3">
+            <h4 className="text-xs font-semibold text-zinc-400 flex items-center gap-1.5">
+              <MessageSquare className="w-4 h-4 text-zinc-500" />
+              二、多空交叉辯論
+            </h4>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              {d.debate.map((round: DebateParticipant, i: number) => {
+                const isBull = round.side === 'bull';
+                return (
+                  <div key={i} className={`p-4 rounded-xl border ${
+                    isBull ? 'bg-bull/5 border-bull/10' : 'bg-bear/5 border-bear/10'
+                  } space-y-2`}>
+                    <div className="flex justify-between items-center">
+                      <span className={`text-xs font-bold ${isBull ? 'text-bull' : 'text-bear'}`}>
+                        {isBull ? '▲ 多方主張 (Bull)' : '▼ 空方論點 (Bear)'}
+                      </span>
+                      <span className="text-[10px] text-zinc-500 font-mono">
+                        信心度: {round.confidence != null ? `${(round.confidence * 100).toFixed(0)}%` : '無'}
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-zinc-400 leading-relaxed">
+                      {round.summary}
+                    </p>
+                    {round.key_points && round.key_points.length > 0 && (
+                      <ul className="text-[10px] text-zinc-500 space-y-0.5 pl-4 list-disc border-t border-border/10 pt-2">
+                        {round.key_points.map((pt: string, j: number) => <li key={j}>{pt}</li>)}
+                      </ul>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+        {/* 5. 交易員與風控審核 */}
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-6 pt-2">
+          {/* Trader */}
+          {d.trader && (
+            <div className="space-y-3">
+              <h4 className="text-xs font-semibold text-zinc-400">三、模擬交易決策</h4>
+              <div className="bg-zinc-950/20 border border-border/40 rounded-xl p-4 space-y-3">
+                <div className="flex justify-between items-center">
+                  <span className="text-xs font-semibold text-zinc-300">主動交易員決策</span>
+                  <span className={`text-[10px] font-bold px-2 py-0.5 rounded ${
+                    d.trader.decision === 'BUY'
+                      ? 'bg-bull/10 text-bull border border-bull/20'
+                      : d.trader.decision === 'SELL'
+                      ? 'bg-bear/10 text-bear border border-bear/20'
+                      : 'bg-zinc-800 text-zinc-400'
+                  }`}>
+                    {d.trader.decision}
+                  </span>
+                </div>
+                <p className="text-[11px] text-zinc-400 leading-relaxed min-h-[48px]">
+                  {d.trader.rationale}
+                </p>
+                {d.trader._llm && (
+                  <div className="text-[8px] text-zinc-500 font-mono text-right">
+                    {d.trader._llm.provider} ({d.trader._llm.elapsed_s}s)
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* Risk Manager */}
+          {d.risk && (
+            <div className="space-y-3">
+              <h4 className="text-xs font-semibold text-zinc-400">四、風控經理審核</h4>
+              <div className="bg-zinc-950/20 border border-border/40 rounded-xl p-4 space-y-3">
+                <div className="flex justify-between items-center">
+                  <span className="text-xs font-semibold text-zinc-300">風控閥門決策</span>
+                  <div className="flex gap-1.5 items-center">
+                    {d.risk.conflict_acknowledged && (
+                      <span className="text-[8px] bg-yellow-500/10 text-yellow-500 border border-yellow-500/20 px-1 py-0.5 rounded">已標記背離</span>
+                    )}
+                    <span className={`text-[10px] font-bold px-2 py-0.5 rounded ${
+                      d.risk.final_decision === 'BUY'
+                        ? 'bg-bull/10 text-bull border border-bull/20'
+                        : d.risk.final_decision === 'SELL'
+                        ? 'bg-bear/10 text-bear border border-bear/20'
+                        : 'bg-zinc-800 text-zinc-400'
+                    }`}>
+                      {d.risk.final_decision}
+                    </span>
+                  </div>
+                </div>
+                <p className="text-[11px] text-zinc-400 leading-relaxed min-h-[48px]">
+                  {d.risk.risk_notes}
+                </p>
+                {d.risk._llm && (
+                  <div className="text-[8px] text-zinc-500 font-mono text-right">
+                    {d.risk._llm.provider} ({d.risk._llm.elapsed_s}s)
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* 6. 用量遙測顯示 */}
+        {(aiReviewState.usage || aiReviewState.config || d.degraded) && (
+          <div className="p-3 bg-zinc-950/40 rounded-lg border border-border/30 text-[9px] text-zinc-500 font-mono flex flex-wrap justify-between gap-2 items-center">
+            <div className="flex flex-wrap gap-x-4">
+              <span>模型首選: {aiReviewState.config?.primary_provider || 'gemini'} / 備援: {aiReviewState.config?.fallback_provider || 'claude'}</span>
+              <span>•</span>
+              <span>辯論輪次: {aiReviewState.config?.debate_rounds || 1} 輪</span>
+              {aiReviewState.usage && (
+                <>
+                  <span>•</span>
+                  <span>總耗時: {aiReviewState.usage.total_elapsed_s || aiReviewState.usage.elapsed_s || aiReviewState.elapsed}s</span>
+                  {(aiReviewState.usage.est_total_tokens || aiReviewState.usage.total_tokens) && (
+                    <>
+                      <span>•</span>
+                      <span>總消耗 Tokens: {aiReviewState.usage.est_total_tokens || aiReviewState.usage.total_tokens}</span>
+                    </>
+                  )}
+                </>
+              )}
+            </div>
+            {d.degraded && d.degraded.length > 0 && (
+              <span className="text-yellow-600 font-semibold animate-pulse">
+                降級節點: {d.degraded.join(', ')}
+              </span>
+            )}
+          </div>
+        )}
+      </div>
+    );
+  };
+
   return (
     <div className="space-y-6">
       {/* 標題與個股快速搜尋 */}
@@ -1895,7 +2530,7 @@ export const StockDetail: React.FC = () => {
                           <p className="text-[11px] text-zinc-500 leading-relaxed line-clamp-2">{item.summary}</p>
                         )}
 
-                        <div className="flex flex-wrap gap-x-3 gap-y-1 text-[10px] text-zinc-650 font-mono pt-1">
+                        <div className="flex flex-wrap gap-x-3 gap-y-1 text-[10px] text-zinc-500 font-mono pt-1">
                           <span>來源: {item.source}</span>
                           <span>•</span>
                           <span>發布時間: {getRelativeTime(item.published)}</span>
@@ -1918,6 +2553,9 @@ export const StockDetail: React.FC = () => {
             <div className="text-xs text-zinc-500 text-center py-8">無即時新聞輿情</div>
           )}
         </div>
+
+        {/* AI 全面審視 */}
+        {renderAiReviewSection()}
       </div>
     </div>
   );
