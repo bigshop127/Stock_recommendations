@@ -43,6 +43,7 @@ const T = {
   book: 15000,    // 即時五檔 live snapshot（TWSE MIS，快）
   intraday: 45000, // 富果盤中分K
   fundamentals: 90000, // 給長一點 timeout，多 dataset 首抓慢
+  news: 30000,     // 個股新聞輿情及情緒標記
 };
 
 const dateParams = (date) => (date ? { date } : {});
@@ -258,6 +259,35 @@ router.get('/api/stocks/:code/intraday', async (req, res) => {
     sendError(res, err);
   }
 });
+
+// ── GET /api/stocks/:code/news?limit= ── 個股新聞輿情及情緒標記 ──
+// 短 TTL 快取（300s）
+const newsCache = new Map();
+router.get('/api/stocks/:code/news', async (req, res) => {
+  const code = req.params.code;
+  const limit = req.query.limit || 30;
+  const cacheKey = `${code}_${limit}`;
+  const now = Date.now();
+
+  if (newsCache.has(cacheKey)) {
+    const cached = newsCache.get(cacheKey);
+    if (cached.expiresAt > now) {
+      return res.json(cached.data);
+    }
+  }
+
+  try {
+    const data = await engineGet('/data/stock_news', { code, limit }, T.news);
+    newsCache.set(cacheKey, {
+      data,
+      expiresAt: Date.now() + 300000 // 5 minutes
+    });
+    res.json(data);
+  } catch (err) {
+    sendError(res, err);
+  }
+});
+
 
 // ── GET /api/watchlist?date= ── 透傳 ───────────────────────────────────────────
 router.get('/api/watchlist', async (req, res) => {

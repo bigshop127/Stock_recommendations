@@ -109,6 +109,15 @@ def news(
     return _guard(service.get_news, keyword, limit)
 
 
+@router.get("/stock_news", summary="個股新聞輿情及情緒標記")
+def stock_news(
+    code: str = Query(..., description="台股代號，例 2330"),
+    limit: int = Query(30, ge=1, le=100, description="回傳則數上限"),
+):
+    return _guard(service.get_stock_news, code, limit)
+
+
+
 @router.get("/macro", summary="美國總經單一序列（FRED，可回測）")
 def macro(
     series: str = Query(..., description="別名 us10y/yield_curve/cpi/unemployment/fed_funds/vix 或 FRED series_id"),

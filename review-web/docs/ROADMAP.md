@@ -1,7 +1,7 @@
 # 個股全面審視網 — 專案總綱 ROADMAP
 
 > 單一事實來源（SSOT）。任何進度／更新／優化都先改這份，再同步 Obsidian vault `C:\obsidian\儲存庫\個股全面審視網` 與 `.claude` 記憶。
-> 建立日：2026-06-21。狀態：**Phase 0–5 ✅ 完工。Phase 5（技術面）2026-06-23 實作完成並通過 Claude review：`lib/indicators.ts`（SMA/EMA/MACD/KD/RSI/BBands 純函式 + Vitest 5 綠）+ `PriceChart.tsx` 升級為完整技術面板（主圖多均線 MA5/10/20/60＋布林(20,2)＋量能均線、MACD/KD/RSI 分離 chart 副圖＋時間軸/十字線同步、台股正紅負綠著色、指標開關 localStorage）；review 抓到並修掉副圖時間錯位（各副圖加 whitespace 脊柱撐齊時間軸）＋成交量開關＋BBands 配色＋Map 查表效能；零後端改動、未升 lightweight-charts v5、`tsc -b && vite build` 乾淨。下一步 Phase 6（新聞輿情・情緒，補 gateway `/api/stocks/:code/news`）。**
+> 建立日：2026-06-21。狀態：**Phase 0–6 ✅ 完工。Phase 6（新聞輿情・情緒）2026-06-24 實作完成並通過 Claude review：engine `service.get_stock_news`（code→股名、逐則詞典情緒、`published` ISO 化、整體輿情摘要）+ `/data/stock_news` 端點 + 抽共用 `classify_polarity` helper（複用 `factors/sentiment.py` 同一份極性詞典、F_sentiment 因子分數不變、回歸綠）；gateway `/api/stocks/:code/news` 薄轉發＋300s 短 TTL 快取；前端 `StockDetail.tsx` 新聞區（逐則情緒徽章＋整體輿情摘要 chip＋F_sentiment 交叉佐證＋相對時間＋載入/空/失敗三態＋手動刷新、無 5s 輪詢、無逐則 LLM）；著色利多=紅/利空=綠/中性=灰（台股慣例）；review 修掉 `docs/contracts.md §2.7` 契約同步、Google News 標題去除「- 媒體」尾、TS `url/published` 可為 null 的 runtime 安全。engine pytest 66 綠、`tsc -b && vite build` 乾淨。下一步 Phase 7（AI 全面審視・招牌段，複用 `POST /api/agents/decide`，按鈕觸發+localStorage 快取）。**
 
 ---
 
@@ -90,8 +90,8 @@ Python engine  FastAPI :8000         ← 既有，本案會新增 /data 或 /mar
 | **3** | 個股籌碼面（重點） | 三大法人買賣超日/累計趨勢、融資券、（可選借券/大戶持股） | `/api/stocks/:code/chips` | ✅ 已完工 (2026-06-23) |
 | **4** | 基本面・財報 | 估值 PE/PB/殖利率、營收 YoY/MoM、EPS 趨勢、財報摘要；回填報價頭部市值/PE | `/api/stocks/:code/fundamentals` | ✅ 已完工 (2026-06-23) |
 | **5** | 技術面 | MA/MACD/KD/RSI/布林疊圖、量價、型態標註、技術因子分呈現 | 多由前端用 `ohlcv` 自算（必要時補端點） | ✅ 已完工 (2026-06-23) |
-| **6** | 新聞輿情・情緒 | 新聞列表、情緒標記、事件時間線 | `/api/stocks/:code/news` | — |
-| **7** | AI 全面審視（招牌） | 複用 `agents/decide` 多 agent 敘事+評分，分段（公司/基本面/技術/籌碼/新聞/風險），按鈕觸發+localStorage 快取 | 沿用既有（必要時加輕量摘要端點省 token） | — |
+| **6** | 新聞輿情・情緒 | 新聞列表、逐則情緒徽章、整體輿情摘要 chip、F_sentiment 交叉佐證、三態+刷新 | `/api/stocks/:code/news`（薄轉發+短 TTL；engine `service.get_stock_news`+共用 `classify_polarity`） | ✅ 已完工 (2026-06-24) |
+| **7** | AI 全面審視（招牌） | 複用 `POST /api/agents/decide` 多 agent 敘事+評分，**分段對齊實際 agent graph**：量化事實底座(blended)→技術＋籌碼/消息情緒/老王在地專家三分析師→多空辯論→交易員決策→風控審核→最終決策+信心+一致性守門(背離 warning)；**按鈕觸發**(~187s/7×LLM/股、貴)+localStorage 快取、用量遙測 | 沿用既有（gateway `/api/agents/decide` 已存在；**必要時**加輕量摘要端點省 token，預設零後端改動） | — |
 | **8** | 整合・RWD打磨・PWA・部署 | 全頁整合、手機收合驗證、PWA 可裝成 APP、效能、部署上既有 Oracle VM（gateway 同源 serve） | gateway serve `review-web/dist`、systemd/部署 | — |
 
 各階段「希望看到的內容」細節寫在各自 `phaseN.md`，僅 Phase 0 先寫好；Phase 1+ 在前一階段完成後才定稿（依現況校正）。

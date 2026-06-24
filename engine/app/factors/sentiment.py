@@ -25,6 +25,36 @@ _NEG = ["利空", "看壞", "看空", "衰退", "跌破", "重挫", "大跌", "�
         "下修", "調降", "虧損", "示警", "跌停", "違約", "賣壓", "疑慮", "踩雷", "轉弱", "下滑", "停損"]
 
 
+def classify_polarity(text: str) -> dict:
+    """分類單則文字的情緒極性。"""
+    pos = sum(text.count(w) for w in _POS)
+    neg = sum(text.count(w) for w in _NEG)
+    hits = [w for w in _POS if text.count(w) > 0] + [w for w in _NEG if text.count(w) > 0]
+
+    if pos == 0 and neg == 0:
+        return {
+            "label": "neutral",
+            "score": 50.0,
+            "hits": []
+        }
+
+    pol = (pos - neg) / (pos + neg)
+    score = (pol + 1) / 2 * 100.0
+
+    if pol > 0:
+        label = "positive"
+    elif pol < 0:
+        label = "negative"
+    else:
+        label = "neutral"
+
+    return {
+        "label": label,
+        "score": score,
+        "hits": hits
+    }
+
+
 def _news_polarity(items: list[dict]) -> tuple[float | None, int]:
     """回 (平均極性 0~100 或 None, 有效則數)。逐則算 (pos-neg)/(pos+neg)。"""
     if not items:
@@ -32,16 +62,15 @@ def _news_polarity(items: list[dict]) -> tuple[float | None, int]:
     scores, used = [], 0
     for it in items:
         text = f"{it.get('title', '')} {it.get('summary', '')}"
-        pos = sum(text.count(w) for w in _POS)
-        neg = sum(text.count(w) for w in _NEG)
-        if pos == 0 and neg == 0:
+        res = classify_polarity(text)
+        if not res["hits"]:
             continue
-        pol = (pos - neg) / (pos + neg)   # -1..+1
-        scores.append((pol + 1) / 2 * 100.0)
+        scores.append(res["score"])
         used += 1
     if not scores:
         return 50.0, len(items)   # 有新聞但無極性詞 → 中性
     return sum(scores) / len(scores), used
+
 
 
 def _read_puhui_signal(code: str, as_of: str, cfg: FactorConfig) -> float | None:

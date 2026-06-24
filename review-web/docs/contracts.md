@@ -200,21 +200,33 @@
 
 ### 2.7 取得個股即時新聞與輿情 `/api/stocks/:code/news`
 * **Method**: `GET`
-* **Description**: 整合各大財經媒體之新聞，並進行情緒評分。
+* **Description**: 整合各大財經媒體之新聞，並進行情緒評分與輿情統計。
 * **Response Schema (200 OK)**:
 ```json
 {
   "code": "2330",
-  "news": [
+  "name": "台積電",
+  "as_of": "2026-06-23T12:00:00+08:00",
+  "summary": {
+    "overall_label": "positive",
+    "overall_score": 63.2,
+    "positive": 12,
+    "negative": 5,
+    "neutral": 13,
+    "total": 30
+  },
+  "items": [
     {
-      "id": "1",
-      "title": "台積電 3 奈米產能供不應求，傳蘋果與超微包下產能",
-      "date": "2026-06-20",
-      "url": "#",
-      "summary": "半導體供應鏈指出，台積電 3 奈米製程持續滿載，訂單已排至明年。",
-      "sentiment": "positive",
-      "sentiment_score": 92,
-      "source": "Anue 鉅亨"
+      "title": "台積電 3 奈米產能大暢旺 訂單利多頻傳",
+      "summary": "台積電 3 奈米產能持續暢旺，市場看好 AI 晶片需求，受惠大客戶擴大訂單...",
+      "url": "https://news.cnyes.com/news/id/5283912",
+      "source": "鉅亨網",
+      "published": "2026-06-22T09:15:00+08:00",
+      "sentiment": {
+        "label": "positive",
+        "score": 75.0,
+        "hits": ["利多", "訂單", "暢旺", "看好", "受惠"]
+      }
     }
   ]
 }

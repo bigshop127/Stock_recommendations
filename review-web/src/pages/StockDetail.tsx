@@ -165,10 +165,20 @@ export const StockDetail: React.FC = () => {
   const getMockNews = (c: string): StockNews => {
     return {
       code: c,
-      news: [
-        { id: '1', title: '台積電 3 奈米產能供不應求，傳蘋果與超微包下產能', date: '2026-06-20', url: '#', summary: '半導體供應鏈指出，台積電 3 奈米製程持續滿載，訂單已排至明年。', sentiment: 'positive', sentiment_score: 92, source: 'Anue 鉅亨' },
-        { id: '2', title: '外資持續回流！單日大舉買超台積電逾 3,500 張', date: '2026-06-19', url: '#', summary: '受到美股 ADR 大漲鼓舞，外資現貨市場再度成為推升台積電股價的主力。', sentiment: 'positive', sentiment_score: 88, source: '經濟日報' },
-        { id: '3', title: '地緣政治風險升溫，分析師示警供應鏈過度集中之疑慮', date: '2026-06-18', url: '#', summary: '地緣政治智庫指出，雖然台積電技術領先，但集中在台海的製造產能仍面臨宏觀風險挑戰。', sentiment: 'neutral', sentiment_score: 50, source: '工商時報' }
+      name: c === '2330' ? '台積電' : '個股',
+      as_of: new Date().toISOString(),
+      summary: {
+        overall_label: 'positive',
+        overall_score: 76.7,
+        positive: 2,
+        negative: 0,
+        neutral: 1,
+        total: 3
+      },
+      items: [
+        { title: '台積電 3 奈米產能供不應求，傳蘋果與超微包下產能', published: '2026-06-20T10:00:00+08:00', url: '#', summary: '半導體供應鏈指出，台積電 3 奈米製程持續滿載，訂單已排至明年。', sentiment: { label: 'positive', score: 92, hits: ['訂單', '成長'] }, source: 'Anue 鉅亨' },
+        { title: '外資持續回流！單日大舉買超台積電逾 3,500 張', published: '2026-06-19T14:30:00+08:00', url: '#', summary: '受到美股 ADR 大漲鼓舞，外資現貨市場再度成為推升台積電股價的主力。', sentiment: { label: 'positive', score: 88, hits: ['買超', '大漲'] }, source: '經濟日報' },
+        { title: '地緣政治風險升溫，分析師示警供應鏈過度集中之疑慮', published: '2026-06-18T09:15:00+08:00', url: '#', summary: '地緣政治智庫指出，雖然台積電技術領先，但集中在台海的製造產能仍面臨宏觀風險挑戰。', sentiment: { label: 'neutral', score: 50, hits: [] }, source: '工商時報' }
       ]
     };
   };
@@ -1569,6 +1579,38 @@ export const StockDetail: React.FC = () => {
     );
   };
 
+  const getRelativeTime = (isoString: string | null | undefined): string => {
+    if (!isoString) return '';
+    try {
+      const d = new Date(isoString);
+      if (isNaN(d.getTime())) return isoString;
+
+      const now = new Date();
+      const diffMs = now.getTime() - d.getTime();
+
+      const diffSecs = Math.floor(diffMs / 1000);
+      if (diffSecs < 60) {
+        return '剛剛';
+      }
+      const mins = Math.floor(diffSecs / 60);
+      if (mins < 60) {
+        return `${mins} 分鐘前`;
+      }
+      const hours = Math.floor(mins / 60);
+      if (hours < 24) {
+        return `${hours} 小時前`;
+      }
+      const days = Math.floor(hours / 24);
+      if (days < 7) {
+        return `${days} 天前`;
+      }
+
+      return isoString.substring(0, 10);
+    } catch (e) {
+      return isoString;
+    }
+  };
+
   return (
     <div className="space-y-6">
       {/* 標題與個股快速搜尋 */}
@@ -1760,10 +1802,20 @@ export const StockDetail: React.FC = () => {
 
         {/* News */}
         <div className="bg-card border border-border rounded-xl p-6">
-          <div className="flex items-center gap-2 mb-4 border-b border-border/60 pb-3">
-            <Newspaper className="w-5 h-5 text-primary" />
-            <h3 className="font-semibold text-sm text-zinc-200">即時市場輿情與新聞情緒</h3>
+          <div className="flex items-center justify-between gap-2 mb-4 border-b border-border/60 pb-3">
+            <div className="flex items-center gap-2">
+              <Newspaper className="w-5 h-5 text-primary" />
+              <h3 className="font-semibold text-sm text-zinc-200">即時市場輿情與新聞情緒</h3>
+            </div>
+            <button
+              onClick={fetchNews}
+              disabled={newsState.loading}
+              className="px-2.5 py-1 bg-zinc-800 hover:bg-zinc-700 disabled:bg-zinc-900 disabled:text-zinc-600 rounded text-xs text-zinc-300 transition flex items-center gap-1"
+            >
+              刷新
+            </button>
           </div>
+
           {newsState.loading ? (
             <div className="text-xs text-zinc-500 animate-pulse text-center py-8">載入新聞輿情中...</div>
           ) : newsState.error ? (
@@ -1771,28 +1823,96 @@ export const StockDetail: React.FC = () => {
               <div>{newsState.error}</div>
               <button onClick={fetchNews} className="mt-2 px-3 py-1 bg-zinc-800 hover:bg-zinc-700 rounded text-[10px] text-zinc-300">重試</button>
             </div>
-          ) : newsState.data && newsState.data.news.length > 0 ? (
-            <div className="space-y-4">
-              {newsState.data.news.map((item) => (
-                <div key={item.id} className="p-4 rounded-lg bg-zinc-950/40 border border-border/30 flex items-start gap-4">
-                  <div className={`shrink-0 text-[10px] font-semibold px-2 py-1 rounded ${
-                    item.sentiment === 'positive' ? 'bg-bull/10 text-bull' : item.sentiment === 'negative' ? 'bg-bear/10 text-bear' : 'bg-zinc-800 text-zinc-400'
+          ) : newsState.data ? (
+            <div className="space-y-6">
+              {/* Summary Statistics */}
+              <div className="p-4 rounded-xl bg-zinc-950/20 border border-border/50 grid grid-cols-1 md:grid-cols-2 gap-4 items-center">
+                <div className="flex flex-wrap items-center gap-3">
+                  <span className="text-xs text-zinc-400">整體輿情傾向:</span>
+                  <span className={`text-xs font-semibold px-2.5 py-1 rounded flex items-center gap-1.5 ${
+                    newsState.data.summary.overall_label === 'positive'
+                      ? 'bg-bull/10 text-bull border border-bull/20'
+                      : newsState.data.summary.overall_label === 'negative'
+                      ? 'bg-bear/10 text-bear border border-bear/20'
+                      : 'bg-zinc-800 text-zinc-400 border border-zinc-750'
                   }`}>
-                    {item.sentiment.toUpperCase()} ({item.sentiment_score}分)
-                  </div>
-                  <div className="space-y-1">
-                    <h4 className="text-xs font-semibold text-zinc-200 hover:text-primary transition">
-                      <a href={item.url}>{item.title}</a>
-                    </h4>
-                    <p className="text-[11px] text-zinc-500 leading-relaxed">{item.summary}</p>
-                    <div className="flex gap-3 text-[10px] text-zinc-600 font-mono pt-1">
-                      <span>來源: {item.source}</span>
-                      <span>•</span>
-                      <span>日期: {item.date}</span>
-                    </div>
+                    {newsState.data.summary.overall_label === 'positive' ? '利多' : newsState.data.summary.overall_label === 'negative' ? '利空' : '中性'}
+                    <span className="font-mono">({newsState.data.summary.overall_score.toFixed(1)}分)</span>
+                  </span>
+
+                  {(() => {
+                    const fSentimentScore = signalState.data?.swing?.factors?.find(f => f.key === 'sentiment')?.score;
+                    return fSentimentScore !== undefined ? (
+                      <span className="text-xs text-zinc-500 border border-border/40 px-2 py-0.5 rounded font-mono">
+                        F_sentiment 因子分: {fSentimentScore}分
+                      </span>
+                    ) : null;
+                  })()}
+                </div>
+
+                <div className="flex items-center justify-start md:justify-end gap-3 text-xs">
+                  <span className="text-zinc-400 font-medium">統計結果:</span>
+                  <div className="flex gap-2">
+                    <span className="text-bull px-2 py-0.5 bg-bull/5 rounded-md border border-bull/10 font-mono">
+                      利多 {newsState.data.summary.positive}
+                    </span>
+                    <span className="text-bear px-2 py-0.5 bg-bear/5 rounded-md border border-bear/10 font-mono">
+                      利空 {newsState.data.summary.negative}
+                    </span>
+                    <span className="text-zinc-400 px-2 py-0.5 bg-zinc-800/40 rounded-md border border-zinc-700/50 font-mono">
+                      中性 {newsState.data.summary.neutral}
+                    </span>
+                    <span className="text-zinc-500 font-mono">
+                      共 {newsState.data.summary.total} 則
+                    </span>
                   </div>
                 </div>
-              ))}
+              </div>
+
+              {/* News Items List */}
+              {newsState.data.items.length > 0 ? (
+                <div className="space-y-4">
+                  {newsState.data.items.map((item, idx) => (
+                    <div key={idx} className="p-4 rounded-lg bg-zinc-950/40 border border-border/30 flex items-start gap-4">
+                      <div className={`shrink-0 text-[10px] font-semibold px-2 py-1.5 rounded text-center min-w-[70px] ${
+                        item.sentiment.label === 'positive'
+                          ? 'bg-bull/10 text-bull border border-bull/20'
+                          : item.sentiment.label === 'negative'
+                          ? 'bg-bear/10 text-bear border border-bear/20'
+                          : 'bg-zinc-800 text-zinc-400'
+                      }`}>
+                        <div>{item.sentiment.label === 'positive' ? '利多' : item.sentiment.label === 'negative' ? '利空' : '中性'}</div>
+                        <div className="font-mono text-[9px] mt-0.5">{item.sentiment.score.toFixed(0)}分</div>
+                      </div>
+
+                      <div className="space-y-1 flex-1">
+                        <h4 className="text-xs font-semibold text-zinc-200 hover:text-primary transition">
+                          <a href={item.url ?? undefined} target="_blank" rel="noopener noreferrer">
+                            {item.title}
+                          </a>
+                        </h4>
+                        {item.summary && (
+                          <p className="text-[11px] text-zinc-500 leading-relaxed line-clamp-2">{item.summary}</p>
+                        )}
+
+                        <div className="flex flex-wrap gap-x-3 gap-y-1 text-[10px] text-zinc-650 font-mono pt-1">
+                          <span>來源: {item.source}</span>
+                          <span>•</span>
+                          <span>發布時間: {getRelativeTime(item.published)}</span>
+                          {item.sentiment.hits && item.sentiment.hits.length > 0 && (
+                            <>
+                              <span>•</span>
+                              <span className="text-zinc-500">命詞: {item.sentiment.hits.slice(0, 5).join(', ')}</span>
+                            </>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="text-xs text-zinc-500 text-center py-8">近期無相關新聞</div>
+              )}
             </div>
           ) : (
             <div className="text-xs text-zinc-500 text-center py-8">無即時新聞輿情</div>

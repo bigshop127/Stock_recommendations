@@ -371,19 +371,36 @@ export interface StockFundamentals {
   source: string;
 }
 
-export interface NewsItem {
-  id: string;
-  title: string;
-  date: string;
-  url: string;
-  summary: string;
-  sentiment: 'positive' | 'negative' | 'neutral';
-  sentiment_score: number; // 0 - 100
-  source: string;
+export interface NewsSentiment {
+  label: 'positive' | 'negative' | 'neutral';
+  score: number;
+  hits: string[];
 }
+
+export interface NewsItem {
+  title: string;
+  summary: string | null;
+  url: string | null;
+  source: string;
+  published: string | null;
+  sentiment: NewsSentiment;
+}
+
+export interface SentimentSummary {
+  overall_label: 'positive' | 'negative' | 'neutral';
+  overall_score: number;
+  positive: number;
+  negative: number;
+  neutral: number;
+  total: number;
+}
+
 export interface StockNews {
   code: string;
-  news: NewsItem[];
+  name: string;
+  as_of: string;
+  summary: SentimentSummary;
+  items: NewsItem[];
 }
 
 // === API Client 整合出口 ===

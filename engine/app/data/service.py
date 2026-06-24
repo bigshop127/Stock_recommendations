@@ -507,3 +507,113 @@ def get_macro(series: str, start: str, end: str) -> dict:
         "rows": meta["rows"],
         "data": _records(df),
     }
+
+
+# ── 個股新聞輿情與情緒聚合（供階段6） ───────────────────────────────────────
+def get_stock_news(code: str, limit: int = 30) -> dict:
+    from app.factors.sentiment import classify_polarity
+    import email.utils
+    from datetime import timezone
+
+    name = finmind_client.get_stock_name(code)
+    keyword = name if name else code
+
+    # 2. Query news
+    raw_items = news_client.get_news(keyword=keyword, limit=limit)
+
+    processed_items = []
+    for it in raw_items:
+        title = it.get("title") or ""
+        summary = it.get("summary") or ""
+
+        # Polarity tagging
+        res = classify_polarity(f"{title} {summary}")
+
+        # Source extraction
+        source_feed = it.get("source_feed") or ""
+        if source_feed == "cnyes":
+            source = "鉅亨網"
+        elif source_feed.startswith("google_news:"):
+            source = source_feed.split(":", 1)[1]
+            # Strip source suffix from Google News title if present
+            suffix = f" - {source}"
+            if title.endswith(suffix):
+                title = title[:-len(suffix)].strip()
+        else:
+            source = "Google News"
+            if " - " in title:
+                parts = title.rsplit(" - ", 1)
+                if len(parts) > 1 and len(parts[1]) < 20:
+                    source = parts[1].strip()
+                    title = parts[0].strip()
+
+        # Published normalization
+        pub_str = it.get("published")
+        normalized_pub = pub_str
+        if pub_str:
+            try:
+                # check if already ISO
+                datetime.datetime.fromisoformat(pub_str)
+                normalized_pub = pub_str
+            except Exception:
+                try:
+                    dt = email.utils.parsedate_to_datetime(pub_str)
+                    if dt.tzinfo is None:
+                        dt = dt.replace(tzinfo=timezone.utc)
+                    normalized_pub = dt.isoformat()
+                except Exception:
+                    try:
+                        sec = int(pub_str)
+                        normalized_pub = datetime.datetime.fromtimestamp(sec, tz=timezone.utc).isoformat()
+                    except Exception:
+                        normalized_pub = pub_str
+
+        processed_items.append({
+            "title": title,
+            "summary": it.get("summary"),
+            "url": it.get("url"),
+            "source": source,
+            "published": normalized_pub,
+            "sentiment": {
+                "label": res["label"],
+                "score": res["score"],
+                "hits": res["hits"]
+            }
+        })
+
+    # 5. Overall summary
+    positive_cnt = sum(1 for it in processed_items if it["sentiment"]["label"] == "positive")
+    negative_cnt = sum(1 for it in processed_items if it["sentiment"]["label"] == "negative")
+    neutral_cnt = sum(1 for it in processed_items if it["sentiment"]["label"] == "neutral")
+    total_cnt = len(processed_items)
+
+    polar_scores = [it["sentiment"]["score"] for it in processed_items if it["sentiment"]["hits"]]
+    if polar_scores:
+        overall_score = round(sum(polar_scores) / len(polar_scores), 1)
+    else:
+        overall_score = 50.0
+
+    if overall_score > 50.0:
+        overall_label = "positive"
+    elif overall_score < 50.0:
+        overall_label = "negative"
+    else:
+        overall_label = "neutral"
+
+    as_of = datetime.datetime.now(datetime.timezone.utc).astimezone().isoformat()
+
+    return {
+        "code": code,
+        "name": name or code,
+        "as_of": as_of,
+        "summary": {
+            "overall_label": overall_label,
+            "overall_score": overall_score,
+            "positive": positive_cnt,
+            "negative": negative_cnt,
+            "neutral": neutral_cnt,
+            "total": total_cnt
+        },
+        "items": processed_items
+    }
+

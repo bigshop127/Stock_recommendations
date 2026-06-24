@@ -194,6 +194,44 @@ def test_news_keyword_uses_rss(monkeypatch):
     assert body["items"][0]["title"] == "台積電 新聞"
 
 
+def test_stock_news_endpoint(monkeypatch):
+    from app.data import finmind_client
+    monkeypatch.setattr(finmind_client, "get_stock_name", lambda code: "台積電")
+    monkeypatch.setattr(
+        news_client, "get_news",
+        lambda keyword=None, limit=30: [
+            {"title": f"{keyword} 帶來訂單大增利多 - 自由時報", "summary": "這是一個利多消息，看好未來成長", "published": "Mon, 23 Jun 2026 12:00:00 +0800",
+             "url": "http://example.com/1", "source_feed": "google_news:自由時報"},
+            {"title": f"{keyword} 遭逢利空重挫", "summary": "出現衰退弱勢，面臨虧損", "published": "1782302400",
+             "url": "http://example.com/2", "source_feed": "cnyes"}
+        ]
+    )
+    r = client.get("/data/stock_news", params={"code": "2330"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["code"] == "2330"
+    assert body["name"] == "台積電"
+    assert "as_of" in body
+    summary = body["summary"]
+    assert summary["positive"] == 1
+    assert summary["negative"] == 1
+    assert summary["total"] == 2
+    assert summary["overall_score"] == 50.0
+    assert summary["overall_label"] == "neutral"
+    items = body["items"]
+    assert len(items) == 2
+    assert items[0]["title"] == "台積電 帶來訂單大增利多"
+    assert items[0]["source"] == "自由時報"
+    assert items[0]["sentiment"]["label"] == "positive"
+    assert "利多" in items[0]["sentiment"]["hits"]
+    assert "2026-06-23T12:00:00+08:00" in items[0]["published"]
+    assert items[1]["title"] == "台積電 遭逢利空重挫"
+    assert items[1]["source"] == "鉅亨網"
+    assert items[1]["sentiment"]["label"] == "negative"
+    assert "2026-" in items[1]["published"]
+
+
+
 def test_macro_series(monkeypatch):
     monkeypatch.setattr(
         fred_client, "fetch_series",
