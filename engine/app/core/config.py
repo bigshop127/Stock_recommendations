@@ -40,7 +40,8 @@ class Settings(BaseSettings):
     engine_port: int = 8000
 
     # 金鑰（缺省 None → client 會在被呼叫時報明確錯誤，不靜默）
-    finmind_token: str | None = None
+    finmind_token: str | None = None    # 單顆（向後相容；見 .env.example）
+    finmind_tokens: str | None = None   # 多顆，逗號分隔（FINMIND_TOKENS）；撞額度上限自動輪替
     fugle_api_key: str | None = None   # 可選；不設則 /data/book 走 TWSE MIS
     fred_api_key: str | None = None    # 可選；/data/macro 需要
 
@@ -53,6 +54,27 @@ class Settings(BaseSettings):
     # 對外 HTTP
     http_timeout: float = 15.0
     http_max_retry: int = 3
+
+    @property
+    def finmind_token_list(self) -> list[str]:
+        """有效的 FinMind token 清單（多顆輪替用；去空白、去重、保序）。
+
+        FINMIND_TOKENS（逗號分隔多顆）優先，並併入單顆 FINMIND_TOKEN（去重）。
+        皆空 → []，由 client 在被呼叫時報明確錯誤。
+        """
+        out: list[str] = []
+        seen: set[str] = set()
+        raw: list[str] = []
+        if self.finmind_tokens:
+            raw.extend(self.finmind_tokens.split(","))
+        if self.finmind_token:
+            raw.append(self.finmind_token)
+        for t in raw:
+            t = t.strip()
+            if t and t not in seen:
+                seen.add(t)
+                out.append(t)
+        return out
 
     @property
     def cache_path(self) -> Path:

@@ -21,29 +21,64 @@ _TRUST = {"Investment_Trust"}
 _DEALER = {"Dealer_self", "Dealer_Hedging"}
 
 
-def _require_token() -> str:
-    if not settings.finmind_token:
+# 多 token 輪替：撞 FinMind 額度上限（HTTP 402 / msg 含 "upper limit"）時自動換下一顆重試。
+# _token_idx 記住目前可用的那顆，避免每次請求都從已爆掉的 token 起手（省一輪白打）。
+_token_idx = 0
+
+
+def _tokens() -> list[str]:
+    toks = settings.finmind_token_list
+    if not toks:
         raise DataSourceError(
-            "缺少 FINMIND_TOKEN。請在 engine/.env 填入 FinMind token（見 engine/.env.example）。"
+            "缺少 FINMIND_TOKEN。請在 engine/.env 填入 FinMind token"
+            "（單顆 FINMIND_TOKEN，或多顆 FINMIND_TOKENS=逗號分隔；見 engine/.env.example）。"
         )
-    return settings.finmind_token
+    return toks
+
+
+def _is_quota_exhausted(text: str) -> bool:
+    """FinMind 額度上限訊號：HTTP 402 或回應 msg 含 'upper limit'。"""
+    t = (text or "").lower()
+    return "402" in t or "upper limit" in t
 
 
 def _finmind_get(dataset: str, data_id: str, start: str, end: str) -> pd.DataFrame:
-    params = {
-        "dataset": dataset,
-        "data_id": data_id,
-        "start_date": start,
-        "end_date": end,
-        "token": _require_token(),
-    }
-    payload = get_json(API_URL, params=params)
-    if not isinstance(payload, dict):
-        raise DataSourceError(f"FinMind 非預期回應：{str(payload)[:200]}")
-    if payload.get("status") != 200:
+    global _token_idx
+    tokens = _tokens()
+    n = len(tokens)
+    last_msg = ""
+    for attempt in range(n):
+        idx = (_token_idx + attempt) % n
+        params = {
+            "dataset": dataset,
+            "data_id": data_id,
+            "start_date": start,
+            "end_date": end,
+            "token": tokens[idx],
+        }
+        try:
+            payload = get_json(API_URL, params=params)
+        except DataSourceError as e:
+            # token 撞額度上限（如 HTTP 402）→ 換下一顆；其餘錯誤（金鑰錯、參數）直接拋。
+            if _is_quota_exhausted(str(e)):
+                last_msg = str(e)
+                continue  # 已是最後一顆時，迴圈自然結束 → 下方拋彙整錯誤
+            raise
+        if not isinstance(payload, dict):
+            raise DataSourceError(f"FinMind 非預期回應：{str(payload)[:200]}")
+        status = payload.get("status")
+        if status == 200:
+            _token_idx = idx  # 記住這顆可用，下次從它起手
+            data = payload.get("data") or []
+            return pd.DataFrame(data)
+        # status != 200：額度上限 → 輪替；其餘（資料錯）→ 直接拋
+        if _is_quota_exhausted(f"{status} {payload.get('msg', '')}"):
+            last_msg = str(payload.get("msg"))
+            continue
         raise DataSourceError(f"FinMind {dataset} 失敗：{payload.get('msg')}")
-    data = payload.get("data") or []
-    return pd.DataFrame(data)
+    raise DataSourceError(
+        f"FinMind {dataset}：{n} 顆 token 全部達額度上限（{last_msg[:120]}）。"
+    )
 
 
 # ── OHLCV（日 K）→ F_technical ──────────────────────────────────────────────
