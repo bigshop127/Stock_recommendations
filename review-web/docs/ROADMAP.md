@@ -1,7 +1,7 @@
 # 個股全面審視網 — 專案總綱 ROADMAP
 
 > 單一事實來源（SSOT）。任何進度／更新／優化都先改這份，再同步 Obsidian vault `C:\obsidian\儲存庫\個股全面審視網` 與 `.claude` 記憶。
-> 建立日：2026-06-21。狀態：**Phase 0–7 ✅ 完工。Phase 7（AI 全面審視・招牌段）2026-06-24 實作完成並通過 Claude review：前端複用 `POST /api/agents/decide`（零後端改動），`StockDetail.tsx` AI 區段分段對齊實際 agent graph（量化事實底座 blended→技術籌碼/消息情緒/老王在地專家三分析師→多空辯論→交易員決策→風控審核→最終決策+信心+一致性守門 warning），**按鈕觸發**(~187s/7×LLM/股、貴)+localStorage 快取(key `aiReview:{code}:{date}`)+用量遙測；`api.ts` 補嚴格 `AgentDecision` 型別樹、`api.decide(codes, date?)` 單股 body；契約 §2.8。review 抓並修兩個真實資料 bug：① 分析師 stance 著色（引擎回 `bull`/`bear` 非 `bullish`/`bearish`→卡片原會全灰標中性，已讓 `getStanceStyles` 兼容兩者並校正 `api.ts` 型別/mock/契約）、② 用量遙測欄位（引擎回 `est_total_tokens`/`total_elapsed_s` 非 `total_tokens`/`elapsed_s`→token 原不顯示）；另清掉非法 Tailwind 色階（`zinc-x50`/`yellow-550`）、補 confidence null 守衛（引擎 confidence 可為 null）、`aiReviewState.data` 收緊為 `AgentDecision|null`、loading 計時器加 `clearInterval` 釋放。`tsc -b && vite build` 乾淨。下一步 Phase 8（整合・RWD 打磨・PWA・部署上既有 Oracle VM，gateway 同源 serve `review-web/dist`）。**
+> 建立日：2026-06-21。狀態：**Phase 0–8 ✅ 全案完工。Phase 8（整合・RWD 打磨・PWA・部署上既有 Oracle VM，gateway 同源 serve `review-web/dist`）2026-06-25 實作並部署完成：① 後端 gateway 同源 serve `review-web/dist` 在子路徑 `/review`；② 前端 base、Router basename、PWA scope/start_url 對齊 `/review`，未知路由重定向；③ RWD 斷點打磨及 `ChipsCharts` SVG 縮放 tooltip 比例修正；④ PWA 包含 192/512 PNG/maskable 圖標、manifest 修改與 API 快取從嚴設定；⑤ 效能分塊與路由 lazy-loading，使 build size 無 >500kB 警告。VM 上 `git pull` + `npm ci` + build + gateway 重啟及本機 `ssh -L` 與端點驗收全綠。**
 
 > 〔Phase 6 紀錄〕Phase 6（新聞輿情・情緒）2026-06-24 實作完成並通過 Claude review：engine `service.get_stock_news`（code→股名、逐則詞典情緒、`published` ISO 化、整體輿情摘要）+ `/data/stock_news` 端點 + 抽共用 `classify_polarity` helper（複用 `factors/sentiment.py` 同一份極性詞典、F_sentiment 因子分數不變、回歸綠）；gateway `/api/stocks/:code/news` 薄轉發＋300s 短 TTL 快取；前端 `StockDetail.tsx` 新聞區（逐則情緒徽章＋整體輿情摘要 chip＋F_sentiment 交叉佐證＋相對時間＋載入/空/失敗三態＋手動刷新、無 5s 輪詢、無逐則 LLM）；著色利多=紅/利空=綠/中性=灰（台股慣例）；review 修掉 `docs/contracts.md §2.7` 契約同步、Google News 標題去除「- 媒體」尾、TS `url/published` 可為 null 的 runtime 安全。engine pytest 66 綠、`tsc -b && vite build` 乾淨。下一步 Phase 7（AI 全面審視・招牌段，複用 `POST /api/agents/decide`，按鈕觸發+localStorage 快取）。**
 
@@ -94,7 +94,7 @@ Python engine  FastAPI :8000         ← 既有，本案會新增 /data 或 /mar
 | **5** | 技術面 | MA/MACD/KD/RSI/布林疊圖、量價、型態標註、技術因子分呈現 | 多由前端用 `ohlcv` 自算（必要時補端點） | ✅ 已完工 (2026-06-23) |
 | **6** | 新聞輿情・情緒 | 新聞列表、逐則情緒徽章、整體輿情摘要 chip、F_sentiment 交叉佐證、三態+刷新 | `/api/stocks/:code/news`（薄轉發+短 TTL；engine `service.get_stock_news`+共用 `classify_polarity`） | ✅ 已完工 (2026-06-24) |
 | **7** | AI 全面審視（招牌） | 複用 `POST /api/agents/decide` 多 agent 敘事+評分，**分段對齊實際 agent graph**：量化事實底座(blended)→技術＋籌碼/消息情緒/老王在地專家三分析師→多空辯論→交易員決策→風控審核→最終決策+信心+一致性守門(背離 warning)；**按鈕觸發**(~187s/7×LLM/股、貴)+localStorage 快取、用量遙測 | 沿用既有（gateway `/api/agents/decide` 已存在；**必要時**加輕量摘要端點省 token，預設零後端改動） | ✅ 已完工 (2026-06-24) |
-| **8** | 整合・RWD打磨・PWA・部署 | 全頁整合、手機收合驗證、PWA 可裝成 APP、效能、部署上既有 Oracle VM（gateway 同源 serve） | gateway serve `review-web/dist`、systemd/部署 | — |
+| **8** | 整合・RWD打磨・PWA・部署 | 全頁整合、手機收合驗證、PWA 可裝成 APP、效能、部署上既有 Oracle VM（gateway 同源 serve） | gateway serve `review-web/dist`、systemd/部署 | ✅ 已完工 (2026-06-25) |
 
 各階段「希望看到的內容」細節寫在各自 `phaseN.md`，僅 Phase 0 先寫好；Phase 1+ 在前一階段完成後才定稿（依現況校正）。
 
