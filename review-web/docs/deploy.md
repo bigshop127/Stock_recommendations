@@ -86,6 +86,7 @@ if (fs.existsSync(webDist)) {
      ```
    - 純前端（只動 `review-web/`）更新才可省略 engine 重啟。
    - engine 重啟後 `/market/breadth`、`/market/institutional` 首次為冷啟動較慢（~15–20s），且高並發冷載偶發 **502**（TWSE MIS 限流）→ 前端「重試」即可，屬上游資料源瞬斷非程式錯誤。
+   - 🚨 **若個股 `chips`/`fundamentals` 回 502 且 engine log 出現 `HTTP 402 ... "Requests reach the upper limit"`**：是 FinMind 免費級「每小時請求上限」被打爆（盤勢總覽冷載＋多檔個股查詢很耗額度）。engine 已支援**多 token 輪替**——在 `engine/.env` 填 `FINMIND_TOKENS=token1,token2,...`（逗號分隔多顆，撞額度自動換顆重試；會與單顆 `FINMIND_TOKEN` 合併去重），改完 `sudo systemctl restart puhui-engine` 生效。
 
 4. **確認服務狀態與日誌**：
    ```bash
