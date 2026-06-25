@@ -9,6 +9,10 @@ export default defineConfig({
     react(),
     VitePWA({
       registerType: 'autoUpdate',
+      // Vite 8/Rolldown 下 vite-plugin-pwa 無法 emit registerSW.js（"assigns to bundle
+      // variable … This will be ignored"），導致注入的 <script> 404、SW 永不註冊。
+      // 改成不注入、由 main.tsx 手動 register 已正確產生的 sw.js。
+      injectRegister: false,
       manifest: {
         name: '個股全面審視網',
         short_name: '個股審視',
