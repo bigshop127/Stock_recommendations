@@ -101,6 +101,7 @@ if (fs.existsSync(webDist)) {
   ssh -L 3000:localhost:3000 -i C:\Users\bigsh\.ssh\oracle_puhui.key ubuntu@140.238.48.197
   ```
   然後於本機瀏覽器開啟 `http://localhost:3000/review/`。
+- **日常一鍵存取（本機，零公網暴露）**：桌面捷徑「個股全面審視網」→ 雙擊即自動建立上述 SSH 通道（最小化視窗常駐）並開瀏覽器到 `/review/`；通道已開則重用。啟動腳本＝`review-web/tools/open-review.ps1`，重建捷徑指向它即可。中斷＝關掉那個最小化的 SSH 視窗。僅限持金鑰的本機可連。
 - **VM 內部 Curl 驗證**：
   - 大盤總覽 `/` 正常：`curl -I http://localhost:3000/` (應該回傳 `Content-Length` 為 481 左右的舊 `web/` HTML)
   - 新個股審視 `/review/` 正常：`curl -I http://localhost:3000/review/` (應該回傳 `Content-Length` 為 901 左右的新版 HTML)
