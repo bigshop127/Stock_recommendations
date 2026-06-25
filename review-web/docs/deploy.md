@@ -76,10 +76,16 @@ if (fs.existsSync(webDist)) {
    npm run build
    ```
 
-3. **重啟 Gateway Systemd 服務** (不需要重啟 `puhui-engine`)：
+3. **重啟服務**：
    ```bash
    sudo systemctl restart puhui-gateway
    ```
+   - 🚨 **若本次 `git pull` 含 engine 程式碼變動（新增/修改 `engine/` 端點，例如 review-web 補的 `/market/*`、`/data/{chips,fundamentals,stock_news}`），必須一併重啟 engine**，否則跑著的舊 engine 程序不會載入新端點 → 前端打到 `/api/market/*` 等會收到 **404/502**：
+     ```bash
+     sudo systemctl restart puhui-engine
+     ```
+   - 純前端（只動 `review-web/`）更新才可省略 engine 重啟。
+   - engine 重啟後 `/market/breadth`、`/market/institutional` 首次為冷啟動較慢（~15–20s），且高並發冷載偶發 **502**（TWSE MIS 限流）→ 前端「重試」即可，屬上游資料源瞬斷非程式錯誤。
 
 4. **確認服務狀態與日誌**：
    ```bash
