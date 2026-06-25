@@ -150,11 +150,52 @@ def test_market_snapshot(monkeypatch):
 
 
 def test_ohlcv_missing_token_is_502(monkeypatch):
-    # 不 mock fetch、清掉 token → _require_token 應拋 DataSourceError → 502
+    # 不 mock fetch、清掉所有 token → _tokens() 應拋 DataSourceError → 502
     monkeypatch.setattr(settings, "finmind_token", None)
+    monkeypatch.setattr(settings, "finmind_tokens", None)
     r = client.get("/data/ohlcv", params={"code": "2330", "start": "2026-01-01", "end": "2026-01-10"})
     assert r.status_code == 502
     assert "FINMIND_TOKEN" in r.json()["detail"]
+
+
+def test_finmind_rotates_on_quota(monkeypatch):
+    # 第一顆 token 撞額度上限（HTTP 402）→ 自動換第二顆並成功。
+    from app.data.http import DataSourceError
+
+    monkeypatch.setattr(settings, "finmind_token", None)
+    monkeypatch.setattr(settings, "finmind_tokens", "TOK_A,TOK_B")
+    monkeypatch.setattr(finmind_client, "_token_idx", 0)
+    used: list[str] = []
+
+    def fake_get_json(url, *, params=None, headers=None):
+        used.append(params["token"])
+        if params["token"] == "TOK_A":
+            raise DataSourceError(
+                'HTTP 402 from .../api/v4/data: {"msg":"Requests reach the upper limit","status":402}'
+            )
+        return {"status": 200, "data": [{"date": "2026-06-25", "close": 600.0}]}
+
+    monkeypatch.setattr(finmind_client, "get_json", fake_get_json)
+    df = finmind_client._finmind_get("TaiwanStockPrice", "2330", "2026-01-01", "2026-01-10")
+    assert used == ["TOK_A", "TOK_B"]  # A 爆 → 換 B
+    assert not df.empty
+
+
+def test_finmind_all_tokens_exhausted_is_502(monkeypatch):
+    # 全部 token 都撞額度上限 → DataSourceError → /data/ohlcv 端點 502。
+    from app.data.http import DataSourceError
+
+    monkeypatch.setattr(settings, "finmind_token", None)
+    monkeypatch.setattr(settings, "finmind_tokens", "TOK_A,TOK_B")
+    monkeypatch.setattr(finmind_client, "_token_idx", 0)
+
+    def fake_get_json(url, *, params=None, headers=None):
+        raise DataSourceError('HTTP 402 from ...: {"msg":"Requests reach the upper limit","status":402}')
+
+    monkeypatch.setattr(finmind_client, "get_json", fake_get_json)
+    r = client.get("/data/ohlcv", params={"code": "2330", "start": "2026-01-01", "end": "2026-01-10"})
+    assert r.status_code == 502
+    assert "額度上限" in r.json()["detail"]
 
 
 def test_futures_merge(monkeypatch):
