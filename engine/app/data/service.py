@@ -6,6 +6,7 @@ live-only（富果，不快取或僅快取歷史日）：book、intraday。
 """
 from __future__ import annotations
 
+import datetime
 from datetime import date as _date
 
 import pandas as pd
@@ -65,8 +66,178 @@ def get_ohlcv_adj(code: str, start: str, end: str) -> dict:
     }
 
 
+def get_fundamentals(code: str) -> dict:
+    """個股基本面聚合：估值（日）、月營收（月）、獲利 (季)、股利 (年) 與最新 summary。"""
+    today = datetime.date.today()
+    
+    # 1. Valuation: 近一年
+    val_start = (today - datetime.timedelta(days=365)).isoformat()
+    val_end = today.isoformat()
+    val_df, _ = cache.get_timeseries("fundamentals_valuation", code, val_start, val_end, finmind_client.fetch_valuation)
+    
+    # 2. Revenue: 近 ~25 月
+    # 為了計算 YoY，往前多拿 13 個月（即共 38 個月）
+    rev_start_query = (today - datetime.timedelta(days=38 * 30.5)).isoformat()
+    rev_df, _ = cache.get_timeseries(
+        "fundamentals_revenue", code, rev_start_query, val_end,
+        finmind_client.fetch_month_revenue
+    )
+    if not rev_df.empty:
+        rev_df = rev_df.copy()
+        rev_df["date_dt"] = pd.to_datetime(rev_df["date"])
+        rev_df = rev_df.sort_values("date_dt").reset_index(drop=True)
+        
+        rev_df["month_period"] = rev_df["date_dt"].dt.to_period("M")
+        rev_map = rev_df.set_index("month_period")["revenue"].to_dict()
+        
+        mom_list = []
+        yoy_list = []
+        for _, row in rev_df.iterrows():
+            m = row["month_period"]
+            rev = row["revenue"]
+            
+            # MoM
+            prev_m = m - 1
+            prev_rev = rev_map.get(prev_m)
+            if prev_rev is not None and not pd.isna(prev_rev) and prev_rev > 0:
+                mom_list.append(round(((rev - prev_rev) / prev_rev) * 100, 4))
+            else:
+                mom_list.append(None)
+                
+            # YoY
+            prev_y = m - 12
+            prev_rev_y = rev_map.get(prev_y)
+            if prev_rev_y is not None and not pd.isna(prev_rev_y) and prev_rev_y > 0:
+                yoy_list.append(round(((rev - prev_rev_y) / prev_rev_y) * 100, 4))
+            else:
+                yoy_list.append(None)
+                
+        rev_df["mom"] = mom_list
+        rev_df["yoy"] = yoy_list
+        rev_df["month"] = rev_df["month_period"].astype(str)
+        rev_df = rev_df[["month", "revenue", "yoy", "mom"]]
+        rev_df = rev_df.tail(25).reset_index(drop=True)
+        
+    # 3. Financials: 近 ~10 季
+    # 拿過去 12 季以確保有 10 季數據可用
+    fin_start = (today - datetime.timedelta(days=12 * 92)).isoformat()
+    fin_df, _ = cache.get_timeseries("fundamentals_financials", code, fin_start, val_end, finmind_client.fetch_financials)
+    if not fin_df.empty:
+        fin_df = fin_df.tail(10).reset_index(drop=True)
+        
+    # 4. Dividend: 近 ~6 年
+    div_start = (today - datetime.timedelta(days=6 * 365)).isoformat()
+    div_df, _ = cache.get_timeseries(
+        "fundamentals_dividend", code, div_start, val_end,
+        finmind_client.fetch_dividend
+    )
+    if not div_df.empty:
+        div_df = div_df.copy()
+        div_df["year"] = pd.to_datetime(div_df["date"]).dt.year.astype(str)
+        div_df = div_df.groupby("year").agg({
+            "cash_dividend": "sum",
+            "stock_dividend": "sum"
+        }).reset_index()
+        div_df["cash_dividend"] = div_df["cash_dividend"].round(4)
+        div_df["stock_dividend"] = div_df["stock_dividend"].round(4)
+        div_df = div_df.sort_values("year").tail(6).reset_index(drop=True)
+        
+    # 5. Summary / market cap / as_of
+    pe_ratio = None
+    pb_ratio = None
+    dividend_yield = None
+    as_of = today.isoformat()
+    
+    if not val_df.empty:
+        latest_val = val_df.iloc[-1]
+        as_of = str(latest_val["date"])
+        
+        val_pe = latest_val["pe_ratio"]
+        val_pb = latest_val["pb_ratio"]
+        val_dy = latest_val["dividend_yield"]
+        
+        if not pd.isna(val_pe): pe_ratio = round(float(val_pe), 2)
+        if not pd.isna(val_pb): pb_ratio = round(float(val_pb), 2)
+        if not pd.isna(val_dy): dividend_yield = round(float(val_dy), 2)
+        
+    market_cap = None
+    try:
+        shares_start = (today - datetime.timedelta(days=30)).isoformat()
+        shares_df, _ = cache.get_timeseries("shares_issued", code, shares_start, val_end, finmind_client.fetch_shares_issued)
+        if not shares_df.empty:
+            latest_shares = float(shares_df.iloc[-1]["shares"])
+            if latest_shares > 0:
+                ohlcv_start = (today - datetime.timedelta(days=15)).isoformat()
+                ohlcv_df, _ = cache.get_timeseries("ohlcv", code, ohlcv_start, val_end, finmind_client.fetch_ohlcv)
+                if not ohlcv_df.empty:
+                    latest_close = float(ohlcv_df.iloc[-1]["close"])
+                    market_cap = int(latest_shares * latest_close)
+    except Exception:
+        pass
+        
+    eps_ttm = None
+    if not fin_df.empty:
+        last_4_fin = fin_df.tail(4)
+        eps_list = last_4_fin["eps"].dropna().tolist()
+        if len(eps_list) == 4:
+            eps_ttm = round(sum(eps_list), 2)
+            
+    def _clean_records(df, map_fn=None):
+        if df is None or df.empty:
+            return []
+        records = df.to_dict(orient="records")
+        cleaned = []
+        for r in records:
+            cleaned_r = {}
+            for k, v in r.items():
+                if pd.isna(v):
+                    cleaned_r[k] = None
+                else:
+                    if isinstance(v, (int, float)):
+                        cleaned_r[k] = round(v, 4) if isinstance(v, float) else v
+                    else:
+                        cleaned_r[k] = str(v)
+            if map_fn:
+                cleaned_r = map_fn(cleaned_r)
+            cleaned.append(cleaned_r)
+        return cleaned
+
+    def format_financials_record(r):
+        date_str = r.pop("date", None)
+        if date_str:
+            dt = pd.to_datetime(date_str)
+            r["quarter"] = f"{dt.year}-Q{(dt.month - 1) // 3 + 1}"
+        else:
+            r["quarter"] = None
+        return r
+
+    return {
+        "code": code,
+        "name": finmind_client.get_stock_name(code),
+        "as_of": as_of,
+        "summary": {
+            "pe_ratio": pe_ratio,
+            "pb_ratio": pb_ratio,
+            "dividend_yield": dividend_yield,
+            "market_cap": market_cap,
+            "eps_ttm": eps_ttm
+        },
+        "valuation": _clean_records(val_df),
+        "revenue": _clean_records(rev_df),
+        "financials": _clean_records(fin_df, format_financials_record),
+        "dividend": _clean_records(div_df),
+        "unit": {
+            "revenue": "元",
+            "market_cap": "元",
+            "dividend": "元/股",
+            "ratio": "%"
+        },
+        "source": "FinMind"
+    }
+
+
 def get_chips(code: str, start: str, end: str) -> dict:
-    """三大法人 + 融資券，合併同一日期軸。"""
+    """三大法人 + 融資券，合併同一日期軸（因子原料用，勿改命名與單位）。"""
     inst, m_inst = cache.get_timeseries("chips_inst", code, start, end, finmind_client.fetch_institutional)
     margin, m_margin = cache.get_timeseries("chips_margin", code, start, end, finmind_client.fetch_margin)
 
@@ -79,6 +250,12 @@ def get_chips(code: str, start: str, end: str) -> dict:
     else:
         merged = inst.merge(margin, on="date", how="outer").sort_values("date").reset_index(drop=True)
 
+    records = merged.to_dict(orient="records")
+    for r in records:
+        for k, v in r.items():
+            if pd.isna(v):
+                r[k] = None
+
     return {
         "code": code,
         "name": finmind_client.get_stock_name(code),
@@ -88,7 +265,107 @@ def get_chips(code: str, start: str, end: str) -> dict:
         "live_only": False,
         "cache": {"institutional": m_inst, "margin": m_margin},
         "rows": int(len(merged)),
-        "data": _records(merged),
+        "data": records,
+    }
+
+
+def get_chips_series(
+    code: str,
+    start: str | None = None,
+    end: str | None = None,
+    days: int | None = None,
+) -> dict:
+    """三大法人 + 融資券 + 外資持股比率，合併同一日期軸，供前端圖表展示（做單位換算、特定欄位）。"""
+    # If start is None and days is None, default to days = 20
+    if start is None and days is None:
+        days = 20
+
+    if not end:
+        end_date = datetime.date.today()
+    else:
+        end_date = datetime.date.fromisoformat(end)
+
+    if not start:
+        n_days = days if days is not None else 20
+        # Fetch extra days to cover weekends and holidays
+        start_date = end_date - datetime.timedelta(days=n_days * 2 + 10)
+    else:
+        start_date = datetime.date.fromisoformat(start)
+
+    start_str = start_date.isoformat()
+    end_str = end_date.isoformat()
+
+    inst, m_inst = cache.get_timeseries("chips_inst", code, start_str, end_str, finmind_client.fetch_institutional)
+    margin, m_margin = cache.get_timeseries("chips_margin", code, start_str, end_str, finmind_client.fetch_margin)
+    shareholding, m_shareholding = cache.get_timeseries("chips_shareholding", code, start_str, end_str, finmind_client.fetch_shareholding)
+
+    if not inst.empty:
+        inst = inst.copy()
+        inst["foreign_net_buy_qty"] = inst["foreign_net"] / 1000.0
+        inst["investment_trust_net_buy_qty"] = inst["trust_net"] / 1000.0
+        inst["dealer_net_buy_qty"] = inst["dealer_net"] / 1000.0
+        inst["total_net_buy_qty"] = inst["foreign_net_buy_qty"] + inst["investment_trust_net_buy_qty"] + inst["dealer_net_buy_qty"]
+        inst = inst.drop(columns=["foreign_net", "trust_net", "dealer_net"])
+    else:
+        inst = pd.DataFrame(columns=["date", "foreign_net_buy_qty", "investment_trust_net_buy_qty", "dealer_net_buy_qty", "total_net_buy_qty"])
+
+    if margin.empty:
+        margin = pd.DataFrame(columns=["date", "margin_balance", "margin_change", "short_balance", "short_change"])
+
+    if shareholding.empty:
+        shareholding = pd.DataFrame(columns=["date", "foreign_holding_ratio"])
+
+    # Outer merge
+    merged = inst.merge(margin, on="date", how="outer").merge(shareholding, on="date", how="outer")
+
+    if not merged.empty:
+        merged = merged.sort_values("date").reset_index(drop=True)
+
+    # Fill NaNs for specific columns
+    expected_cols = {
+        "foreign_net_buy_qty": 0.0,
+        "investment_trust_net_buy_qty": 0.0,
+        "dealer_net_buy_qty": 0.0,
+        "total_net_buy_qty": 0.0,
+        "margin_balance": 0.0,
+        "margin_change": 0.0,
+        "short_balance": 0.0,
+        "short_change": 0.0,
+    }
+    for col, default in expected_cols.items():
+        if col not in merged.columns:
+            merged[col] = default
+        else:
+            merged[col] = merged[col].fillna(default)
+
+    if "foreign_holding_ratio" not in merged.columns:
+        merged["foreign_holding_ratio"] = None
+
+    # Slice to last days if days is specified
+    if days is not None and days > 0:
+        merged = merged.tail(days).reset_index(drop=True)
+
+    as_of = None
+    if not merged.empty:
+        as_of = str(merged.iloc[-1]["date"])
+
+    records = merged.to_dict(orient="records")
+    for r in records:
+        for k, v in r.items():
+            if pd.isna(v):
+                r[k] = None
+
+    return {
+        "code": code,
+        "name": finmind_client.get_stock_name(code),
+        "as_of": as_of,
+        "unit": {
+            "net_buy_qty": "張",
+            "balance": "張",
+            "holding_ratio": "%",
+        },
+        "data": records,
+        "source": "FinMind",
     }
 
 
@@ -230,3 +507,113 @@ def get_macro(series: str, start: str, end: str) -> dict:
         "rows": meta["rows"],
         "data": _records(df),
     }
+
+
+# ── 個股新聞輿情與情緒聚合（供階段6） ───────────────────────────────────────
+def get_stock_news(code: str, limit: int = 30) -> dict:
+    from app.factors.sentiment import classify_polarity
+    import email.utils
+    from datetime import timezone
+
+    name = finmind_client.get_stock_name(code)
+    keyword = name if name else code
+
+    # 2. Query news
+    raw_items = news_client.get_news(keyword=keyword, limit=limit)
+
+    processed_items = []
+    for it in raw_items:
+        title = it.get("title") or ""
+        summary = it.get("summary") or ""
+
+        # Polarity tagging
+        res = classify_polarity(f"{title} {summary}")
+
+        # Source extraction
+        source_feed = it.get("source_feed") or ""
+        if source_feed == "cnyes":
+            source = "鉅亨網"
+        elif source_feed.startswith("google_news:"):
+            source = source_feed.split(":", 1)[1]
+            # Strip source suffix from Google News title if present
+            suffix = f" - {source}"
+            if title.endswith(suffix):
+                title = title[:-len(suffix)].strip()
+        else:
+            source = "Google News"
+            if " - " in title:
+                parts = title.rsplit(" - ", 1)
+                if len(parts) > 1 and len(parts[1]) < 20:
+                    source = parts[1].strip()
+                    title = parts[0].strip()
+
+        # Published normalization
+        pub_str = it.get("published")
+        normalized_pub = pub_str
+        if pub_str:
+            try:
+                # check if already ISO
+                datetime.datetime.fromisoformat(pub_str)
+                normalized_pub = pub_str
+            except Exception:
+                try:
+                    dt = email.utils.parsedate_to_datetime(pub_str)
+                    if dt.tzinfo is None:
+                        dt = dt.replace(tzinfo=timezone.utc)
+                    normalized_pub = dt.isoformat()
+                except Exception:
+                    try:
+                        sec = int(pub_str)
+                        normalized_pub = datetime.datetime.fromtimestamp(sec, tz=timezone.utc).isoformat()
+                    except Exception:
+                        normalized_pub = pub_str
+
+        processed_items.append({
+            "title": title,
+            "summary": it.get("summary"),
+            "url": it.get("url"),
+            "source": source,
+            "published": normalized_pub,
+            "sentiment": {
+                "label": res["label"],
+                "score": res["score"],
+                "hits": res["hits"]
+            }
+        })
+
+    # 5. Overall summary
+    positive_cnt = sum(1 for it in processed_items if it["sentiment"]["label"] == "positive")
+    negative_cnt = sum(1 for it in processed_items if it["sentiment"]["label"] == "negative")
+    neutral_cnt = sum(1 for it in processed_items if it["sentiment"]["label"] == "neutral")
+    total_cnt = len(processed_items)
+
+    polar_scores = [it["sentiment"]["score"] for it in processed_items if it["sentiment"]["hits"]]
+    if polar_scores:
+        overall_score = round(sum(polar_scores) / len(polar_scores), 1)
+    else:
+        overall_score = 50.0
+
+    if overall_score > 50.0:
+        overall_label = "positive"
+    elif overall_score < 50.0:
+        overall_label = "negative"
+    else:
+        overall_label = "neutral"
+
+    as_of = datetime.datetime.now(datetime.timezone.utc).astimezone().isoformat()
+
+    return {
+        "code": code,
+        "name": name or code,
+        "as_of": as_of,
+        "summary": {
+            "overall_label": overall_label,
+            "overall_score": overall_score,
+            "positive": positive_cnt,
+            "negative": negative_cnt,
+            "neutral": neutral_cnt,
+            "total": total_cnt
+        },
+        "items": processed_items
+    }
+

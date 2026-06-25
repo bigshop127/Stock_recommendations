@@ -115,6 +115,13 @@ engine 掛掉也回 200（`engine:"down"`）。
 
 ---
 
+### `GET /api/stocks/:code/news?limit=`
+個股新聞輿情及情緒標記（透傳 engine `/data/stock_news`）。對應契約 **`StockNews`**。
+提供 300 秒短 TTL 快取以防止重複向後端發送新聞抓取請求。
+
+---
+
+
 ### `GET /api/watchlist?date=`
 自動觀察清單（engine `/watchlist` 透傳）。`items[]` 為 **`Watchlist`** 元素（`swing_score`/`daytrade_prob`/`rank_*`/`source`/`puhui_*`/`tags`），波段與當沖各自排序。
 
@@ -169,7 +176,7 @@ engine 掛掉也回 200（`engine:"down"`）。
 | `GET /api/health` | 200，`engine:"down"` |
 | `GET /api/reports/list`、`GET /api/reports` | **照常可用**（純檔案系統，不依賴 engine） |
 | `GET /api/dashboard` | **degraded 200**：水位/情緒退讀 `data/puhui_cache.json`（僅全域 `water_level`/`puhui_sentiment`，**無個股清單**）、`market_regime:null`、`watchlist:[]`、**`degraded:true`** + `notes`。連 cache 都沒 → 仍 200，欄位 `null` |
-| `GET /api/stocks/:code`、`GET /api/stocks/:code/{ohlcv,book,intraday}`、`GET /api/watchlist`、`POST /api/backtest`、`POST /api/backtest/grid`、`POST /api/agents/decide` | **明確 503** `ENGINE_UNAVAILABLE`（不假裝成功、不吐殘缺數字） |
+| `GET /api/stocks/:code`、`GET /api/stocks/:code/{ohlcv,book,intraday,news}`、`GET /api/watchlist`、`POST /api/backtest`、`POST /api/backtest/grid`、`POST /api/agents/decide` | **明確 503** `ENGINE_UNAVAILABLE`（不假裝成功、不吐殘缺數字） |
 
 degraded dashboard 範例（engine down + 有 cache）：
 ```json

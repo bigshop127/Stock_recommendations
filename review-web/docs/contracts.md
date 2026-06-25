@@ -143,60 +143,233 @@
 ```json
 {
   "code": "2330",
+  "name": "台積電",
+  "as_of": "2026-06-19",
+  "unit": { "net_buy_qty": "張", "balance": "張", "holding_ratio": "%" },
   "data": [
     {
       "date": "2026-06-19",
-      "foreign_holding_ratio": 74.2,
-      "investment_trust_net_buy_qty": 1200,
       "foreign_net_buy_qty": 3500,
+      "investment_trust_net_buy_qty": 1200,
       "dealer_net_buy_qty": -450,
+      "total_net_buy_qty": 4250,
       "margin_balance": 12500,
+      "margin_change": 320,
       "short_balance": 820,
-      "source": "TWSE"
+      "short_change": -45,
+      "foreign_holding_ratio": 74.2
     }
-  ]
+  ],
+  "source": "FinMind"
 }
 ```
 
 ### 2.6 取得個股基本面診斷 `/api/stocks/:code/fundamentals`
 * **Method**: `GET`
-* **Description**: 取得本益比、股價淨值比、殖利率及營收年增率。
+* **Description**: 取得個股估值（日頻）、月營收（月頻）、獲利 EPS（季頻）、股利（年頻）與最新 summary 快照。
 * **Response Schema (200 OK)**:
 ```json
 {
   "code": "2330",
-  "metrics": [
+  "name": "台積電",
+  "as_of": "2026-06-19",
+  "summary": {
+    "pe_ratio": 24.5,
+    "pb_ratio": 6.8,
+    "dividend_yield": 2.45,
+    "market_cap": 18250000000000,
+    "eps_ttm": 42.1
+  },
+  "valuation": [
+    { "date": "2026-06-19", "pe_ratio": 24.5, "pb_ratio": 6.8, "dividend_yield": 2.45 }
+  ],
+  "revenue": [
+    { "month": "2026-05", "revenue": 250000000000, "yoy": 15.4, "mom": -2.1 }
+  ],
+  "financials": [
+    { "quarter": "2026-Q1", "eps": 8.7, "gross_margin": 56.2, "operating_margin": 42.1, "net_margin": 38.5 }
+  ],
+  "dividend": [
+    { "year": "2025", "cash_dividend": 13.5, "stock_dividend": 0.0 }
+  ],
+  "unit": { "revenue": "元", "market_cap": "元", "dividend": "元/股", "ratio": "%" },
+  "source": "FinMind"
+}
+```
+
+
+### 2.7 取得個股即時新聞與輿情 `/api/stocks/:code/news`
+* **Method**: `GET`
+* **Description**: 整合各大財經媒體之新聞，並進行情緒評分與輿情統計。
+* **Response Schema (200 OK)**:
+```json
+{
+  "code": "2330",
+  "name": "台積電",
+  "as_of": "2026-06-23T12:00:00+08:00",
+  "summary": {
+    "overall_label": "positive",
+    "overall_score": 63.2,
+    "positive": 12,
+    "negative": 5,
+    "neutral": 13,
+    "total": 30
+  },
+  "items": [
     {
-      "date": "2026-Q1",
-      "pe_ratio": 24.5,
-      "pb_ratio": 6.8,
-      "dividend_yield": 2.45,
-      "revenue_yoy": 15.4,
-      "eps": 8.7,
-      "source": "TWSE"
+      "title": "台積電 3 奈米產能大暢旺 訂單利多頻傳",
+      "summary": "台積電 3 奈米產能持續暢旺，市場看好 AI 晶片需求，受惠大客戶擴大訂單...",
+      "url": "https://news.cnyes.com/news/id/5283912",
+      "source": "鉅亨網",
+      "published": "2026-06-22T09:15:00+08:00",
+      "sentiment": {
+        "label": "positive",
+        "score": 75.0,
+        "hits": ["利多", "訂單", "暢旺", "看好", "受惠"]
+      }
     }
   ]
 }
 ```
 
-### 2.7 取得個股即時新聞與輿情 `/api/stocks/:code/news`
-* **Method**: `GET`
-* **Description**: 整合各大財經媒體之新聞，並進行情緒評分。
+### 2.8 啟動 AI 全面審視 (多 Agent 決策) `/api/agents/decide`
+* **Method**: `POST`
+* **Description**: 啟動多 agent LLM 決策流程，融合量化 facts、三個分析師（技術籌碼、消息情緒、老王在地專家）、多空辯論、交易員決策、風控審核。
+* **Request Body**:
+```json
+{
+  "codes": ["2330"],
+  "date": "2026-06-24"
+}
+```
 * **Response Schema (200 OK)**:
 ```json
 {
-  "code": "2330",
-  "news": [
+  "date": "2026-06-24",
+  "count": 1,
+  "decisions": [
     {
-      "id": "1",
-      "title": "台積電 3 奈米產能供不應求，傳蘋果與超微包下產能",
-      "date": "2026-06-20",
-      "url": "#",
-      "summary": "半導體供應鏈指出，台積電 3 奈米製程持續滿載，訂單已排至明年。",
-      "sentiment": "positive",
-      "sentiment_score": 92,
-      "source": "Anue 鉅亨"
+      "code": "2330",
+      "name": "台積電",
+      "date": "2026-06-24",
+      "fact_base": {
+        "blended_score": 62.1,
+        "blended_action": "BUY",
+        "conflict": false
+      },
+      "analysts": {
+        "technical": {
+          "stance": "bull",
+          "confidence": 0.7,
+          "summary": "技術面呈現偏多整理...",
+          "key_points": ["站穩季線", "成交量放大"],
+          "llm_failed": false,
+          "_llm": {
+            "provider": "gemini",
+            "switched": false,
+            "elapsed_s": 21.3,
+            "est_tokens": 700,
+            "error": null
+          },
+          "role": "technical_analyst"
+        },
+        "news_sentiment": {
+          "stance": "neutral",
+          "confidence": 0.5,
+          "summary": "市場輿論中規中矩...",
+          "key_points": ["產業前景佳但估值偏高"],
+          "_llm": {
+            "provider": "gemini",
+            "switched": false,
+            "elapsed_s": 15.2,
+            "est_tokens": 500,
+            "error": null
+          },
+          "role": "news_sentiment_analyst"
+        },
+        "puhui": {
+          "stance": "bull",
+          "confidence": 0.6,
+          "summary": "普惠觀點表示主力偏多吸籌...",
+          "key_points": ["老王指標轉強"],
+          "_llm": {
+            "provider": "gemini",
+            "switched": false,
+            "elapsed_s": 18.1,
+            "est_tokens": 600,
+            "error": null
+          },
+          "role": "puhui_expert"
+        }
+      },
+      "debate": [
+        {
+          "side": "bull",
+          "stance": "bull",
+          "confidence": 0.7,
+          "summary": "多方論點認為基本面強勁且技術指標向上...",
+          "key_points": ["營收創高"]
+        },
+        {
+          "side": "bear",
+          "stance": "bear",
+          "confidence": 0.6,
+          "summary": "空方論點認為目前評價偏高且外資有調節跡象...",
+          "key_points": ["本益比接近區間上緣"]
+        }
+      ],
+      "trader": {
+        "decision": "BUY",
+        "confidence": 0.65,
+        "rationale": "考量多方論點較具說服力且量化基本面良好，建議偏多操作。",
+        "_llm": {
+          "provider": "gemini",
+          "switched": false,
+          "elapsed_s": 25.4,
+          "est_tokens": 800,
+          "error": null
+        },
+        "role": "trader"
+      },
+      "risk": {
+        "final_decision": "HOLD",
+        "confidence": 0.6,
+        "risk_notes": "大盤近期水位相對偏高，且個股背離技術支撐，建議暫時觀望。",
+        "conflict_acknowledged": true,
+        "_llm": {
+          "provider": "gemini",
+          "switched": false,
+          "elapsed_s": 22.1,
+          "est_tokens": 900,
+          "error": null
+        },
+        "role": "risk_manager"
+      },
+      "final_decision": "HOLD",
+      "confidence": 0.6,
+      "consistency": {
+        "blended_direction": "bull",
+        "agent_direction": "neutral",
+        "blended_conflict_quant_vs_puhui": false,
+        "divergent_from_quant": false,
+        "divergence_flagged": true,
+        "warning": "最終決策背離量化 blended 方向，卻沒被風控/交易員點名"
+      },
+      "degraded": []
     }
-  ]
+  ],
+  "errors": [],
+  "usage": {
+    "llm_calls": 7,
+    "by_provider": { "gemini": 7, "claude": 0 },
+    "est_total_tokens": 4900,
+    "total_elapsed_s": 187
+  },
+  "config": {
+    "analysts": ["technical", "news_sentiment", "puhui"],
+    "debate_rounds": 1,
+    "primary_provider": "gemini",
+    "fallback_provider": "claude"
+  }
 }
 ```

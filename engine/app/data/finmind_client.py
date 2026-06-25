@@ -111,6 +111,140 @@ def fetch_margin(code: str, start: str, end: str) -> pd.DataFrame:
     return out.sort_values("date").reset_index(drop=True)
 
 
+# ── 外資持股比率 → F_chips ───────────────────────────────────────────────────
+def fetch_shareholding(code: str, start: str, end: str) -> pd.DataFrame:
+    """外資持股比率：date, foreign_holding_ratio。"""
+    raw = _finmind_get("TaiwanStockShareholding", code, start, end)
+    cols = ["date", "foreign_holding_ratio"]
+    if raw.empty:
+        return pd.DataFrame(columns=cols)
+    if "ForeignInvestmentSharesRatio" not in raw.columns:
+        return pd.DataFrame(columns=cols)
+    out = pd.DataFrame(
+        {
+            "date": raw["date"].astype(str),
+            "foreign_holding_ratio": pd.to_numeric(raw["ForeignInvestmentSharesRatio"], errors="coerce"),
+        }
+    )
+    return out.sort_values("date").reset_index(drop=True)
+
+
+# ── 個股估值（PER/PBR/殖利率，日頻）→ Phase 4 ──────────────────────────────────
+def fetch_valuation(code: str, start: str, end: str) -> pd.DataFrame:
+    """個股估值：date, pe_ratio, pb_ratio, dividend_yield。"""
+    raw = _finmind_get("TaiwanStockPER", code, start, end)
+    cols = ["date", "pe_ratio", "pb_ratio", "dividend_yield"]
+    if raw.empty:
+        return pd.DataFrame(columns=cols)
+    out = pd.DataFrame(
+        {
+            "date": raw["date"].astype(str),
+            "pe_ratio": pd.to_numeric(raw["PER"], errors="coerce"),
+            "pb_ratio": pd.to_numeric(raw["PBR"], errors="coerce"),
+            "dividend_yield": pd.to_numeric(raw["dividend_yield"], errors="coerce"),
+        }
+    )
+    return out[cols].sort_values("date").reset_index(drop=True)
+
+
+# ── 月營收（YoY/MoM 計算移至 service，此處只抓 raw 資料）→ Phase 4 ───────────────
+def fetch_month_revenue(code: str, start: str, end: str) -> pd.DataFrame:
+    """月營收：date, revenue。"""
+    raw = _finmind_get("TaiwanStockMonthRevenue", code, start, end)
+    cols = ["date", "revenue"]
+    if raw.empty:
+        return pd.DataFrame(columns=cols)
+        
+    out = pd.DataFrame(
+        {
+            "date": raw["date"].astype(str),
+            "revenue": pd.to_numeric(raw["revenue"], errors="coerce"),
+        }
+    )
+    return out[cols].sort_values("date").reset_index(drop=True)
+
+
+# ── 獲利能力（EPS / 三率，季頻）→ Phase 4 ──────────────────────────────────────
+def fetch_financials(code: str, start: str, end: str) -> pd.DataFrame:
+    """獲利能力 (季頻)：date, eps, gross_margin, operating_margin, net_margin。"""
+    raw = _finmind_get("TaiwanStockFinancialStatements", code, start, end)
+    cols = ["date", "eps", "gross_margin", "operating_margin", "net_margin"]
+    if raw.empty:
+        return pd.DataFrame(columns=cols)
+        
+    df_pivot = raw.pivot_table(index="date", columns="type", values="value", aggfunc="first").reset_index()
+    
+    eps_col = "EPS" if "EPS" in df_pivot.columns else None
+    rev_col = "Revenue" if "Revenue" in df_pivot.columns else None
+    gross_col = "GrossProfit" if "GrossProfit" in df_pivot.columns else None
+    op_col = "OperatingIncome" if "OperatingIncome" in df_pivot.columns else None
+    net_col = "IncomeAfterTaxes" if "IncomeAfterTaxes" in df_pivot.columns else None
+    
+    out = pd.DataFrame()
+    out["date"] = df_pivot["date"].astype(str)
+    
+    if eps_col:
+        out["eps"] = pd.to_numeric(df_pivot[eps_col], errors="coerce")
+    else:
+        out["eps"] = None
+        
+    if rev_col and gross_col:
+        out["gross_margin"] = (pd.to_numeric(df_pivot[gross_col], errors="coerce") / 
+                                pd.to_numeric(df_pivot[rev_col], errors="coerce") * 100).round(2)
+    else:
+        out["gross_margin"] = None
+        
+    if rev_col and op_col:
+        out["operating_margin"] = (pd.to_numeric(df_pivot[op_col], errors="coerce") / 
+                                    pd.to_numeric(df_pivot[rev_col], errors="coerce") * 100).round(2)
+    else:
+        out["operating_margin"] = None
+        
+    if rev_col and net_col:
+        out["net_margin"] = (pd.to_numeric(df_pivot[net_col], errors="coerce") / 
+                              pd.to_numeric(df_pivot[rev_col], errors="coerce") * 100).round(2)
+    else:
+        out["net_margin"] = None
+        
+    return out[cols].sort_values("date").reset_index(drop=True)
+
+
+# ── 股利政策（年頻）→ Phase 4 ──────────────────────────────────────────────────
+def fetch_dividend(code: str, start: str, end: str) -> pd.DataFrame:
+    """股利政策：date, cash_dividend, stock_dividend。"""
+    raw = _finmind_get("TaiwanStockDividend", code, start, end)
+    cols = ["date", "cash_dividend", "stock_dividend"]
+    if raw.empty:
+        return pd.DataFrame(columns=cols)
+        
+    out = pd.DataFrame(
+        {
+            "date": raw["date"].astype(str),
+            "cash_dividend": pd.to_numeric(raw["CashEarningsDistribution"], errors="coerce").fillna(0.0),
+            "stock_dividend": pd.to_numeric(raw["StockEarningsDistribution"], errors="coerce").fillna(0.0),
+        }
+    )
+    return out[cols].sort_values("date").reset_index(drop=True)
+
+
+# ── 發行股數（估值市值計算用，日頻）→ Phase 4 ─────────────────────────
+def fetch_shares_issued(code: str, start: str, end: str) -> pd.DataFrame:
+    """發行股數：date, shares。"""
+    raw = _finmind_get("TaiwanStockShareholding", code, start, end)
+    cols = ["date", "shares"]
+    if raw.empty or "NumberOfSharesIssued" not in raw.columns:
+        return pd.DataFrame(columns=cols)
+    out = pd.DataFrame(
+        {
+            "date": raw["date"].astype(str),
+            "shares": pd.to_numeric(raw["NumberOfSharesIssued"], errors="coerce"),
+        }
+    )
+    return out[cols].sort_values("date").reset_index(drop=True)
+
+
+
+
 # ── 股名（補 StockSignal.name）──────────────────────────────────────────────
 _name_cache: dict[str, str] = {}
 

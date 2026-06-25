@@ -216,13 +216,95 @@ export interface BacktestResult {
   [k: string]: unknown;
 }
 
+export interface LlmUsage {
+  provider: string;
+  switched: boolean;
+  elapsed_s: number;
+  est_tokens?: number;
+  error?: string | null;
+}
+
+export interface FactBase {
+  blended_score: number;
+  blended_action: string;
+  conflict: boolean;
+}
+
+export interface AnalystDetail {
+  stance: 'bull' | 'bullish' | 'bear' | 'bearish' | 'neutral';
+  confidence: number | null;
+  summary: string;
+  key_points: string[];
+  llm_failed?: boolean;
+  role: string;
+  _llm?: LlmUsage;
+}
+
+export interface DebateParticipant {
+  side: 'bull' | 'bear';
+  stance: 'bull' | 'bullish' | 'bear' | 'bearish' | 'neutral';
+  confidence: number | null;
+  summary: string;
+  key_points: string[];
+}
+
+export interface TraderDecision {
+  decision: string;
+  confidence: number | null;
+  rationale: string;
+  role: string;
+  _llm?: LlmUsage;
+}
+
+export interface RiskManagement {
+  final_decision: string;
+  confidence: number | null;
+  risk_notes: string;
+  conflict_acknowledged: boolean;
+  role: string;
+  _llm?: LlmUsage;
+}
+
+export interface ConsistencyStatus {
+  blended_direction: string;
+  agent_direction: string;
+  blended_conflict_quant_vs_puhui: boolean;
+  divergent_from_quant: boolean;
+  divergence_flagged: boolean;
+  warning: string | null;
+}
+
+export interface AgentDecision {
+  code: string;
+  name: string;
+  date: string;
+  fact_base: FactBase;
+  analysts: {
+    technical: AnalystDetail;
+    news_sentiment: AnalystDetail;
+    puhui: AnalystDetail;
+  };
+  debate: DebateParticipant[];
+  trader: TraderDecision;
+  risk: RiskManagement;
+  final_decision: string;
+  confidence: number | null;
+  consistency: ConsistencyStatus;
+  degraded?: string[];
+}
+
 export interface DecideResp {
   date: string;
   count: number;
-  decisions: Record<string, unknown>[];
-  errors: unknown[];
+  decisions: AgentDecision[];
+  errors: any[];
   usage?: Record<string, unknown>;
-  config?: Record<string, unknown>;
+  config?: {
+    analysts: string[];
+    debate_rounds: number;
+    primary_provider: string;
+    fallback_provider: string;
+  };
 }
 
 // === Phase 1 新增 API 介面定義 (市場資訊與個股多維度資料) ===
@@ -294,46 +376,113 @@ export interface MarketInstitutional {
 
 export interface ChipRow {
   date: string;
-  foreign_holding_ratio: number;
+  foreign_holding_ratio: number | null;
   investment_trust_net_buy_qty: number;
   foreign_net_buy_qty: number;
   dealer_net_buy_qty: number;
+  total_net_buy_qty: number;
   margin_balance: number;
+  margin_change: number;
   short_balance: number;
-  source: string;
+  short_change: number;
 }
 export interface StockChips {
   code: string;
+  name: string | null;
+  as_of: string | null;
+  unit: {
+    net_buy_qty: string;
+    balance: string;
+    holding_ratio: string;
+  };
   data: ChipRow[];
-}
-
-export interface FundamentalMetric {
-  date: string;
-  pe_ratio: number;
-  pb_ratio: number;
-  dividend_yield: number;
-  revenue_yoy: number;
-  eps: number;
   source: string;
 }
+
+export interface FundamentalSummary {
+  pe_ratio: number | null;
+  pb_ratio: number | null;
+  dividend_yield: number | null;
+  market_cap: number | null;
+  eps_ttm: number | null;
+}
+
+export interface ValuationRow {
+  date: string;
+  pe_ratio: number | null;
+  pb_ratio: number | null;
+  dividend_yield: number | null;
+}
+
+export interface RevenueRow {
+  month: string;
+  revenue: number | null;
+  yoy: number | null;
+  mom: number | null;
+}
+
+export interface FinancialsRow {
+  quarter: string;
+  eps: number | null;
+  gross_margin: number | null;
+  operating_margin: number | null;
+  net_margin: number | null;
+}
+
+export interface DividendRow {
+  year: string;
+  cash_dividend: number | null;
+  stock_dividend: number | null;
+}
+
 export interface StockFundamentals {
   code: string;
-  metrics: FundamentalMetric[];
+  name: string | null;
+  as_of: string;
+  summary: FundamentalSummary;
+  valuation: ValuationRow[];
+  revenue: RevenueRow[];
+  financials: FinancialsRow[];
+  dividend: DividendRow[];
+  unit: {
+    revenue: string;
+    market_cap: string;
+    dividend: string;
+    ratio: string;
+  };
+  source: string;
+}
+
+export interface NewsSentiment {
+  label: 'positive' | 'negative' | 'neutral';
+  score: number;
+  hits: string[];
 }
 
 export interface NewsItem {
-  id: string;
   title: string;
-  date: string;
-  url: string;
-  summary: string;
-  sentiment: 'positive' | 'negative' | 'neutral';
-  sentiment_score: number; // 0 - 100
+  summary: string | null;
+  url: string | null;
   source: string;
+  published: string | null;
+  sentiment: NewsSentiment;
 }
+
+export interface SentimentSummary {
+  overall_label: 'positive' | 'negative' | 'neutral';
+  overall_score: number;
+  positive: number;
+  negative: number;
+  neutral: number;
+  total: number;
+}
+
 export interface StockNews {
   code: string;
-  news: NewsItem[];
+  name: string;
+  as_of: string;
+  summary: SentimentSummary;
+  items: NewsItem[];
 }
 
 // === API Client 整合出口 ===
@@ -357,11 +506,11 @@ export const api = {
     }),
   reportsList: () => req<ReportsList>('/reports/list'),
   report: (date?: string) => req<Report>(`/reports${qs({ date })}`),
-  decide: (codes: string[]) =>
+  decide: (codes: string[], date?: string) =>
     req<DecideResp>('/agents/decide', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ codes }),
+      body: JSON.stringify({ codes, date }),
     }),
 
   // Phase 1 新增 API 端點
@@ -369,7 +518,7 @@ export const api = {
   marketBreadth: (o?: { date?: string }) => req<MarketBreadth>(`/market/breadth${qs(o)}`),
   marketSectors: (o?: { date?: string }) => req<MarketSectors>(`/market/sectors${qs(o)}`),
   marketInstitutional: (o?: { date?: string; days?: number }) => req<MarketInstitutional>(`/market/institutional${qs(o)}`),
-  stockChips: (code: string) => req<StockChips>(`/stocks/${code}/chips`),
+  stockChips: (code: string, o?: { days?: number; start?: string; end?: string }) => req<StockChips>(`/stocks/${code}/chips${qs(o)}`),
   stockFundamentals: (code: string) => req<StockFundamentals>(`/stocks/${code}/fundamentals`),
   stockNews: (code: string) => req<StockNews>(`/stocks/${code}/news`),
 };

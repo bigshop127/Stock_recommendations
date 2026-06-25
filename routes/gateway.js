@@ -10,6 +10,7 @@
  * | GET  /api/dashboard         | /puhui/view + /watchlist + regime | DailySnapshot |
  * | GET  /api/stocks/:code      | /signal(swing+daytrade) + /signal/blended + /puhui/view | StockSignal×2 + blended |
  * | GET  /api/stocks/:code/ohlcv| /data/ohlcv 透傳（日K；?adjust=1 → /data/ohlcv_adj yfinance 還原）| — |
+ * | GET  /api/stocks/:code/chips| /data/chips 透傳（個股籌碼時序）               | StockChips |
  * | GET  /api/stocks/:code/book | /data/book 透傳（即時五檔，TWSE MIS 預設）| — |
  * | GET  /api/stocks/:code/intraday | /data/intraday 透傳（盤中分K，富果）| — |
  * | GET  /api/watchlist         | /watchlist 透傳                | Watchlist[] |
@@ -38,8 +39,11 @@ const T = {
   backtest: 180000,
   agents: 1200000,
   ohlcv: 60000,   // FinMind 一年日K（有 parquet 快取，首抓較久）
+  chips: 60000,   // FinMind 個股籌碼時序
   book: 15000,    // 即時五檔 live snapshot（TWSE MIS，快）
   intraday: 45000, // 富果盤中分K
+  fundamentals: 90000, // 給長一點 timeout，多 dataset 首抓慢
+  news: 30000,     // 個股新聞輿情及情緒標記
 };
 
 const dateParams = (date) => (date ? { date } : {});
@@ -208,6 +212,30 @@ router.get('/api/stocks/:code/ohlcv', async (req, res) => {
   }
 });
 
+// ── GET /api/stocks/:code/chips?days=&start=&end= ── 個股籌碼面時序（三大法人/信用交易/外資持股）──
+// 透傳 /data/chips。
+router.get('/api/stocks/:code/chips', async (req, res) => {
+  const { days, start, end } = req.query;
+  const params = { code: req.params.code };
+  if (days) params.days = days;
+  if (start) params.start = start;
+  if (end) params.end = end;
+  try {
+    res.json(await engineGet('/data/chips', params, T.chips));
+  } catch (err) {
+    sendError(res, err);
+  }
+});
+
+// ── GET /api/stocks/:code/fundamentals ── 個股基本面聚合（估值/營收/EPS/股利/summary）──
+router.get('/api/stocks/:code/fundamentals', async (req, res) => {
+  try {
+    res.json(await engineGet('/data/fundamentals', { code: req.params.code }, T.fundamentals));
+  } catch (err) {
+    sendError(res, err);
+  }
+});
+
 // ── GET /api/stocks/:code/book ── 即時最佳五檔 透傳（缺口A：當沖盤口；TWSE MIS 預設）──
 // live-only：盤後/非交易時段資料可能為空殼或 502（數據源錯誤），由 engine 決定。
 router.get('/api/stocks/:code/book', async (req, res) => {
@@ -231,6 +259,35 @@ router.get('/api/stocks/:code/intraday', async (req, res) => {
     sendError(res, err);
   }
 });
+
+// ── GET /api/stocks/:code/news?limit= ── 個股新聞輿情及情緒標記 ──
+// 短 TTL 快取（300s）
+const newsCache = new Map();
+router.get('/api/stocks/:code/news', async (req, res) => {
+  const code = req.params.code;
+  const limit = req.query.limit || 30;
+  const cacheKey = `${code}_${limit}`;
+  const now = Date.now();
+
+  if (newsCache.has(cacheKey)) {
+    const cached = newsCache.get(cacheKey);
+    if (cached.expiresAt > now) {
+      return res.json(cached.data);
+    }
+  }
+
+  try {
+    const data = await engineGet('/data/stock_news', { code, limit }, T.news);
+    newsCache.set(cacheKey, {
+      data,
+      expiresAt: Date.now() + 300000 // 5 minutes
+    });
+    res.json(data);
+  } catch (err) {
+    sendError(res, err);
+  }
+});
+
 
 // ── GET /api/watchlist?date= ── 透傳 ───────────────────────────────────────────
 router.get('/api/watchlist', async (req, res) => {
