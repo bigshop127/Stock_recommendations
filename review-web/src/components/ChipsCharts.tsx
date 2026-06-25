@@ -93,7 +93,9 @@ export const ChipsCharts: React.FC<ChipsChartsProps> = ({ data, name, asOf }) =>
   // Mouse Move Event Handler for Tooltip
   const handleMouseMove = (e: React.MouseEvent<SVGSVGElement, MouseEvent>) => {
     const svgRect = e.currentTarget.getBoundingClientRect();
-    const mouseX = e.clientX - svgRect.left - paddingLeft;
+    const scaleX = svgWidth / (svgRect.width || 1);
+    const clientXInSvg = (e.clientX - svgRect.left) * scaleX;
+    const mouseX = clientXInSvg - paddingLeft;
     if (mouseX < -stepX / 2 || mouseX > plotWidth + stepX / 2) {
       setHoverIndex(null);
       return;

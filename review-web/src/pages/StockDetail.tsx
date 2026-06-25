@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { api } from '../lib/api';
 import type { StockDetail as IStockDetail, StockChips, StockFundamentals, StockNews, Book, OhlcvRow, AgentDecision, DebateParticipant } from '../lib/api';
-import { RefreshCw, BarChart2, TrendingUp, Cpu, Newspaper, DollarSign, AlertTriangle, Users, MessageSquare, Info, AlertCircle } from 'lucide-react';
+import { RefreshCw, BarChart2, TrendingUp, Cpu, Newspaper, DollarSign, AlertTriangle, Users, MessageSquare, Info, AlertCircle, ArrowLeft } from 'lucide-react';
 import { PriceChart } from '../components/PriceChart';
 import { ChipsCharts } from '../components/ChipsCharts';
 
@@ -2251,6 +2251,13 @@ export const StockDetail: React.FC = () => {
       {/* 標題與個股快速搜尋 */}
       <div className="flex items-center justify-between flex-wrap gap-4">
         <div className="flex items-center gap-3">
+          <Link
+            to="/"
+            className="flex items-center gap-1.5 px-3 py-1.5 bg-zinc-800 text-xs font-semibold hover:bg-zinc-700 text-zinc-300 rounded-lg border border-border transition-colors duration-150"
+          >
+            <ArrowLeft className="w-3.5 h-3.5" />
+            返回大盤總覽
+          </Link>
           <div>
             <h1 className="text-lg font-bold text-zinc-300">個股多維度審查</h1>
           </div>

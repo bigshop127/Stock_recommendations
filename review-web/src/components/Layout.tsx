@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { Link, useLocation } from 'react-router-dom';
-import { Activity, TrendingUp, BarChart2, ShieldAlert, CheckCircle2, XCircle } from 'lucide-react';
+import { TrendingUp, BarChart2, ShieldAlert, CheckCircle2, XCircle } from 'lucide-react';
 import { api } from '../lib/api';
 import type { Health } from '../lib/api';
 
@@ -34,7 +34,6 @@ export const Layout: React.FC<LayoutProps> = ({ children }) => {
   const navItems = [
     { path: '/', label: '大盤與籌碼總覽', icon: <TrendingUp className="w-5 h-5" /> },
     { path: '/stock/2330', label: '個股多維度審查 (TSMC)', icon: <BarChart2 className="w-5 h-5" /> },
-    { path: '/rwd-verify', label: 'RWD 策略與驗證', icon: <Activity className="w-5 h-5" /> },
   ];
 
   return (
@@ -45,11 +44,11 @@ export const Layout: React.FC<LayoutProps> = ({ children }) => {
           {/* Logo / 標題 */}
           <div className="p-6 border-b border-border flex items-center gap-3">
             <div className="w-8 h-8 rounded-lg bg-primary flex items-center justify-center font-bold text-white shadow-md">
-              台
+              審
             </div>
             <div>
-              <h1 className="font-semibold text-zinc-100 tracking-tight">台股籌碼審查</h1>
-              <span className="text-xs text-zinc-500 font-mono">Phase 0 Skeleton</span>
+              <h1 className="font-semibold text-zinc-100 tracking-tight">個股全面審視網</h1>
+              <span className="text-xs text-zinc-500 font-mono">PWA Desktop & Mobile</span>
             </div>
           </div>
 
