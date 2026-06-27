@@ -96,7 +96,7 @@ Python engine  FastAPI :8000         ← 既有，本案會新增 /data 或 /mar
 | **7** | AI 全面審視（招牌） | 複用 `POST /api/agents/decide` 多 agent 敘事+評分，**分段對齊實際 agent graph**：量化事實底座(blended)→技術＋籌碼/消息情緒/老王在地專家三分析師→多空辯論→交易員決策→風控審核→最終決策+信心+一致性守門(背離 warning)；**按鈕觸發**(~187s/7×LLM/股、貴)+localStorage 快取、用量遙測 | 沿用既有（gateway `/api/agents/decide` 已存在；**必要時**加輕量摘要端點省 token，預設零後端改動） | ✅ 已完工 (2026-06-24) |
 | **8** | 整合・RWD打磨・PWA・部署 | 全頁整合、手機收合驗證、PWA 可裝成 APP、效能、部署上既有 Oracle VM（gateway 同源 serve） | gateway serve `review-web/dist`、systemd/部署 | ✅ 已完工 (2026-06-25) |
 
-各階段「希望看到的內容」細節原寫在各自 `phaseN.md`（Phase 0 先寫、Phase 1+ 前一階段完成後才定稿）。**Phase 0–8 全數完工後，`phaseN.md` 已於 2026-06-27 隨提示詞收斂移除（歷史可查 git）**；**§8 優化專案 `opt1–4-*.md` 亦於 2026-06-28 全數完工後移除（同例，歷史可查 git，內容已濃縮進 §8 完工紀錄）**。現存提示詞僅維修啟動 `maintenance.md`。
+各階段「希望看到的內容」細節原寫在各自 `phaseN.md`（Phase 0 先寫、Phase 1+ 前一階段完成後才定稿）。**Phase 0–8 全數完工後，`phaseN.md` 已於 2026-06-27 隨提示詞收斂移除（歷史可查 git）**；**§8 優化專案 `opt1–4-*.md` 亦於 2026-06-28 全數完工後移除（同例，歷史可查 git，內容已濃縮進 §8 完工紀錄）**。現存提示詞＝維修啟動 `maintenance.md` 與待實作的 `opt5-sector-heatmap.md`。
 
 ---
 
@@ -141,6 +141,7 @@ Python engine  FastAPI :8000         ← 既有，本案會新增 /data 或 /mar
 | 2 | 個股搜尋＋手動增刪資料夾 | `opt2-search.md` | 新端點 `/api/symbols/search`（複用 engine `TaiwanStockInfo`）＋共用 `<SymbolSearch>`；加入/移除/跨夾移動 | engine+gateway `/symbols/search` | ✅ 完工 (2026-06-27) |
 | 3 | Watchlist 手動增刪 | `opt3-watchlist.md` | Dashboard 自選卡：後端焦點（唯讀）＋使用者自選（localStorage 可增刪）並存、徽章區分；複用專案 2 搜尋 | 無 | ✅ 完工 (2026-06-28) |
 | 4 | 資金潮汐（仿 tide-tw.app） | `opt4-capital-tide.md` | 新頁 `/tide`：資金流向×動能**泡泡圖**＋新端點 `/api/market/capital-tide`（有界 universe＝breadth 的 `watchlist_union_0050`、每日快取、還原價算 momentum）；左右面板列可選 | engine+gateway `/market/capital-tide` | ✅ 完工 (2026-06-28) |
+| 5 | 產業熱力圖（仿 aistockmap.com） | `opt5-sector-heatmap.md` | 新頁 `/heatmap`：各 TWSE 類股 **treemap**，區塊大小＝`\|漲跌%\|`、紅漲綠跌發散色階±5% 飽和；複用既有 `/api/market/sectors`（**零後端**）＋自寫 squarified；**單日 MVP**，單週/單月 disabled「即將推出」 | 無（MVP） | 📝 提示詞已備、待實作 |
 
 **共用基礎與相依**：
 - 無使用者 DB／免登入 → 使用者自管清單（資料夾、持股、自選）一律 **localStorage**，共用 `review-web/src/lib/userStore.ts`（專案 1 建立、3 擴充）。同 `aiReview:{code}:{date}` 快取模式。
