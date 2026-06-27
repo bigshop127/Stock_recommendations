@@ -117,3 +117,60 @@ export function subscribeFolders(cb: () => void): () => void {
     window.removeEventListener('storage', handleStorageEvent);
   };
 }
+
+// 自選 watchlist 區
+const WATCHLIST_KEY = `review:watchlist:${VERSION}`;
+
+export function getUserWatchlist(): UserStock[] {
+  const dataStr = localStorage.getItem(WATCHLIST_KEY);
+  if (dataStr === null) {
+    return [];
+  }
+  try {
+    const parsed = JSON.parse(dataStr);
+    if (Array.isArray(parsed)) {
+      return parsed;
+    }
+  } catch (e) {
+    console.error('Failed to parse watchlist from localStorage', e);
+  }
+  return [];
+}
+
+function saveUserWatchlist(watchlist: UserStock[]): void {
+  localStorage.setItem(WATCHLIST_KEY, JSON.stringify(watchlist));
+  window.dispatchEvent(new CustomEvent('userstore:watchlist'));
+}
+
+export function addToWatchlist(stock: UserStock): void {
+  const watchlist = getUserWatchlist();
+  if (!watchlist.some(s => s.code === stock.code)) {
+    watchlist.push(stock);
+    saveUserWatchlist(watchlist);
+  }
+}
+
+export function removeFromWatchlist(code: string): void {
+  const watchlist = getUserWatchlist();
+  const updated = watchlist.filter(s => s.code !== code);
+  if (watchlist.length !== updated.length) {
+    saveUserWatchlist(updated);
+  }
+}
+
+export function subscribeWatchlist(cb: () => void): () => void {
+  const handleCustomEvent = () => cb();
+  const handleStorageEvent = (e: StorageEvent) => {
+    if (e.key === WATCHLIST_KEY) {
+      cb();
+    }
+  };
+
+  window.addEventListener('userstore:watchlist', handleCustomEvent);
+  window.addEventListener('storage', handleStorageEvent);
+
+  return () => {
+    window.removeEventListener('userstore:watchlist', handleCustomEvent);
+    window.removeEventListener('storage', handleStorageEvent);
+  };
+}

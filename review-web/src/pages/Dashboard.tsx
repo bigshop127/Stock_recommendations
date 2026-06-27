@@ -1,8 +1,22 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useMemo } from 'react';
 import { Link } from 'react-router-dom';
 import { api } from '../lib/api';
 import type { MarketIndices, MarketBreadth, MarketSectors, MarketInstitutional, WatchItem } from '../lib/api';
-import { Activity, BarChart3, TrendingUp, Users, RefreshCw } from 'lucide-react';
+import { Activity, BarChart3, TrendingUp, Users, RefreshCw, Plus, Trash2 } from 'lucide-react';
+import { SymbolSearch } from '../components/SymbolSearch';
+import { getUserWatchlist, addToWatchlist, removeFromWatchlist, subscribeWatchlist, type UserStock } from '../lib/userStore';
+
+interface MergedWatchItem {
+  code: string;
+  name: string;
+  isFocus: boolean;
+  isUser: boolean;
+  swing_score: number | null;
+  daytrade_prob: number | null;
+  rank_swing: number | null;
+  rank_daytrade: number | null;
+  tags?: string[];
+}
 
 export const Dashboard: React.FC = () => {
   const [indicesState, setIndicesState] = useState<{ data: MarketIndices | null; loading: boolean; error: string | null }>({ data: null, loading: true, error: null });
@@ -12,6 +26,17 @@ export const Dashboard: React.FC = () => {
   const [watchlistState, setWatchlistState] = useState<{ data: WatchItem[] | null; loading: boolean; error: string | null }>({ data: null, loading: true, error: null });
   
   const [range, setRange] = useState<'1d' | '5d' | '1m'>('1d');
+
+  const [userWatchlist, setUserWatchlist] = useState<UserStock[]>([]);
+  const [showSearch, setShowSearch] = useState(false);
+
+  useEffect(() => {
+    setUserWatchlist(getUserWatchlist());
+    const unsubscribe = subscribeWatchlist(() => {
+      setUserWatchlist(getUserWatchlist());
+    });
+    return unsubscribe;
+  }, []);
 
   // Check if mock mode is explicitly requested in Dev env
   const isDev = import.meta.env.DEV;
@@ -361,6 +386,45 @@ export const Dashboard: React.FC = () => {
     }
   };
 
+  const mergedWatchlist = useMemo<MergedWatchItem[]>(() => {
+    const focusItems = watchlistState.data || [];
+    const orderedList: MergedWatchItem[] = [];
+
+    focusItems.forEach(item => {
+      const isUser = userWatchlist.some(u => u.code === item.code);
+      orderedList.push({
+        code: item.code,
+        name: item.name,
+        isFocus: true,
+        isUser,
+        swing_score: item.swing_score,
+        daytrade_prob: item.daytrade_prob,
+        rank_swing: item.rank_swing,
+        rank_daytrade: item.rank_daytrade,
+        tags: item.tags || []
+      });
+    });
+
+    const userOnlyItems = userWatchlist.filter(u => !focusItems.some(f => f.code === u.code));
+    const sortedUserOnly = [...userOnlyItems].sort((a, b) => new Date(b.added_at).getTime() - new Date(a.added_at).getTime());
+
+    sortedUserOnly.forEach(u => {
+      orderedList.push({
+        code: u.code,
+        name: u.name,
+        isFocus: false,
+        isUser: true,
+        swing_score: null,
+        daytrade_prob: null,
+        rank_swing: null,
+        rank_daytrade: null,
+        tags: []
+      });
+    });
+
+    return orderedList;
+  }, [watchlistState.data, userWatchlist]);
+
   return (
     <div className="space-y-6">
       {/* Title block */}
@@ -634,6 +698,13 @@ export const Dashboard: React.FC = () => {
               <Activity className="w-5 h-5 text-primary" />
               <h3 className="font-semibold text-sm text-zinc-200">自選與焦點審查清單 (Watchlist)</h3>
             </div>
+            <button
+              onClick={() => setShowSearch(true)}
+              className="flex items-center gap-1 px-2.5 py-1 rounded bg-primary text-white text-xs font-semibold hover:bg-primary/95 transition"
+            >
+              <Plus className="w-3.5 h-3.5" />
+              加入自選
+            </button>
           </div>
           {watchlistState.loading ? (
             <div className="h-32 flex items-center justify-center text-xs text-zinc-500 animate-pulse">載入自選清單中...</div>
@@ -643,7 +714,7 @@ export const Dashboard: React.FC = () => {
               <span className="text-[10px] text-zinc-500 font-mono mb-4">{watchlistState.error}</span>
               <button onClick={fetchWatchlist} className="px-3 py-1 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded text-[10px] transition">重試</button>
             </div>
-          ) : watchlistState.data && watchlistState.data.length > 0 ? (
+          ) : mergedWatchlist.length > 0 ? (
             <div className="overflow-x-auto">
               <table className="w-full text-xs text-left">
                 <thead>
@@ -659,18 +730,34 @@ export const Dashboard: React.FC = () => {
                   </tr>
                 </thead>
                 <tbody>
-                  {watchlistState.data.map((item) => (
+                  {mergedWatchlist.map((item) => (
                     <tr key={item.code} className="border-b border-border/30 last:border-0 hover:bg-zinc-850/40 transition duration-150">
                       <td className="py-3 font-mono text-zinc-300 font-bold">{item.code}</td>
                       <td className="py-3 text-zinc-200">{item.name}</td>
-                      <td className="py-3 text-right font-mono text-zinc-300">{item.swing_score}分</td>
                       <td className="py-3 text-right font-mono text-zinc-300">
-                        {item.daytrade_prob !== null ? `${(item.daytrade_prob * 100).toFixed(0)}%` : '--'}
+                        {item.swing_score !== null && item.swing_score !== undefined ? `${item.swing_score}分` : '—'}
                       </td>
-                      <td className="py-3 text-right font-mono text-zinc-400">#{item.rank_swing}</td>
-                      <td className="py-3 text-right font-mono text-zinc-400">#{item.rank_daytrade}</td>
+                      <td className="py-3 text-right font-mono text-zinc-300">
+                        {item.daytrade_prob !== null && item.daytrade_prob !== undefined ? `${(item.daytrade_prob * 100).toFixed(0)}%` : '—'}
+                      </td>
+                      <td className="py-3 text-right font-mono text-zinc-400">
+                        {item.rank_swing !== null && item.rank_swing !== undefined ? `#${item.rank_swing}` : '—'}
+                      </td>
+                      <td className="py-3 text-right font-mono text-zinc-400">
+                        {item.rank_daytrade !== null && item.rank_daytrade !== undefined ? `#${item.rank_daytrade}` : '—'}
+                      </td>
                       <td className="py-3">
                         <div className="flex flex-wrap gap-1">
+                          {item.isFocus && (
+                            <span className="text-[9px] bg-bull/10 text-bull px-1.5 py-0.5 rounded font-mono border border-bull/20 font-semibold">
+                              焦點
+                            </span>
+                          )}
+                          {item.isUser && (
+                            <span className="text-[9px] bg-primary/10 text-primary px-1.5 py-0.5 rounded font-mono border border-primary/20 font-semibold">
+                              自選
+                            </span>
+                          )}
                           {item.tags?.map((tag: string) => (
                             <span key={tag} className="text-[9px] bg-zinc-800 text-zinc-400 px-1.5 py-0.5 rounded font-mono">
                               {tag}
@@ -678,13 +765,32 @@ export const Dashboard: React.FC = () => {
                           ))}
                         </div>
                       </td>
-                      <td className="py-3 text-center">
-                        <Link
-                          to={`/stock/${item.code}`}
-                          className="px-2.5 py-1 bg-primary/10 text-primary hover:bg-primary/20 text-[10px] font-semibold rounded-md border border-primary/20 transition"
-                        >
-                          進入審查
-                        </Link>
+                      <td className="py-3">
+                        <div className="flex items-center justify-center gap-2">
+                          <Link
+                            to={`/stock/${item.code}`}
+                            className="px-2.5 py-1 bg-primary/10 text-primary hover:bg-primary/20 text-[10px] font-semibold rounded-md border border-primary/20 transition"
+                          >
+                            進入審查
+                          </Link>
+                          {item.isUser ? (
+                            <button
+                              onClick={() => removeFromWatchlist(item.code)}
+                              className="p-1 text-zinc-500 hover:text-bull transition"
+                              title="移除自選"
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </button>
+                          ) : (
+                            <button
+                              disabled
+                              className="p-1 text-zinc-700 cursor-not-allowed opacity-40"
+                              title="系統焦點股（無法移除）"
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </button>
+                          )}
+                        </div>
                       </td>
                     </tr>
                   ))}
@@ -695,6 +801,32 @@ export const Dashboard: React.FC = () => {
             <div className="h-32 flex items-center justify-center text-xs text-zinc-500">尚無自選個股</div>
           )}
         </div>
+
+        {/* 搜尋自選股彈窗 */}
+        {showSearch && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+            <div className="bg-zinc-900 border border-zinc-800 rounded-xl w-full max-w-md p-6 shadow-2xl relative">
+              <button
+                onClick={() => setShowSearch(false)}
+                className="absolute top-4 right-4 text-zinc-400 hover:text-zinc-200 text-lg"
+              >
+                ✕
+              </button>
+              <h3 className="text-zinc-200 font-semibold mb-4 text-base">搜尋並加入自選股</h3>
+              <SymbolSearch
+                autoFocus
+                onPick={(hit) => {
+                  addToWatchlist({
+                    code: hit.code,
+                    name: hit.name,
+                    added_at: new Date().toISOString(),
+                  });
+                  setShowSearch(false);
+                }}
+              />
+            </div>
+          </div>
+        )}
 
       </div>
     </div>
