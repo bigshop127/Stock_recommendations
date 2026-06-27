@@ -351,7 +351,7 @@ export interface MarketBreadth {
 
 export interface SectorPerformance {
   name: string;
-  change_pct: number;
+  change_pct: number | null;
   turnover: number;
   source: string;
 }

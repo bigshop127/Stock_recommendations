@@ -14,7 +14,8 @@ import {
   Plus,
   X,
   MoreHorizontal,
-  Waves
+  Waves,
+  LayoutGrid
 } from 'lucide-react';
 import { api } from '../lib/api';
 import type { Health } from '../lib/api';
@@ -150,6 +151,19 @@ export const Layout: React.FC<LayoutProps> = ({ children }) => {
             >
               <Waves className="w-5 h-5" />
               資金潮汐
+            </Link>
+
+            {/* 產業熱力圖 */}
+            <Link
+              to="/heatmap"
+              className={`flex items-center gap-3 px-4 py-3 rounded-lg text-sm font-medium transition-all duration-200 ${
+                location.pathname === '/heatmap'
+                  ? 'bg-primary/10 text-primary border border-primary/20 shadow-sm'
+                  : 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800/40 border border-transparent'
+              }`}
+            >
+              <LayoutGrid className="w-5 h-5" />
+              產業熱力圖
             </Link>
 
             {/* 個股多維度審查 折疊選單 */}
@@ -377,7 +391,7 @@ export const Layout: React.FC<LayoutProps> = ({ children }) => {
         {/* 頁首 Header Bar */}
         <header className="h-16 border-b border-border bg-card/60 backdrop-blur-md px-6 flex items-center justify-between">
           <div className="text-sm font-medium text-zinc-400">
-            {location.pathname === '/' ? '大盤儀表板' : location.pathname === '/tide' ? '資金潮汐' : location.pathname.startsWith('/stock/') ? '個股審查中心' : 'RWD 規範驗證'}
+            {location.pathname === '/' ? '大盤儀表板' : location.pathname === '/tide' ? '資金潮汐' : location.pathname === '/heatmap' ? '產業熱力圖' : location.pathname.startsWith('/stock/') ? '個股審查中心' : 'RWD 規範驗證'}
           </div>
           <div className="flex items-center gap-4">
             {/* Engine 下線警告 Banner */}
