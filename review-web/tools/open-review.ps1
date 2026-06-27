@@ -1,4 +1,4 @@
-# 一鍵開啟「個股全面審視網」
+﻿# 一鍵開啟「個股全面審視網」
 # 自動建立 SSH 通道（本機 localhost:3000 -> Oracle VM:3000），再開預設瀏覽器。
 # 通道以最小化視窗常駐；看完把那個最小化的視窗關掉即可中斷連線。
 $ErrorActionPreference = 'SilentlyContinue'
