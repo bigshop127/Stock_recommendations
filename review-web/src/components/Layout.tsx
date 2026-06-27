@@ -1,8 +1,26 @@
 import React, { useEffect, useState } from 'react';
 import { Link, useLocation } from 'react-router-dom';
-import { TrendingUp, BarChart2, ShieldAlert, CheckCircle2, XCircle } from 'lucide-react';
+import {
+  TrendingUp,
+  BarChart2,
+  ShieldAlert,
+  CheckCircle2,
+  XCircle,
+  Folder,
+  FolderOpen,
+  ChevronRight,
+  ChevronDown,
+  Trash2
+} from 'lucide-react';
 import { api } from '../lib/api';
 import type { Health } from '../lib/api';
+import {
+  getFolders,
+  removeFromFolder,
+  subscribeFolders,
+  FOLDERS
+} from '../lib/userStore';
+import type { FolderId } from '../lib/userStore';
 
 interface LayoutProps {
   children: React.ReactNode;
@@ -10,8 +28,27 @@ interface LayoutProps {
 
 export const Layout: React.FC<LayoutProps> = ({ children }) => {
   const location = useLocation();
+  const match = location.pathname.match(/^\/stock\/([a-zA-Z0-9]+)/);
+  const activeCode = match ? match[1] : null;
   const [health, setHealth] = useState<Health | null>(null);
   const [loading, setLoading] = useState(true);
+  const [folders, setFolders] = useState(() => getFolders());
+  const [isStocksMenuOpen, setIsStocksMenuOpen] = useState(() => {
+    const stored = localStorage.getItem('review:menu:expanded');
+    if (stored !== null) return stored === 'true';
+    return window.innerWidth >= 768;
+  });
+  const [expandedFolders, setExpandedFolders] = useState<Record<FolderId, boolean>>(() => {
+    const stored = localStorage.getItem('review:folders:expanded');
+    if (stored !== null) {
+      try {
+        return JSON.parse(stored);
+      } catch (e) {
+        // ignore
+      }
+    }
+    return { holdings: true, potential: true, others: true };
+  });
 
   useEffect(() => {
     const checkHealth = async () => {
@@ -31,10 +68,27 @@ export const Layout: React.FC<LayoutProps> = ({ children }) => {
     return () => clearInterval(interval);
   }, []);
 
-  const navItems = [
-    { path: '/', label: '大盤與籌碼總覽', icon: <TrendingUp className="w-5 h-5" /> },
-    { path: '/stock/2330', label: '個股多維度審查 (TSMC)', icon: <BarChart2 className="w-5 h-5" /> },
-  ];
+  useEffect(() => {
+    const unsubscribe = subscribeFolders(() => {
+      setFolders(getFolders());
+    });
+    return unsubscribe;
+  }, []);
+
+  useEffect(() => {
+    localStorage.setItem('review:menu:expanded', String(isStocksMenuOpen));
+  }, [isStocksMenuOpen]);
+
+  useEffect(() => {
+    localStorage.setItem('review:folders:expanded', JSON.stringify(expandedFolders));
+  }, [expandedFolders]);
+
+  const toggleFolder = (folderId: FolderId) => {
+    setExpandedFolders(prev => ({
+      ...prev,
+      [folderId]: !prev[folderId]
+    }));
+  };
 
   return (
     <div className="min-h-screen bg-background text-zinc-100 flex flex-col md:flex-row">
@@ -54,23 +108,121 @@ export const Layout: React.FC<LayoutProps> = ({ children }) => {
 
           {/* 導覽連結 */}
           <nav className="p-4 space-y-1">
-            {navItems.map((item) => {
-              const isActive = location.pathname === item.path || (item.path.startsWith('/stock/') && location.pathname.startsWith('/stock/'));
-              return (
-                <Link
-                  key={item.path}
-                  to={item.path}
-                  className={`flex items-center gap-3 px-4 py-3 rounded-lg text-sm font-medium transition-all duration-200 ${
-                    isActive
-                      ? 'bg-primary/10 text-primary border border-primary/20 shadow-sm'
-                      : 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800/40 border border-transparent'
-                  }`}
-                >
-                  {item.icon}
-                  {item.label}
-                </Link>
-              );
-            })}
+            {/* 大盤與籌碼總覽 */}
+            <Link
+              to="/"
+              className={`flex items-center gap-3 px-4 py-3 rounded-lg text-sm font-medium transition-all duration-200 ${
+                location.pathname === '/'
+                  ? 'bg-primary/10 text-primary border border-primary/20 shadow-sm'
+                  : 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800/40 border border-transparent'
+              }`}
+            >
+              <TrendingUp className="w-5 h-5" />
+              大盤與籌碼總覽
+            </Link>
+
+            {/* 個股多維度審查 折疊選單 */}
+            <div className="space-y-1">
+              <button
+                onClick={() => setIsStocksMenuOpen(!isStocksMenuOpen)}
+                className={`w-full flex items-center justify-between px-4 py-3 rounded-lg text-sm font-medium transition-all duration-200 ${
+                  location.pathname.startsWith('/stock/')
+                    ? 'text-zinc-200 font-medium'
+                    : 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800/40'
+                }`}
+              >
+                <div className="flex items-center gap-3">
+                  <BarChart2 className="w-5 h-5" />
+                  <span>個股多維度審查</span>
+                </div>
+                {isStocksMenuOpen ? (
+                  <ChevronDown className="w-4 h-4 text-zinc-500" />
+                ) : (
+                  <ChevronRight className="w-4 h-4 text-zinc-500" />
+                )}
+              </button>
+
+              {/* 資料夾樹與股票列表 */}
+              {isStocksMenuOpen && (
+                <div className="pl-4 space-y-2 mt-1 border-l border-zinc-800/80 ml-6">
+                  {FOLDERS.map((f) => {
+                    const isExpanded = expandedFolders[f.id];
+                    const stocks = folders[f.id] || [];
+                    return (
+                      <div key={f.id} className="space-y-1">
+                        {/* 資料夾標頭 */}
+                        <button
+                          onClick={() => toggleFolder(f.id)}
+                          className="w-full flex items-center justify-between py-1.5 px-2 rounded hover:bg-zinc-800/20 text-xs font-semibold text-zinc-500 hover:text-zinc-300 transition-colors"
+                        >
+                          <div className="flex items-center gap-1.5">
+                            {isExpanded ? (
+                              <FolderOpen className="w-3.5 h-3.5 text-zinc-400" />
+                            ) : (
+                              <Folder className="w-3.5 h-3.5 text-zinc-400" />
+                            )}
+                            <span>
+                              {f.label} ({stocks.length})
+                            </span>
+                          </div>
+                          {isExpanded ? (
+                            <ChevronDown className="w-3 h-3 text-zinc-500" />
+                          ) : (
+                            <ChevronRight className="w-3 h-3 text-zinc-500" />
+                          )}
+                        </button>
+
+                        {/* 資料夾內個股 */}
+                        {isExpanded && (
+                          <div className="pl-3.5 space-y-0.5">
+                            {stocks.length === 0 ? (
+                              <div className="py-1 px-2 text-[11px] text-zinc-600 italic">
+                                尚無個股（用搜尋加入）
+                              </div>
+                            ) : (
+                              stocks.map((stock) => {
+                                const stockPath = `/stock/${stock.code}`;
+                                const isStockActive = activeCode === stock.code;
+                                return (
+                                  <div
+                                    key={stock.code}
+                                    className={`group flex items-center justify-between rounded px-2 py-1 text-xs transition-all duration-150 ${
+                                      isStockActive
+                                        ? 'bg-primary/10 text-primary border border-primary/20 shadow-sm font-medium'
+                                        : 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800/30'
+                                    }`}
+                                  >
+                                    <Link
+                                      to={stockPath}
+                                      className="flex-1 truncate mr-2"
+                                    >
+                                      {stock.name ? `${stock.name} ${stock.code}` : stock.code}
+                                    </Link>
+                                    <button
+                                      onClick={(e) => {
+                                        e.preventDefault();
+                                        e.stopPropagation();
+                                        if (window.confirm(`確定要將 ${stock.name || stock.code} 從「${f.label}」移除嗎？`)) {
+                                          removeFromFolder(f.id, stock.code);
+                                        }
+                                      }}
+                                      className="opacity-0 group-hover:opacity-100 text-zinc-500 hover:text-red-400 p-0.5 rounded transition-all duration-150"
+                                      title={`自 ${f.label} 移除`}
+                                    >
+                                      <Trash2 className="w-3.5 h-3.5" />
+                                    </button>
+                                  </div>
+                                );
+                              })
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
           </nav>
         </div>
 
