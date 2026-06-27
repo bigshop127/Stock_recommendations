@@ -96,7 +96,7 @@ Python engine  FastAPI :8000         ← 既有，本案會新增 /data 或 /mar
 | **7** | AI 全面審視（招牌） | 複用 `POST /api/agents/decide` 多 agent 敘事+評分，**分段對齊實際 agent graph**：量化事實底座(blended)→技術＋籌碼/消息情緒/老王在地專家三分析師→多空辯論→交易員決策→風控審核→最終決策+信心+一致性守門(背離 warning)；**按鈕觸發**(~187s/7×LLM/股、貴)+localStorage 快取、用量遙測 | 沿用既有（gateway `/api/agents/decide` 已存在；**必要時**加輕量摘要端點省 token，預設零後端改動） | ✅ 已完工 (2026-06-24) |
 | **8** | 整合・RWD打磨・PWA・部署 | 全頁整合、手機收合驗證、PWA 可裝成 APP、效能、部署上既有 Oracle VM（gateway 同源 serve） | gateway serve `review-web/dist`、systemd/部署 | ✅ 已完工 (2026-06-25) |
 
-各階段「希望看到的內容」細節原寫在各自 `phaseN.md`（Phase 0 先寫、Phase 1+ 前一階段完成後才定稿）。**Phase 0–8 全數完工後，`phaseN.md` 已於 2026-06-27 隨提示詞收斂移除（歷史可查 git）**；現存提示詞見 §8 優化專案的 `optN-*.md` 與維修啟動 `maintenance.md`。
+各階段「希望看到的內容」細節原寫在各自 `phaseN.md`（Phase 0 先寫、Phase 1+ 前一階段完成後才定稿）。**Phase 0–8 全數完工後，`phaseN.md` 已於 2026-06-27 隨提示詞收斂移除（歷史可查 git）**；**§8 優化專案 `opt1–4-*.md` 亦於 2026-06-28 全數完工後移除（同例，歷史可查 git，內容已濃縮進 §8 完工紀錄）**。現存提示詞僅維修啟動 `maintenance.md`。
 
 ---
 
