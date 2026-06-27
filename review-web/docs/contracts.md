@@ -12,6 +12,7 @@
 | **大盤** | `/api/market/breadth` | GET | **新增** | TWSE | 否 |
 | **大盤** | `/api/market/sectors` | GET | **新增** | TWSE | 否 |
 | **大盤** | `/api/market/institutional` | GET | **新增** | TWSE | 否 |
+| **大盤** | `/api/market/capital-tide` | GET | **新增** | FinMind / yfinance | 否（每日快取） |
 | **個股** | `/api/stocks/:code` | GET | 既有 | Engine | 否 |
 | **個股** | `/api/stocks/:code/ohlcv` | GET | 既有 | yfinance / 富果 | 否 |
 | **個股** | `/api/stocks/:code/book` | GET | 既有 | 富果 / TWSE | **是** (五檔) |
@@ -392,4 +393,36 @@
   "degraded": false
 }
 ```
+
+### 2.11 資金潮汐（資金流向 × 動能泡泡圖）`/api/market/capital-tide?date=&universe=`
+* **Method**: `GET`
+* **Description**: 有界 universe（預設 `watchlist_union_0050`，沿用 breadth 同一份取得邏輯）逐檔算「近 5 日三大法人淨買賣超」與「近 5 日平均每日漲幅（**還原價**）」，z-score 正規化到 `[-1, 1]` 當泡泡座標。**engine 端每日整批快取**（`cache_path/capital_tide/{date}_{universe}.json`），gateway 轉發（120s timeout）。
+* **降級**：個別股缺資料 → 略過並記入 `errors[]`，不整批 500；engine down → gateway 走統一錯誤格式。
+* **座標語意**：`flow_x`/`momentum_y` 為**相對 universe 的 z-score**（中線＝當日 universe 平均，非絕對 0）；原始值見 `flow_raw`（張）/`momentum_raw`（%/日）。
+* **Response Schema (200 OK)**:
+```json
+{
+  "date": "2026-06-28",
+  "window_days": 5,
+  "universe": "watchlist_union_0050",
+  "axes": {
+    "x": { "label": "資金流向", "unit": "近5日法人淨買賣超(張)" },
+    "y": { "label": "進入慣性", "unit": "近5日平均漲幅(%/日)" }
+  },
+  "stocks": [
+    {
+      "code": "2330", "name": "台積電", "sector": "半導體",
+      "flow_x": 0.82, "flow_raw": 125000.0,
+      "momentum_y": 0.6, "momentum_raw": 1.2,
+      "size": 0.9, "size_raw": 1.85e12,
+      "strength": 78,
+      "quadrant": "inflow_up"
+    }
+  ],
+  "source": "FinMind/yfinance",
+  "degraded": false,
+  "errors": []
+}
+```
+* `quadrant` ∈ `inflow_up | inflow_down | outflow_up | outflow_down`（依 `flow_x`/`momentum_y` 正負分象限）。
 

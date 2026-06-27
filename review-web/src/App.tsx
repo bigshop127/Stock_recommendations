@@ -5,6 +5,7 @@ import { Dashboard } from './pages/Dashboard';
 
 const StockDetail = lazy(() => import('./pages/StockDetail').then(m => ({ default: m.StockDetail })));
 const RwdVerify = lazy(() => import('./pages/RwdVerify').then(m => ({ default: m.RwdVerify })));
+const CapitalTide = lazy(() => import('./pages/CapitalTide').then(m => ({ default: m.CapitalTide })));
 
 function App() {
   return (
@@ -22,6 +23,7 @@ function App() {
             <Route path="/" element={<Dashboard />} />
             <Route path="/stock/:code" element={<StockDetail />} />
             <Route path="/rwd-verify" element={<RwdVerify />} />
+            <Route path="/tide" element={<CapitalTide />} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
         </Suspense>

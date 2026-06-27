@@ -54,4 +54,14 @@ router.get('/api/market/institutional', async (req, res) => {
   }
 });
 
+router.get('/api/market/capital-tide', async (req, res) => {
+  const { date, universe } = req.query;
+  try {
+    const data = await engineGet('/market/capital-tide', { date, universe }, 120000);
+    res.json(data);
+  } catch (err) {
+    sendError(res, err);
+  }
+});
+
 module.exports = router;

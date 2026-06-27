@@ -522,6 +522,7 @@ export const api = {
   stockFundamentals: (code: string) => req<StockFundamentals>(`/stocks/${code}/fundamentals`),
   stockNews: (code: string) => req<StockNews>(`/stocks/${code}/news`),
   symbolSearch: (q: string, limit?: number) => req<SymbolSearch>(`/symbols/search${qs({ q, limit })}`),
+  marketCapitalTide: (o?: { date?: string; universe?: string }) => req<CapitalTideData>(`/market/capital-tide${qs(o)}`),
 };
 
 export interface SymbolHit {
@@ -535,5 +536,33 @@ export interface SymbolSearch {
   results: SymbolHit[];
   source: string;
   degraded?: boolean;
+}
+
+export interface CapitalTideStock {
+  code: string;
+  name: string;
+  sector: string;
+  flow_x: number;
+  flow_raw: number;
+  momentum_y: number;
+  momentum_raw: number;
+  size: number;
+  size_raw: number;
+  strength: number;
+  quadrant: 'inflow_up' | 'inflow_down' | 'outflow_up' | 'outflow_down';
+}
+
+export interface CapitalTideData {
+  date: string;
+  window_days: number;
+  universe: string;
+  axes: {
+    x: { label: string; unit: string };
+    y: { label: string; unit: string };
+  };
+  stocks: CapitalTideStock[];
+  source: string;
+  degraded?: boolean;
+  errors?: string[];
 }
 

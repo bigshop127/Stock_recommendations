@@ -91,3 +91,34 @@ def test_rollback_helper_logic():
     )
     assert actual_date <= future_date
     assert "advancing" in data
+
+
+def test_market_capital_tide_ok():
+    r = client.get("/market/capital-tide")
+    assert r.status_code == 200
+    body = r.json()
+    assert "date" in body
+    assert "universe" in body
+    assert "axes" in body
+    assert "stocks" in body
+    assert "source" in body
+    assert "degraded" in body
+    assert "errors" in body
+
+    stocks = body["stocks"]
+    assert len(stocks) > 0
+    
+    # Verify first stock has required fields
+    s = stocks[0]
+    assert "code" in s
+    assert "name" in s
+    assert "sector" in s
+    assert "flow_x" in s
+    assert "flow_raw" in s
+    assert "momentum_y" in s
+    assert "momentum_raw" in s
+    assert "size" in s
+    assert "size_raw" in s
+    assert "strength" in s
+    assert "quadrant" in s
+    assert s["quadrant"] in ["inflow_up", "inflow_down", "outflow_up", "outflow_down"]
