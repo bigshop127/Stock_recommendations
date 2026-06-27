@@ -126,3 +126,37 @@ def macro(
 ):
     d_start, d_end = _default_range()
     return _guard(service.get_macro, series, start or d_start, end or d_end)
+
+
+@router.get("/symbols/search", summary="搜尋股票代號 or 股名")
+def search_symbols(
+    q: str = Query("", description="搜尋關鍵字（代號或股名）"),
+    limit: int = Query(20, ge=1, le=50, description="回傳上限"),
+):
+    try:
+        results = service.search_symbols(q, limit)
+        return {
+            "query": q,
+            "count": len(results),
+            "results": results,
+            "source": "FinMind TaiwanStockInfo"
+        }
+    except DataSourceError as exc:
+        return {
+            "query": q,
+            "count": 0,
+            "results": [],
+            "source": "FinMind TaiwanStockInfo",
+            "degraded": True,
+            "detail": str(exc)
+        }
+    except Exception as exc:
+        return {
+            "query": q,
+            "count": 0,
+            "results": [],
+            "source": "FinMind TaiwanStockInfo",
+            "degraded": True,
+            "detail": f"未知錯誤：{exc}"
+        }
+

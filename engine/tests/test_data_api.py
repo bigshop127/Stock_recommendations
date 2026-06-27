@@ -469,3 +469,55 @@ def test_fundamentals_calculation_details(monkeypatch):
     assert div_list[0]["cash_dividend"] == 11.0  # 2.5 + 2.5 + 3.0 + 3.0
     assert div_list[0]["stock_dividend"] == 1.0
 
+
+def test_symbols_search(monkeypatch):
+    mock_symbols = [
+        {"stock_id": "2330", "stock_name": "\u53f0\u7a4d\u96fb"},
+        {"stock_id": "2454", "stock_name": "\u806f\u767c\u79d1"},
+        {"stock_id": "2317", "stock_name": "\u9d3b\u6d77"},
+        {"stock_id": "2301", "stock_name": "\u5149\u5bf6\u79d1"},
+        {"stock_id": "23300", "stock_name": "\u53f0\u7a4d\u6b0a\u8b4901"},
+    ]
+    monkeypatch.setattr(finmind_client, "list_symbols", lambda: mock_symbols)
+
+    # 1. 測試前綴代號匹配與排序
+    r = client.get("/data/symbols/search", params={"q": "23"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["query"] == "23"
+    assert body["count"] == 4
+    codes = [item["code"] for item in body["results"]]
+    assert codes == ["2301", "2317", "2330", "23300"]
+
+    # 2. 測試完全匹配代號優先
+    r = client.get("/data/symbols/search", params={"q": "2330"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["count"] == 2
+    assert body["results"][0]["code"] == "2330"
+
+    # 3. 測試股名子字串匹配
+    r = client.get("/data/symbols/search", params={"q": "\u79d1"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["count"] == 2
+    codes_with_ke = [item["code"] for item in body["results"]]
+    assert "2454" in codes_with_ke
+    assert "2301" in codes_with_ke
+
+    # 4. 測試空查詢
+    r = client.get("/data/symbols/search", params={"q": ""})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["count"] == 0
+    assert body["results"] == []
+
+    # 5. 測試 limit 限制
+    r = client.get("/data/symbols/search", params={"q": "23", "limit": 2})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["count"] == 2
+    assert len(body["results"]) == 2
+
+
+

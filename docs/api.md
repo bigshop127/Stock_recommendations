@@ -191,6 +191,21 @@ degraded dashboard 範例（engine down + 有 cache）：
 > schema＝`{date, water_level:"五成"(中文), stocks:[{name,emoji}](無代號/無買賣), market_sentiment:{label,score:1-10}, ...}`。
 > **僅 engine 掛掉時的後援**，不可當主要老王資料（結構化老王觀點一律走 engine `/puhui/view`）。
 
+### `GET /api/symbols/search?q=&limit=`
+搜尋一般上市櫃台股代號或股名（排除權證）。結果會進行長 TTL 快取 (6 小時)，且 engine 斷線時能自動降級不回報 500。
+
+```json
+{
+  "query": "台積",
+  "count": 1,
+  "results": [
+    { "code": "2330", "name": "台積電" }
+  ],
+  "source": "FinMind TaiwanStockInfo",
+  "degraded": false
+}
+```
+
 ---
 
 ## 本機啟動 / 驗收

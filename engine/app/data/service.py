@@ -617,3 +617,60 @@ def get_stock_news(code: str, limit: int = 30) -> dict:
         "items": processed_items
     }
 
+
+def search_symbols(q: str, limit: int = 20) -> list[dict[str, str]]:
+    """搜尋台股代號或股名。
+    比對規則：q 對 代號前綴 (stock_id.startswith(q)) 或 股名子字串 (q in stock_name) 皆命中；
+    去重、依「代號前綴完全相符優先，其餘代號數字小→大」排序；截斷 limit（上限 50）。
+    """
+    if limit > 50:
+        limit = 50
+    q = (q or "").strip()
+    if not q:
+        return []
+
+    all_symbols = finmind_client.list_symbols()
+
+    # 比對
+    matched = []
+    for s in all_symbols:
+        sid = s["stock_id"]
+        sname = s["stock_name"]
+
+        is_id_match = sid.startswith(q)
+        is_name_match = q in sname
+
+        if is_id_match or is_name_match:
+            matched.append((sid, sname, is_id_match and sid == q))
+
+    # 排序：
+    # 1. 完全符合代號 (priority 0)
+    # 2. 代號前綴符合 (priority 1)
+    # 3. 股名子字串符合 (priority 2)
+    # 相同優先度時依代號數值大小或字典序排序
+    def sort_key(item):
+        sid, sname, is_exact = item
+        if is_exact:
+            priority = 0
+        elif sid.startswith(q):
+            priority = 1
+        else:
+            priority = 2
+
+        try:
+            val = int(sid.rstrip("ABCDEFGHIJKLMNOPQRSTUVWXYZ"))
+        except ValueError:
+            val = 999999
+        return (priority, val, sid)
+
+    matched.sort(key=sort_key)
+
+    results = []
+    for sid, sname, _ in matched[:limit]:
+        results.append({
+            "code": sid,
+            "name": sname
+        })
+    return results
+
+

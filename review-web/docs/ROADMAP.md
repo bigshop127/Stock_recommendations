@@ -138,7 +138,7 @@ Python engine  FastAPI :8000         ← 既有，本案會新增 /data 或 /mar
 | # | 專案 | 提示詞 | 重點 | 後端改動 | 狀態 |
 |---|---|---|---|---|---|
 | 1 | 個股多維度審查「資料夾化」 | `opt1-folders.md` | 側欄改可展開資料夾：我的持股／有潛力的／其他；新增共用 `lib/userStore.ts`（localStorage）；種子收進現有 2330/2454/2317 | 無 | ✅ 完工 (2026-06-27) |
-| 2 | 個股搜尋＋手動增刪資料夾 | `opt2-search.md` | 新端點 `/api/symbols/search`（複用 engine `TaiwanStockInfo`）＋共用 `<SymbolSearch>`；加入/移除/跨夾移動 | engine+gateway `/symbols/search` | 📝 提示詞已備、待實作 |
+| 2 | 個股搜尋＋手動增刪資料夾 | `opt2-search.md` | 新端點 `/api/symbols/search`（複用 engine `TaiwanStockInfo`）＋共用 `<SymbolSearch>`；加入/移除/跨夾移動 | engine+gateway `/symbols/search` | ✅ 完工 (2026-06-27) |
 | 3 | Watchlist 手動增刪 | `opt3-watchlist.md` | Dashboard 自選卡：後端焦點（唯讀）＋使用者自選（localStorage 可增刪）並存、徽章區分；複用專案 2 搜尋 | 無 | 📝 提示詞已備、待實作 |
 | 4 | 資金潮汐（仿 tide-tw.app） | `opt4-capital-tide.md` | 新頁 `/tide`：資金流向×動能**泡泡圖**＋新端點 `/api/market/capital-tide`（有界 universe＝breadth 的 `watchlist_union_0050`、每日快取、還原價算 momentum）；左右面板列可選 | engine+gateway `/market/capital-tide` | 📝 提示詞已備、待實作（**先 MVP**） |
 
@@ -150,3 +150,4 @@ Python engine  FastAPI :8000         ← 既有，本案會新增 /data 或 /mar
 
 **完工紀錄：**
 - **opt1 ✅ 2026-06-27**：新增 `review-web/src/lib/userStore.ts`（`UserStock`/`FolderId`/`FolderMap`＋種子 2330/2454/2317 置「其他」＋`getFolders`/`addToFolder`/`removeFromFolder`/`moveStock`/`subscribeFolders`、localStorage 持久化、CustomEvent＋原生 `storage` 跨分頁/跨元件同步）；`components/Layout.tsx` 側欄「個股多維度審查」改可折疊資料夾樹（三夾＋檔數＋active highlight＋hover 移除`window.confirm`＋空夾佔位＋展開狀態 localStorage＋RWD 行動端預設收合）；`activeCode` 改 regex 解析支援任意代號。零後端、未動 `web/`/Dashboard watchlist；`tsc -b && vite build` 綠（Claude review 通過）。
+- **opt2 ✅ 2026-06-27**：後端 `finmind_client.list_symbols()`（重構 `_load_symbols_data` 一次建「全清單＋name→code 映射」雙記憶體快取、**保留 `nm not in m` 首見為準**不回歸 phase4 `get_code_by_name`）＋`service.search_symbols`（代號完全符＞前綴＞股名子字串排序、limit≤50）＋engine `GET /data/symbols/search`（`DataSourceError`/未知例外皆降級不 500）；gateway `GET /api/symbols/search`（Map 6h TTL 快取、engine down graceful degradation）；前端 `components/SymbolSearch.tsx`（300ms debounce＋loading/查無/降級三態）＋`api.ts` `symbolSearch`/`SymbolHit`/`SymbolSearch`；`Layout.tsx` 每夾「＋」就地展開搜尋→`addToFolder`、`MoreHorizontal` 下拉→`moveStock` 跨夾、全域 click 關下拉（toggle `stopPropagation` 防即關）。`docs/api.md`＋`contracts.md` 契約同步。engine pytest **69**、`tsc -b && vite build` 綠（Claude review 通過）。小觀察（非阻塞）：`list_symbols` 未對 `stock_id` 去重、gateway 快取不主動清除。

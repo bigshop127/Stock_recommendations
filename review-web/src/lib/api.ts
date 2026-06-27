@@ -521,4 +521,19 @@ export const api = {
   stockChips: (code: string, o?: { days?: number; start?: string; end?: string }) => req<StockChips>(`/stocks/${code}/chips${qs(o)}`),
   stockFundamentals: (code: string) => req<StockFundamentals>(`/stocks/${code}/fundamentals`),
   stockNews: (code: string) => req<StockNews>(`/stocks/${code}/news`),
+  symbolSearch: (q: string, limit?: number) => req<SymbolSearch>(`/symbols/search${qs({ q, limit })}`),
 };
+
+export interface SymbolHit {
+  code: string;
+  name: string;
+}
+
+export interface SymbolSearch {
+  query: string;
+  count: number;
+  results: SymbolHit[];
+  source: string;
+  degraded?: boolean;
+}
+

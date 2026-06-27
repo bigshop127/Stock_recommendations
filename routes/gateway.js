@@ -351,4 +351,41 @@ router.post('/api/agents/decide', async (req, res) => {
   }
 });
 
+
+// ── GET /api/symbols/search?q=&limit= ── 股票搜尋 ──
+// 長 TTL 快取 (6 小時 = 21600000 ms)
+const symbolSearchCache = new Map();
+router.get('/api/symbols/search', async (req, res) => {
+  const q = req.query.q || '';
+  const limit = req.query.limit || 20;
+  const cacheKey = `${q}_${limit}`;
+  const now = Date.now();
+
+  if (symbolSearchCache.has(cacheKey)) {
+    const cached = symbolSearchCache.get(cacheKey);
+    if (cached.expiresAt > now) {
+      return res.json(cached.data);
+    }
+  }
+
+  try {
+    const data = await engineGet('/data/symbols/search', { q, limit }, 30000);
+    symbolSearchCache.set(cacheKey, {
+      data,
+      expiresAt: Date.now() + 21600000 // 6 hours
+    });
+    res.json(data);
+  } catch (err) {
+    // engine down -> graceful degradation
+    res.json({
+      query: q,
+      count: 0,
+      results: [],
+      source: 'gateway fallback due to error',
+      degraded: true,
+      error: err.message || String(err)
+    });
+  }
+});
+
 module.exports = router;

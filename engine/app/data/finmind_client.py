@@ -302,26 +302,42 @@ def get_stock_name(code: str) -> str | None:
 # ── 股名 → 代號 反查（階段4 老王次要個股常只有股名）───────────────────────────
 # phase4：用「同一份 TaiwanStockInfo」建 name→code 映射（記憶體快取）；
 # 查不到（例：美股 美光/英特爾）→ None，由上層降級標 code=null、不硬猜。
+_symbols_cache: list[dict[str, str]] | None = None
 _name_code_map: dict[str, str] | None = None
 
 
-def _load_name_code_map() -> dict[str, str]:
-    global _name_code_map
-    if _name_code_map is not None:
-        return _name_code_map
+def _load_symbols_data() -> tuple[list[dict[str, str]], dict[str, str]]:
+    global _symbols_cache, _name_code_map
+    if _symbols_cache is not None and _name_code_map is not None:
+        return _symbols_cache, _name_code_map
     try:
         raw = _finmind_get("TaiwanStockInfo", "", "2000-01-01", "2100-01-01")
     except DataSourceError:
-        return {}
+        return _symbols_cache or [], _name_code_map or {}
     m: dict[str, str] = {}
+    res: list[dict[str, str]] = []
     if not raw.empty and {"stock_id", "stock_name"} <= set(raw.columns):
         for sid, nm in zip(raw["stock_id"].astype(str), raw["stock_name"].astype(str)):
             nm, sid = nm.strip(), sid.strip()
             # 只收一般上市櫃股票代號（4~6 碼，可帶尾字母），首見為準
-            if nm and sid and nm not in m and 4 <= len(sid.rstrip("ABCDEFGHIJKLMNOPQRSTUVWXYZ")) <= 6:
-                m[nm] = sid
+            if nm and sid and 4 <= len(sid.rstrip("ABCDEFGHIJKLMNOPQRSTUVWXYZ")) <= 6:
+                res.append({"stock_id": sid, "stock_name": nm})
+                if nm not in m:
+                    m[nm] = sid
+    _symbols_cache = res
     _name_code_map = m
+    return res, m
+
+
+def _load_name_code_map() -> dict[str, str]:
+    _, m = _load_symbols_data()
     return m
+
+
+def list_symbols() -> list[dict[str, str]]:
+    """列出所有一般上市櫃股票；結果記憶體快取。"""
+    res, _ = _load_symbols_data()
+    return res
 
 
 def get_code_by_name(name: str) -> str | None:

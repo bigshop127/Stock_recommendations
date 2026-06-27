@@ -373,3 +373,23 @@
   }
 }
 ```
+
+### 2.10 搜尋台股代號與股名 `/api/symbols/search?q=&limit=`
+* **Method**: `GET`
+* **Description**: 搜尋一般上市櫃個股，排除權證。結果長效快取 6 小時。
+* **Response Schema (200 OK)**:
+```json
+{
+  "query": "2330",
+  "count": 1,
+  "results": [
+    {
+      "code": "2330",
+      "name": "台積電"
+    }
+  ],
+  "source": "FinMind TaiwanStockInfo",
+  "degraded": false
+}
+```
+
