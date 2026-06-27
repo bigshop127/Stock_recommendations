@@ -101,6 +101,8 @@ if (fs.existsSync(webDist)) {
   ssh -L 3000:localhost:3000 -i C:\Users\bigsh\.ssh\oracle_puhui.key ubuntu@140.238.48.197
   ```
   然後於本機瀏覽器開啟 `http://localhost:3000/review/`。
+- **日常一鍵存取（本機，零公網暴露）**：桌面捷徑「個股全面審視網」→ 雙擊即自動建立上述 SSH 通道（最小化視窗常駐）並開瀏覽器到 `/review/`；通道已開則重用。啟動腳本＝`review-web/tools/open-review.ps1`，重建捷徑指向它即可。中斷＝關掉那個最小化的 SSH 視窗。僅限持金鑰的本機可連。
+  - 🚨 **`open-review.ps1` 必須存成 UTF-8 with BOM**：捷徑用 `powershell.exe`（Windows PowerShell 5.1），它會把「無 BOM」的 UTF-8 檔當系統 ANSI 碼頁（zh-TW＝CP950）解讀，腳本內的中文註解被誤解碼 → **整支 parse error、雙擊完全沒反應**（不是通道問題）。若哪天改了這支腳本後捷徑又「沒反應」，先確認存檔編碼仍含 BOM：`(Get-Content -Encoding Byte -TotalCount 3 path) -join ' '` 應為 `239 187 191`。
 - **VM 內部 Curl 驗證**：
   - 大盤總覽 `/` 正常：`curl -I http://localhost:3000/` (應該回傳 `Content-Length` 為 481 左右的舊 `web/` HTML)
   - 新個股審視 `/review/` 正常：`curl -I http://localhost:3000/review/` (應該回傳 `Content-Length` 為 901 左右的新版 HTML)
