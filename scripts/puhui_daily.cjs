@@ -975,11 +975,9 @@ async function main() {
     gmailAvailable = true;
     log('OAuth 正常');
   } catch (e) {
-    log(`OAuth 失敗: ${e.message} — 改走 Playwright 文章列表 fallback`);
-    // 在 CI 或 deleted_client（永久失效）時不發 Telegram，避免每次觸發垃圾通知
-    if (!IS_CI && !e.message.includes('deleted_client')) {
-      await sendTelegram(`⚠️ 浦惠投顧 OAuth 異常，改走 Playwright fallback\n\n${e.message}\n\n請執行 node scripts/oauth_reauth.cjs 修復`);
-    }
+    // 2026-06-26：OAuth/Gmail 已非必要——報告一律走 Playwright fallback 正常產出並寫進 Obsidian，
+    // 使用者只需維持 Obsidian、不要 OAuth 噪音，故 OAuth 失敗不再發 Telegram 告警（保留 log 供排查）。
+    log(`OAuth 失敗（已忽略，改走 Playwright fallback；不發 Telegram）: ${e.message}`);
   }
 
   // 3 & 4. 取文章（Gmail 優先，Playwright 列表頁 fallback）
@@ -1187,7 +1185,9 @@ async function main() {
         log('報告已推送到 GitHub（手機可同步）');
       } catch (pushErr) {
         log(`GitHub push 第一次失敗，rebase 後重試: ${String(pushErr.message).slice(0, 120)}`);
-        execSync(`git -C "${repoDir}" pull --rebase origin master`, { stdio: 'pipe' });
+        // rebase 目標用「目前分支」，不硬寫 master（VM 在 phase3-chips 時硬寫 master 會造成分叉）。
+        const branch = execSync(`git -C "${repoDir}" rev-parse --abbrev-ref HEAD`).toString().trim();
+        execSync(`git -C "${repoDir}" pull --rebase origin ${branch}`, { stdio: 'pipe' });
         execSync(`git -C "${repoDir}" push`, { stdio: 'pipe' });
         log('報告已推送到 GitHub（rebase 後重試成功）');
       }

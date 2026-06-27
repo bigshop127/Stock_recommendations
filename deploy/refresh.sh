@@ -17,6 +17,10 @@ SNAP_DIR="$APP_DIR/reports/signals"
 SNAP_PATH="$SNAP_DIR/$DATE.json"
 cd "$APP_DIR" || exit 1
 
+# 推送目標一律用「目前 checkout 的分支」，不再硬寫 master。
+# （VM 被切到 phase3-chips 時，硬寫 master 會把 master rebase 進來造成分叉、push 被拒。）
+BRANCH="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo master)"
+
 envval() { grep -E "^$1=" "$APP_DIR/.env" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"'\''\r'; }
 TG_TOKEN="$(envval TELEGRAM_BOT_TOKEN)"; TG_CHAT="$(envval TELEGRAM_CHAT_ID)"
 alert() {
@@ -31,7 +35,7 @@ ok() { echo "[refresh] $(date '+%F %T') $1"; }
 ok "start date=$DATE gateway=$GATEWAY_URL"
 
 # 1) 先同步 repo（避免與本機/手機分岔）
-git pull --rebase --autostash origin master 2>&1 | tail -2 || alert "git pull --rebase 失敗（稍後 push 可能衝突）"
+git pull --rebase --autostash origin "$BRANCH" 2>&1 | tail -2 || alert "git pull --rebase 失敗（稍後 push 可能衝突）"
 
 # 2) 暖快取 + 3) 存當日訊號快照
 mkdir -p "$SNAP_DIR"
@@ -55,7 +59,7 @@ else
     ok "已 push reports/signals/$DATE.json"
   else
     ok "push 第一次失敗，rebase 後重試"
-    git pull --rebase --autostash origin master >/dev/null 2>&1 && git push 2>&1 | tail -2 || alert "git push 失敗（檢查 deploy key/PAT）"
+    git pull --rebase --autostash origin "$BRANCH" >/dev/null 2>&1 && git push 2>&1 | tail -2 || alert "git push 失敗（檢查 deploy key/PAT）"
   fi
 fi
 ok "done"

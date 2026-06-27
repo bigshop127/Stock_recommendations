@@ -39,8 +39,12 @@ try {
   Write-Log '--- sync start ---'
 
   # 1) Fetch + fast-forward only. We only pull if FF is clean; otherwise just sync existing reports.
-  [void](Invoke-Git fetch origin master)
-  $pullCode = Invoke-Git pull --ff-only origin master
+  #    Pull whatever branch this repo is on (VM 老王報告現走 phase3-chips，硬寫 master 會抓不到當日報告)。
+  $Branch = (& git rev-parse --abbrev-ref HEAD 2>$null)
+  if (-not $Branch) { $Branch = 'master' }
+  Write-Log "sync branch: $Branch"
+  [void](Invoke-Git fetch origin $Branch)
+  $pullCode = Invoke-Git pull --ff-only origin $Branch
   $pullOk = ($pullCode -eq 0)
   if (-not $pullOk) {
     Write-Log 'WARN: git pull --ff-only failed (local likely diverged). Continuing with existing reports/.'
