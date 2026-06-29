@@ -87,6 +87,7 @@ const GOOGLE_REFRESH_TOKEN = process.env.GOOGLE_REFRESH_TOKEN;
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const GEMINI_API_KEY_2 = process.env.GEMINI_API_KEY_2;
 const GEMINI_API_KEY_3 = process.env.GEMINI_API_KEY_3;
+const GROQ_API_KEY = process.env.GROQ_API_KEY;
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 const NOTIFY_EMAIL = process.env.NOTIFY_EMAIL || 'a4980678@gmail.com';
@@ -718,6 +719,30 @@ async function summarizeWithGemini(articleTitle, rawContent) {
   throw lastError || new Error('所有 Gemini API key 均失敗');
 }
 
+// ── Groq 摘要（Claude CLI 失敗時的中間層，免費額度充足）──────
+async function summarizeWithGroq(articleTitle, rawContent) {
+  if (!GROQ_API_KEY) throw new Error('GROQ_API_KEY 未設定');
+  const { systemPrompt, userPrompt } = buildObsidianPromptSplit(articleTitle, rawContent, DATE_DISPLAY);
+  const body = {
+    model: 'llama-3.3-70b-versatile',
+    messages: [
+      { role: 'system', content: systemPrompt },
+      { role: 'user', content: userPrompt }
+    ],
+    max_tokens: 4096,
+    temperature: 0.3
+  };
+  const r = await httpsPostJson('api.groq.com', '/openai/v1/chat/completions', body, {
+    Authorization: `Bearer ${GROQ_API_KEY}`
+  });
+  if (r.error) throw new Error(`Groq: ${r.error.message || JSON.stringify(r.error)}`);
+  if (!r.choices?.[0]?.message?.content) throw new Error(`Groq 無輸出: ${JSON.stringify(r).substring(0, 200)}`);
+  const out = r.choices[0].message.content.trim();
+  if (out.length < 500) throw new Error(`Groq 輸出過短 (${out.length} chars)`);
+  log(`Groq (llama-3.3-70b) 摘要完成 (${out.length} 字元)`);
+  return out;
+}
+
 // ── Claude CLI 摘要（本機 fallback，吃 Claude Pro/Max 訂閱）─
 // 雲端 GitHub Actions 沒有 claude CLI，呼叫端需自行判斷 IS_CI
 async function summarizeWithClaudeCli(articleTitle, rawContent) {
@@ -1119,8 +1144,8 @@ async function main() {
   }
 
   // 5 & 6. AI 摘要
-  //   本機：Claude CLI 主（吃訂閱不限額）→ Gemini fallback（3 key 輪換）
-  //   雲端 CI：只能用 Gemini（沒有 Claude CLI）
+  //   本機/VM：Claude CLI 主 → Groq 中間層 → Gemini fallback（3 key 輪換）
+  //   雲端 CI：Groq → Gemini（沒有 Claude CLI）
   let markdown;
   const errors = [];
 
@@ -1130,8 +1155,18 @@ async function main() {
       markdown = await summarizeWithClaudeCli(articleTitle, articleContent);
       log(`Claude CLI 摘要完成 (${markdown.length} 字元)`);
     } catch (e) {
-      log(`Claude CLI 失敗，改用 Gemini: ${e.message}`);
+      log(`Claude CLI 失敗，改用 Groq: ${e.message}`);
       errors.push(`Claude CLI: ${e.message}`);
+    }
+  }
+
+  if (!markdown) {
+    log('呼叫 Groq 進行摘要...');
+    try {
+      markdown = await summarizeWithGroq(articleTitle, articleContent);
+    } catch (e) {
+      log(`Groq 失敗，改用 Gemini: ${e.message}`);
+      errors.push(`Groq: ${e.message}`);
     }
   }
 
