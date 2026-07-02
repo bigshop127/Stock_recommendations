@@ -7,6 +7,7 @@ const StockDetail = lazy(() => import('./pages/StockDetail').then(m => ({ defaul
 const RwdVerify = lazy(() => import('./pages/RwdVerify').then(m => ({ default: m.RwdVerify })));
 const CapitalTide = lazy(() => import('./pages/CapitalTide').then(m => ({ default: m.CapitalTide })));
 const SectorHeatmap = lazy(() => import('./pages/SectorHeatmap').then(m => ({ default: m.SectorHeatmap })));
+const SectorDetail = lazy(() => import('./pages/SectorDetail').then(m => ({ default: m.SectorDetail })));
 
 function App() {
   return (
@@ -26,6 +27,7 @@ function App() {
             <Route path="/rwd-verify" element={<RwdVerify />} />
             <Route path="/tide" element={<CapitalTide />} />
             <Route path="/heatmap" element={<SectorHeatmap />} />
+            <Route path="/heatmap/sector/:name" element={<SectorDetail />} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
         </Suspense>

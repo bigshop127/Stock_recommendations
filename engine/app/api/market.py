@@ -387,11 +387,15 @@ def get_institutional(
 
 # ── 資金潮汐相關輔助與端點 ──────────────────────────────────────────────────
 _code_sector_map: dict[str, str] | None = None
+_sector_map_last_fail: float = 0.0
 
 def get_sector_by_code(code: str) -> str:
-    global _code_sector_map
+    global _code_sector_map, _sector_map_last_fail
     if _code_sector_map is None:
-        _code_sector_map = {}
+        import time
+        if time.time() - _sector_map_last_fail < 600:
+            return "其他"
+        sector_map = {}
         try:
             raw = finmind_client._finmind_get("TaiwanStockInfo", "", "2000-01-01", "2100-01-01")
             if not raw.empty and {"stock_id", "industry_category"} <= set(raw.columns):
@@ -399,9 +403,14 @@ def get_sector_by_code(code: str) -> str:
                     sid = sid.strip()
                     cat = cat.strip()
                     if cat and cat != "None" and cat != "nan" and cat != "":
-                        _code_sector_map[sid] = cat
+                        sector_map[sid] = cat
         except Exception:
             pass
+        if sector_map:
+            _code_sector_map = sector_map
+        else:
+            _sector_map_last_fail = time.time()
+            return "其他"
     return _code_sector_map.get(code, "其他")
 
 
@@ -619,3 +628,91 @@ def get_capital_tide(
         return result
 
     return _guard(_fetch)
+
+
+@router.get("/stock-heatmap", summary="全市場個股熱力圖資料（含日/週/月）")
+def get_stock_heatmap(
+    period: str = Query("day", pattern="^(day|week|month)$", description="計算週期"),
+    date: str | None = Query(None, description="日期 YYYY-MM-DD")
+):
+    def _fetch():
+        # 1. 取得當日行情 (含自動回溯非交易日)
+        stocks_now, actual_date = twse_report_client.get_with_rollback(
+            twse_report_client.get_mi_index_allbut0999, date
+        )
+
+        base_date = actual_date
+        base_close_map = {}
+
+        if period == "week":
+            recent_days = get_recent_trading_days(actual_date, n=6)
+            if recent_days:
+                base_target = recent_days[0]
+                try:
+                    stocks_base, actual_base = twse_report_client.get_with_rollback(
+                        twse_report_client.get_mi_index_allbut0999, base_target
+                    )
+                    base_date = actual_base
+                    for item in stocks_base:
+                        if item.get("close") is not None:
+                            base_close_map[item["code"]] = item["close"]
+                except Exception:
+                    pass
+        elif period == "month":
+            recent_days = get_recent_trading_days(actual_date, n=22)
+            if recent_days:
+                base_target = recent_days[0]
+                try:
+                    stocks_base, actual_base = twse_report_client.get_with_rollback(
+                        twse_report_client.get_mi_index_allbut0999, base_target
+                    )
+                    base_date = actual_base
+                    for item in stocks_base:
+                        if item.get("close") is not None:
+                            base_close_map[item["code"]] = item["close"]
+                except Exception:
+                    pass
+
+        out_stocks = []
+        for item in stocks_now:
+            code = item["code"]
+            name = item["name"]
+            close = item["close"]
+            turnover = item["turnover"]
+            sector = get_sector_by_code(code)
+
+            change_pct = None
+            if period == "day":
+                change_val = item.get("change_val")
+                if close is not None and change_val is not None:
+                    prev_close = close - change_val
+                    if prev_close > 0:
+                        change_pct = round((change_val / prev_close) * 100, 4)
+            else:
+                base_close = base_close_map.get(code)
+                if close is not None and base_close is not None and base_close > 0:
+                    change_pct = round(((close - base_close) / base_close) * 100, 4)
+
+            if change_pct is not None and (math.isnan(change_pct) or math.isinf(change_pct)):
+                change_pct = None
+
+            out_stocks.append({
+                "code": code,
+                "name": name,
+                "sector": sector,
+                "close": close,
+                "change_pct": change_pct,
+                "turnover": turnover,
+            })
+
+        return {
+            "date": actual_date,
+            "period": period,
+            "base_date": base_date,
+            "market": "twse",
+            "stocks": out_stocks,
+            "source": "twse_mi_index",
+        }
+
+    return _guard(_fetch)
+

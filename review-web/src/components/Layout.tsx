@@ -391,7 +391,17 @@ export const Layout: React.FC<LayoutProps> = ({ children }) => {
         {/* 頁首 Header Bar */}
         <header className="h-16 border-b border-border bg-card/60 backdrop-blur-md px-6 flex items-center justify-between">
           <div className="text-sm font-medium text-zinc-400">
-            {location.pathname === '/' ? '大盤儀表板' : location.pathname === '/tide' ? '資金潮汐' : location.pathname === '/heatmap' ? '產業熱力圖' : location.pathname.startsWith('/stock/') ? '個股審查中心' : 'RWD 規範驗證'}
+            {location.pathname === '/'
+              ? '大盤儀表板'
+              : location.pathname === '/tide'
+              ? '資金潮汐'
+              : location.pathname === '/heatmap'
+              ? '產業熱力圖'
+              : location.pathname.startsWith('/heatmap/sector/')
+              ? `產業熱力圖 · ${(() => { try { return decodeURIComponent(location.pathname.replace('/heatmap/sector/', '')); } catch { return location.pathname.replace('/heatmap/sector/', ''); } })()}`
+              : location.pathname.startsWith('/stock/')
+              ? '個股審查中心'
+              : 'RWD 規範驗證'}
           </div>
           <div className="flex items-center gap-4">
             {/* Engine 下線警告 Banner */}

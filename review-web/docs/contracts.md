@@ -426,3 +426,29 @@
 ```
 * `quadrant` ∈ `inflow_up | inflow_down | outflow_up | outflow_down`（依 `flow_x`/`momentum_y` 正負分象限）。
 
+
+### 2.12 全市場個股熱力圖（含日/週/月） `/api/market/stock-heatmap?period=day|week|month&date=`
+* **Method**: `GET`
+* **Description**: 取得上市全市場個股收盤行情與漲跌幅資訊（支援單日/單週/單月切換）。單請求抓取 TWSE `MI_INDEX` (ALLBUT0999)，並具備日檔快取與非交易日自動回溯機制。
+* **Response Schema (200 OK)**:
+```json
+{
+  "date": "2026-07-02",
+  "period": "week",
+  "base_date": "2026-06-25",
+  "market": "twse",
+  "stocks": [
+    {
+      "code": "2330",
+      "name": "台積電",
+      "sector": "半導體業",
+      "close": 1080.0,
+      "change_pct": 2.35,
+      "turnover": 51234567890.0
+    }
+  ],
+  "source": "twse_mi_index"
+}
+```
+
+

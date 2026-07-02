@@ -523,6 +523,7 @@ export const api = {
   stockNews: (code: string) => req<StockNews>(`/stocks/${code}/news`),
   symbolSearch: (q: string, limit?: number) => req<SymbolSearch>(`/symbols/search${qs({ q, limit })}`),
   marketCapitalTide: (o?: { date?: string; universe?: string }) => req<CapitalTideData>(`/market/capital-tide${qs(o)}`),
+  marketStockHeatmap: (o?: { period?: string; date?: string }, force?: boolean) => marketStockHeatmap(o, force),
 };
 
 export interface SymbolHit {
@@ -565,4 +566,39 @@ export interface CapitalTideData {
   degraded?: boolean;
   errors?: string[];
 }
+
+export interface HeatmapStock {
+  code: string;
+  name: string;
+  sector: string;
+  close: number | null;
+  change_pct: number | null;
+  turnover: number | null;
+}
+
+export interface StockHeatmap {
+  date: string;
+  period: 'day' | 'week' | 'month';
+  base_date: string;
+  market: string;
+  stocks: HeatmapStock[];
+  source: string;
+}
+
+const heatmapCache = new Map<string, { timestamp: number; data: StockHeatmap }>();
+
+export function marketStockHeatmap(o?: { period?: string; date?: string }, force = false): Promise<StockHeatmap> {
+  const key = `${o?.period || 'day'}_${o?.date || 'latest'}`;
+  const cached = heatmapCache.get(key);
+  const now = Date.now();
+  if (!force && cached && now - cached.timestamp < 5 * 60 * 1000) {
+    return Promise.resolve(cached.data);
+  }
+  return req<StockHeatmap>(`/market/stock-heatmap${qs(o)}`).then((data) => {
+    heatmapCache.set(key, { timestamp: Date.now(), data });
+    return data;
+  });
+}
+
+
 

@@ -208,6 +208,25 @@ degraded dashboard 範例（engine down + 有 cache）：
 
 ---
 
+### `GET /api/market/stock-heatmap?period=day|week|month&date=`
+全市場個股熱力圖資料端點（支援單日、單週、單月）。單請求向 TWSE `MI_INDEX` (ALLBUT0999) 取得上市全個股，具備日檔快取與交易日回溯。
+
+```json
+{
+  "date": "2026-07-02",
+  "period": "week",
+  "base_date": "2026-06-25",
+  "market": "twse",
+  "stocks": [
+    { "code": "2330", "name": "台積電", "sector": "半導體業", "close": 1080.0, "change_pct": 2.35, "turnover": 51234567890.0 }
+  ],
+  "source": "twse_mi_index"
+}
+```
+
+
+---
+
 ## 本機啟動 / 驗收
 
 ```powershell

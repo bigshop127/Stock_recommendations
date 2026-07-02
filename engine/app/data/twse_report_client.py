@@ -22,9 +22,13 @@ def _clean_num(val: str) -> float:
     if not val:
         return 0.0
     val_clean = val.replace(",", "").strip()
-    if val_clean in ("", "-", "None", "null"):
+    if val_clean in ("", "-", "--", "None", "null"):
         return 0.0
-    return float(val_clean)
+    try:
+        return float(val_clean)
+    except ValueError:
+        return 0.0
+
 
 
 def _to_yyyymmdd(date_str: str) -> str:
@@ -266,7 +270,7 @@ def get_with_rollback(fetch_fn: callable, date_str: str | None = None, max_days:
         dt = datetime.date.today()
     else:
         dt = datetime.date.fromisoformat(date_str)
-        
+
     for _ in range(max_days):
         current_str = dt.isoformat()
         try:
@@ -276,5 +280,116 @@ def get_with_rollback(fetch_fn: callable, date_str: str | None = None, max_days:
         except Exception:
             pass
         dt -= datetime.timedelta(days=1)
-        
+
     raise DataSourceError("無法取得任何有效的交易日資料（已往前搜尋 15 天）")
+
+
+# ── 5. 全市場個股收盤行情 MI_INDEX (ALLBUT0999) ─────────────────────────────────
+def fetch_mi_index_allbut0999_raw(date_str: str) -> list[dict] | None:
+    """從 TWSE 獲取特定日期之全市場上市個股每日收盤行情。"""
+    date_formatted = _to_yyyymmdd(date_str)
+    url = f"https://www.twse.com.tw/exchangeReport/MI_INDEX?response=json&date={date_formatted}&type=ALLBUT0999"
+
+    try:
+        res = get_json(url, headers=_HEADERS)
+    except Exception as exc:
+        raise DataSourceError(f"TWSE MI_INDEX ALLBUT0999 請求失敗：{exc}") from exc
+
+    if not isinstance(res, dict) or res.get("stat") != "OK":
+        return None
+
+    tables = res.get("tables", [])
+    target_table = None
+    for t in tables:
+        title = t.get("title", "")
+        if "每日收盤行情" in title:
+            target_table = t
+            break
+
+    if not target_table:
+        # 備用：若找不到符合標題之 table，看 res 是否有 data
+        if "data" in res:
+            target_table = res
+        else:
+            return None
+
+    fields = target_table.get("fields", [])
+    data_rows = target_table.get("data", [])
+    if not data_rows:
+        return None
+
+    code_idx = fields.index("證券代號") if "證券代號" in fields else 0
+    name_idx = fields.index("證券名稱") if "證券名稱" in fields else 1
+    turnover_idx = fields.index("成交金額") if "成交金額" in fields else 4
+    close_idx = fields.index("收盤價") if "收盤價" in fields else 8
+    dir_idx = fields.index("漲跌(+/-)") if "漲跌(+/-)" in fields else 9
+    diff_idx = fields.index("漲跌價差") if "漲跌價差" in fields else 10
+
+    stocks = []
+    for row in data_rows:
+        try:
+            max_idx = max(code_idx, name_idx, turnover_idx, close_idx, dir_idx, diff_idx)
+            if len(row) <= max_idx:
+                continue
+
+            code = str(row[code_idx]).strip()
+            if len(code) != 4 or not code.isdigit() or code.startswith("00"):
+                continue
+
+            name = str(row[name_idx]).strip()
+            turnover = _clean_num(str(row[turnover_idx]))
+
+            close_str = str(row[close_idx]).strip()
+            if close_str in ("", "--", "-", "None", "null"):
+                close = None
+            else:
+                close_val = _clean_num(close_str)
+                close = close_val if close_val > 0 else None
+
+            dir_raw = str(row[dir_idx])
+            dir_clean = re.sub(r'<[^>]+>', '', dir_raw).strip()
+            diff_val = _clean_num(str(row[diff_idx]))
+
+            if "X" in dir_clean:
+                change_val = None
+            elif "+" in dir_clean or "▲" in dir_clean:
+                change_val = diff_val
+            elif "-" in dir_clean or "▼" in dir_clean:
+                change_val = -diff_val
+            else:
+                change_val = 0.0
+
+            stocks.append({
+                "code": code,
+                "name": name,
+                "close": close,
+                "change_val": change_val,
+                "turnover": turnover,
+            })
+        except Exception:
+            continue
+
+    return stocks
+
+
+def get_mi_index_allbut0999(date_str: str) -> list[dict] | None:
+    """獲取全市場個股每日收盤行情（優先讀取日檔快取）。"""
+    import json
+    from app.core.config import settings
+    cache_file = settings.cache_path / "stock_heatmap" / f"{date_str}.json"
+    if cache_file.exists():
+        try:
+            return json.loads(cache_file.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+
+    raw = fetch_mi_index_allbut0999_raw(date_str)
+    if raw is not None:
+        try:
+            cache_file.parent.mkdir(parents=True, exist_ok=True)
+            cache_file.write_text(json.dumps(raw, ensure_ascii=False), encoding="utf-8")
+        except Exception:
+            pass
+        return raw
+    return None
+

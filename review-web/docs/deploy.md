@@ -64,7 +64,7 @@ if (fs.existsSync(webDist)) {
    ssh -i C:\Users\bigsh\.ssh\oracle_puhui.key ubuntu@140.238.48.197
    cd /home/ubuntu/Stock_recommendations
    git fetch origin
-   git checkout phase3-chips
+   git checkout master   # 2026-06-28 起分支已收斂，一律部署 master（phase3-chips 已退役）
    git pull
    ```
 

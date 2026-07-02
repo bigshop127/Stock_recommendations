@@ -122,3 +122,27 @@ def test_market_capital_tide_ok():
     assert "strength" in s
     assert "quadrant" in s
     assert s["quadrant"] in ["inflow_up", "inflow_down", "outflow_up", "outflow_down"]
+
+
+def test_stock_heatmap_ok():
+    r = client.get("/market/stock-heatmap?period=day")
+    assert r.status_code == 200
+    body = r.json()
+    assert "date" in body
+    assert body["period"] == "day"
+    assert "base_date" in body
+    assert body["market"] == "twse"
+    assert "stocks" in body
+    assert body["source"] == "twse_mi_index"
+
+    stocks = body["stocks"]
+    assert len(stocks) > 0
+
+    s = stocks[0]
+    assert "code" in s
+    assert "name" in s
+    assert "sector" in s
+    assert "close" in s
+    assert "change_pct" in s
+    assert "turnover" in s
+

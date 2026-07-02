@@ -1,17 +1,15 @@
-import type { SectorPerformance } from './api';
-
-export interface TreemapInput {
+export interface TreemapInput<T = any> {
   key: string;
   value: number; // must be > 0
-  datum: SectorPerformance;
+  datum: T;
 }
 
-export interface TreemapTile {
+export interface TreemapTile<T = any> {
   x: number;
   y: number;
   w: number;
   h: number;
-  item: TreemapInput;
+  item: TreemapInput<T>;
 }
 
 /**
@@ -19,7 +17,7 @@ export interface TreemapTile {
  * Fits tiles into a rectangle of size [width, height].
  * Items must be sorted in descending order of value, and values must be > 0.
  */
-export function squarify(items: TreemapInput[], width: number, height: number): TreemapTile[] {
+export function squarify<T = any>(items: TreemapInput<T>[], width: number, height: number): TreemapTile<T>[] {
   if (items.length === 0 || width <= 0 || height <= 0) return [];
 
   // 1. Calculate the sum of all values
@@ -30,7 +28,7 @@ export function squarify(items: TreemapInput[], width: number, height: number): 
   const totalArea = width * height;
   const scale = totalArea / totalValue;
 
-  interface ScaledItem extends TreemapInput {
+  interface ScaledItem extends TreemapInput<T> {
     scaledArea: number;
   }
 

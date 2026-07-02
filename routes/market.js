@@ -64,4 +64,15 @@ router.get('/api/market/capital-tide', async (req, res) => {
   }
 });
 
+router.get('/api/market/stock-heatmap', async (req, res) => {
+  const { period, date } = req.query;
+  try {
+    const data = await engineGet('/market/stock-heatmap', { period, date }, 120000);
+    res.json(data);
+  } catch (err) {
+    sendError(res, err);
+  }
+});
+
 module.exports = router;
+
