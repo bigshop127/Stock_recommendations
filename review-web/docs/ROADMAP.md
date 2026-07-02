@@ -96,7 +96,7 @@ Python engine  FastAPI :8000         ← 既有，本案會新增 /data 或 /mar
 | **7** | AI 全面審視（招牌） | 複用 `POST /api/agents/decide` 多 agent 敘事+評分，**分段對齊實際 agent graph**：量化事實底座(blended)→技術＋籌碼/消息情緒/老王在地專家三分析師→多空辯論→交易員決策→風控審核→最終決策+信心+一致性守門(背離 warning)；**按鈕觸發**(~187s/7×LLM/股、貴)+localStorage 快取、用量遙測 | 沿用既有（gateway `/api/agents/decide` 已存在；**必要時**加輕量摘要端點省 token，預設零後端改動） | ✅ 已完工 (2026-06-24) |
 | **8** | 整合・RWD打磨・PWA・部署 | 全頁整合、手機收合驗證、PWA 可裝成 APP、效能、部署上既有 Oracle VM（gateway 同源 serve） | gateway serve `review-web/dist`、systemd/部署 | ✅ 已完工 (2026-06-25) |
 
-各階段「希望看到的內容」細節原寫在各自 `phaseN.md`（Phase 0 先寫、Phase 1+ 前一階段完成後才定稿）。**Phase 0–8 全數完工後，`phaseN.md` 已於 2026-06-27 隨提示詞收斂移除（歷史可查 git）**；**§8 優化專案 `opt1–4-*.md` 亦於 2026-06-28 全數完工後移除（同例，歷史可查 git，內容已濃縮進 §8 完工紀錄）**。現存提示詞＝維修啟動 `maintenance.md` 與待實作的 `opt5-sector-heatmap.md`。
+各階段「希望看到的內容」細節原寫在各自 `phaseN.md`（Phase 0 先寫、Phase 1+ 前一階段完成後才定稿）。**Phase 0–8 全數完工後，`phaseN.md` 已於 2026-06-27 隨提示詞收斂移除（歷史可查 git）**；**§8 優化專案 `opt1–4-*.md` 亦於 2026-06-28 全數完工後移除（同例，歷史可查 git，內容已濃縮進 §8 完工紀錄）**。現存提示詞＝維修啟動 `maintenance.md`、已完工留檔的 `opt5-sector-heatmap.md`、待實作的 `opt6-stock-heatmap.md` 與 `opt7-market-overview.md`（2026-07-02 定稿，見 §8）。
 
 ---
 
@@ -142,6 +142,10 @@ Python engine  FastAPI :8000         ← 既有，本案會新增 /data 或 /mar
 | 3 | Watchlist 手動增刪 | `opt3-watchlist.md` | Dashboard 自選卡：後端焦點（唯讀）＋使用者自選（localStorage 可增刪）並存、徽章區分；複用專案 2 搜尋 | 無 | ✅ 完工 (2026-06-28) |
 | 4 | 資金潮汐（仿 tide-tw.app） | `opt4-capital-tide.md` | 新頁 `/tide`：資金流向×動能**泡泡圖**＋新端點 `/api/market/capital-tide`（有界 universe＝breadth 的 `watchlist_union_0050`、每日快取、還原價算 momentum）；左右面板列可選 | engine+gateway `/market/capital-tide` | ✅ 完工 (2026-06-28) |
 | 5 | 產業熱力圖（仿 aistockmap.com） | `opt5-sector-heatmap.md` | 新頁 `/heatmap`：各 TWSE 類股 **treemap**，區塊大小＝`\|漲跌%\|`、紅漲綠跌發散色階±5% 飽和；複用既有 `/api/market/sectors`（**零後端**）＋自寫 squarified；**單日 MVP**，單週/單月 disabled「即將推出」 | 無（MVP） | ✅ 完工 (2026-06-28) |
+| 6 | 個股層級熱力圖（heatmap 2.0，仿 aistockmap） | `opt6-stock-heatmap.md` | `/heatmap` 加「個股視圖」：兩層 treemap（產業群組→個股方塊，大小＝成交值、色＝漲跌%）＋**單日/單週/單月啟用**＋點方塊跳 `/stock/:code`＋產業聚焦；TWSE `MI_INDEX ALLBUT0999` 單請求全市場＋每日檔快取 | engine+gateway `/market/stock-heatmap` | ⬜ 規格已出 (2026-07-02) |
+| 7 | 盤勢總覽 2.0（仿 futures-ai market-overview） | `opt7-market-overview.md` | Dashboard 資訊架構重整：指數狀態列＋**規則式市場溫度儀表與一句話總結**（`lib/marketSummary.ts` 純函式+vitest）＋漲跌家數分布條＋12-col 重排＋卡殼統一＋熱力/潮汐入口 | 無（零後端） | ⬜ 規格已出 (2026-07-02) |
+| 8 | 個股研究摘要卡（規則式五力雷達，仿 Danny Quant） | `opt8-*.md`（opt6/7 完工後定稿） | `StockDetail` 頂部：五力雷達（**複用 blended.factors 因子分**映射 動能/籌碼/情緒/技術/基本面）＋綜合分數＋規則式「加分/扣分因素」（引用籌碼/營收/均線真數字）＋「觀察點/失效訊號」（60MA/20MA/量比/法人5日 附具體門檻價）；零 LLM | 無（預估） | ⬜ 構想已定 (2026-07-02) |
+| 9 | 合理價估算＋同業排名（仿 Danny Quant 個股頁） | `opt9-*.md`（opt8 完工後定稿） | 個股頁新卡：同業 PE 中位數 × trailing EPS ＝ 推估合理價＋與現價差距%；同業百分位條（PE/PB/殖利率/營收YoY/成交值）；FinMind `TaiwanStockPER` 按日全市場單請求＋日快取 | engine+gateway `/stocks/:code/peers` | ⬜ 構想已定 (2026-07-02) |
 
 **共用基礎與相依**：
 - 無使用者 DB／免登入 → 使用者自管清單（資料夾、持股、自選）一律 **localStorage**，共用 `review-web/src/lib/userStore.ts`（專案 1 建立、3 擴充）。同 `aiReview:{code}:{date}` 快取模式。
@@ -156,3 +160,11 @@ Python engine  FastAPI :8000         ← 既有，本案會新增 /data 或 /mar
 - **opt3 ✅ 2026-06-28**：純前端零後端。`lib/userStore.ts` 加自選區（`WATCHLIST_KEY`＝`review:watchlist:v1`、不種子預設 `[]`＋`getUserWatchlist`/`addToWatchlist`(去重 by code)/`removeFromWatchlist`/`subscribeWatchlist`、`userstore:watchlist` CustomEvent＋原生 `storage` 同步、try/catch 防壞資料）；`Dashboard.tsx` Watchlist 卡＝`useMemo` 合併「焦點(`/api/watchlist`)＋自選(localStorage)」以 `code` union（焦點列在前、自選 only 依 `added_at` 倒序、同 code 一列掛雙徽章）、`MergedWatchItem` 評分欄全 `number|null`＋缺值顯「—」(8 欄不破表)、焦點徽章紅(`bull`)/自選徽章藍(`primary`)、自選列垃圾桶移除＋焦點列 disabled 移除鈕(tooltip「系統焦點股」)、卡右上「＋加入自選」開彈窗複用 `<SymbolSearch>`→`addToWatchlist`、`subscribeWatchlist` 即時重繪不重打後端。**未自動打 `/api/stocks/:code`/`/api/agents/decide`**（自選列評分留「—」）。未動 `/api/watchlist`/`web/`/`puhui_daily.cjs`；`tsc -b && vite build` 綠 exit 0（Claude review 通過）。小觀察（非阻塞）：`/api/watchlist` 報錯時整卡走錯誤畫面，本地自選清單會一併被遮（沿用現有降級，可後續讓自選獨立存活）。
 - **opt5 ✅ 2026-06-28**：新增 `/heatmap`「產業熱力圖」頁。前端自定義 `review-web/src/lib/treemap.ts`（純函式 `squarify` 實作 squarified treemap 演算法 (Bruls 2000)、自動對 scaled area 由大到小排序，並撰寫 `treemap.test.ts` 以 vitest 測試通過）；`/pages/SectorHeatmap.tsx` 複用既有 `/api/market/sectors` 端點，對 `change_pct` 進行 runtime 防 null/NaN 保護、以 `Math.max(|change_pct|, 0.05)` 當 value 避免 0% 類股消失，並依 ±5% 飽和紅漲綠跌發散色階渲染 SVG 區塊（viewBox `0 0 1000 600` RWD 自適應）；文字分級避免小塊溢出，點擊區塊高亮（白描邊上層渲染），hover 手刻 DOM 浮動 tooltip（顯示類股名/漲跌幅/成交值億兆/資料來源）；時間切換鈕單日 active，單週/單月 disabled 並附 tooltip 提示「即將推出」；`App.tsx` lazy 路由 `/heatmap`，`Layout.tsx` 側欄 nav「產業熱力圖」(`LayoutGrid`) 與 header 標題分支；`api.ts` `SectorPerformance.change_pct` 型別誠實化為 `number | null`（Dashboard 無回歸）。零後端改動。**Claude review**：原 `SectorHeatmap.tsx` 有 2 個未使用 import（`SectorPerformance`/`TreemapTile`）觸發 `noUnusedLocals` → tsc 失敗，已移除（純機械、不動邏輯）→ `tsc -b && vite build` 綠 exit 0、`treemap.test.ts` vitest **3 passed**、VM live `/api/market/sectors` 實測 34 類股（30 有值/4 null 已正確過濾、06-26 當日全綠 −7.37~−0.82%）。通過。
 
+
+**2026-07-02 規劃紀錄（概念圖統整 → opt6–9 定案）**：使用者提供 `C:\Users\bigsh\Downloads\概念圖`（8 張有效截圖：Danny Quant 產業地圖個股頁×2、五力雷達洞察卡、市場情緒看板、策略卡片牆「今日資料池」、條件篩選器、研究摘要卡、5888 股票戰情卡）＋兩個參考站（futures-ai 盤勢總覽、aistockmap 熱力圖）。統整決策：**優先做 opt6（個股層級熱力圖）→ opt7（盤勢總覽 2.0）**（兩者為使用者明示需求），其後 opt8（研究摘要卡）、opt9（合理價/同業排名）吃概念圖精華且成本低（opt8 零後端零 LLM）。規格提示詞 `opt6-stock-heatmap.md`、`opt7-market-overview.md` 已定稿；opt8/9 依慣例待前案完工後定稿。**Backlog（暫不立案）**：①市場情緒看板（需 universe 批次輿情端點，新聞/額度成本高）；②5888 風格戰情卡分享海報（依賴 opt8 規則式摘要，屆時做成 StockDetail 匯出視圖）；③策略選股卡片牆＋條件篩選器（等同完整 screener，工程量最大，待前述完工後評估）。
+
+---
+
+## 9. 維修紀錄
+
+- **2026-07-02 桌面捷徑失效（重大事故復原）**：使用者回報桌面捷徑「個股全面審視網.lnk」點開沒反應。調查發現 **2026-06-28 16:21 左右 repo 工作樹 818 個已追蹤檔案被整批刪除**（含 `review-web/`、`engine/`、`web/`、`docs/` 全部；未 commit 所以 git HEAD 完好），且根目錄被一個全新 Vite React 範本覆蓋（`package.json`/`.gitignore`/`package-lock.json` 被改寫、新增 `src/`/`index.html` 等）。捷徑目標 `review-web\tools\open-review.ps1` 因此不存在 → 雙擊無反應。**處置**：範本檔案先移至 `_backup_vite_scaffold_20260702/` 備份，再 `git checkout` 還原全部 818 個刪除檔與 4 個被覆蓋檔；驗證 `open-review.ps1` UTF-8 BOM 完好（`239 187 191`）、SSH 通道實測全綠（`/api/health` 200、engine up、`/review/` 200）。**捷徑恢復可用**。備份資料夾確認無用後可刪。教訓：在 repo 根目錄跑 `npm create vite` 等腳手架會覆蓋專案檔；日後新實驗一律開獨立資料夾。
