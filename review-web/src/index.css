@@ -4,6 +4,8 @@
 
 @layer base {
   body {
-    @apply bg-background text-zinc-100 antialiased;
+    background-color: theme('colors.background');
+    color: theme('colors.zinc.100');
+    @apply antialiased;
   }
 }
