@@ -474,7 +474,7 @@ function buildObsidianPrompt(articleTitle, rawContent, dateDisplay) {
   return systemPrompt + '\n\n' + userPrompt;
 }
 
-function buildObsidianPromptSplit(articleTitle, rawContent, dateDisplay) {
+function buildObsidianPromptSplit(articleTitle, rawContent, dateDisplay, maxContentChars = 8000) {
   const systemPrompt = `你是台股投資分析助手。請將浦惠投顧老王的每日分析文章，整理成繁體中文的 Obsidian Markdown 筆記。
 
 【第一步：段落分組 — 最重要的規則】
@@ -674,7 +674,7 @@ function buildObsidianPromptSplit(articleTitle, rawContent, dateDisplay) {
 日期：${dateDisplay}
 
 文章內容：
-${rawContent.content.substring(0, 8000)}
+${rawContent.content.substring(0, maxContentChars)}
 
 🔗 原文網址：${rawContent.url || ''}
 
@@ -689,19 +689,22 @@ async function summarizeWithGemini(articleTitle, rawContent) {
   const { default: fetch } = await import('node-fetch');
 
   const apiKeys = [GEMINI_API_KEY, GEMINI_API_KEY_2, GEMINI_API_KEY_3].filter(Boolean);
-  const models = ['gemini-2.0-flash', 'gemini-2.0-flash-lite'];
+  // 2026-05-25 起 Google 把 2.0 系列免費層額度降為 0（limit: 0），全數 401/429。
+  // 改用 2.5 系列（免費層仍有額度：flash 250 req/day、flash-lite 1000 req/day）。
+  // v1beta 端點才支援 thinkingConfig；thinkingBudget=0 關掉 thinking，避免吃掉輸出 token。
+  const models = ['gemini-2.5-flash', 'gemini-2.5-flash-lite'];
   let lastError;
 
   for (const apiKey of apiKeys) {
     const keyHint = apiKey.slice(-8);
     for (const model of models) {
-      const url = `https://generativelanguage.googleapis.com/v1/models/${model}:generateContent?key=${apiKey}`;
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
       const r = await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           contents: [{ parts: [{ text: prompt }] }],
-          generationConfig: { maxOutputTokens: 8192, temperature: 0.3 }
+          generationConfig: { maxOutputTokens: 8192, temperature: 0.3, thinkingConfig: { thinkingBudget: 0 } }
         })
       });
       const data = await r.json();
@@ -722,7 +725,10 @@ async function summarizeWithGemini(articleTitle, rawContent) {
 // ── Groq 摘要（Claude CLI 失敗時的中間層，免費額度充足）──────
 async function summarizeWithGroq(articleTitle, rawContent) {
   if (!GROQ_API_KEY) throw new Error('GROQ_API_KEY 未設定');
-  const { systemPrompt, userPrompt } = buildObsidianPromptSplit(articleTitle, rawContent, DATE_DISPLAY);
+  // Groq 免費層 TPM=12000 且把 max_tokens 也計入：system prompt ~4300 字 + 內文 8000 字
+  // + max_tokens 4096 必定超限（2026-07-03 實測 Requested 13068）。內文砍到 3500 字，
+  // 總量約 11400 留安全邊際；Groq 是 fallback 層，摘要略短可接受。
+  const { systemPrompt, userPrompt } = buildObsidianPromptSplit(articleTitle, rawContent, DATE_DISPLAY, 3500);
   const body = {
     model: 'llama-3.3-70b-versatile',
     messages: [
@@ -751,8 +757,13 @@ async function summarizeWithClaudeCli(articleTitle, rawContent) {
   // Windows arg 傳長中文 prompt 不可靠（CreateProcess 32k 限制 + UTF-16），
   // 改用 stdin pipe 把 prompt 餵進去（claude -p 支援 stdin）
   // 必須指向 claude.exe，不可用 'claude'（會被 resolve 到 claude.cmd，stdin 不透傳）
-  const CLAUDE_BIN = process.env.CLAUDE_BIN ||
-    'C:\\Users\\bigsh\\.local\\bin\\claude.exe';
+  // 2026-07-03：本機 CLI 改為 npm 安裝，舊 .local\bin 路徑失效 → 依序找存在的候選路徑
+  const CLAUDE_CANDIDATES = [
+    process.env.CLAUDE_BIN,
+    'C:\\Users\\bigsh\\.local\\bin\\claude.exe',
+    path.join(process.env.APPDATA || '', 'npm', 'node_modules', '@anthropic-ai', 'claude-code', 'bin', 'claude.exe'),
+  ].filter(Boolean);
+  const CLAUDE_BIN = CLAUDE_CANDIDATES.find(p => fs.existsSync(p)) || CLAUDE_CANDIDATES[0];
   const result = spawnSync(CLAUDE_BIN, ['-p'], {
     input: fullPrompt,
     encoding: 'utf8',
