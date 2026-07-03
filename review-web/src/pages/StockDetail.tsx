@@ -1,10 +1,13 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useMemo } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { api } from '../lib/api';
 import type { StockDetail as IStockDetail, StockChips, StockFundamentals, StockNews, Book, OhlcvRow, AgentDecision, DebateParticipant } from '../lib/api';
 import { RefreshCw, BarChart2, TrendingUp, Cpu, Newspaper, DollarSign, AlertTriangle, Users, MessageSquare, Info, AlertCircle, ArrowLeft } from 'lucide-react';
 import { PriceChart } from '../components/PriceChart';
 import { ChipsCharts } from '../components/ChipsCharts';
+import { StockBriefCard } from '../components/StockBriefCard';
+import { buildStockBrief } from '../lib/stockBrief';
+import type { StockBriefInput } from '../lib/stockBrief';
 
 export const StockDetail: React.FC = () => {
   const { code } = useParams<{ code: string }>();
@@ -13,6 +16,7 @@ export const StockDetail: React.FC = () => {
   // Section States
   const [headerBookState, setHeaderBookState] = useState<{ data: Book | null; loading: boolean; error: string | null }>({ data: null, loading: true, error: null });
   const [klineState, setKlineState] = useState<{ data: OhlcvRow[] | null; loading: boolean; error: string | null; type: 'daily' | 'intraday' }>({ data: null, loading: true, error: null, type: 'daily' });
+  const [dailyRows, setDailyRows] = useState<OhlcvRow[] | null>(null);
   const [signalState, setSignalState] = useState<{ data: IStockDetail | null; loading: boolean; error: string | null }>({ data: null, loading: true, error: null });
   const [chipsState, setChipsState] = useState<{ data: StockChips | null; loading: boolean; error: string | null }>({ data: null, loading: true, error: null });
   const [fundamentalsState, setFundamentalsState] = useState<{ data: StockFundamentals | null; loading: boolean; error: string | null }>({ data: null, loading: true, error: null });
@@ -23,6 +27,11 @@ export const StockDetail: React.FC = () => {
   useEffect(() => {
     setFundHoverIdx(null);
   }, [fundTab, activeCode]);
+
+  // 日K快照只在換股時清空（不可綁 fundTab，否則切基本面 tab 會清掉摘要卡動能軸與觀察點）
+  useEffect(() => {
+    setDailyRows(null);
+  }, [activeCode]);
 
   // Refresh & Polling
   const [autoPoll, setAutoPoll] = useState(false);
@@ -546,6 +555,9 @@ export const StockDetail: React.FC = () => {
           rows = res.data || [];
         }
       }
+      if (klineType === 'daily') {
+        setDailyRows(rows);
+      }
       setKlineState({ data: rows, loading: false, error: null, type: klineType });
     } catch (err: any) {
       console.error(`Fetch ${klineType} K-line failed:`, err);
@@ -617,9 +629,9 @@ export const StockDetail: React.FC = () => {
     }
   };
 
-  const fetchAllData = () => {
+  const fetchAllData = (klineType?: 'daily' | 'intraday') => {
     fetchHeaderAndBook();
-    fetchKlineData(klineState.type);
+    fetchKlineData(klineType ?? klineState.type);
     fetchSignal();
     fetchChips();
     fetchFundamentals();
@@ -642,10 +654,21 @@ export const StockDetail: React.FC = () => {
     return () => clearInterval(interval);
   }, [autoPoll, activeCode, useMock]);
 
-  // Initial Fetch
+  // Initial Fetch（換股一律以日K載入，確保摘要卡動能軸/觀察點有日K快照可算；請求數不變）
   useEffect(() => {
-    fetchAllData();
+    fetchAllData('daily');
   }, [activeCode, useMock]);
+
+  // Opt 8: Build Research Brief Input and Memoized StockBrief
+  const briefInput: StockBriefInput = useMemo(() => ({
+    blended: signalState.data?.blended || null,
+    dailyOhlcv: dailyRows,
+    chips: chipsState.data,
+    fundamentals: fundamentalsState.data,
+    news: newsState.data,
+  }), [signalState.data, dailyRows, chipsState.data, fundamentalsState.data, newsState.data]);
+
+  const stockBrief = useMemo(() => buildStockBrief(briefInput), [briefInput]);
 
   // Render Quote Header
   const renderHeader = () => {
@@ -2280,7 +2303,7 @@ export const StockDetail: React.FC = () => {
             </span>
           )}
           <button
-            onClick={fetchAllData}
+            onClick={() => fetchAllData()}
             className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-zinc-800 text-xs hover:bg-zinc-700 text-zinc-300 font-semibold"
           >
             <RefreshCw className="w-3.5 h-3.5" />
@@ -2291,6 +2314,14 @@ export const StockDetail: React.FC = () => {
 
       {/* Quote Header */}
       {renderHeader()}
+
+      {/* Stock Research Brief Card (Opt 8) */}
+      <StockBriefCard
+        brief={stockBrief}
+        loading={signalState.loading && !signalState.data}
+        error={signalState.error}
+        onRetry={() => fetchAllData()}
+      />
 
       <div className="space-y-6">
         {/* Main Section: Chart on Left, Signals/OrderBook on Right */}
