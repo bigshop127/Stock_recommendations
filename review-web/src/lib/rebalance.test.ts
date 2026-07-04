@@ -273,4 +273,76 @@ describe('computeRebalance', () => {
     expect(res.upper_band).toBeCloseTo(1.4); // 預設 abs ±0.1
     expect(res.lower_band).toBeCloseTo(1.2);
   });
+
+  // ===== 增修B：平均成本 → 未實現損益 =====
+
+  it('computes unrealized profit when price > avg_cost', () => {
+    const res = computeRebalance({
+      shares: 1000,
+      price: 200,
+      avg_cost: 150,
+      cash: 100000,
+      target_beta: 1.3,
+      tolerance_mode: 'abs',
+      threshold_pct: 10,
+      threshold_abs: 0.1,
+      etf_beta: 2.0,
+    });
+    expect(res.cost_basis).toBe(150000); // 1000 × 150
+    expect(res.unrealized_pnl).toBe(50000); // 200000 − 150000
+    expect(res.unrealized_pnl_pct).toBeCloseTo(0.3333, 3);
+  });
+
+  it('computes unrealized loss when price < avg_cost', () => {
+    const res = computeRebalance({
+      shares: 1000,
+      price: 120,
+      avg_cost: 150,
+      cash: 100000,
+      target_beta: 1.3,
+      tolerance_mode: 'abs',
+      threshold_pct: 10,
+      threshold_abs: 0.1,
+      etf_beta: 2.0,
+    });
+    expect(res.cost_basis).toBe(150000);
+    expect(res.unrealized_pnl).toBe(-30000); // 120000 − 150000
+    expect(res.unrealized_pnl_pct).toBeCloseTo(-0.2, 3);
+  });
+
+  it('P&L fields are null when avg_cost not provided (does not affect rebalance)', () => {
+    const res = computeRebalance({
+      shares: 6000,
+      price: 100,
+      cash: 400000,
+      target_beta: 1.2,
+      tolerance_mode: 'pct',
+      threshold_pct: 10,
+      threshold_abs: 0.1,
+      etf_beta: 2.0,
+    } as any);
+    expect(res.cost_basis).toBeNull();
+    expect(res.unrealized_pnl).toBeNull();
+    expect(res.unrealized_pnl_pct).toBeNull();
+    // 再平衡計算不受影響
+    expect(res.current_beta).toBe(1.2);
+    expect(res.status).toBe('normal');
+  });
+
+  it('avg_cost with zero shares still yields null P&L (empty guard)', () => {
+    const res = computeRebalance({
+      shares: 0,
+      price: 0,
+      avg_cost: 150,
+      cash: 0,
+      target_beta: 1.3,
+      tolerance_mode: 'abs',
+      threshold_pct: 10,
+      threshold_abs: 0.1,
+      etf_beta: 2.0,
+    });
+    expect(res.status).toBe('empty');
+    expect(res.cost_basis).toBeNull();
+    expect(res.unrealized_pnl).toBeNull();
+  });
 });

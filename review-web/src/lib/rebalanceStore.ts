@@ -4,6 +4,7 @@ const KEY = `review:rebalance:${VERSION}`;
 export interface RebalanceConfig {
   shares: number;
   price: number;
+  avg_cost: number;              // 每股平均成本，預設 0（純顯示未實現損益）
   cash: number;
   target_beta: number;           // 預設 1.3
   tolerance_mode: 'pct' | 'abs'; // 容忍口徑，預設 'abs'
@@ -15,6 +16,7 @@ export interface RebalanceConfig {
 const SEED_CONFIG: RebalanceConfig = {
   shares: 0,
   price: 0,
+  avg_cost: 0,
   cash: 0,
   target_beta: 1.3,
   tolerance_mode: 'abs',
@@ -51,6 +53,7 @@ export function getRebalanceConfig(): RebalanceConfig {
       return {
         shares: Math.max(0, safeNumber(parsed.shares, SEED_CONFIG.shares)),
         price: Math.max(0, safeNumber(parsed.price, SEED_CONFIG.price)),
+        avg_cost: Math.max(0, safeNumber(parsed.avg_cost, SEED_CONFIG.avg_cost)),
         cash: Math.max(0, safeNumber(parsed.cash, SEED_CONFIG.cash)),
         target_beta: safeNumber(parsed.target_beta, SEED_CONFIG.target_beta),
         tolerance_mode: safeMode(parsed.tolerance_mode),
@@ -70,6 +73,7 @@ export function saveRebalanceConfig(cfg: RebalanceConfig): void {
   const sanitized: RebalanceConfig = {
     shares: Math.max(0, safeNumber(cfg.shares, 0)),
     price: Math.max(0, safeNumber(cfg.price, 0)),
+    avg_cost: Math.max(0, safeNumber(cfg.avg_cost, 0)),
     cash: Math.max(0, safeNumber(cfg.cash, 0)),
     target_beta: safeNumber(cfg.target_beta, 1.3),
     tolerance_mode: safeMode(cfg.tolerance_mode),

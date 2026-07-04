@@ -1,7 +1,10 @@
-import React, { useState, useEffect, useMemo } from 'react';
-import { SlidersHorizontal, AlertTriangle, CheckCircle2, Info, ArrowRightLeft, ShieldAlert } from 'lucide-react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
+import { SlidersHorizontal, AlertTriangle, CheckCircle2, Info, ArrowRightLeft, ShieldAlert, RefreshCw, Loader2 } from 'lucide-react';
 import { getRebalanceConfig, saveRebalanceConfig, subscribeRebalance, type RebalanceConfig } from '../lib/rebalanceStore';
 import { computeRebalance, type RebalanceResult } from '../lib/rebalance';
+import { api } from '../lib/api';
+
+const ETF_CODE = '00631L';
 
 // 半圓 SVG 儀表元件
 const BetaGauge: React.FC<{
@@ -126,8 +129,16 @@ export function Rebalance() {
   // 本地表單輸入暫存 (允許使用者打字未完，如 "12.")
   const [sharesStr, setSharesStr] = useState<string>(() => String(config.shares || ''));
   const [priceStr, setPriceStr] = useState<string>(() => String(config.price || ''));
+  const [avgCostStr, setAvgCostStr] = useState<string>(() => String(config.avg_cost || ''));
   const [cashStr, setCashStr] = useState<string>(() => String(config.cash || ''));
   const [showAdvanced, setShowAdvanced] = useState(false);
+
+  // 自動抓取最新收盤價的狀態
+  const [priceFetch, setPriceFetch] = useState<{ loading: boolean; error: string | null; date: string | null }>({
+    loading: false,
+    error: null,
+    date: null,
+  });
 
   useEffect(() => {
     const unsub = subscribeRebalance(() => {
@@ -141,8 +152,40 @@ export function Rebalance() {
   useEffect(() => {
     setSharesStr(config.shares ? String(config.shares) : '');
     setPriceStr(config.price ? String(config.price) : '');
+    setAvgCostStr(config.avg_cost ? String(config.avg_cost) : '');
     setCashStr(config.cash ? String(config.cash) : '');
-  }, [config.shares, config.price, config.cash]);
+  }, [config.shares, config.price, config.avg_cost, config.cash]);
+
+  // 抓取 00631L 最新收盤價（未還原原始價；市值＝股數×實際成交價，故不用還原）
+  const fetchLatestPrice = async () => {
+    setPriceFetch((s) => ({ ...s, loading: true, error: null }));
+    try {
+      const res = await api.ohlcv(ETF_CODE);
+      const rows = res?.data ?? [];
+      if (rows.length === 0) throw new Error('查無報價資料');
+      const latest = rows.reduce((a, b) => (b.date > a.date ? b : a));
+      const close = latest.close;
+      if (!Number.isFinite(close) || close <= 0) throw new Error('收盤價無效');
+      setPriceStr(String(close));
+      const next = { ...getRebalanceConfig(), price: close };
+      setConfig(next);
+      saveRebalanceConfig(next);
+      setPriceFetch({ loading: false, error: null, date: latest.date });
+    } catch (e) {
+      setPriceFetch({ loading: false, error: e instanceof Error ? e.message : '抓取失敗', date: null });
+    }
+  };
+
+  // 首次載入若尚未有現價，自動抓一次最新收盤價
+  const didAutoFetch = useRef(false);
+  useEffect(() => {
+    if (didAutoFetch.current) return;
+    didAutoFetch.current = true;
+    if (getRebalanceConfig().price <= 0) {
+      fetchLatestPrice();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // 即時計算結果
   const result: RebalanceResult = useMemo(() => {
@@ -166,6 +209,14 @@ export function Rebalance() {
     setPriceStr(val);
     const parsed = parseFloat(val);
     updateConfig({ price: Number.isFinite(parsed) && parsed >= 0 ? parsed : 0 });
+    // 手動改價 → 清掉「自動收盤」標記，避免誤導日期
+    setPriceFetch((s) => ({ ...s, date: null, error: null }));
+  };
+
+  const handleAvgCostChange = (val: string) => {
+    setAvgCostStr(val);
+    const parsed = parseFloat(val);
+    updateConfig({ avg_cost: Number.isFinite(parsed) && parsed >= 0 ? parsed : 0 });
   };
 
   const handleCashChange = (val: string) => {
@@ -453,6 +504,32 @@ export function Rebalance() {
                 {result.action_label}
               </div>
 
+              {/* 顯眼行動數字：目前配置要搬多少錢回目標 β */}
+              {result.status !== 'empty' && result.etf_value_delta !== null && Math.abs(result.etf_value_delta) >= 1 && (
+                <div
+                  className={`rounded-lg px-4 py-3 text-center ${
+                    result.etf_value_delta > 0
+                      ? 'bg-bear/10 border border-bear/25'
+                      : 'bg-bull/10 border border-bull/25'
+                  }`}
+                >
+                  <div className="text-[11px] text-zinc-400">
+                    {result.etf_value_delta > 0 ? '應買進 00631L' : '應賣出 00631L'}
+                  </div>
+                  <div className={`text-2xl font-extrabold font-mono tracking-tight mt-0.5 ${result.etf_value_delta > 0 ? 'text-bear' : 'text-bull'}`}>
+                    ${Math.abs(Math.round(result.etf_value_delta)).toLocaleString()}
+                  </div>
+                  {result.trade_shares !== null && (
+                    <div className="text-[11px] text-zinc-500 mt-0.5">
+                      約 {Math.abs(result.trade_shares).toLocaleString()} 股
+                      {result.etf_value_delta > 0
+                        ? '（動用閒置現金）'
+                        : '（轉回現金）'}
+                    </div>
+                  )}
+                </div>
+              )}
+
               {/* 精確達標試算 (永遠顯示) */}
               <div className="pt-2 border-t border-zinc-800/80 text-xs space-y-1.5 text-zinc-300">
                 <div className="text-zinc-400 font-medium">🎯 若要精確重置至目標 β ({config.target_beta.toFixed(2)}X)：</div>
@@ -501,10 +578,10 @@ export function Rebalance() {
             <span className="w-2 h-2 rounded-full bg-blue-500" />
             持倉數據輸入（00631L ＋ 現金）
           </span>
-          <span className="text-xs text-zinc-500 font-normal">手動填寫現價，零後端安全儲存</span>
+          <span className="text-xs text-zinc-500 font-normal">現價可自動抓取或手動覆寫，零後端安全儲存</span>
         </h2>
 
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
           {/* 00631L 股數 */}
           <div className="space-y-1.5">
             <label className="text-xs font-medium text-zinc-300">00631L 持有股數</label>
@@ -522,9 +599,42 @@ export function Rebalance() {
             </div>
           </div>
 
-          {/* 00631L 現價 */}
+          {/* 00631L 平均成本 */}
           <div className="space-y-1.5">
-            <label className="text-xs font-medium text-zinc-300">00631L 手動現價 (TWD)</label>
+            <label className="text-xs font-medium text-zinc-300">00631L 平均成本 (TWD)</label>
+            <div className="relative">
+              <input
+                type="number"
+                min="0"
+                step="0.1"
+                placeholder="例如: 150.0"
+                value={avgCostStr}
+                onChange={(e) => handleAvgCostChange(e.target.value)}
+                className="w-full px-3 py-2 bg-zinc-950 border border-zinc-800 rounded-lg font-mono text-sm text-zinc-100 focus:outline-none focus:border-primary pr-10"
+              />
+              <span className="absolute right-3 top-2.5 text-xs text-zinc-500 font-mono">元</span>
+            </div>
+            <p className="text-[10px] text-zinc-600 leading-tight">選填，用來算未實現損益，不影響再平衡</p>
+          </div>
+
+          {/* 00631L 現價（可自動抓取） */}
+          <div className="space-y-1.5">
+            <div className="flex items-center justify-between">
+              <label className="text-xs font-medium text-zinc-300">00631L 現價 (TWD)</label>
+              <button
+                onClick={fetchLatestPrice}
+                disabled={priceFetch.loading}
+                className="text-[11px] text-primary hover:text-primary/80 disabled:text-zinc-600 flex items-center gap-1 transition-colors"
+                title="抓取最新收盤價"
+              >
+                {priceFetch.loading ? (
+                  <Loader2 className="w-3 h-3 animate-spin" />
+                ) : (
+                  <RefreshCw className="w-3 h-3" />
+                )}
+                {priceFetch.loading ? '抓取中' : '抓最新價'}
+              </button>
+            </div>
             <div className="relative">
               <input
                 type="number"
@@ -533,10 +643,19 @@ export function Rebalance() {
                 placeholder="例如: 185.5"
                 value={priceStr}
                 onChange={(e) => handlePriceChange(e.target.value)}
-                className="w-full px-3 py-2 bg-zinc-950 border border-zinc-800 rounded-lg font-mono text-sm text-zinc-100 focus:outline-none focus:border-primary pr-14"
+                className="w-full px-3 py-2 bg-zinc-950 border border-zinc-800 rounded-lg font-mono text-sm text-zinc-100 focus:outline-none focus:border-primary pr-10"
               />
               <span className="absolute right-3 top-2.5 text-xs text-zinc-500 font-mono">元</span>
             </div>
+            <p className="text-[10px] leading-tight h-3">
+              {priceFetch.error ? (
+                <span className="text-amber-400">抓取失敗：{priceFetch.error}（可手動輸入）</span>
+              ) : priceFetch.date ? (
+                <span className="text-zinc-600">自動帶入 {priceFetch.date} 收盤價</span>
+              ) : (
+                <span className="text-zinc-600">&nbsp;</span>
+              )}
+            </p>
           </div>
 
           {/* 現金 TWD */}
@@ -550,7 +669,7 @@ export function Rebalance() {
                 placeholder="例如: 400000"
                 value={cashStr}
                 onChange={(e) => handleCashChange(e.target.value)}
-                className="w-full px-3 py-2 bg-zinc-950 border border-zinc-800 rounded-lg font-mono text-sm text-zinc-100 focus:outline-none focus:border-primary pr-14"
+                className="w-full px-3 py-2 bg-zinc-950 border border-zinc-800 rounded-lg font-mono text-sm text-zinc-100 focus:outline-none focus:border-primary pr-10"
               />
               <span className="absolute right-3 top-2.5 text-xs text-zinc-500 font-mono">元</span>
             </div>
@@ -558,12 +677,27 @@ export function Rebalance() {
         </div>
 
         {/* 資產試算小結 */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-3 border-t border-zinc-800/80">
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 pt-3 border-t border-zinc-800/80">
           <div className="flex justify-between items-center px-4 py-2.5 bg-zinc-950/60 rounded-lg border border-zinc-800/60">
             <span className="text-xs text-zinc-400">00631L 估計總市值</span>
             <span className="font-mono font-bold text-blue-400 text-base">
               ${Math.round(result.etf_value).toLocaleString()}
             </span>
+          </div>
+          <div className="flex justify-between items-center px-4 py-2.5 bg-zinc-950/60 rounded-lg border border-zinc-800/60">
+            <span className="text-xs text-zinc-400">未實現損益</span>
+            {result.unrealized_pnl !== null ? (
+              <span className={`font-mono font-bold text-base ${result.unrealized_pnl >= 0 ? 'text-bull' : 'text-bear'}`}>
+                {result.unrealized_pnl >= 0 ? '+' : '−'}${Math.abs(Math.round(result.unrealized_pnl)).toLocaleString()}
+                {result.unrealized_pnl_pct !== null && (
+                  <span className="text-xs font-normal ml-1">
+                    ({result.unrealized_pnl_pct >= 0 ? '+' : '−'}{Math.abs(result.unrealized_pnl_pct * 100).toFixed(1)}%)
+                  </span>
+                )}
+              </span>
+            ) : (
+              <span className="font-mono text-zinc-600 text-sm">填平均成本</span>
+            )}
           </div>
           <div className="flex justify-between items-center px-4 py-2.5 bg-zinc-950/60 rounded-lg border border-zinc-800/60">
             <span className="text-xs text-zinc-400">投組總資產現值</span>
@@ -580,7 +714,7 @@ export function Rebalance() {
         <div>
           <strong className="text-zinc-400 font-medium">系統聲明與警語：</strong>
           <p className="mt-0.5 leading-relaxed">
-            本工具為個人資產配置輔助試算，00631L 現價由你手動輸入、不抓即時行情；投組 Beta 以 00631L β=2.0、現金 β=0 計算；非投資建議。
+            本工具為個人資產配置輔助試算。00631L 現價可「抓最新價」自動帶入<strong className="text-zinc-400">最新收盤價</strong>（非盤中即時報價，經 <span className="font-mono">/api</span> 讀取，可手動覆寫）；未實現損益依你填的平均成本計算，僅供參考、不影響再平衡；投組 Beta 以 00631L β=2.0、現金 β=0 計算；持倉資料僅存本機瀏覽器，不上傳。非投資建議。
           </p>
         </div>
       </div>

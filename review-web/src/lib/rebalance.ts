@@ -1,6 +1,7 @@
 export interface RebalanceInput {
   shares: number;        // 00631L 持有股數（≥0）
-  price: number;         // 00631L 現價 TWD（手動，>0 才能算交易股數）
+  price: number;         // 00631L 現價 TWD（手動或自動抓取；>0 才能算交易股數）
+  avg_cost?: number;     // 00631L 每股平均成本 TWD（選填，≥0；純顯示未實現損益、不影響再平衡計算）
   cash: number;          // 現金 TWD（≥0）
   target_beta: number;   // 目標投組 β（滑桿，預設 1.3）
   tolerance_mode: 'pct' | 'abs'; // 容忍口徑：百分比 / 絕對 β（預設 'abs'）
@@ -12,6 +13,10 @@ export interface RebalanceInput {
 export interface RebalanceResult {
   etf_value: number;            // shares × price
   total_value: number;          // etf_value + cash
+  // 未實現損益（純顯示；avg_cost≤0 或 shares≤0 → null）
+  cost_basis: number | null;        // shares × avg_cost
+  unrealized_pnl: number | null;    // etf_value − cost_basis（+獲利 −虧損）
+  unrealized_pnl_pct: number | null; // unrealized_pnl / cost_basis
   etf_weight: number | null;    // etf_value / total_value；total≤0 → null
   cash_weight: number | null;
   current_beta: number | null;  // etf_weight × etf_beta；total≤0 → null
@@ -57,6 +62,7 @@ function safeNum(val: unknown, fallback: number = 0): number {
 export function computeRebalance(input: RebalanceInput): RebalanceResult {
   const shares = Math.max(0, safeNum(input?.shares, 0));
   const price = Math.max(0, safeNum(input?.price, 0));
+  const avg_cost = Math.max(0, safeNum(input?.avg_cost, 0));
   const cash = Math.max(0, safeNum(input?.cash, 0));
   const target_beta = safeNum(input?.target_beta, 1.3);
   const tolerance_mode: 'pct' | 'abs' = input?.tolerance_mode === 'pct' ? 'pct' : 'abs';
@@ -66,6 +72,16 @@ export function computeRebalance(input: RebalanceInput): RebalanceResult {
 
   const etf_value = shares * price;
   const total_value = etf_value + cash;
+
+  // 未實現損益（純顯示，不參與再平衡計算）：有股數且有成本才算
+  let cost_basis: number | null = null;
+  let unrealized_pnl: number | null = null;
+  let unrealized_pnl_pct: number | null = null;
+  if (shares > 0 && avg_cost > 0) {
+    cost_basis = shares * avg_cost;
+    unrealized_pnl = etf_value - cost_basis;
+    unrealized_pnl_pct = cost_basis > 0 ? unrealized_pnl / cost_basis : null;
+  }
 
   // 算 target配比
   let target_etf_weight: number | null = null;
@@ -87,6 +103,9 @@ export function computeRebalance(input: RebalanceInput): RebalanceResult {
     return {
       etf_value: 0,
       total_value: 0,
+      cost_basis,
+      unrealized_pnl,
+      unrealized_pnl_pct,
       etf_weight: null,
       cash_weight: null,
       current_beta: null,
@@ -185,6 +204,9 @@ export function computeRebalance(input: RebalanceInput): RebalanceResult {
   return {
     etf_value,
     total_value,
+    cost_basis,
+    unrealized_pnl,
+    unrealized_pnl_pct,
     etf_weight,
     cash_weight,
     current_beta,
