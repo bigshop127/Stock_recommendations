@@ -86,3 +86,8 @@ data/engine_cache/
 # 引擎本地數據快取（parquet，可重建，不進 repo）
 engine/data_cache/
 # .env 已由上方 Secrets 區塊涵蓋（.env 任何目錄皆 ignore）
+
+# === Added 2026-07-04 (opt10 再平衡 Email 告警) ===
+# 個人持倉設定與告警狀態（含財務數字，不進 repo；範本 scripts/rebalance_holdings.example.json 才進版控）
+data/rebalance_holdings.json
+data/rebalance_alert_state.json

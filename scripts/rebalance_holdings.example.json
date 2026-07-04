@@ -1,0 +1,11 @@
+{
+  "_readme": "複製本檔為 data/rebalance_holdings.json（該路徑已 gitignore、不進版控）後填入你的實際持倉。rebalance_alert.cjs 每日讀它。tolerance_mode: 'abs'=絕對±β（threshold_abs），'pct'=百分比±%（threshold_pct）。etf_beta 通常維持 2.0。",
+  "shares": 19000,
+  "avg_cost": 35.37,
+  "cash": 1000000,
+  "target_beta": 1.3,
+  "tolerance_mode": "abs",
+  "threshold_abs": 0.1,
+  "threshold_pct": 10,
+  "etf_beta": 2.0
+}
