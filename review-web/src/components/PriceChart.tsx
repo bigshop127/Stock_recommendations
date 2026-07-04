@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import {
   createChart,
   ColorType,
+  PriceScaleMode,
   type IChartApi,
   type CandlestickData,
   type HistogramData,
@@ -52,15 +53,16 @@ export const PriceChart: React.FC<PriceChartProps> = ({ rows, isIntraday, height
         return JSON.parse(saved);
       } catch (_) {}
     }
+    // 精簡預設：只留 MA20/MA60 + 成交量 + MACD，其餘要看再自己勾（僅影響尚無存檔的新使用者）
     return {
-      ma5: true,
+      ma5: false,
       ma10: false,
       ma20: true,
       ma60: true,
       bbands: false,
       vol: true,
-      vma5: true,
-      vma20: true,
+      vma5: false,
+      vma20: false,
       macd: true,
       kd: false,
       rsi: false,
@@ -71,6 +73,18 @@ export const PriceChart: React.FC<PriceChartProps> = ({ rows, isIntraday, height
     setSettings((prev: IndicatorSettings) => {
       const next = { ...prev, [key]: !prev[key] };
       localStorage.setItem('technical_indicator_settings', JSON.stringify(next));
+      return next;
+    });
+  };
+
+  // 價格軸對數座標切換（十倍漲幅下線性座標會把早期壓成扁線）
+  const [logScale, setLogScale] = useState<boolean>(() => {
+    return localStorage.getItem('technical_chart_logscale') === '1';
+  });
+  const toggleLogScale = () => {
+    setLogScale((prev) => {
+      const next = !prev;
+      localStorage.setItem('technical_chart_logscale', next ? '1' : '0');
       return next;
     });
   };
@@ -173,6 +187,7 @@ export const PriceChart: React.FC<PriceChartProps> = ({ rows, isIntraday, height
           borderColor: '#3f3f46',
           timeVisible: isIntraday,
           secondsVisible: false,
+          rightOffset: 6, // 最後一根 K 棒與右軸間留白，不再貼死價格標籤
         },
         crosshair: { mode: 0 },
         handleScale: true,
@@ -182,6 +197,10 @@ export const PriceChart: React.FC<PriceChartProps> = ({ rows, isIntraday, height
 
     // --- Create Main Chart ---
     const mainChart = createChartInstance(mainEl, height);
+    // 對數座標只套主圖價格軸（成交量在獨立 'vol' scale、不受影響；副圖亦維持線性）
+    mainChart.priceScale('right').applyOptions({
+      mode: logScale ? PriceScaleMode.Logarithmic : PriceScaleMode.Normal,
+    });
 
     const candle = mainChart.addCandlestickSeries({
       upColor: '#ef4444',
@@ -204,24 +223,26 @@ export const PriceChart: React.FC<PriceChartProps> = ({ rows, isIntraday, height
     candle.setData(candleData);
 
     // Add main chart indicator series
+    // 疊加線一律關右軸最後值標籤與橫貫價格線，改由左上動態圖例/游標顯示數值
+    const overlayLineOpts = { lastValueVisible: false, priceLineVisible: false };
     let ma5Series: any = null;
     if (settings.ma5 && ma5Data.length > 0) {
-      ma5Series = mainChart.addLineSeries({ color: '#a855f7', lineWidth: 2, title: 'MA5' });
+      ma5Series = mainChart.addLineSeries({ color: '#a855f7', lineWidth: 2, title: 'MA5', ...overlayLineOpts });
       ma5Series.setData(ma5Data);
     }
     let ma10Series: any = null;
     if (settings.ma10 && ma10Data.length > 0) {
-      ma10Series = mainChart.addLineSeries({ color: '#ec4899', lineWidth: 2, title: 'MA10' });
+      ma10Series = mainChart.addLineSeries({ color: '#ec4899', lineWidth: 2, title: 'MA10', ...overlayLineOpts });
       ma10Series.setData(ma10Data);
     }
     let ma20Series: any = null;
     if (settings.ma20 && ma20Data.length > 0) {
-      ma20Series = mainChart.addLineSeries({ color: '#eab308', lineWidth: 2, title: 'MA20' });
+      ma20Series = mainChart.addLineSeries({ color: '#eab308', lineWidth: 2, title: 'MA20', ...overlayLineOpts });
       ma20Series.setData(ma20Data);
     }
     let ma60Series: any = null;
     if (settings.ma60 && ma60Data.length > 0) {
-      ma60Series = mainChart.addLineSeries({ color: '#3b82f6', lineWidth: 2, title: 'MA60' });
+      ma60Series = mainChart.addLineSeries({ color: '#3b82f6', lineWidth: 2, title: 'MA60', ...overlayLineOpts });
       ma60Series.setData(ma60Data);
     }
 
@@ -229,12 +250,12 @@ export const PriceChart: React.FC<PriceChartProps> = ({ rows, isIntraday, height
     let bbMiddleSeries: any = null;
     let bbLowerSeries: any = null;
     if (settings.bbands && bbandsData.length > 0) {
-      bbUpperSeries = mainChart.addLineSeries({ color: '#64748b', lineWidth: 1, lineStyle: 2, title: 'BB Upper' });
+      bbUpperSeries = mainChart.addLineSeries({ color: '#64748b', lineWidth: 1, lineStyle: 2, title: 'BB Upper', ...overlayLineOpts });
       bbUpperSeries.setData(bbandsData.map(d => ({ time: d.time, value: d.upper })));
       // Use dotted style for BB Middle to resolve visual overlap with MA20
-      bbMiddleSeries = mainChart.addLineSeries({ color: '#64748b', lineWidth: 1, lineStyle: 3, title: 'BB Middle' });
+      bbMiddleSeries = mainChart.addLineSeries({ color: '#64748b', lineWidth: 1, lineStyle: 3, title: 'BB Middle', ...overlayLineOpts });
       bbMiddleSeries.setData(bbandsData.map(d => ({ time: d.time, value: d.middle })));
-      bbLowerSeries = mainChart.addLineSeries({ color: '#64748b', lineWidth: 1, lineStyle: 2, title: 'BB Lower' });
+      bbLowerSeries = mainChart.addLineSeries({ color: '#64748b', lineWidth: 1, lineStyle: 2, title: 'BB Lower', ...overlayLineOpts });
       bbLowerSeries.setData(bbandsData.map(d => ({ time: d.time, value: d.lower })));
     }
 
@@ -539,7 +560,7 @@ export const PriceChart: React.FC<PriceChartProps> = ({ rows, isIntraday, height
       ro.disconnect();
       activeCharts.forEach((c) => c.remove());
     };
-  }, [rows, isIntraday, height, settings]);
+  }, [rows, isIntraday, height, settings, logScale]);
 
   return (
     <div ref={containerRef} className="w-full flex flex-col gap-2">
@@ -655,6 +676,22 @@ export const PriceChart: React.FC<PriceChartProps> = ({ rows, isIntraday, height
           />
           RSI
         </label>
+
+        <span className="text-zinc-700">|</span>
+
+        {/* 價格軸線性/對數切換 */}
+        <button
+          type="button"
+          onClick={toggleLogScale}
+          title="切換價格軸線性 / 對數座標（十倍漲幅下對數更易讀）"
+          className={`px-2 py-0.5 rounded border text-[11px] font-medium transition-colors ${
+            logScale
+              ? 'bg-primary/20 border-primary/60 text-primary'
+              : 'bg-zinc-950 border-zinc-700 text-zinc-400 hover:text-zinc-200'
+          }`}
+        >
+          對數座標{logScale ? ' ✓' : ''}
+        </button>
       </div>
 
       {/* Candlestick Main Chart Container */}
