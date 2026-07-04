@@ -9,6 +9,7 @@ const CapitalTide = lazy(() => import('./pages/CapitalTide').then(m => ({ defaul
 const SectorHeatmap = lazy(() => import('./pages/SectorHeatmap').then(m => ({ default: m.SectorHeatmap })));
 const SectorDetail = lazy(() => import('./pages/SectorDetail').then(m => ({ default: m.SectorDetail })));
 const Rebalance = lazy(() => import('./pages/Rebalance').then(m => ({ default: m.Rebalance })));
+const CrashBacktest = lazy(() => import('./pages/CrashBacktest').then(m => ({ default: m.CrashBacktest })));
 
 function App() {
   return (
@@ -30,6 +31,7 @@ function App() {
             <Route path="/heatmap" element={<SectorHeatmap />} />
             <Route path="/heatmap/sector/:name" element={<SectorDetail />} />
             <Route path="/rebalance" element={<Rebalance />} />
+            <Route path="/backtest" element={<CrashBacktest />} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
         </Suspense>

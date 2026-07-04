@@ -16,7 +16,8 @@ import {
   MoreHorizontal,
   Waves,
   LayoutGrid,
-  SlidersHorizontal
+  SlidersHorizontal,
+  FlaskConical
 } from 'lucide-react';
 import { api } from '../lib/api';
 import type { Health } from '../lib/api';
@@ -178,6 +179,19 @@ export const Layout: React.FC<LayoutProps> = ({ children }) => {
             >
               <SlidersHorizontal className="w-5 h-5" />
               再平衡計算機
+            </Link>
+
+            {/* 崩盤策略回測 */}
+            <Link
+              to="/backtest"
+              className={`flex items-center gap-3 px-4 py-3 rounded-lg text-sm font-medium transition-all duration-200 ${
+                location.pathname === '/backtest'
+                  ? 'bg-primary/10 text-primary border border-primary/20 shadow-sm'
+                  : 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800/40 border border-transparent'
+              }`}
+            >
+              <FlaskConical className="w-5 h-5" />
+              崩盤策略回測
             </Link>
 
             {/* 個股多維度審查 折疊選單 */}
@@ -413,6 +427,8 @@ export const Layout: React.FC<LayoutProps> = ({ children }) => {
               ? '產業熱力圖'
               : location.pathname === '/rebalance'
               ? '再平衡計算機'
+              : location.pathname === '/backtest'
+              ? '崩盤策略回測實驗室'
               : location.pathname.startsWith('/heatmap/sector/')
               ? `產業熱力圖 · ${(() => { try { return decodeURIComponent(location.pathname.replace('/heatmap/sector/', '')); } catch { return location.pathname.replace('/heatmap/sector/', ''); } })()}`
               : location.pathname.startsWith('/stock/')
