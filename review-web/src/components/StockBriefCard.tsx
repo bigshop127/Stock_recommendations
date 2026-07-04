@@ -35,7 +35,13 @@ export const StockBriefCard: React.FC<StockBriefCardProps> = ({ brief, loading, 
     );
   }
 
-  if (error) {
+  const { overall, action, stateLabel, headline, forces, plus, minus, checkpoints, invalidation, asOf, degraded } = brief;
+
+  // 訊號失敗不該讓整卡全滅：動能/基本面/觀察點來自 K線與基本面，與 blended 無關。
+  // 只有連這些可用區塊都算不出來時，才走整卡硬錯誤；否則降級顯示（規格 §6：blended 缺 → 灰態＋重試）。
+  const hasUsable = forces.some(f => f.score !== null) || checkpoints.length > 0 || plus.length > 0 || minus.length > 0;
+
+  if (error && !hasUsable) {
     return (
       <div className="w-full bg-red-950/20 border border-red-900/40 rounded-xl p-6 mb-6 text-zinc-300">
         <div className="flex items-center justify-between">
@@ -55,8 +61,6 @@ export const StockBriefCard: React.FC<StockBriefCardProps> = ({ brief, loading, 
       </div>
     );
   }
-
-  const { overall, action, stateLabel, headline, forces, plus, minus, checkpoints, invalidation, asOf, degraded } = brief;
 
   // Radar Chart Calculations
   const cx = 140;
@@ -128,11 +132,23 @@ export const StockBriefCard: React.FC<StockBriefCardProps> = ({ brief, loading, 
 
       {!collapsed && (
         <>
-          {/* Degraded Banner */}
-          {degraded && (
+          {/* Degraded / Signal-error Banner（規格 §6：blended 缺 → 灰態＋重試） */}
+          {(degraded || error) && (
             <div className="bg-amber-950/30 border border-amber-800/40 rounded-lg p-3 mb-4 text-amber-300 text-xs flex items-center gap-2">
               <AlertCircle className="w-4 h-4 shrink-0 text-amber-400" />
-              <span>訊號資料不足或無法取得，摘要卡呈現降級狀態。</span>
+              <span>
+                {error
+                  ? '綜合訊號暫時無法取得（上游限流／逾時），以下為可計算之區塊（動能／基本面／觀察點）。'
+                  : '訊號資料不足或無法取得，摘要卡呈現降級狀態。'}
+              </span>
+              {onRetry && (
+                <button
+                  onClick={onRetry}
+                  className="ml-auto shrink-0 flex items-center gap-1 bg-amber-900/40 hover:bg-amber-800/50 text-amber-200 px-2.5 py-1 rounded border border-amber-700/50 transition-colors"
+                >
+                  <RefreshCw className="w-3.5 h-3.5" /> 重試
+                </button>
+              )}
             </div>
           )}
 

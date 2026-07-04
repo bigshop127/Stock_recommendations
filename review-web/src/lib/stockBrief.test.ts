@@ -150,6 +150,22 @@ describe('buildStockBrief', () => {
     expect(brief.overall).toBeNull();
     expect(brief.stateLabel).toBe('資料不足');
     expect(brief.headline).toBe('訊號資料不足，僅顯示可用區塊');
+
+    // 降級時卡片仍須有可用區塊可顯示（StockBriefCard 的 hasUsable 契約）：
+    // 動能/基本面來自 K線與基本面、與 blended 無關 → 仍應算得出；觀察點同理。
+    expect(brief.forces.find(f => f.key === 'momentum')?.score).not.toBeNull();
+    expect(brief.forces.find(f => f.key === 'fundamental')?.score).not.toBeNull();
+    // 但取自 blended.factors 的三軸此時應為 null（不得用 50 假裝中性）
+    expect(brief.forces.find(f => f.key === 'technical')?.score).toBeNull();
+    expect(brief.forces.find(f => f.key === 'chips')?.score).toBeNull();
+    expect(brief.forces.find(f => f.key === 'sentiment')?.score).toBeNull();
+    expect(brief.checkpoints.length).toBeGreaterThan(0);
+    const hasUsable =
+      brief.forces.some(f => f.score !== null) ||
+      brief.checkpoints.length > 0 ||
+      brief.plus.length > 0 ||
+      brief.minus.length > 0;
+    expect(hasUsable).toBe(true);
   });
 
   it('handles missing input sources gracefully without crashing or emitting NaN', () => {
