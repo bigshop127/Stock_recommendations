@@ -544,7 +544,10 @@ export const PriceChart: React.FC<PriceChartProps> = ({ rows, isIntraday, height
       });
     });
 
-    mainChart.timeScale().fitContent();
+    // 用固定 barSpacing 取代 fitContent：K 棒有較寬間距、顯示近期，歷史往左捲/滾輪縮放
+    // （fitContent 會把全部資料壓進畫面寬度，資料越長棒子越細；固定間距較好看）
+    mainChart.timeScale().applyOptions({ barSpacing: 12 });
+    mainChart.timeScale().scrollToRealTime();
 
     // --- Handle Resize Alignment ---
     const ro = new ResizeObserver(() => {
