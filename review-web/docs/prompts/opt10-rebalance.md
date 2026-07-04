@@ -5,6 +5,11 @@
 > 來源：使用者的 Google Sheet（多標的再平衡計算機，Claude 已用 gviz CSV 匯出讀到並逐格驗算）＋「正二實驗室 #03」崩盤策略回測研究文（11 張截圖）。
 > **2026-07-04 重寫定案**：使用者明示「**只買 00631L**」→ 本案從多標的塌縮為 **單一標的（00631L＋現金）**。不做 00685L/QLD、不做匯率、不做「每資產目標權重」。**範疇順序＝計算機（本案 opt10）優先、崩盤回測實驗室（opt11）隨後**（使用者 2026-07-04 定）。
 > **相依：無**——個人投組工具，資料全存 localStorage、**零新後端、零新請求、零 LLM**。
+>
+> **2026-07-04 增修 A（opt10 已上線後）**：使用者要「目標 β 1.3、±0.1（1.2~1.4）」。現行容忍區間是**百分比**口徑（±10% 套 1.3＝[1.17,1.43]，非 [1.2,1.4]）。**新增「容忍模式切換：百分比 %／絕對 β」**（使用者選定，預設**絕對 ±β**、預設 0.1）。以下 §2 interface／§2.1 band／§2.3 文案／§3 store／§5 UI／§7 §8 皆已標注增修點；這是在既有 opt10 code 上的增量修改（非重寫）。
+
+<!-- 增修 A：容忍模式切換 pct/abs 的所有改動點，於各節就地標注 -->
+
 
 ## 0. 這套系統在做什麼（背景）
 
@@ -17,9 +22,9 @@
 新頁 `/rebalance`「再平衡計算機」（進側欄 nav，比照 `/tide`、`/heatmap`），把 00631L＋現金的再平衡做成一眼可操作的試算：
 
 1. **PORTFOLIO BETA 半圓儀表（手刻 SVG）**：大字現值 `1.20X`、弧 0x→1.0x→2.0x、指針＝現投組 β、白圈 marker＝目標 β。
-2. **目標 Beta 滑桿**：0x 全現金 ↔ 1.0x 平衡 ↔ 2.0x 全槓桿，step 0.05，預設 1.2；旁顯示「＝ 00631L {X}% / 現金 {100−X}%」。
+2. **目標 Beta 滑桿**：0x 全現金 ↔ 1.0x 平衡 ↔ 2.0x 全槓桿，step 0.05，預設 1.3【增修A】；旁顯示「＝ 00631L {X}% / 現金 {100−X}%」。
 3. **配置比例條**：目前 00631L%/現金% 對比 目標配比（由目標 β 反推）。
-4. **偏離分析 · 再平衡建議面板**：容忍區間設定（±%，預設 10）、上限/下限 Beta（`目標×(1±%)`）、Beta 偏離量（絕對＋%）、目前狀態 pill、再平衡建議句、**精確達標**：要買/賣 00631L 多少元、**幾股**、換多少現金。
+4. **偏離分析 · 再平衡建議面板**：容忍區間設定【增修A：模式切換「±β／±%」＋數值輸入，預設 ±β 0.1】、上限/下限 Beta、Beta 偏離量（絕對＋%）、目前狀態 pill、再平衡建議句、**精確達標**：要買/賣 00631L 多少元、**幾股**、換多少現金。
 5. **持倉輸入**：00631L 股數、00631L 現價、現金（TWD）三格；顯示 00631L 市值＝股數×現價、總資產＝市值＋現金。**現價手動輸入**（不抓即時價，對齊 Sheet 作法；QLD/美股問題不存在，因只有 00631L）。
 6. **聲明**：卡底小字「本工具為個人資產配置輔助試算，00631L 現價由你手動輸入、不抓即時行情；投組 Beta 以 00631L β=2.0、現金 β=0 計算；非投資建議。」
 
@@ -34,8 +39,10 @@ export interface RebalanceInput {
   shares: number;        // 00631L 持有股數（≥0）
   price: number;         // 00631L 現價 TWD（手動，>0 才能算交易股數）
   cash: number;          // 現金 TWD（≥0）
-  target_beta: number;   // 目標投組 β（滑桿，預設 1.2）
-  threshold_pct: number; // 容忍區間 %（預設 10 = ±10%）
+  target_beta: number;   // 目標投組 β（滑桿，預設 1.3）
+  tolerance_mode: 'pct' | 'abs';  // 【增修A】容忍口徑，預設 'abs'
+  threshold_pct: number; // 容忍區間 %（pct 模式用；預設 10 = ±10%）
+  threshold_abs: number; // 【增修A】容忍區間 絕對 β（abs 模式用；預設 0.1 = ±0.1）
   etf_beta: number;      // 00631L 標的 β（預設 2.0；進階可調）
 }
 export interface RebalanceResult {
@@ -47,8 +54,8 @@ export interface RebalanceResult {
   target_beta: number;
   target_etf_weight: number | null;   // clamp(target_beta / etf_beta, 0, 1)；etf_beta≤0 → null
   target_cash_weight: number | null;
-  upper_band: number;           // target×(1+thr/100)
-  lower_band: number;           // target×(1−thr/100)
+  upper_band: number;           // 【增修A】依 tolerance_mode，見 §2.1
+  lower_band: number;           // 【增修A】abs 模式下限 clamp ≥ 0
   deviation_abs: number | null; // current_beta − target_beta
   deviation_pct: number | null; // (current_beta − target)/target；target=0 → null
   status: 'empty' | 'sell' | 'buy' | 'normal';
@@ -72,9 +79,12 @@ export function computeRebalance(input: RebalanceInput): RebalanceResult;
 etf_value = shares × price ; total = etf_value + cash
 etf_weight = etf_value / total          // total≤0 → 全部 null, status='empty'
 current_beta = etf_weight × etf_beta
-upper_band = target × (1 + thr/100) ; lower_band = target × (1 − thr/100)
+【增修A】容忍區間依 tolerance_mode：
+  abs 模式：upper_band = target + threshold_abs ; lower_band = max(target − threshold_abs, 0)
+  pct 模式：upper_band = target × (1 + threshold_pct/100) ; lower_band = max(target × (1 − threshold_pct/100), 0)
 deviation_abs = current_beta − target ; deviation_pct = (current_beta − target)/target  // target=0→null
 status: current_beta > upper_band → 'sell' ; current_beta < lower_band → 'buy' ; else 'normal'
+  （示例：target 1.3、abs 0.1 → band [1.2, 1.4]；target 1.2、pct 10 → band [1.08, 1.32]）
 ```
 
 ### 2.2 精確達標（定案，對齊 Sheet 的「需交易金額／交易股數」）
@@ -101,7 +111,9 @@ trade_shares      = round(etf_value_delta / price)       // price≤0 → null�
 
 ```
 empty  → 「尚未輸入持倉」（引導：填入 00631L 股數/現價與現金）
-normal → 「✅ 正常範圍（偏離 {|dev_pct|一位小數}%，未超過 ±{thr}%）」
+【增修A】normal 文案依 tolerance_mode：
+  abs → 「✅ 正常範圍（偏離 {|deviation_abs|兩位小數} β，未超過 ±{threshold_abs} β）」
+  pct → 「✅ 正常範圍（偏離 {|dev_pct|一位小數}%，未超過 ±{threshold_pct}%）」
 sell   → 「⚠ 已破上限 {upper} → 建議賣出 00631L 約 ${|etf_value_delta|}（約 {|trade_shares|} 股）換現金」
 buy    → 「⚠ 已破下限 {lower} → 建議買進 00631L 約 ${|etf_value_delta|}（約 {|trade_shares|} 股）」
 另一行（永遠顯示，含 normal）：「若要精確回到目標 β {target}：00631L 調整 {±etf_value_delta}（{±trade_shares} 股）/ 現金 {±cash_delta}」
@@ -120,15 +132,18 @@ buy    → 「⚠ 已破下限 {lower} → 建議買進 00631L 約 ${|etf_value_
 const KEY = 'review:rebalance:v1';
 export interface RebalanceConfig {
   shares: number; price: number; cash: number;
-  target_beta: number;   // 1.2
-  threshold_pct: number; // 10
-  etf_beta: number;      // 2.0
+  target_beta: number;         // 1.3
+  tolerance_mode: 'pct'|'abs'; // 【增修A】'abs'
+  threshold_pct: number;       // 10
+  threshold_abs: number;       // 【增修A】0.1
+  etf_beta: number;            // 2.0
 }
 export function getRebalanceConfig(): RebalanceConfig;   // 無資料→種子
 export function saveRebalanceConfig(cfg: RebalanceConfig): void;  // 存＋dispatch 'userstore:rebalance'
 export function subscribeRebalance(cb: () => void): () => void;
 ```
-種子：`shares:0, price:0, cash:0, target_beta:1.2, threshold_pct:10, etf_beta:2.0`。**絕不上傳後端**（真實部位屬隱私）。
+種子：`shares:0, price:0, cash:0, target_beta:1.3, tolerance_mode:'abs', threshold_pct:10, threshold_abs:0.1, etf_beta:2.0`。**絕不上傳後端**（真實部位屬隱私）。
+> 🚨【增修A・遷移】既有 `review:rebalance:v1` 舊資料**沒有** `tolerance_mode`／`threshold_abs` 欄位 → `getRebalanceConfig` 的逐欄守衛要對這兩欄補預設（`tolerance_mode` 非 `'pct'|'abs'` → `'abs'`；`threshold_abs` 非有限數或 <0 → `0.1`），**不改 KEY 版本號**（欄位補齊即相容）。
 
 ## 4. 架構鐵律（沿用全案）
 
@@ -145,6 +160,7 @@ export function subscribeRebalance(cb: () => void): () => void;
 - 半圓儀表手刻 SVG：半圓弧 0→2x、刻度 0/1/2、指針（現 β）＋目標 marker（白圈）、中央大字 `{β}X`；別引圖表套件。
 - 配置比例條：stacked bar（00631L/現金），目前一條、目標一條對照。
 - 持倉輸入：三個 number input（股數/現價/現金）即時試算；顯示 00631L 市值與總資產。
+- 【增修A】容忍區間控制：一個小型二選一切換（`±β` / `±%`）＋一個數值輸入；`±β` 模式輸入 β 單位（step 0.05，如 0.1），`±%` 模式輸入 % 單位（step 1，如 10）；切換時沿用各自欄位值（`threshold_abs` / `threshold_pct`），上下限 band 與狀態即時重算。
 
 ## 6. 工作清單
 
@@ -160,7 +176,10 @@ export function subscribeRebalance(cb: () => void): () => void;
 - [ ] **clean 回歸**：股數×現價=600,000、現金 400,000、target 1.2、thr 10 → β=1.2、status normal、etf_value_delta=0。
 - [ ] **觸發**：把現金/股數調到 β>1.32 → status 'sell'、建議賣、etf_value_delta<0、trade_shares<0；調到 β<1.08 → 'buy'、建議買、正值。
 - [ ] **精確達標＋整股**：任一情境 delta＝target_etf_value−etf_value、trade_shares＝round(delta/price)、post 佔比因整股略偏目標（如 20.00%→19.9x%）不報錯。
-- [ ] 目標 β 滑桿 0→2 全程、閾值 ±% 調整 → 儀表指針/marker、上下限、配比條、建議金額/股數全連動，無破版。
+- [ ] 目標 β 滑桿 0→2 全程、閾值調整 → 儀表指針/marker、上下限、配比條、建議金額/股數全連動，無破版。
+- [ ] 【增修A】**絕對 β 模式**：target 1.3、±β 0.1 → 上限 1.4、下限 1.2（非 [1.17,1.43]）；normal 文案顯「偏離 X β，未超過 ±0.1 β」。切到 **± % 模式**：target 1.2、±10% → [1.08,1.32]、文案回百分比口徑。切換兩模式各自數值互不覆蓋。
+- [ ] 【增修A】**遷移**：手動塞一筆舊 `review:rebalance:v1`（無 `tolerance_mode`/`threshold_abs`）→ 讀取後補預設 `abs`/`0.1`、不報錯、不出現 NaN。
+- [ ] 【增修A】abs 下限 clamp：target 0.05、±β 0.1 → 下限 0（不為負）。
 - [ ] 護欄：total=0 → 'empty' 引導；price=0 → 金額可算但 trade_shares=null＋note；全程無 NaN/Infinity。
 - [ ] localStorage：改股數/現價/現金/目標/閾值 → 重整保留；跨分頁同步。
 - [ ] network：進 `/rebalance` **零 `/api` 請求**；三斷點（375/768/1280）不破版；既有頁面零回歸。
@@ -175,6 +194,9 @@ export function subscribeRebalance(cb: () => void): () => void;
 - 整股成交後現金要用 `cash − trade_shares×price`（賣為負股數→加現金），別直接套 cash_delta（那是未整股的理論值）。
 - localStorage 壞資料/舊版：`getRebalanceConfig` try/catch 落種子、欄位逐一守衛（比照 `userStore.getFolders`）。
 - 現價需手動更新（不抓即時價）→ 聲明明列，避免誤以為即時監控。
+- 🚨【增修A】**abs 模式下限可能為負**（target 0.05、abs 0.1 → −0.05）→ 一律 `max(lower, 0)` clamp；band 顯示與 status 判定都用 clamp 後值。
+- 🚨【增修A】**舊 localStorage 遷移**：不改 KEY 版本、靠逐欄守衛補 `tolerance_mode`/`threshold_abs` 預設；別讓缺欄位變 `undefined` 流進公式成 NaN。
+- 【增修A】deviation 顯示口徑隨模式：abs 顯「β 偏離量」、pct 顯「% 偏離」；別在 abs 模式硬塞百分比讓使用者困惑。
 - PWA SW 快取：上版後看不到新頁先照 `deploy.md §4.4` 強制重整（已知坑）。
 
 ## 9. 後續（opt11 崩盤策略回測實驗室，本案不做，先記軌）
