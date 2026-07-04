@@ -10,7 +10,7 @@
 
 <!-- 增修 A：容忍模式切換 pct/abs 的所有改動點，於各節就地標注 -->
 
-> **2026-07-04 增修 B（Claude 直接實作完成）**：使用者要求持倉面板加三項——①**平均成本**輸入（可手動改）→ 顯示未實現損益（金額＋%，台股慣例獲利紅、虧損綠；純顯示、**不影響再平衡計算**）；②**自動抓取 00631L 最新價**（「抓最新價」按鈕＋首次載入若無現價自動抓一次；讀既有 `GET /api/stocks/00631L/ohlcv`＝**未還原原始收盤價**，取最新交易日 close，可手動覆寫；顯示帶入日期）；③**應買進/賣出多少錢**顯眼呈現（既有 `etf_value_delta` 精確達標數字本已計算，但無現價時全為 $0；②補上現價後即生效，並在建議面板加大字行動數字「應買進/賣出 $X（約 Y 股）」）。**架構破例（誠實記軌）**：本頁原「零 `/api` 請求」，增修 B 為了自動抓價**新增一支既有 ohlcv 端點的讀取**（單次、可失敗降級為手動輸入）；`contracts.md` 不動（沿用既有端點）；持倉資料仍僅存 localStorage 不上傳。實作：`RebalanceInput.avg_cost?`＋`RebalanceResult.{cost_basis,unrealized_pnl,unrealized_pnl_pct}`（有股數且成本>0 才算，否則 null）；`RebalanceConfig.avg_cost`（預設 0，逐欄守衛相容舊 localStorage、不改 KEY）；`Rebalance.tsx` 加 avg_cost 輸入、`fetchLatestPrice()`＋首載自動抓、未實現損益 tile、顯眼行動數字、聲明改寫。vitest 48/48（新增 4 案 P&L）、tsc/build 乾淨。
+> **2026-07-04 增修 B（Claude 直接實作完成）**：使用者要求持倉面板加三項——①**平均成本**輸入（可手動改）→ 顯示未實現損益（金額＋%，台股慣例獲利紅、虧損綠；純顯示、**不影響再平衡計算**）；②**自動抓取 00631L 最新價**（「抓最新價」按鈕＋首次載入若無現價自動抓一次；讀既有 `GET /api/stocks/00631L/ohlcv`＝**未還原原始收盤價**，取最新交易日 close，可手動覆寫；顯示帶入日期）；③**應買進/賣出多少錢**顯眼呈現（既有 `etf_value_delta` 精確達標數字本已計算，但無現價時全為 $0；②補上現價後即生效，並在建議面板加大字行動數字「應買進/賣出 $X（約 Y 股）」）。**架構破例（誠實記軌）**：本頁原「零 `/api` 請求」，增修 B 為了自動抓價**新增一支既有 ohlcv 端點的讀取**（單次、可失敗降級為手動輸入）；`contracts.md` 不動（沿用既有端點）；持倉資料仍僅存 localStorage 不上傳。實作：`RebalanceInput.avg_cost?`＋`RebalanceResult.{cost_basis,unrealized_pnl,unrealized_pnl_pct}`（有股數且成本>0 才算，否則 null）；`RebalanceConfig.avg_cost`（預設 0，逐欄守衛相容舊 localStorage、不改 KEY）；`Rebalance.tsx` 加 avg_cost 輸入、`fetchLatestPrice()`＋首載自動抓、未實現損益 tile、顯眼行動數字、聲明改寫。vitest 48/48（新增 4 案 P&L）、tsc/build 乾淨。**VM 實機驗收（2026-07-04 commit `1edb5c7` 通過）**：三功能全對帳（自動帶入 2026-07-03 收盤價 38.8；成本 35.37×19000→損益 +$65,170/+9.7%；閒置現金 100 萬→應買進 $391,980/約 10,103 股、成交後 β 回 1.30X）。
 
 
 ## 0. 這套系統在做什麼（背景）
