@@ -84,7 +84,7 @@ export function runBacktest(bars: AlignedBar[], params: Partial<BacktestParams>)
 - [x] 三基準與策略曲線等長；buyHold 報酬/最大回撤數值正確；static 不再平衡。
 - [x] 全路徑無 NaN/Infinity；<2 bar 回 note。
 - [x] vitest **12/12**；`tsc -b` 與 `vite build` 乾淨（`CrashBacktest` lazy chunk、全庫 **44/44**）。
-- [ ] **VM 實機驗收（待使用者）**：`/backtest` 零回歸；確認 VM 端 ohlcv 涵蓋 2020 起且 00631L/0050 皆回傳；三斷點不破版；PWA §4.4 快取排除。
+- [x] **VM 實機驗收（2026-07-04 通過）**：commit `322cc21` 部署 VM，`/backtest` 完整渲染零回歸。回測區間 `2020-01-02~2026-07-02`（1576 交易日）確認 ohlcv 涵蓋 2020 起、00631L/0050 皆回傳。績效表：崩盤策略 +1009.8%/回撤 −37.1% vs 全倉正二 +1472.4%/回撤 −55.1% vs 初始不再平衡 +883.4%/回撤 −48.9%（策略回撤明顯優於全倉正二，符合預期）。β 曲線兩次崩盤拉滿 2.0 再收回 1.2；崩盤事件 2 次（2020-03 COVID −28.2%、2022-09→2024-02 −33.8%）；交易紀錄型別/方向/顏色正確。
 
 ## 6. 坑（帶進驗收）
 
