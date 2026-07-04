@@ -107,3 +107,15 @@ if (fs.existsSync(webDist)) {
   - 大盤總覽 `/` 正常：`curl -I http://localhost:3000/` (應該回傳 `Content-Length` 為 481 左右的舊 `web/` HTML)
   - 新個股審視 `/review/` 正常：`curl -I http://localhost:3000/review/` (應該回傳 `Content-Length` 為 901 左右的新版 HTML)
   - API 正常：`curl http://localhost:3000/api/health` (應該回傳 `{"gateway":"ok","engine":"up",...}`)
+
+### 4.4 上版後前端看到舊畫面 → PWA Service Worker 快取排除
+
+`review-web` 的 PWA 採 `registerType: 'autoUpdate'`，Service Worker 會積極快取整個 app shell。**上版後瀏覽器很可能還在跑舊的 hashed chunk（舊 JS），看不到新功能。**
+
+🚨 **實測（2026-07-04 opt8 上版）：光按 `Ctrl+Shift+R`（強制重整）不夠**——連按兩次仍載到舊 chunk。判斷「新 JS 是否真的載入」的鐵證＝**Console 堆疊追蹤裡的 chunk hash**（如 `StockDetail-0ORDw7af.js`），與 `dist/assets/` 下建置產出的檔名比對即可確認。
+
+確實有效的排除步驟（依序做）：
+1. DevTools → **Application → Service Workers → Unregister**（把 review 網域的 SW 註銷）。
+2. 同頁 **Storage → Clear site data**（清掉 Cache Storage / 舊 precache）。
+3. 再 `Ctrl+Shift+R` 硬重整一次。
+4. 回 Console 確認 chunk hash 已換成新的，才算真的吃到新版。

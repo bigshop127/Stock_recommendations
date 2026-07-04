@@ -199,7 +199,7 @@ export function buildStockBrief(input: StockBriefInput): StockBrief {
       const sum5 = last5.reduce((acc, c) => acc + (c.total_net_buy_qty || 0), 0);
       if (sum5 >= 500) {
         plusCandidates.push({
-          text: `法人 5 日累積買超 +${sum5.toLocaleString('en-US')} 張`,
+          text: `法人 5 日累積買超 +${sum5.toLocaleString('en-US', { maximumFractionDigits: 0 })} 張`,
           provenance: `籌碼 · 近5日 total_net_buy_qty 合計`,
           tone: 'plus',
           category: 'chips',
@@ -207,7 +207,7 @@ export function buildStockBrief(input: StockBriefInput): StockBrief {
         });
       } else if (sum5 <= -500) {
         minusCandidates.push({
-          text: `法人 5 日累積賣超 ${Math.abs(sum5).toLocaleString('en-US')} 張`,
+          text: `法人 5 日累積賣超 ${Math.abs(sum5).toLocaleString('en-US', { maximumFractionDigits: 0 })} 張`,
           provenance: `籌碼 · 近5日 total_net_buy_qty 合計`,
           tone: 'minus',
           category: 'chips',
@@ -524,7 +524,7 @@ export function buildStockBrief(input: StockBriefInput): StockBrief {
       checkpoints.push({
         label: '法人 5 日累積保持淨買進',
         pass: sum5 >= 0,
-        current: `${sum5 >= 0 ? '+' : ''}${sum5.toLocaleString('en-US')} 張`,
+        current: `${sum5 >= 0 ? '+' : ''}${sum5.toLocaleString('en-US', { maximumFractionDigits: 0 })} 張`,
         target: '≥ 0',
       });
       invalidation.push('法人轉為連續賣超（5 日累積轉為負值）');

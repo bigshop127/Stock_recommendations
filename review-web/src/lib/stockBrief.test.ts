@@ -258,6 +258,32 @@ describe('buildStockBrief', () => {
     expect(brief.minus.some(b => /賣超|年減|跌幅|季減/.test(b.text))).toBe(true);
   });
 
+  it('rounds 張 quantities to whole numbers (no decimals in bullets or checkpoints)', () => {
+    // FinMind 有時回浮點張數 → 5 日累加後帶小數（例：-852.712）；顯示須取整、不得出現小數點
+    const fractionalChips: StockChips = {
+      ...mockChips,
+      data: Array.from({ length: 10 }, (_, i) => ({
+        ...mockChips.data[i],
+        date: `2026-06-${10 + i}`,
+        total_net_buy_qty: -170.3456, // 5 日累加 ≈ -851.728
+      })),
+    };
+
+    const brief = buildStockBrief({
+      blended: mockBlended,
+      dailyOhlcv: mockDailyOhlcv,
+      chips: fractionalChips,
+      fundamentals: mockFundamentals,
+      news: mockNews,
+    });
+
+    const chipsBullet = [...brief.plus, ...brief.minus].find(b => b.category === 'chips' && /張/.test(b.text));
+    expect(chipsBullet?.text).toBeDefined();
+    expect(chipsBullet!.text).not.toMatch(/\.\d/); // 因素敘述無小數
+    const chipsCheckpoint = brief.checkpoints.find(c => /張/.test(c.current ?? ''));
+    expect(chipsCheckpoint?.current).not.toMatch(/\.\d/); // 觀察點現況無小數
+  });
+
   it('caps bullets at max 4 total and max 2 per category', () => {
     // 造出同類多條：籌碼(法人5日賣超 + 外資連賣 + 投信連賣 = 3 條同類) + 基本面 + 動能
     const manyBearChips: StockChips = {
