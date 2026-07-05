@@ -524,7 +524,47 @@ export const api = {
   symbolSearch: (q: string, limit?: number) => req<SymbolSearch>(`/symbols/search${qs({ q, limit })}`),
   marketCapitalTide: (o?: { date?: string; universe?: string }) => req<CapitalTideData>(`/market/capital-tide${qs(o)}`),
   marketStockHeatmap: (o?: { period?: string; date?: string }, force?: boolean) => marketStockHeatmap(o, force),
+
+  // 再平衡持倉雲端同步（gateway 讀寫 data/rebalance_holdings.json，與告警腳本同一份）
+  getRebalanceHoldings: () => req<RebalanceHoldingsResp>('/rebalance/holdings'),
+  saveRebalanceHoldings: (holdings: RebalanceHoldingsPayload) =>
+    req<RebalanceHoldingsSaveResp>('/rebalance/holdings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(holdings),
+    }),
 };
+
+// 再平衡持倉（雲端 JSON）— 與 rebalanceStore.RebalanceConfig 對齊
+export interface RebalanceTrade {
+  id: string;
+  date: string;
+  side: 'buy' | 'sell';
+  shares: number;
+  price: number;
+}
+export interface RebalanceHoldingsPayload {
+  shares: number;       // 衍生（伺服端會再重算）
+  avg_cost: number;     // 衍生
+  price: number;
+  cash: number;
+  target_beta: number;
+  tolerance_mode: 'pct' | 'abs';
+  threshold_pct: number;
+  threshold_abs: number;
+  etf_beta: number;
+  opening: { shares: number; avg_cost: number };
+  trades: RebalanceTrade[];
+}
+export interface RebalanceHoldingsResp {
+  exists: boolean;
+  holdings: RebalanceHoldingsPayload | null;
+}
+export interface RebalanceHoldingsSaveResp {
+  ok: boolean;
+  holdings: RebalanceHoldingsPayload;
+  saved_at: string;
+}
 
 export interface SymbolHit {
   code: string;

@@ -1,5 +1,67 @@
 import { describe, it, expect } from 'vitest';
-import { computeRebalance } from './rebalance';
+import { computeRebalance, aggregatePosition, type Trade } from './rebalance';
+
+const mk = (side: 'buy' | 'sell', date: string, shares: number, price: number): Trade => ({
+  id: `${side}_${date}_${shares}_${price}`,
+  date,
+  side,
+  shares,
+  price,
+});
+
+describe('aggregatePosition', () => {
+  it('opening only, no trades → returns opening', () => {
+    const r = aggregatePosition({ shares: 19000, avg_cost: 35.37 }, []);
+    expect(r.shares).toBe(19000);
+    expect(r.avg_cost).toBeCloseTo(35.37, 6);
+    expect(r.realized_pnl).toBe(0);
+    expect(r.invalid_sells).toBe(0);
+  });
+
+  it('buy adds shares and recomputes weighted average cost', () => {
+    // 期初 1000@10（成本 10,000）＋ 買進 1000@20（成本 20,000）＝ 2000 股、均價 15
+    const r = aggregatePosition({ shares: 1000, avg_cost: 10 }, [mk('buy', '2026-01-02', 1000, 20)]);
+    expect(r.shares).toBe(2000);
+    expect(r.avg_cost).toBeCloseTo(15, 6);
+  });
+
+  it('sell reduces shares but leaves average cost unchanged; realized pnl computed', () => {
+    // 期初 2000@15，賣 500@25 → 剩 1500 股、均價仍 15、已實現 (25-15)*500=5000
+    const r = aggregatePosition({ shares: 2000, avg_cost: 15 }, [mk('sell', '2026-02-01', 500, 25)]);
+    expect(r.shares).toBe(1500);
+    expect(r.avg_cost).toBeCloseTo(15, 6);
+    expect(r.realized_pnl).toBeCloseTo(5000, 6);
+  });
+
+  it('oversell clamps to held shares and flags invalid_sells; shares/avg go to 0', () => {
+    const r = aggregatePosition({ shares: 1000, avg_cost: 10 }, [mk('sell', '2026-03-01', 5000, 12)]);
+    expect(r.shares).toBe(0);
+    expect(r.avg_cost).toBe(0);
+    expect(r.invalid_sells).toBe(1);
+    // 賣出 clamp 到 1000 股：已實現 (12-10)*1000 = 2000
+    expect(r.realized_pnl).toBeCloseTo(2000, 6);
+  });
+
+  it('sorts by date regardless of input order (buy before sell chronologically)', () => {
+    // 亂序輸入：先給 2026-02 賣、再給 2026-01 買；期初 0
+    const trades = [mk('sell', '2026-02-01', 500, 30), mk('buy', '2026-01-01', 1000, 20)];
+    const r = aggregatePosition({ shares: 0, avg_cost: 0 }, trades);
+    // 排序後：買 1000@20 → 賣 500@30 → 剩 500 股、均價 20、已實現 (30-20)*500=5000
+    expect(r.shares).toBe(500);
+    expect(r.avg_cost).toBeCloseTo(20, 6);
+    expect(r.realized_pnl).toBeCloseTo(5000, 6);
+  });
+
+  it('guards NaN / missing fields', () => {
+    const r = aggregatePosition(null, [
+      { id: 'x', date: '2026-01-01', side: 'buy', shares: NaN as unknown as number, price: 10 },
+      { id: 'y', date: '2026-01-02', side: 'buy', shares: 100, price: 10 },
+    ]);
+    expect(Number.isFinite(r.shares)).toBe(true);
+    expect(r.shares).toBe(100);
+    expect(r.avg_cost).toBeCloseTo(10, 6);
+  });
+});
 
 describe('computeRebalance', () => {
   it('clean regression case: 60/40 ratio matching target beta 1.2', () => {

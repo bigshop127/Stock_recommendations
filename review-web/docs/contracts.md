@@ -20,6 +20,7 @@
 | **個股** | `/api/stocks/:code/chips` | GET | **新增** | TWSE / 櫃買中心 | 否 |
 | **個股** | `/api/stocks/:code/fundamentals`| GET | **新增** | FinMind / 富果 | 否 |
 | **個股** | `/api/stocks/:code/news` | GET | **新增** | 鉅亨網 / 經濟日報 | 否 |
+| **再平衡** | `/api/rebalance/holdings` | GET/POST | **新增** | Gateway 檔案（`data/rebalance_holdings.json`） | 否 |
 
 ---
 
@@ -451,4 +452,22 @@
 }
 ```
 
+### 2.13 再平衡持倉雲端同步 `/api/rebalance/holdings`
+* **Method**: `GET` / `POST`
+* **Description**: 個人「00631L 正2＋現金」再平衡持倉的雲端持久化。gateway 純檔案讀寫 `data/rebalance_holdings.json`（不經 engine），**與背景告警腳本 `scripts/rebalance_alert.cjs` 讀的是同一份檔**。POST 一律伺服端 sanitize＋重算衍生 `shares`/`avg_cost`（＝`aggregatePosition`：期初部位＋trades 加權平均），並以原子寫入（`.tmp`→rename）避免告警腳本讀到寫一半的檔。免登入個人自用、僅走內網/`ssh -L`；持倉檔已 gitignore（含財務數字不進版控）。
+* **GET Response (200 OK)**：
+```json
+{
+  "exists": true,
+  "holdings": {
+    "shares": 20000, "avg_cost": 34.8, "price": 38.8, "cash": 1000000,
+    "target_beta": 1.3, "tolerance_mode": "abs", "threshold_abs": 0.1,
+    "threshold_pct": 10, "etf_beta": 2.0,
+    "opening": { "shares": 19000, "avg_cost": 35.37 },
+    "trades": [ { "id": "t1", "date": "2026-07-05", "side": "buy", "shares": 1000, "price": 38.8 } ]
+  }
+}
+```
+（檔不存在時 `{ "exists": false, "holdings": null }`。）
+* **POST Body**：同 `holdings` 物件（頂層 `shares`/`avg_cost` 會被伺服端依 `opening`+`trades` 重算覆蓋）。**Response**：`{ "ok": true, "holdings": {...清洗後...}, "saved_at": "ISO時間" }`。
 

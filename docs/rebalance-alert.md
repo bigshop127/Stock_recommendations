@@ -4,7 +4,14 @@
 搭配前端計算機（`/review/rebalance`, opt10）——**計算機是互動試算，本腳本是背景自動盯盤**。
 
 ## 為什麼是腳本＋排程，不是網頁功能
-前端計算機是純瀏覽器工具、持倉存在 localStorage，關掉分頁就不跑、伺服器也讀不到。要「該賣出/買進時自動寄信」必須有背景排程 + 獨立持倉設定檔。
+前端計算機是互動試算、關掉分頁就不跑。要「該賣出/買進時自動寄信」必須有背景排程盯盤。
+
+## 持倉檔的兩個寫入者（2026-07-05 起）
+`data/rebalance_holdings.json` 現在有兩條寫入路徑，**讀的都是同一份檔**：
+1. **前端計算機**（雲端同步）：按「送出並同步雲端」或新增/刪除買賣報價單時，經 gateway `POST /api/rebalance/holdings` 寫此檔（見 `routes/rebalance.js`、`contracts.md §2.13`）。頂層 `shares`/`avg_cost` 為衍生值＝`opening`（期初部位）＋`trades`（報價單，加權平均法）由伺服端重算。
+2. **手動編輯**：仍可直接 `nano` 此檔（本告警腳本只讀頂層 `shares`/`avg_cost`/`cash`/`target_beta`/`tolerance_mode`/`threshold_*`/`etf_beta`，忽略 `opening`/`trades`，故手改頂層數字仍有效；但下次前端同步會以報價單重算覆蓋）。
+
+→ 好處：在網頁記完當天買賣按送出，VM 上的告警腳本隔天 15:00 就吃到最新持倉，不用再手動改檔。
 
 ## 運作
 1. 讀持倉 `data/rebalance_holdings.json`（**gitignore**，由 `scripts/rebalance_holdings.example.json` 複製後填）。
