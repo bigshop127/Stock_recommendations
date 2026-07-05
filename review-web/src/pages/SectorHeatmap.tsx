@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useMemo } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { api, type StockHeatmap } from '../lib/api';
-import { squarify, type TreemapInput } from '../lib/treemap';
+import { api, type StockHeatmap, type HeatmapStock } from '../lib/api';
+import { squarify, type TreemapInput, type TreemapTile } from '../lib/treemap';
 import {
   Loader2,
   RefreshCw,
@@ -16,6 +16,20 @@ interface AggregatedSector {
   count: number;
 }
 
+// 個股層級巢狀 treemap 的分組結果
+interface StockGroup {
+  sector: TreemapTile<{ stocks: HeatmapStock[]; total: number; count: number }>;
+  stocks: TreemapTile<HeatmapStock>[];
+}
+
+// treemap 畫布尺寸（viewBox 座標）
+const CANVAS_W = 1000;
+const CANVAS_H = 640;
+// 每個產業區塊頂部標題列高度
+const HEADER_H = 17;
+const GROUP_GAP = 2;
+const TINY_FLOOR = 1; // 成交值下限，避免 0 值
+
 export const SectorHeatmap: React.FC = () => {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -24,11 +38,14 @@ export const SectorHeatmap: React.FC = () => {
   const [period, setPeriod] = useState<'day' | 'week' | 'month'>(
     ['day', 'week', 'month'].includes(initialPeriod) ? initialPeriod : 'day'
   );
+  // 檢視模式：個股 (finviz 式) / 產業聚合
+  const [viewMode, setViewMode] = useState<'stock' | 'sector'>('stock');
   const [data, setData] = useState<StockHeatmap | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   const [hoveredSector, setHoveredSector] = useState<TreemapInput<AggregatedSector> | null>(null);
+  const [hoveredStock, setHoveredStock] = useState<HeatmapStock | null>(null);
   const [tooltipPos, setTooltipPos] = useState({ x: 0, y: 0 });
 
   const handlePeriodChange = (newPeriod: 'day' | 'week' | 'month') => {
@@ -100,8 +117,8 @@ export const SectorHeatmap: React.FC = () => {
     return `${turnover.toLocaleString()} 元`;
   };
 
-  // Interpolate RGB color for a given change percentage
-  const getSectorColor = (changePct: number | null): string => {
+  // Interpolate RGB color for a given change percentage (共用：產業聚合 & 個股)
+  const getChangeColor = (changePct: number | null): string => {
     if (changePct === null || isNaN(changePct)) {
       return '#3f3f46'; // Neutral grey
     }
@@ -140,12 +157,12 @@ export const SectorHeatmap: React.FC = () => {
     return `rgb(${r}, ${g}, ${b})`;
   };
 
-  // Generate Treemap layout tiles
-  const tiles = useMemo(() => {
+  // === 產業聚合 treemap（一產業一格） ===
+  const sectorTiles = useMemo(() => {
     if (aggregatedSectors.length === 0) return [];
 
     const FLOOR = 0.05;
-    const inputs: TreemapInput[] = aggregatedSectors
+    const inputs: TreemapInput<AggregatedSector>[] = aggregatedSectors
       .filter((s) => s.change_pct !== null && !isNaN(s.change_pct))
       .map((s) => ({
         key: s.name,
@@ -153,10 +170,58 @@ export const SectorHeatmap: React.FC = () => {
         datum: s,
       }));
 
-    return squarify(inputs, 1000, 600);
+    return squarify(inputs, CANVAS_W, CANVAS_H);
   }, [aggregatedSectors]);
 
-  const handleMouseMove = (e: React.MouseEvent<SVGRectElement>) => {
+  // === 個股 finviz 式巢狀 treemap（外層產業、內層個股，皆依成交值） ===
+  const stockGroups = useMemo<StockGroup[]>(() => {
+    if (!data || !data.stocks) return [];
+
+    // 依產業分組（僅計成交值 > 0 者）
+    const groups = new Map<string, HeatmapStock[]>();
+    for (const s of data.stocks) {
+      if (s.turnover === null || !(s.turnover > 0)) continue;
+      const sec = s.sector || '其他';
+      if (!groups.has(sec)) groups.set(sec, []);
+      groups.get(sec)!.push(s);
+    }
+
+    // 外層：一產業一區塊，面積 = 產業成交值合計
+    const outerInputs: TreemapInput<{ stocks: HeatmapStock[]; total: number; count: number }>[] = [];
+    for (const [sec, list] of groups.entries()) {
+      const total = list.reduce((a, b) => a + (b.turnover || 0), 0);
+      if (total > 0) {
+        outerInputs.push({ key: sec, value: total, datum: { stocks: list, total, count: list.length } });
+      }
+    }
+    if (outerInputs.length === 0) return [];
+
+    const outerTiles = squarify(outerInputs, CANVAS_W, CANVAS_H);
+
+    // 內層：每個產業區塊內，依個股成交值切格
+    const result: StockGroup[] = [];
+    for (const st of outerTiles) {
+      const ix = st.x + GROUP_GAP;
+      const iy = st.y + HEADER_H;
+      const iw = Math.max(0, st.w - GROUP_GAP * 2);
+      const ih = Math.max(0, st.h - HEADER_H - GROUP_GAP);
+
+      let stocks: TreemapTile<HeatmapStock>[] = [];
+      if (iw > 2 && ih > 2) {
+        const innerInputs: TreemapInput<HeatmapStock>[] = st.item.datum.stocks
+          .map((s) => ({ key: s.code, value: Math.max(s.turnover || 0, TINY_FLOOR), datum: s }));
+        stocks = squarify(innerInputs, iw, ih).map((t) => ({
+          ...t,
+          x: t.x + ix,
+          y: t.y + iy,
+        }));
+      }
+      result.push({ sector: st, stocks });
+    }
+    return result;
+  }, [data]);
+
+  const handleMouseMove = (e: React.MouseEvent<SVGElement>) => {
     const svg = e.currentTarget.ownerSVGElement;
     if (!svg) return;
     const rect = svg.getBoundingClientRect();
@@ -202,10 +267,12 @@ export const SectorHeatmap: React.FC = () => {
     );
   }
 
+  const isStockView = viewMode === 'stock';
+
   return (
     <div className="space-y-6">
       {/* Top Header Panel */}
-      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-6">
+      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-4">
         <div>
           <div className="flex items-center gap-2 flex-wrap">
             <h2 className="text-xl font-bold text-zinc-100">產業熱力圖</h2>
@@ -214,23 +281,30 @@ export const SectorHeatmap: React.FC = () => {
             </span>
           </div>
           <p className="text-xs text-zinc-500 mt-1">
-            依產業平均漲跌幅度(絕對值)顯示區塊大小，顏色深淺代表漲跌方向與強度。點擊產業可直接進入該產業總覽。
+            {isStockView
+              ? '每格為一檔個股、依產業分區；格子大小＝成交值，顏色深淺＝漲跌方向與強度。點擊個股進入審查頁。'
+              : '依產業平均漲跌幅度(絕對值)顯示區塊大小，顏色深淺代表漲跌方向與強度。點擊產業可直接進入該產業總覽。'}
           </p>
         </div>
         <div className="flex items-center gap-3 shrink-0 flex-wrap">
-          {/* 市場範圍 Tabs */}
+          {/* 檢視模式切換：個股 / 產業 */}
           <div className="flex items-center gap-1 bg-zinc-900/60 border border-zinc-800/80 rounded-lg p-1">
-            <button className="px-2.5 py-1 rounded-md text-xs font-semibold bg-zinc-800 text-zinc-200 shadow-sm">
-              上市
+            <button
+              onClick={() => setViewMode('stock')}
+              className={`px-3 py-1.5 rounded-md text-xs font-semibold transition ${
+                isStockView ? 'bg-primary text-white shadow-sm' : 'text-zinc-400 hover:text-zinc-200'
+              }`}
+            >
+              個股
             </button>
-            <div className="relative group">
-              <button disabled className="px-2.5 py-1 rounded-md text-xs font-semibold text-zinc-600 cursor-not-allowed">
-                上櫃
-              </button>
-              <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-2.5 py-1 text-[10px] text-zinc-300 bg-zinc-950 border border-zinc-800 rounded opacity-0 pointer-events-none group-hover:opacity-100 transition-opacity duration-150 whitespace-nowrap z-50 shadow-md">
-                即將推出
-              </div>
-            </div>
+            <button
+              onClick={() => setViewMode('sector')}
+              className={`px-3 py-1.5 rounded-md text-xs font-semibold transition ${
+                !isStockView ? 'bg-primary text-white shadow-sm' : 'text-zinc-400 hover:text-zinc-200'
+              }`}
+            >
+              產業聚合
+            </button>
           </div>
 
           <button
@@ -272,74 +346,204 @@ export const SectorHeatmap: React.FC = () => {
       </div>
 
       {/* Main Treemap Canvas */}
-      <div className="relative border border-zinc-800 bg-zinc-900/10 rounded-xl p-4 flex items-center justify-center overflow-hidden">
-        <svg viewBox="0 0 1000 600" className="w-full h-auto rounded-lg select-none">
-          {tiles.map((tile) => {
-            const isHovered = hoveredSector?.key === tile.item.key;
-            const color = getSectorColor(tile.item.datum.change_pct);
-            const changePct = tile.item.datum.change_pct;
+      <div className="relative border border-zinc-800 bg-zinc-900/10 rounded-xl p-3 flex items-center justify-center overflow-hidden">
+        <svg
+          viewBox={`0 0 ${CANVAS_W} ${CANVAS_H}`}
+          className="w-full h-auto rounded-lg select-none"
+          onMouseLeave={() => {
+            setHoveredSector(null);
+            setHoveredStock(null);
+          }}
+        >
+          {isStockView
+            ? /* === 個股 finviz 式巢狀 treemap === */
+              stockGroups.map((group) => {
+                const sec = group.sector;
+                const secName = sec.item.key;
+                const secCount = sec.item.datum.count;
+                return (
+                  <g key={secName}>
+                    {/* 產業區塊外框 */}
+                    <rect
+                      x={sec.x}
+                      y={sec.y}
+                      width={sec.w}
+                      height={sec.h}
+                      fill="#09090b"
+                      stroke="#27272a"
+                      strokeWidth={1}
+                    />
+                    {/* 產業標題列 */}
+                    {sec.w > 46 && sec.h > HEADER_H + 6 && (
+                      <text
+                        x={sec.x + 5}
+                        y={sec.y + HEADER_H / 2 + 3}
+                        className="fill-zinc-300 font-bold text-[11px] pointer-events-none select-none uppercase tracking-wide"
+                      >
+                        {getTruncatedName(`${secName} · ${secCount}`, sec.w - 10)}
+                      </text>
+                    )}
+                    {/* 個股格子 */}
+                    {group.stocks.map((tile) => {
+                      const st = tile.item.datum;
+                      const isHovered = hoveredStock?.code === st.code;
+                      const color = getChangeColor(st.change_pct);
+                      const showLabel = tile.w >= 34 && tile.h >= 20;
+                      const showPct = tile.w >= 52 && tile.h >= 34;
+                      return (
+                        <g key={st.code} className="cursor-pointer">
+                          <rect
+                            x={tile.x}
+                            y={tile.y}
+                            width={tile.w}
+                            height={tile.h}
+                            fill={color}
+                            stroke="#121214"
+                            strokeWidth={0.75}
+                            fillOpacity={isHovered ? 1 : 0.85}
+                            onMouseEnter={() => setHoveredStock(st)}
+                            onMouseMove={handleMouseMove}
+                            onClick={() => navigate(`/stock/${st.code}`)}
+                            className="transition-opacity duration-150"
+                          />
+                          {showLabel && (
+                            <g className="pointer-events-none select-none">
+                              <text
+                                x={tile.x + tile.w / 2}
+                                y={tile.y + tile.h / 2 + (showPct ? -5 : 3)}
+                                textAnchor="middle"
+                                dominantBaseline="middle"
+                                className="fill-white font-bold text-[10px]"
+                              >
+                                {st.code}
+                              </text>
+                              {showPct && (
+                                <text
+                                  x={tile.x + tile.w / 2}
+                                  y={tile.y + tile.h / 2 + 9}
+                                  textAnchor="middle"
+                                  dominantBaseline="middle"
+                                  className="fill-zinc-100 font-mono text-[9px]"
+                                >
+                                  {st.change_pct !== null && st.change_pct >= 0 ? '+' : ''}
+                                  {st.change_pct !== null ? st.change_pct.toFixed(2) : '0.00'}%
+                                </text>
+                              )}
+                            </g>
+                          )}
+                        </g>
+                      );
+                    })}
+                  </g>
+                );
+              })
+            : /* === 產業聚合 treemap === */
+              sectorTiles.map((tile) => {
+                const isHovered = hoveredSector?.key === tile.item.key;
+                const color = getChangeColor(tile.item.datum.change_pct);
+                const changePct = tile.item.datum.change_pct;
 
-            return (
-              <g key={tile.item.key} className="cursor-pointer">
-                <rect
-                  x={tile.x}
-                  y={tile.y}
-                  width={tile.w}
-                  height={tile.h}
-                  fill={color}
-                  stroke="#121214"
-                  strokeWidth={1}
-                  fillOpacity={isHovered ? 0.95 : 0.8}
-                  onMouseEnter={() => setHoveredSector(tile.item)}
-                  onMouseMove={handleMouseMove}
-                  onMouseLeave={() => setHoveredSector(null)}
-                  onClick={() => navigate(`/heatmap/sector/${encodeURIComponent(tile.item.key)}?period=${period}`)}
-                  className="transition-colors duration-150"
-                />
-                
-                {/* Labels based on size category */}
-                {tile.w > 70 && tile.h > 40 ? (
-                  <g className="pointer-events-none select-none">
-                    <text
-                      x={tile.x + tile.w / 2}
-                      y={tile.y + tile.h / 2 - 6}
-                      textAnchor="middle"
-                      dominantBaseline="middle"
-                      className="fill-white font-bold text-xs"
-                    >
-                      {getTruncatedName(tile.item.key, tile.w - 8)}
-                    </text>
-                    <text
-                      x={tile.x + tile.w / 2}
-                      y={tile.y + tile.h / 2 + 10}
-                      textAnchor="middle"
-                      dominantBaseline="middle"
-                      className="fill-zinc-200 font-mono text-[10px]"
-                    >
-                      {changePct !== null && changePct >= 0 ? '+' : ''}
-                      {changePct !== null ? changePct.toFixed(2) : '0.00'}%
-                    </text>
+                return (
+                  <g key={tile.item.key} className="cursor-pointer">
+                    <rect
+                      x={tile.x}
+                      y={tile.y}
+                      width={tile.w}
+                      height={tile.h}
+                      fill={color}
+                      stroke="#121214"
+                      strokeWidth={1}
+                      fillOpacity={isHovered ? 0.95 : 0.8}
+                      onMouseEnter={() => setHoveredSector(tile.item)}
+                      onMouseMove={handleMouseMove}
+                      onClick={() => navigate(`/heatmap/sector/${encodeURIComponent(tile.item.key)}?period=${period}`)}
+                      className="transition-colors duration-150"
+                    />
+
+                    {/* Labels based on size category */}
+                    {tile.w > 70 && tile.h > 40 ? (
+                      <g className="pointer-events-none select-none">
+                        <text
+                          x={tile.x + tile.w / 2}
+                          y={tile.y + tile.h / 2 - 6}
+                          textAnchor="middle"
+                          dominantBaseline="middle"
+                          className="fill-white font-bold text-xs"
+                        >
+                          {getTruncatedName(tile.item.key, tile.w - 8)}
+                        </text>
+                        <text
+                          x={tile.x + tile.w / 2}
+                          y={tile.y + tile.h / 2 + 10}
+                          textAnchor="middle"
+                          dominantBaseline="middle"
+                          className="fill-zinc-200 font-mono text-[10px]"
+                        >
+                          {changePct !== null && changePct >= 0 ? '+' : ''}
+                          {changePct !== null ? changePct.toFixed(2) : '0.00'}%
+                        </text>
+                      </g>
+                    ) : tile.w >= 32 && tile.h >= 22 ? (
+                      <g className="pointer-events-none select-none">
+                        <text
+                          x={tile.x + tile.w / 2}
+                          y={tile.y + tile.h / 2}
+                          textAnchor="middle"
+                          dominantBaseline="middle"
+                          className="fill-white font-semibold text-[10px]"
+                        >
+                          {getTruncatedName(tile.item.key, tile.w - 4)}
+                        </text>
+                      </g>
+                    ) : null}
                   </g>
-                ) : tile.w >= 32 && tile.h >= 22 ? (
-                  <g className="pointer-events-none select-none">
-                    <text
-                      x={tile.x + tile.w / 2}
-                      y={tile.y + tile.h / 2}
-                      textAnchor="middle"
-                      dominantBaseline="middle"
-                      className="fill-white font-semibold text-[10px]"
-                    >
-                      {getTruncatedName(tile.item.key, tile.w - 4)}
-                    </text>
-                  </g>
-                ) : null}
-              </g>
-            );
-          })}
+                );
+              })}
         </svg>
 
-        {/* Hover Tooltip */}
-        {hoveredSector && (
+        {/* Hover Tooltip — 個股 */}
+        {isStockView && hoveredStock && (
+          <div
+            className="absolute z-30 bg-zinc-950/95 border border-zinc-800 rounded-xl p-3 shadow-xl text-xs space-y-2 pointer-events-none w-60 backdrop-blur-sm"
+            style={{ left: `${tooltipPos.x}px`, top: `${tooltipPos.y}px` }}
+          >
+            <div className="flex items-center justify-between border-b border-zinc-800/80 pb-1.5">
+              <span className="font-bold text-zinc-100">{hoveredStock.name}</span>
+              <span className="font-mono text-zinc-500 text-[10px]">{hoveredStock.code}</span>
+            </div>
+            <div className="grid grid-cols-2 gap-y-1 font-mono text-[11px] text-zinc-400">
+              <div>產業:</div>
+              <div className="text-zinc-200 text-right truncate">{hoveredStock.sector || '其他'}</div>
+              <div>收盤價:</div>
+              <div className="text-zinc-200 text-right">
+                {hoveredStock.close !== null ? hoveredStock.close.toFixed(2) : '--'}
+              </div>
+              <div>漲跌幅:</div>
+              <div
+                className={`text-right font-bold ${
+                  hoveredStock.change_pct !== null && hoveredStock.change_pct > 0
+                    ? 'text-bull'
+                    : hoveredStock.change_pct !== null && hoveredStock.change_pct < 0
+                    ? 'text-bear'
+                    : 'text-zinc-400'
+                }`}
+              >
+                {hoveredStock.change_pct !== null && hoveredStock.change_pct > 0 ? '+' : ''}
+                {hoveredStock.change_pct !== null ? hoveredStock.change_pct.toFixed(2) : '0.00'} %
+              </div>
+              <div>成交值:</div>
+              <div className="text-zinc-200 text-right">
+                {hoveredStock.turnover !== null ? formatTurnover(hoveredStock.turnover) : '--'}
+              </div>
+            </div>
+            <div className="text-[10px] text-zinc-500 italic text-center pt-1 border-t border-zinc-900">
+              點擊進入【{hoveredStock.name}】審查頁
+            </div>
+          </div>
+        )}
+
+        {/* Hover Tooltip — 產業聚合 */}
+        {!isStockView && hoveredSector && (
           <div
             className="absolute z-30 bg-zinc-950/95 border border-zinc-800 rounded-xl p-3 shadow-xl text-xs space-y-2 pointer-events-none w-60 backdrop-blur-sm"
             style={{ left: `${tooltipPos.x}px`, top: `${tooltipPos.y}px` }}
@@ -383,7 +587,9 @@ export const SectorHeatmap: React.FC = () => {
       {/* Notice & Legend Panel */}
       <div className="flex flex-col sm:flex-row items-center justify-between gap-4 p-4 border border-zinc-800 bg-zinc-900/20 rounded-xl">
         <div className="text-[11px] text-zinc-500 leading-relaxed">
-          * 歷史漲跌幅（週/月）採未還原收盤價計算，若期間經歷除權息可能影響計算精確度。
+          {isStockView
+            ? '* 格子大小依成交值；個股依 TWSE 產業別分區。歷史漲跌幅（週/月）採未還原收盤價計算，若期間經歷除權息可能影響精確度。'
+            : '* 歷史漲跌幅（週/月）採未還原收盤價計算，若期間經歷除權息可能影響計算精確度。'}
         </div>
         <div className="shrink-0 w-full sm:w-64">
           <div className="flex items-center gap-1.5 mb-1.5">
