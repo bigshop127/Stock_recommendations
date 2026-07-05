@@ -2686,13 +2686,14 @@ export const StockDetail: React.FC = () => {
 
   const renderIndustryTab = () => {
     const heatmap = peersState.data;
-    const targetSector = profileState.data?.industry || (heatmap?.stocks.find(s => s.code === activeCode)?.sector) || '';
+    // 同儕清單來自 heatmap.sector，故 targetSector 必須同源：優先取 heatmap 裡本股那筆的 sector，
+    // 保證本股一定落在自己的同儕圈並可高亮；本股不在 heatmap 時才退回 profile.industry。
+    // （heatmap 與 profile 是兩套產業詞彙，直接用 profile.industry 會導致本股被濾掉，例如 2330＝電子工業 vs 半導體業）
+    const selfSector = heatmap?.stocks.find(s => s.code === activeCode)?.sector;
+    const targetSector = selfSector || profileState.data?.industry || '';
 
     const allStocks = heatmap?.stocks || [];
-    const peerStocks = allStocks.filter(s => {
-      if (!targetSector) return true;
-      return s.sector === targetSector || s.sector.includes(targetSector) || targetSector.includes(s.sector);
-    });
+    const peerStocks = allStocks.filter(s => !!targetSector && s.sector === targetSector);
 
     const peerCount = peerStocks.length;
     const validChanges = peerStocks.map(s => s.change_pct).filter((v): v is number => v !== null && v !== undefined);
