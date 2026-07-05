@@ -192,15 +192,15 @@ export const CapitalTide: React.FC = () => {
         </div>
       </div>
 
-      <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
+      <div className="grid grid-cols-1 xl:grid-cols-4 gap-6">
         {/* 左側：SVG Scatter Plot 泡泡圖 */}
-        <div className="xl:col-span-2 bg-card border border-border rounded-xl p-6 relative select-none">
+        <div className="xl:col-span-3 bg-card border border-border rounded-xl p-4 relative select-none">
           <div className="absolute top-4 left-4 flex items-center gap-1.5 bg-zinc-950/60 border border-zinc-800/80 px-2.5 py-1 rounded text-[10px] text-zinc-400 font-mono z-10">
             <Info className="w-3 h-3 text-primary" />
             評估範圍: {data.universe} ({data.stocks.length} 檔)
           </div>
 
-          <div className="aspect-square w-full max-w-[780px] mx-auto relative mt-6">
+          <div className="aspect-square w-full max-w-[85vh] mx-auto relative mt-6">
             <svg viewBox="0 0 600 600" className="w-full h-full overflow-visible">
               {/* 四象限背景 */}
               {/* 右上 (inflow_up) */}
