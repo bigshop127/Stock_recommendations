@@ -108,12 +108,65 @@ export const CapitalTide: React.FC = () => {
 
   // 座標展布：原始 flow_x / momentum_y 多半擠在中央 (少數極端值把尺度拉大)，
   // 用凹函數 (signed power, 指數 <1) 把靠近 0 的值往外推，明顯降低泡泡重疊、提升可讀性。
+  // 指數再壓低 (0.42) 讓中央密集區展得更開。
   const spreadAxis = (v: number) => {
     const c = Math.max(-1, Math.min(1, v));
-    return Math.sign(c) * Math.pow(Math.abs(c), 0.5);
+    return Math.sign(c) * Math.pow(Math.abs(c), 0.42);
   };
-  const plotX = (s: CapitalTideStock) => 300 + spreadAxis(s.flow_x) * 250;
-  const plotY = (s: CapitalTideStock) => 300 - spreadAxis(s.momentum_y) * 250;
+  const radiusOf = (s: CapitalTideStock) => 3.5 + s.size * 11;
+
+  // 泡泡防重疊：先依展布函數放置初始座標，再做數次力導鬆弛把互相重疊的泡泡推開，
+  // 大幅提升中央密集區的可讀性。位移限制在繪圖框內、僅輕微推移故不破壞象限語意 (顏色仍鎖定原象限)。
+  const layout = useMemo(() => {
+    if (!data) return new Map<string, { x: number; y: number; r: number }>();
+    const pts = data.stocks.map((s) => ({
+      code: s.code,
+      x: 300 + spreadAxis(s.flow_x) * 250,
+      y: 300 - spreadAxis(s.momentum_y) * 250,
+      r: radiusOf(s),
+    }));
+    const PAD = 2; // 泡泡間最小間隙
+    const MIN = 56;
+    const MAX = 544;
+    for (let iter = 0; iter < 80; iter++) {
+      for (let i = 0; i < pts.length; i++) {
+        for (let j = i + 1; j < pts.length; j++) {
+          const a = pts[i];
+          const b = pts[j];
+          let dx = b.x - a.x;
+          let dy = b.y - a.y;
+          let dist = Math.sqrt(dx * dx + dy * dy);
+          const minDist = a.r + b.r + PAD;
+          if (dist < minDist) {
+            if (dist < 0.01) {
+              // 完全重合：給一個確定性的微小偏移避免除以零
+              dx = (i % 2 === 0 ? 1 : -1) * 0.5;
+              dy = (j % 2 === 0 ? 1 : -1) * 0.5;
+              dist = 0.7;
+            }
+            const push = (minDist - dist) / 2;
+            const ux = dx / dist;
+            const uy = dy / dist;
+            a.x -= ux * push;
+            a.y -= uy * push;
+            b.x += ux * push;
+            b.y += uy * push;
+          }
+        }
+      }
+      // 夾回繪圖框
+      for (const p of pts) {
+        p.x = Math.max(MIN, Math.min(MAX, p.x));
+        p.y = Math.max(MIN, Math.min(MAX, p.y));
+      }
+    }
+    const m = new Map<string, { x: number; y: number; r: number }>();
+    for (const p of pts) m.set(p.code, { x: p.x, y: p.y, r: p.r });
+    return m;
+  }, [data]);
+
+  const plotX = (s: CapitalTideStock) => layout.get(s.code)?.x ?? 300 + spreadAxis(s.flow_x) * 250;
+  const plotY = (s: CapitalTideStock) => layout.get(s.code)?.y ?? 300 - spreadAxis(s.momentum_y) * 250;
 
   const getQuadrantDotColor = (quad: string) => {
     switch (quad) {
@@ -192,7 +245,7 @@ export const CapitalTide: React.FC = () => {
         </div>
       </div>
 
-      <div className="grid grid-cols-1 xl:grid-cols-4 gap-6">
+      <div className="grid grid-cols-1 xl:grid-cols-5 gap-6">
         {/* 左側：SVG Scatter Plot 泡泡圖 */}
         <div className="xl:col-span-3 bg-card border border-border rounded-xl p-4 relative select-none">
           <div className="absolute top-4 left-4 flex items-center gap-1.5 bg-zinc-950/60 border border-zinc-800/80 px-2.5 py-1 rounded text-[10px] text-zinc-400 font-mono z-10">
@@ -200,7 +253,7 @@ export const CapitalTide: React.FC = () => {
             評估範圍: {data.universe} ({data.stocks.length} 檔)
           </div>
 
-          <div className="aspect-square w-full max-w-[85vh] mx-auto relative mt-6">
+          <div className="aspect-square w-full max-w-[78vh] mx-auto relative mt-6">
             <svg viewBox="0 0 600 600" className="w-full h-full overflow-visible">
               {/* 四象限背景 */}
               {/* 右上 (inflow_up) */}
@@ -254,7 +307,7 @@ export const CapitalTide: React.FC = () => {
               {data.stocks.map((stock) => {
                 const cx = plotX(stock);
                 const cy = plotY(stock);
-                const r = 4 + stock.size * 13;
+                const r = layout.get(stock.code)?.r ?? radiusOf(stock);
                 const fill = getQuadrantDotColor(stock.quadrant);
                 const isMatch = searchQuery
                   ? stock.code.includes(searchQuery) || stock.name.toLowerCase().includes(searchQuery.toLowerCase())
@@ -285,7 +338,7 @@ export const CapitalTide: React.FC = () => {
                 <circle
                   cx={plotX(selectedStock)}
                   cy={plotY(selectedStock)}
-                  r={4 + selectedStock.size * 13 + 4}
+                  r={(layout.get(selectedStock.code)?.r ?? radiusOf(selectedStock)) + 4}
                   fill="none"
                   stroke="#ffffff"
                   strokeWidth="1.5"
@@ -330,7 +383,7 @@ export const CapitalTide: React.FC = () => {
         </div>
 
         {/* 右側面板：強弱分析、法人焦點、動能領先與選定個股 */}
-        <div className="space-y-6">
+        <div className="space-y-6 xl:col-span-2">
           {/* 1. 選定個股看板 */}
           <div className="bg-card border border-border rounded-xl p-5">
             <h3 className="text-xs font-bold text-zinc-400 uppercase tracking-wider mb-3 flex items-center gap-1.5">

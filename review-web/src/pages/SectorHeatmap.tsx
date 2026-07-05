@@ -388,8 +388,10 @@ export const SectorHeatmap: React.FC = () => {
                       const st = tile.item.datum;
                       const isHovered = hoveredStock?.code === st.code;
                       const color = getChangeColor(st.change_pct);
-                      const showLabel = tile.w >= 34 && tile.h >= 20;
+                      const showLabel = tile.w >= 30 && tile.h >= 18;
                       const showPct = tile.w >= 52 && tile.h >= 34;
+                      // 顯示名稱（2330→台積電）；窄格截斷，極窄仍放不下時退回代號
+                      const label = getTruncatedName(st.name || st.code, tile.w - 6) || st.code;
                       return (
                         <g key={st.code} className="cursor-pointer">
                           <rect
@@ -415,7 +417,7 @@ export const SectorHeatmap: React.FC = () => {
                                 dominantBaseline="middle"
                                 className="fill-white font-bold text-[10px]"
                               >
-                                {st.code}
+                                {label}
                               </text>
                               {showPct && (
                                 <text

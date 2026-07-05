@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useMemo } from 'react';
-import { useParams, Link } from 'react-router-dom';
+import { useParams, Link, useSearchParams } from 'react-router-dom';
 import { api } from '../lib/api';
 import type { StockDetail as IStockDetail, StockChips, StockFundamentals, StockNews, Book, OhlcvRow, AgentDecision, DebateParticipant } from '../lib/api';
 import { RefreshCw, BarChart2, TrendingUp, Cpu, Newspaper, DollarSign, AlertTriangle, Users, MessageSquare, Info, AlertCircle, ArrowLeft } from 'lucide-react';
@@ -9,9 +9,61 @@ import { StockBriefCard } from '../components/StockBriefCard';
 import { buildStockBrief } from '../lib/stockBrief';
 import type { StockBriefInput } from '../lib/stockBrief';
 
+export type StockTab = 'basic' | 'industry' | 'financials' | 'chips' | 'etf' | 'technical' | 'news' | 'ai';
+
+interface TabItem {
+  id: StockTab;
+  label: string;
+  isSoon?: boolean;
+}
+
+const STOCK_TABS: TabItem[] = [
+  { id: 'basic', label: '基本資料', isSoon: true },
+  { id: 'industry', label: '產業分析', isSoon: true },
+  { id: 'financials', label: '財務分析' },
+  { id: 'chips', label: '籌碼分析' },
+  { id: 'etf', label: 'ETF 持倉', isSoon: true },
+  { id: 'technical', label: '技術分析' },
+  { id: 'news', label: '相關新聞' },
+  { id: 'ai', label: 'AI 審視' },
+];
+
+const DEFAULT_STOCK_TAB: StockTab = 'technical';
+
+const ComingSoon: React.FC<{ label: string }> = ({ label }) => {
+  return (
+    <div className="bg-card border border-border rounded-xl p-12 flex flex-col items-center justify-center text-center min-h-[320px]">
+      <div className="w-12 h-12 rounded-2xl bg-primary/10 border border-primary/20 flex items-center justify-center mb-4 text-primary">
+        <Info className="w-6 h-6" />
+      </div>
+      <h3 className="text-base font-semibold text-zinc-200 mb-1">
+        〔{label}〕資料整理中，敬請期待
+      </h3>
+      <p className="text-xs text-zinc-500 max-w-sm">
+        資料將走自家 TWSE / FinMind，非爬取他站
+      </p>
+    </div>
+  );
+};
+
 export const StockDetail: React.FC = () => {
   const { code } = useParams<{ code: string }>();
   const activeCode = code || '2330';
+
+  const [searchParams, setSearchParams] = useSearchParams();
+  const rawTab = searchParams.get('tab') as StockTab | null;
+  const activeTab: StockTab = useMemo(() => {
+    if (rawTab && STOCK_TABS.some(t => t.id === rawTab)) {
+      return rawTab;
+    }
+    return DEFAULT_STOCK_TAB;
+  }, [rawTab]);
+
+  const handleTabChange = (tabId: StockTab) => {
+    const nextParams = new URLSearchParams(searchParams);
+    nextParams.set('tab', tabId);
+    setSearchParams(nextParams, { replace: true });
+  };
 
   // Section States
   const [headerBookState, setHeaderBookState] = useState<{ data: Book | null; loading: boolean; error: string | null }>({ data: null, loading: true, error: null });
@@ -645,14 +697,14 @@ export const StockDetail: React.FC = () => {
     }
   };
 
-  // Auto-polling for Book
+  // Auto-polling for Book (only active when technical tab is mounted)
   useEffect(() => {
-    if (!autoPoll) return;
+    if (!autoPoll || activeTab !== 'technical') return;
     const interval = setInterval(() => {
       fetchHeaderAndBook();
     }, 5000);
     return () => clearInterval(interval);
-  }, [autoPoll, activeCode, useMock]);
+  }, [autoPoll, activeTab, activeCode, useMock]);
 
   // Initial Fetch（換股一律以日K載入，確保摘要卡動能軸/觀察點有日K快照可算；請求數不變）
   useEffect(() => {
@@ -2323,123 +2375,52 @@ export const StockDetail: React.FC = () => {
         onRetry={() => fetchAllData()}
       />
 
-      <div className="space-y-6">
-        {/* Main Section: Chart on Left, Signals/OrderBook on Right */}
-        <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
-          {/* K-line Chart */}
-          <div className="xl:col-span-2 bg-card border border-border rounded-xl p-6 flex flex-col justify-between min-h-[420px]">
-            <div className="flex items-center justify-between border-b border-border/60 pb-3 mb-4 flex-wrap gap-2">
-              <div className="flex items-center gap-2">
-                <BarChart2 className="w-5 h-5 text-primary" />
-                <span className="text-sm font-semibold text-zinc-200">互動式 K 線技術圖表</span>
-              </div>
-              <div className="flex bg-zinc-950/60 p-1 rounded-lg border border-border/80 text-xs">
-                <button
-                  onClick={() => handleKlineTypeChange('daily')}
-                  className={`px-3 py-1 rounded-md transition ${klineState.type === 'daily' ? 'bg-primary text-white font-semibold' : 'text-zinc-400 hover:text-zinc-200'}`}
-                >
-                  還原日 K 線
-                </button>
-                <button
-                  onClick={() => handleKlineTypeChange('intraday')}
-                  className={`px-3 py-1 rounded-md transition ${klineState.type === 'intraday' ? 'bg-primary text-white font-semibold' : 'text-zinc-400 hover:text-zinc-200'}`}
-                >
-                  盤中分 K 線
-                </button>
-              </div>
-            </div>
-
-            <div className="flex-1 flex flex-col justify-center min-h-[300px]">
-              {klineState.loading ? (
-                <div className="text-xs text-zinc-500 animate-pulse text-center py-16">載入 K 線圖表中...</div>
-              ) : klineState.error ? (
-                <div className="p-6 border border-bull/20 bg-bull/5 rounded-lg text-center">
-                  <p className="text-xs text-bull font-semibold mb-2">無法取得 K 線資料</p>
-                  <p className="text-[10px] text-zinc-500 font-mono mb-4">{klineState.error}</p>
-                  <button
-                    onClick={() => fetchKlineData(klineState.type)}
-                    className="px-3 py-1 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded text-xs transition border border-border"
-                  >
-                    重試
-                  </button>
-                </div>
-              ) : klineState.data && klineState.data.length > 0 ? (
-                <PriceChart rows={klineState.data} isIntraday={klineState.type === 'intraday'} />
-              ) : (
-                <div className="text-center py-16 text-zinc-500 text-xs">無圖表資料</div>
-              )}
-            </div>
-          </div>
-
-          {/* Right Column: AI Decision & Order Book */}
-          <div className="flex flex-col gap-6">
-            {/* AI Decision */}
-            <div className="bg-card border border-border rounded-xl p-6 flex flex-col">
-              <div className="flex items-center gap-2 mb-4 border-b border-border/60 pb-3">
-                <Cpu className="w-5 h-5 text-primary" />
-                <h3 className="font-semibold text-sm text-zinc-200">AI 交易決策訊號</h3>
-              </div>
-              {signalState.loading ? (
-                <div className="text-xs text-zinc-500 animate-pulse text-center py-8">載入交易決策中...</div>
-              ) : signalState.error ? (
-                <div className="p-4 border border-bull/20 bg-bull/5 rounded-lg text-center text-xs text-bull">
-                  <div>{signalState.error}</div>
-                  <button onClick={fetchSignal} className="mt-2 px-3 py-1 bg-zinc-800 hover:bg-zinc-750 rounded text-[10px] text-zinc-300">重試</button>
-                </div>
-              ) : signalState.data ? (
-                <div className="space-y-4 flex-1 flex flex-col justify-between">
-                  <div className="space-y-3">
-                    <div className="flex justify-between items-center p-3 rounded-lg bg-zinc-950/40 border border-border/30">
-                      <span className="text-xs text-zinc-400">波段決策 (Swing)</span>
-                      <span className={`text-xs font-semibold px-2 py-0.5 rounded ${signalState.data.swing.action === 'BUY' ? 'bg-bull/10 text-bull' : signalState.data.swing.action === 'SELL' ? 'bg-bear/10 text-bear' : 'bg-zinc-800 text-zinc-400'}`}>
-                        {signalState.data.swing.action} ({signalState.data.swing.score}分)
-                      </span>
-                    </div>
-                    <div className="flex justify-between items-center p-3 rounded-lg bg-zinc-950/40 border border-border/30">
-                      <span className="text-xs text-zinc-400">當沖決策 (Daytrade)</span>
-                      <span className={`text-xs font-semibold px-2 py-0.5 rounded ${signalState.data.daytrade.action === 'BUY' ? 'bg-bull/10 text-bull' : signalState.data.daytrade.action === 'SELL' ? 'bg-bear/10 text-bear' : 'bg-zinc-800 text-zinc-400'}`}>
-                        {signalState.data.daytrade.action} ({signalState.data.daytrade.score}分)
-                      </span>
-                    </div>
-                    <div className="flex justify-between items-center p-3.5 rounded-lg bg-primary/5 border border-primary/20">
-                      <span className="text-xs font-semibold text-zinc-200">融合訊號 (Blended)</span>
-                      <span className="text-sm font-bold text-primary font-mono">{signalState.data.blended.action} ({signalState.data.blended.score}分)</span>
-                    </div>
-                  </div>
-                  <div className="mt-4 pt-3 border-t border-border/40 text-[10px] text-zinc-500 font-mono text-right">
-                    更新於: {new Date(signalState.data.generated_at || '').toLocaleString()}
-                  </div>
-                </div>
-              ) : (
-                <div className="text-xs text-zinc-500 text-center py-8">無決策資料</div>
-              )}
-            </div>
-
-            {/* Best 5 Order Book */}
-            <div className="bg-card border border-border rounded-xl p-6 flex flex-col">
-              <div className="flex items-center justify-between border-b border-border/60 pb-3 mb-4">
-                <div className="flex items-center gap-2">
-                  <TrendingUp className="w-5 h-5 text-primary" />
-                  <h3 className="font-semibold text-sm text-zinc-200">即時最佳五檔</h3>
-                </div>
-                <label className="flex items-center gap-1.5 cursor-pointer text-[10px] text-zinc-400 select-none">
-                  <input
-                    type="checkbox"
-                    checked={autoPoll}
-                    onChange={(e) => setAutoPoll(e.target.checked)}
-                    className="rounded border-zinc-800 bg-zinc-950 text-primary focus:ring-0 focus:ring-offset-0 w-3 h-3"
-                  />
-                  <span>自動更新(5s)</span>
-                </label>
-              </div>
-              {renderOrderBook()}
-            </div>
-          </div>
+      {/* Tab Navigation Bar */}
+      <div className="border-b border-border/80">
+        <div className="flex items-center gap-2 overflow-x-auto pb-2 scrollbar-none">
+          {STOCK_TABS.map((t) => {
+            const isActive = activeTab === t.id;
+            return (
+              <button
+                key={t.id}
+                onClick={() => handleTabChange(t.id)}
+                className={`flex items-center gap-1.5 px-4 py-2 text-xs font-semibold rounded-lg transition whitespace-nowrap shrink-0 ${
+                  isActive
+                    ? 'bg-primary text-white shadow-sm'
+                    : 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800/40'
+                }`}
+              >
+                <span>{t.label}</span>
+                {t.isSoon && (
+                  <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-normal ${
+                    isActive ? 'bg-white/20 text-white' : 'bg-zinc-800 text-zinc-400 border border-zinc-700/50'
+                  }`}>
+                    soon
+                  </span>
+                )}
+              </button>
+            );
+          })}
         </div>
+      </div>
 
-        {/* Chips & Fundamentals */}
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          {/* Chips */}
+      {/* Tab Content Section */}
+      <div className="space-y-6">
+        {activeTab === 'basic' && <ComingSoon label="基本資料" />}
+        {activeTab === 'industry' && <ComingSoon label="產業分析" />}
+        {activeTab === 'etf' && <ComingSoon label="ETF 持倉" />}
+
+        {activeTab === 'financials' && (
+          <div className="bg-card border border-border rounded-xl p-6">
+            <div className="flex items-center gap-2 mb-4 border-b border-border/60 pb-3">
+              <DollarSign className="w-5 h-5 text-primary" />
+              <h3 className="font-semibold text-sm text-zinc-200">基本面估值與增長率</h3>
+            </div>
+            {renderFundamentals()}
+          </div>
+        )}
+
+        {activeTab === 'chips' && (
           <div className="bg-card border border-border rounded-xl p-6">
             <div className="flex items-center gap-2 mb-4 border-b border-border/60 pb-3">
               <TrendingUp className="w-5 h-5 text-primary" />
@@ -2462,138 +2443,243 @@ export const StockDetail: React.FC = () => {
               <div className="text-xs text-zinc-500 text-center py-8">無籌碼資料</div>
             )}
           </div>
+        )}
 
-          {/* Fundamentals */}
-          <div className="bg-card border border-border rounded-xl p-6">
-            <div className="flex items-center gap-2 mb-4 border-b border-border/60 pb-3">
-              <DollarSign className="w-5 h-5 text-primary" />
-              <h3 className="font-semibold text-sm text-zinc-200">基本面估值與增長率</h3>
-            </div>
-            {renderFundamentals()}
-          </div>
-        </div>
-
-        {/* News */}
-        <div className="bg-card border border-border rounded-xl p-6">
-          <div className="flex items-center justify-between gap-2 mb-4 border-b border-border/60 pb-3">
-            <div className="flex items-center gap-2">
-              <Newspaper className="w-5 h-5 text-primary" />
-              <h3 className="font-semibold text-sm text-zinc-200">即時市場輿情與新聞情緒</h3>
-            </div>
-            <button
-              onClick={fetchNews}
-              disabled={newsState.loading}
-              className="px-2.5 py-1 bg-zinc-800 hover:bg-zinc-700 disabled:bg-zinc-900 disabled:text-zinc-600 rounded text-xs text-zinc-300 transition flex items-center gap-1"
-            >
-              刷新
-            </button>
-          </div>
-
-          {newsState.loading ? (
-            <div className="text-xs text-zinc-500 animate-pulse text-center py-8">載入新聞輿情中...</div>
-          ) : newsState.error ? (
-            <div className="p-4 border border-bull/20 bg-bull/5 rounded-lg text-center text-xs text-bull">
-              <div>{newsState.error}</div>
-              <button onClick={fetchNews} className="mt-2 px-3 py-1 bg-zinc-800 hover:bg-zinc-700 rounded text-[10px] text-zinc-300">重試</button>
-            </div>
-          ) : newsState.data ? (
-            <div className="space-y-6">
-              {/* Summary Statistics */}
-              <div className="p-4 rounded-xl bg-zinc-950/20 border border-border/50 grid grid-cols-1 md:grid-cols-2 gap-4 items-center">
-                <div className="flex flex-wrap items-center gap-3">
-                  <span className="text-xs text-zinc-400">整體輿情傾向:</span>
-                  <span className={`text-xs font-semibold px-2.5 py-1 rounded flex items-center gap-1.5 ${
-                    newsState.data.summary.overall_label === 'positive'
-                      ? 'bg-bull/10 text-bull border border-bull/20'
-                      : newsState.data.summary.overall_label === 'negative'
-                      ? 'bg-bear/10 text-bear border border-bear/20'
-                      : 'bg-zinc-800 text-zinc-400 border border-zinc-750'
-                  }`}>
-                    {newsState.data.summary.overall_label === 'positive' ? '利多' : newsState.data.summary.overall_label === 'negative' ? '利空' : '中性'}
-                    <span className="font-mono">({newsState.data.summary.overall_score.toFixed(1)}分)</span>
-                  </span>
-
-                  {(() => {
-                    const fSentimentScore = signalState.data?.swing?.factors?.find(f => f.key === 'sentiment')?.score;
-                    return fSentimentScore !== undefined ? (
-                      <span className="text-xs text-zinc-500 border border-border/40 px-2 py-0.5 rounded font-mono">
-                        F_sentiment 因子分: {fSentimentScore}分
-                      </span>
-                    ) : null;
-                  })()}
+        {activeTab === 'technical' && (
+          <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
+            {/* K-line Chart */}
+            <div className="xl:col-span-2 bg-card border border-border rounded-xl p-6 flex flex-col justify-between min-h-[420px]">
+              <div className="flex items-center justify-between border-b border-border/60 pb-3 mb-4 flex-wrap gap-2">
+                <div className="flex items-center gap-2">
+                  <BarChart2 className="w-5 h-5 text-primary" />
+                  <span className="text-sm font-semibold text-zinc-200">互動式 K 線技術圖表</span>
                 </div>
-
-                <div className="flex items-center justify-start md:justify-end gap-3 text-xs">
-                  <span className="text-zinc-400 font-medium">統計結果:</span>
-                  <div className="flex gap-2">
-                    <span className="text-bull px-2 py-0.5 bg-bull/5 rounded-md border border-bull/10 font-mono">
-                      利多 {newsState.data.summary.positive}
-                    </span>
-                    <span className="text-bear px-2 py-0.5 bg-bear/5 rounded-md border border-bear/10 font-mono">
-                      利空 {newsState.data.summary.negative}
-                    </span>
-                    <span className="text-zinc-400 px-2 py-0.5 bg-zinc-800/40 rounded-md border border-zinc-700/50 font-mono">
-                      中性 {newsState.data.summary.neutral}
-                    </span>
-                    <span className="text-zinc-500 font-mono">
-                      共 {newsState.data.summary.total} 則
-                    </span>
-                  </div>
+                <div className="flex bg-zinc-950/60 p-1 rounded-lg border border-border/80 text-xs">
+                  <button
+                    onClick={() => handleKlineTypeChange('daily')}
+                    className={`px-3 py-1 rounded-md transition ${klineState.type === 'daily' ? 'bg-primary text-white font-semibold' : 'text-zinc-400 hover:text-zinc-200'}`}
+                  >
+                    還原日 K 線
+                  </button>
+                  <button
+                    onClick={() => handleKlineTypeChange('intraday')}
+                    className={`px-3 py-1 rounded-md transition ${klineState.type === 'intraday' ? 'bg-primary text-white font-semibold' : 'text-zinc-400 hover:text-zinc-200'}`}
+                  >
+                    盤中分 K 線
+                  </button>
                 </div>
               </div>
 
-              {/* News Items List */}
-              {newsState.data.items.length > 0 ? (
-                <div className="space-y-4">
-                  {newsState.data.items.map((item, idx) => (
-                    <div key={idx} className="p-4 rounded-lg bg-zinc-950/40 border border-border/30 flex items-start gap-4">
-                      <div className={`shrink-0 text-[10px] font-semibold px-2 py-1.5 rounded text-center min-w-[70px] ${
-                        item.sentiment.label === 'positive'
-                          ? 'bg-bull/10 text-bull border border-bull/20'
-                          : item.sentiment.label === 'negative'
-                          ? 'bg-bear/10 text-bear border border-bear/20'
-                          : 'bg-zinc-800 text-zinc-400'
-                      }`}>
-                        <div>{item.sentiment.label === 'positive' ? '利多' : item.sentiment.label === 'negative' ? '利空' : '中性'}</div>
-                        <div className="font-mono text-[9px] mt-0.5">{item.sentiment.score.toFixed(0)}分</div>
+              <div className="flex-1 flex flex-col justify-center min-h-[300px]">
+                {klineState.loading ? (
+                  <div className="text-xs text-zinc-500 animate-pulse text-center py-16">載入 K 線圖表中...</div>
+                ) : klineState.error ? (
+                  <div className="p-6 border border-bull/20 bg-bull/5 rounded-lg text-center">
+                    <p className="text-xs text-bull font-semibold mb-2">無法取得 K 線資料</p>
+                    <p className="text-[10px] text-zinc-500 font-mono mb-4">{klineState.error}</p>
+                    <button
+                      onClick={() => fetchKlineData(klineState.type)}
+                      className="px-3 py-1 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded text-xs transition border border-border"
+                    >
+                      重試
+                    </button>
+                  </div>
+                ) : klineState.data && klineState.data.length > 0 ? (
+                  <PriceChart rows={klineState.data} isIntraday={klineState.type === 'intraday'} />
+                ) : (
+                  <div className="text-center py-16 text-zinc-500 text-xs">無圖表資料</div>
+                )}
+              </div>
+            </div>
+
+            {/* Right Column: AI Decision & Order Book */}
+            <div className="flex flex-col gap-6">
+              {/* AI Decision */}
+              <div className="bg-card border border-border rounded-xl p-6 flex flex-col">
+                <div className="flex items-center gap-2 mb-4 border-b border-border/60 pb-3">
+                  <Cpu className="w-5 h-5 text-primary" />
+                  <h3 className="font-semibold text-sm text-zinc-200">AI 交易決策訊號</h3>
+                </div>
+                {signalState.loading ? (
+                  <div className="text-xs text-zinc-500 animate-pulse text-center py-8">載入交易決策中...</div>
+                ) : signalState.error ? (
+                  <div className="p-4 border border-bull/20 bg-bull/5 rounded-lg text-center text-xs text-bull">
+                    <div>{signalState.error}</div>
+                    <button onClick={fetchSignal} className="mt-2 px-3 py-1 bg-zinc-800 hover:bg-zinc-750 rounded text-[10px] text-zinc-300">重試</button>
+                  </div>
+                ) : signalState.data ? (
+                  <div className="space-y-4 flex-1 flex flex-col justify-between">
+                    <div className="space-y-3">
+                      <div className="flex justify-between items-center p-3 rounded-lg bg-zinc-950/40 border border-border/30">
+                        <span className="text-xs text-zinc-400">波段決策 (Swing)</span>
+                        <span className={`text-xs font-semibold px-2 py-0.5 rounded ${signalState.data.swing.action === 'BUY' ? 'bg-bull/10 text-bull' : signalState.data.swing.action === 'SELL' ? 'bg-bear/10 text-bear' : 'bg-zinc-800 text-zinc-400'}`}>
+                          {signalState.data.swing.action} ({signalState.data.swing.score}分)
+                        </span>
                       </div>
-
-                      <div className="space-y-1 flex-1">
-                        <h4 className="text-xs font-semibold text-zinc-200 hover:text-primary transition">
-                          <a href={item.url ?? undefined} target="_blank" rel="noopener noreferrer">
-                            {item.title}
-                          </a>
-                        </h4>
-                        {item.summary && (
-                          <p className="text-[11px] text-zinc-500 leading-relaxed line-clamp-2">{item.summary}</p>
-                        )}
-
-                        <div className="flex flex-wrap gap-x-3 gap-y-1 text-[10px] text-zinc-500 font-mono pt-1">
-                          <span>來源: {item.source}</span>
-                          <span>•</span>
-                          <span>發布時間: {getRelativeTime(item.published)}</span>
-                          {item.sentiment.hits && item.sentiment.hits.length > 0 && (
-                            <>
-                              <span>•</span>
-                              <span className="text-zinc-500">命詞: {item.sentiment.hits.slice(0, 5).join(', ')}</span>
-                            </>
-                          )}
-                        </div>
+                      <div className="flex justify-between items-center p-3 rounded-lg bg-zinc-950/40 border border-border/30">
+                        <span className="text-xs text-zinc-400">當沖決策 (Daytrade)</span>
+                        <span className={`text-xs font-semibold px-2 py-0.5 rounded ${signalState.data.daytrade.action === 'BUY' ? 'bg-bull/10 text-bull' : signalState.data.daytrade.action === 'SELL' ? 'bg-bear/10 text-bear' : 'bg-zinc-800 text-zinc-400'}`}>
+                          {signalState.data.daytrade.action} ({signalState.data.daytrade.score}分)
+                        </span>
+                      </div>
+                      <div className="flex justify-between items-center p-3.5 rounded-lg bg-primary/5 border border-primary/20">
+                        <span className="text-xs font-semibold text-zinc-200">融合訊號 (Blended)</span>
+                        <span className="text-sm font-bold text-primary font-mono">{signalState.data.blended.action} ({signalState.data.blended.score}分)</span>
                       </div>
                     </div>
-                  ))}
-                </div>
-              ) : (
-                <div className="text-xs text-zinc-500 text-center py-8">近期無相關新聞</div>
-              )}
-            </div>
-          ) : (
-            <div className="text-xs text-zinc-500 text-center py-8">無即時新聞輿情</div>
-          )}
-        </div>
+                    <div className="mt-4 pt-3 border-t border-border/40 text-[10px] text-zinc-500 font-mono text-right">
+                      更新於: {new Date(signalState.data.generated_at || '').toLocaleString()}
+                    </div>
+                  </div>
+                ) : (
+                  <div className="text-xs text-zinc-500 text-center py-8">無決策資料</div>
+                )}
+              </div>
 
-        {/* AI 全面審視 */}
-        {renderAiReviewSection()}
+              {/* Best 5 Order Book */}
+              <div className="bg-card border border-border rounded-xl p-6 flex flex-col">
+                <div className="flex items-center justify-between border-b border-border/60 pb-3 mb-4">
+                  <div className="flex items-center gap-2">
+                    <TrendingUp className="w-5 h-5 text-primary" />
+                    <h3 className="font-semibold text-sm text-zinc-200">即時最佳五檔</h3>
+                  </div>
+                  <label className="flex items-center gap-1.5 cursor-pointer text-[10px] text-zinc-400 select-none">
+                    <input
+                      type="checkbox"
+                      checked={autoPoll}
+                      onChange={(e) => setAutoPoll(e.target.checked)}
+                      className="rounded border-zinc-800 bg-zinc-950 text-primary focus:ring-0 focus:ring-offset-0 w-3 h-3"
+                    />
+                    <span>自動更新(5s)</span>
+                  </label>
+                </div>
+                {renderOrderBook()}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {activeTab === 'news' && (
+          <div className="bg-card border border-border rounded-xl p-6">
+            <div className="flex items-center justify-between gap-2 mb-4 border-b border-border/60 pb-3">
+              <div className="flex items-center gap-2">
+                <Newspaper className="w-5 h-5 text-primary" />
+                <h3 className="font-semibold text-sm text-zinc-200">即時市場輿情與新聞情緒</h3>
+              </div>
+              <button
+                onClick={fetchNews}
+                disabled={newsState.loading}
+                className="px-2.5 py-1 bg-zinc-800 hover:bg-zinc-700 disabled:bg-zinc-900 disabled:text-zinc-600 rounded text-xs text-zinc-300 transition flex items-center gap-1"
+              >
+                刷新
+              </button>
+            </div>
+
+            {newsState.loading ? (
+              <div className="text-xs text-zinc-500 animate-pulse text-center py-8">載入新聞輿情中...</div>
+            ) : newsState.error ? (
+              <div className="p-4 border border-bull/20 bg-bull/5 rounded-lg text-center text-xs text-bull">
+                <div>{newsState.error}</div>
+                <button onClick={fetchNews} className="mt-2 px-3 py-1 bg-zinc-800 hover:bg-zinc-700 rounded text-[10px] text-zinc-300">重試</button>
+              </div>
+            ) : newsState.data ? (
+              <div className="space-y-6">
+                {/* Summary Statistics */}
+                <div className="p-4 rounded-xl bg-zinc-950/20 border border-border/50 grid grid-cols-1 md:grid-cols-2 gap-4 items-center">
+                  <div className="flex flex-wrap items-center gap-3">
+                    <span className="text-xs text-zinc-400">整體輿情傾向:</span>
+                    <span className={`text-xs font-semibold px-2.5 py-1 rounded flex items-center gap-1.5 ${
+                      newsState.data.summary.overall_label === 'positive'
+                        ? 'bg-bull/10 text-bull border border-bull/20'
+                        : newsState.data.summary.overall_label === 'negative'
+                        ? 'bg-bear/10 text-bear border border-bear/20'
+                        : 'bg-zinc-800 text-zinc-400 border border-zinc-750'
+                    }`}>
+                      {newsState.data.summary.overall_label === 'positive' ? '利多' : newsState.data.summary.overall_label === 'negative' ? '利空' : '中性'}
+                      <span className="font-mono">({newsState.data.summary.overall_score.toFixed(1)}分)</span>
+                    </span>
+
+                    {(() => {
+                      const fSentimentScore = signalState.data?.swing?.factors?.find(f => f.key === 'sentiment')?.score;
+                      return fSentimentScore !== undefined ? (
+                        <span className="text-xs text-zinc-500 border border-border/40 px-2 py-0.5 rounded font-mono">
+                          F_sentiment 因子分: {fSentimentScore}分
+                        </span>
+                      ) : null;
+                    })()}
+                  </div>
+
+                  <div className="flex items-center justify-start md:justify-end gap-3 text-xs">
+                    <span className="text-zinc-400 font-medium">統計結果:</span>
+                    <div className="flex gap-2">
+                      <span className="text-bull px-2 py-0.5 bg-bull/5 rounded-md border border-bull/10 font-mono">
+                        利多 {newsState.data.summary.positive}
+                      </span>
+                      <span className="text-bear px-2 py-0.5 bg-bear/5 rounded-md border border-bear/10 font-mono">
+                        利空 {newsState.data.summary.negative}
+                      </span>
+                      <span className="text-zinc-400 px-2 py-0.5 bg-zinc-800/40 rounded-md border border-zinc-700/50 font-mono">
+                        中性 {newsState.data.summary.neutral}
+                      </span>
+                      <span className="text-zinc-500 font-mono">
+                        共 {newsState.data.summary.total} 則
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* News Items List */}
+                {newsState.data.items.length > 0 ? (
+                  <div className="space-y-4">
+                    {newsState.data.items.map((item, idx) => (
+                      <div key={idx} className="p-4 rounded-lg bg-zinc-950/40 border border-border/30 flex items-start gap-4">
+                        <div className={`shrink-0 text-[10px] font-semibold px-2 py-1.5 rounded text-center min-w-[70px] ${
+                          item.sentiment.label === 'positive'
+                            ? 'bg-bull/10 text-bull border border-bull/20'
+                            : item.sentiment.label === 'negative'
+                            ? 'bg-bear/10 text-bear border border-bear/20'
+                            : 'bg-zinc-800 text-zinc-400'
+                        }`}>
+                          <div>{item.sentiment.label === 'positive' ? '利多' : item.sentiment.label === 'negative' ? '利空' : '中性'}</div>
+                          <div className="font-mono text-[9px] mt-0.5">{item.sentiment.score.toFixed(0)}分</div>
+                        </div>
+
+                        <div className="space-y-1 flex-1">
+                          <h4 className="text-xs font-semibold text-zinc-200 hover:text-primary transition">
+                            <a href={item.url ?? undefined} target="_blank" rel="noopener noreferrer">
+                              {item.title}
+                            </a>
+                          </h4>
+                          {item.summary && (
+                            <p className="text-[11px] text-zinc-500 leading-relaxed line-clamp-2">{item.summary}</p>
+                          )}
+
+                          <div className="flex flex-wrap gap-x-3 gap-y-1 text-[10px] text-zinc-500 font-mono pt-1">
+                            <span>來源: {item.source}</span>
+                            <span>•</span>
+                            <span>發布時間: {getRelativeTime(item.published)}</span>
+                            {item.sentiment.hits && item.sentiment.hits.length > 0 && (
+                              <>
+                                <span>•</span>
+                                <span className="text-zinc-500">命詞: {item.sentiment.hits.slice(0, 5).join(', ')}</span>
+                              </>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="text-xs text-zinc-500 text-center py-8">近期無相關新聞</div>
+                )}
+              </div>
+            ) : (
+              <div className="text-xs text-zinc-500 text-center py-8">無即時新聞輿情</div>
+            )}
+          </div>
+        )}
+
+        {activeTab === 'ai' && renderAiReviewSection()}
       </div>
     </div>
   );
