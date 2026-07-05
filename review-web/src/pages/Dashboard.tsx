@@ -19,7 +19,6 @@ import {
   RefreshCw,
   Plus,
   Trash2,
-  Waves,
   LayoutGrid,
   ExternalLink,
   Flame,
@@ -569,7 +568,6 @@ export const Dashboard: React.FC = () => {
     error: string | null;
   }>({ data: null, loading: true, error: null });
 
-  const [range, setRange] = useState<'1d' | '5d' | '1m'>('1d');
   const [userWatchlist, setUserWatchlist] = useState<UserStock[]>([]);
   const [showSearch, setShowSearch] = useState(false);
 
@@ -781,7 +779,7 @@ export const Dashboard: React.FC = () => {
   const fetchIndices = async () => {
     setIndicesState((prev) => ({ ...prev, loading: true, error: null }));
     try {
-      const data = await api.marketIndices({ range });
+      const data = await api.marketIndices({ range: '1d' });
       setIndicesState({ data, loading: false, error: null });
     } catch (err: any) {
       setIndicesState({ data: null, loading: false, error: err.message || '無法取得指數資料' });
@@ -905,12 +903,6 @@ export const Dashboard: React.FC = () => {
     fetchAllData();
   }, [useMock]);
 
-  useEffect(() => {
-    if (!useMock) {
-      fetchIndices();
-    }
-  }, [range]);
-
   // Market Summary Logic
   const summary = useMemo(() => {
     return buildMarketSummary({
@@ -921,43 +913,12 @@ export const Dashboard: React.FC = () => {
     });
   }, [breadthState.data, institutionalState.data, dashboardState.data]);
 
-  // Sparkline chart renderer for indices
-  const renderSparkline = (row: any) => {
-    const points = range === '1d' ? row.intraday : row.history;
-    if (!points || points.length === 0) {
-      return <span className="text-[10px] text-zinc-500 italic">無走勢圖</span>;
-    }
-    const values = points.map((p: any) => (p.v !== undefined ? p.v : p.close || 0));
-    const min = Math.min(...values);
-    const max = Math.max(...values);
-    const valRange = max - min || 1;
-    const width = 80;
-    const height = 24;
-    const isUp = (row.change || 0) >= 0;
-    const strokeColor = isUp ? '#ef4444' : '#22c55e';
-
-    const coords = points
-      .map((p: any, idx: number) => {
-        const val = p.v !== undefined ? p.v : p.close || 0;
-        const x = (idx / (points.length - 1)) * width;
-        const y = height - ((val - min) / valRange) * height;
-        return `${x},${y}`;
-      })
-      .join(' ');
-
-    return (
-      <svg width={width} height={height} className="overflow-visible">
-        <polyline fill="none" stroke={strokeColor} strokeWidth="1.5" points={coords} />
-      </svg>
-    );
-  };
-
   // Institutional Trend Chart Renderer
   const renderTrendChart = (trend: any[]) => {
     if (!trend || trend.length === 0) return null;
     const width = 500;
-    const height = 140;
-    const padding = { top: 10, right: 30, bottom: 20, left: 50 };
+    const height = 175;
+    const padding = { top: 16, right: 24, bottom: 26, left: 50 };
 
     const allValues = trend.flatMap((d) => [d.foreign, d.investment_trust, d.dealer, d.total]);
     const minVal = Math.min(...allValues);
@@ -1003,14 +964,15 @@ export const Dashboard: React.FC = () => {
           </text>
 
           {trend.map((d, idx) => {
-            if (idx === 0 || idx === trend.length - 1 || idx === Math.floor(trend.length / 2)) {
+            // 近 10 日：每隔一日標一次日期，避免文字重疊
+            if (idx % 2 === 0 || idx === trend.length - 1) {
               return (
                 <text
                   key={idx}
                   x={getX(idx)}
-                  y={height - 5}
+                  y={height - 6}
                   fill="#71717a"
-                  fontSize="8"
+                  fontSize="9"
                   textAnchor="middle"
                 >
                   {d.date.slice(5)}
@@ -1208,16 +1170,16 @@ export const Dashboard: React.FC = () => {
         </div>
       </div>
 
-      {/* Grid Layout (12-col desktop, 2-col tablet, 1-col mobile) */}
+      {/* Grid Layout (12-col desktop, 2-col tablet, 1-col mobile) — 三欄式主版面 */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-12 gap-5">
-        {/* ROW 1: 盤面分析卡 (5 col) + 指數走勢卡 (7 col) */}
+        {/* ROW 1: 盤面氣氛 (4) + 期現貨走勢 (4) + 漲跌家數直方圖 (4) */}
 
         {/* 盤面分析卡 */}
         <OverviewCard
           title="盤面氣氛與關鍵指標"
           icon={<Gauge className="w-5 h-5 text-primary" />}
           caption="極速規則式診斷 · 零 LLM 延遲"
-          className="lg:col-span-5"
+          className="lg:col-span-4"
           footer={
             <>
               <span>規則式合成，非投資建議</span>
@@ -1362,27 +1324,10 @@ export const Dashboard: React.FC = () => {
         {/* 指數走勢卡 */}
         <OverviewCard
           id="index-card"
-          title="期現貨指數與分時走勢"
+          title="期現貨指數"
           icon={<TrendingUp className="w-5 h-5 text-primary" />}
-          caption="即時加權、櫃買、台指期分時變化"
-          className="lg:col-span-7"
-          actions={
-            <div className="flex gap-1">
-              {(['1d', '5d', '1m'] as const).map((r) => (
-                <button
-                  key={r}
-                  onClick={() => setRange(r)}
-                  className={`px-2 py-0.5 rounded text-[10px] transition ${
-                    range === r
-                      ? 'bg-primary text-primary-foreground font-semibold'
-                      : 'bg-zinc-800 hover:bg-zinc-700 text-zinc-400'
-                  }`}
-                >
-                  {r.toUpperCase()}
-                </button>
-              ))}
-            </div>
-          }
+          caption="加權、櫃買、電子、金融、台指期報價"
+          className="lg:col-span-4"
           loading={indicesState.loading}
           error={indicesState.error}
           onRetry={fetchIndices}
@@ -1394,7 +1339,7 @@ export const Dashboard: React.FC = () => {
             )
           }
         >
-          <div className="space-y-2.5">
+          <div className="space-y-2">
             {indicesState.data?.indices.map((idx) => {
               const isUp = (idx.change || 0) >= 0;
               return (
@@ -1402,32 +1347,29 @@ export const Dashboard: React.FC = () => {
                   key={idx.key}
                   className="flex items-center justify-between p-3 rounded-lg bg-zinc-950/40 border border-border/30"
                 >
-                  <div>
-                    <div className="text-xs font-semibold text-zinc-200">{idx.name}</div>
+                  <div className="min-w-0">
+                    <div className="text-sm font-semibold text-zinc-200 truncate">{idx.name}</div>
                     <div className="text-[9px] text-zinc-500 font-mono mt-0.5">
                       來源: {idx.source}
                     </div>
                   </div>
-                  <div className="flex items-center gap-6">
-                    <div className="h-6 flex items-center">{renderSparkline(idx)}</div>
-                    <div className="text-right min-w-[100px]">
-                      <div className="text-xs font-bold font-mono text-zinc-100">
-                        {idx.price !== null
-                          ? idx.price.toLocaleString(undefined, { minimumFractionDigits: 2 })
-                          : '--'}
-                      </div>
-                      <div
-                        className={`text-[10px] font-mono font-medium mt-0.5 ${
-                          isUp ? 'text-bull' : 'text-bear'
-                        }`}
-                      >
-                        {idx.change !== null
-                          ? `${idx.change >= 0 ? '+' : ''}${idx.change.toFixed(2)}`
-                          : '--'}
-                        {idx.change_pct !== null
-                          ? ` (${idx.change_pct >= 0 ? '+' : ''}${idx.change_pct.toFixed(2)}%)`
-                          : ''}
-                      </div>
+                  <div className="text-right shrink-0">
+                    <div className="text-sm font-bold font-mono text-zinc-100">
+                      {idx.price !== null
+                        ? idx.price.toLocaleString(undefined, { minimumFractionDigits: 2 })
+                        : '--'}
+                    </div>
+                    <div
+                      className={`text-[11px] font-mono font-medium mt-0.5 ${
+                        isUp ? 'text-bull' : 'text-bear'
+                      }`}
+                    >
+                      {idx.change !== null
+                        ? `${idx.change >= 0 ? '+' : ''}${idx.change.toFixed(2)}`
+                        : '--'}
+                      {idx.change_pct !== null
+                        ? ` (${idx.change_pct >= 0 ? '+' : ''}${idx.change_pct.toFixed(2)}%)`
+                        : ''}
                     </div>
                   </div>
                 </div>
@@ -1436,14 +1378,12 @@ export const Dashboard: React.FC = () => {
           </div>
         </OverviewCard>
 
-        {/* ROW 2: 漲跌分布直方圖 (6 col) + 三大法人買賣超 (6 col) */}
-
-        {/* 漲跌分布直方圖 */}
+        {/* 漲跌分布直方圖 — Row1 右 (order-3) */}
         <OverviewCard
           title="漲跌家數分布直方圖"
           icon={<BarChart3 className="w-5 h-5 text-primary" />}
           caption="上市普通股 1% 級距直條圖與漲跌停 Strip"
-          className="lg:col-span-6"
+          className="lg:col-span-4 lg:order-3"
           loading={heatmapState.loading}
           error={heatmapState.error}
           onRetry={() => fetchHeatmap(true)}
@@ -1457,12 +1397,12 @@ export const Dashboard: React.FC = () => {
           <HistogramChart heatmapData={heatmapState.data} />
         </OverviewCard>
 
-        {/* 三大法人買賣超 */}
+        {/* 三大法人買賣超 — Row2 左 (order-4) */}
         <OverviewCard
           title="三大法人現貨資金流向"
           icon={<Users className="w-5 h-5 text-primary" />}
-          caption="外資、投信、自營商買賣超與 20 日趨勢"
-          className="lg:col-span-6"
+          caption="外資、投信、自營商買賣超與近 10 日趨勢"
+          className="lg:col-span-4 lg:order-4"
           loading={institutionalState.loading}
           error={institutionalState.error}
           onRetry={fetchInstitutional}
@@ -1527,23 +1467,21 @@ export const Dashboard: React.FC = () => {
 
                 <div className="pt-1 border-t border-border/30">
                   <div className="text-xs font-semibold text-zinc-300 mb-2">
-                    近 20 日三大法人買賣超趨勢
+                    近 10 日三大法人買賣超趨勢
                   </div>
-                  {renderTrendChart(institutionalState.data.trend)}
+                  {renderTrendChart(institutionalState.data.trend.slice(-10))}
                 </div>
               </>
             )}
           </div>
         </OverviewCard>
 
-        {/* ROW 3: 市場多空寬度指標 (6 col) + 強勢/弱勢/熱門 Top15 (6 col) */}
-
-        {/* 市場多空寬度指標 */}
+        {/* 市場多空寬度指標 — Row3 左 (order-7) */}
         <OverviewCard
           title="市場多空寬度指標"
           icon={<Activity className="w-5 h-5 text-primary" />}
           caption="站上 20MA / 50MA 個股比例與全市場家數"
-          className="lg:col-span-6"
+          className="lg:col-span-4 lg:order-7"
           loading={breadthState.loading}
           error={breadthState.error}
           onRetry={fetchBreadth}
@@ -1615,12 +1553,12 @@ export const Dashboard: React.FC = () => {
           </div>
         </OverviewCard>
 
-        {/* 強勢/弱勢/熱門 Top15 */}
+        {/* 強勢/弱勢/熱門 Top15 — Row2 右 (order-6) */}
         <OverviewCard
           title="強勢／弱勢／熱門 Top15"
           icon={<Flame className="w-5 h-5 text-amber-400" />}
           caption="點選個股列快速進入審查頁面"
-          className="lg:col-span-6"
+          className="lg:col-span-4 lg:order-6"
           loading={heatmapState.loading}
           error={heatmapState.error}
           onRetry={() => fetchHeatmap(true)}
@@ -1634,14 +1572,12 @@ export const Dashboard: React.FC = () => {
           <Top15Table stocks={heatmapState.data?.stocks || []} />
         </OverviewCard>
 
-        {/* ROW 4: 產業熱力 Top10 縮卡 (6 col) + 資金潮汐入口卡 (6 col) */}
-
-        {/* 產業熱力 Top10 縮卡 */}
+        {/* 產業熱力 Top10 縮卡 — Row2 中 (order-5) */}
         <OverviewCard
           title="產業類股熱力 (Top 10)"
           icon={<LayoutGrid className="w-5 h-5 text-primary" />}
           caption="市場成交量與漲跌幅產業佈局"
-          className="lg:col-span-6"
+          className="lg:col-span-4 lg:order-5"
           actions={
             <Link
               to="/heatmap"
@@ -1663,7 +1599,7 @@ export const Dashboard: React.FC = () => {
           }
         >
           <div className="space-y-3">
-            <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
+            <div className="grid grid-cols-2 gap-2">
               {sectorsState.data?.sectors
                 .slice()
                 .sort((a, b) => {
@@ -1701,64 +1637,12 @@ export const Dashboard: React.FC = () => {
           </div>
         </OverviewCard>
 
-        {/* 資金潮汐入口卡 */}
-        <OverviewCard
-          title="資金潮汐探索"
-          icon={<Waves className="w-5 h-5 text-primary" />}
-          caption="多維度資金流向與動能四象限矩陣"
-          className="lg:col-span-6"
-          actions={
-            <Link
-              to="/tide"
-              className="flex items-center gap-1 text-xs font-semibold text-primary hover:underline"
-            >
-              開啟資金潮汐 <ExternalLink className="w-3.5 h-3.5" />
-            </Link>
-          }
-          footer={<span>主力資金脈絡 · 象限分化分析</span>}
-        >
-          <div className="p-4 rounded-xl bg-zinc-950/40 border border-border/30 flex flex-col justify-between h-full space-y-4">
-            <p className="text-xs text-zinc-300 leading-relaxed">
-              資金潮汐圖透過『資金淨流入』與『動能變化』雙軸矩陣，協助您迅速辨識籌碼高度集中（流入＋動能爆發）的主力進駐強勢股，以及資金撤出的轉弱避險標的。
-            </p>
-
-            <div className="grid grid-cols-2 gap-2 text-[11px] font-mono">
-              <div className="bg-bull/10 border border-bull/20 p-2 rounded text-bull font-semibold flex items-center justify-between">
-                <span>↖ 資金流入 + 動能強</span>
-                <span>主攻象限</span>
-              </div>
-              <div className="bg-amber-500/10 border border-amber-500/20 p-2 rounded text-amber-400 font-semibold flex items-center justify-between">
-                <span>↗ 資金流入 + 動能趨緩</span>
-                <span>高檔震盪</span>
-              </div>
-              <div className="bg-zinc-800/60 border border-border/40 p-2 rounded text-zinc-400 font-semibold flex items-center justify-between">
-                <span>↙ 資金流出 + 動能趨緩</span>
-                <span>潛伏沉澱</span>
-              </div>
-              <div className="bg-bear/10 border border-bear/20 p-2 rounded text-bear font-semibold flex items-center justify-between">
-                <span>↘ 資金流出 + 動能轉弱</span>
-                <span>避險象限</span>
-              </div>
-            </div>
-
-            <div className="pt-2 text-right">
-              <Link
-                to="/tide"
-                className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-primary text-white text-xs font-bold hover:bg-primary/90 transition shadow"
-              >
-                <Waves className="w-4 h-4" />
-                進入資金潮汐分析矩陣
-              </Link>
-            </div>
-          </div>
-        </OverviewCard>
-
-        {/* ROW 5: Watchlist 自選與焦點個股審查清單 (12 col) */}
+        {/* Watchlist 自選與焦點個股審查清單 — Row3 右 (order-8) */}
         <OverviewCard
           title="自選與焦點審查清單 (Watchlist)"
           icon={<Activity className="w-5 h-5 text-primary" />}
           caption="整合系統焦點推薦與個人自選追蹤標的"
-          className="lg:col-span-12"
+          className="lg:col-span-8 lg:order-8"
           actions={
             <button
               onClick={() => setShowSearch(true)}

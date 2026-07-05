@@ -106,6 +106,15 @@ export const CapitalTide: React.FC = () => {
     }
   };
 
+  // 座標展布：原始 flow_x / momentum_y 多半擠在中央 (少數極端值把尺度拉大)，
+  // 用凹函數 (signed power, 指數 <1) 把靠近 0 的值往外推，明顯降低泡泡重疊、提升可讀性。
+  const spreadAxis = (v: number) => {
+    const c = Math.max(-1, Math.min(1, v));
+    return Math.sign(c) * Math.pow(Math.abs(c), 0.5);
+  };
+  const plotX = (s: CapitalTideStock) => 300 + spreadAxis(s.flow_x) * 250;
+  const plotY = (s: CapitalTideStock) => 300 - spreadAxis(s.momentum_y) * 250;
+
   const getQuadrantDotColor = (quad: string) => {
     switch (quad) {
       case 'inflow_up':
@@ -159,7 +168,7 @@ export const CapitalTide: React.FC = () => {
             資金潮汐與動能分佈觀測
           </h2>
           <p className="text-xs text-zinc-500 mt-1">
-            二維平面分佈：X 軸為近 5 日三大法人淨買賣超 (張)，Y 軸為近 5 日平均每日漲跌幅 (%)，泡泡大小代表成交值。
+            二維平面分佈：X 軸為近 5 日三大法人淨買賣超 (張)，Y 軸為近 5 日平均每日漲跌幅 (%)，泡泡大小代表成交值。座標已做視覺展布，將密集於中央的個股向外推開以利閱讀（相對位置不變）。
           </p>
         </div>
         <div className="flex items-center gap-3">
@@ -191,7 +200,7 @@ export const CapitalTide: React.FC = () => {
             評估範圍: {data.universe} ({data.stocks.length} 檔)
           </div>
 
-          <div className="aspect-square w-full max-w-[650px] mx-auto relative mt-6">
+          <div className="aspect-square w-full max-w-[780px] mx-auto relative mt-6">
             <svg viewBox="0 0 600 600" className="w-full h-full overflow-visible">
               {/* 四象限背景 */}
               {/* 右上 (inflow_up) */}
@@ -243,9 +252,9 @@ export const CapitalTide: React.FC = () => {
 
               {/* 繪製泡泡 */}
               {data.stocks.map((stock) => {
-                const cx = 300 + stock.flow_x * 250;
-                const cy = 300 - stock.momentum_y * 250;
-                const r = 5 + stock.size * 15;
+                const cx = plotX(stock);
+                const cy = plotY(stock);
+                const r = 4 + stock.size * 13;
                 const fill = getQuadrantDotColor(stock.quadrant);
                 const isMatch = searchQuery
                   ? stock.code.includes(searchQuery) || stock.name.toLowerCase().includes(searchQuery.toLowerCase())
@@ -274,9 +283,9 @@ export const CapitalTide: React.FC = () => {
               {/* 點擊高亮環 */}
               {selectedStock && (
                 <circle
-                  cx={300 + selectedStock.flow_x * 250}
-                  cy={300 - selectedStock.momentum_y * 250}
-                  r={5 + selectedStock.size * 15 + 4}
+                  cx={plotX(selectedStock)}
+                  cy={plotY(selectedStock)}
+                  r={4 + selectedStock.size * 13 + 4}
                   fill="none"
                   stroke="#ffffff"
                   strokeWidth="1.5"
