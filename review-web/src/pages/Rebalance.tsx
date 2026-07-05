@@ -278,6 +278,16 @@ export function Rebalance() {
   // 報價單累算（已實現損益 / 超賣提示）
   const agg = useMemo(() => aggregatePosition(config.opening, config.trades), [config.opening, config.trades]);
 
+  // 目前價格所處價帶（供觸發價帶面板標示；由 status 導出）
+  const priceZone =
+    result.status === 'buy'
+      ? { label: '買進區（β 偏低、偏現金）', cls: 'bg-bear/10 border-bear/25 text-bear' }
+      : result.status === 'sell'
+        ? { label: '賣出區（β 偏高、偏槓桿）', cls: 'bg-bull/10 border-bull/25 text-bull' }
+        : result.status === 'normal'
+          ? { label: '容忍區間內（無須動作）', cls: 'bg-emerald-500/10 border-emerald-500/25 text-emerald-400' }
+          : { label: '—', cls: 'bg-zinc-800/40 border-zinc-700 text-zinc-400' };
+
   const handlePriceChange = (val: string) => {
     setPriceStr(val);
     const parsed = parseFloat(val);
@@ -683,11 +693,11 @@ export function Rebalance() {
               </div>
             </div>
 
-            {/* 觸發價位：持倉不動下，00631L 到多少價位該買 / 該賣 */}
+            {/* 觸發價帶：持倉不動下，β 落在容忍區間對應的 00631L 價格上下界 */}
             <div className="p-4 rounded-xl border border-zinc-800 bg-zinc-900/60 space-y-3">
               <div className="text-xs font-semibold text-zinc-400 flex items-center gap-1.5">
                 <SlidersHorizontal className="w-4 h-4 text-primary" />
-                觸發價位（持倉不動、只看 00631L 價格）
+                觸發價帶（持倉不動、只看 00631L 價格）
               </div>
               {result.sell_trigger_price === null && result.buy_trigger_price === null ? (
                 <p className="text-xs text-zinc-500 leading-relaxed">
@@ -702,47 +712,51 @@ export function Rebalance() {
               ) : (
                 <>
                   <div className="grid grid-cols-2 gap-3">
-                    {/* 跌到 → 買進 */}
+                    {/* 買進門檻＝下限 β 對應價（低於它就進買進區） */}
                     <div className="rounded-lg px-3 py-3 bg-bear/10 border border-bear/25 text-center">
-                      <div className="text-[11px] text-zinc-400">跌到此價 → 買進</div>
+                      <div className="text-[11px] text-zinc-400">買進門檻（β&lt;{result.lower_band.toFixed(2)}）</div>
                       {result.buy_trigger_price !== null ? (
                         <>
                           <div className="text-2xl font-extrabold font-mono tracking-tight text-bear mt-0.5">
                             ${result.buy_trigger_price.toFixed(2)}
                           </div>
-                          {config.price > 0 && (
-                            <div className="text-[11px] text-zinc-500 mt-0.5">
-                              距現價 {(((result.buy_trigger_price - config.price) / config.price) * 100).toFixed(1)}%
-                            </div>
-                          )}
+                          <div className="text-[11px] text-zinc-500 mt-0.5">價格低於此 → 買進區</div>
                         </>
                       ) : (
                         <div className="text-sm text-zinc-600 mt-2">—<div className="text-[10px] font-normal">下限 β≤0，跌不觸發</div></div>
                       )}
                     </div>
-                    {/* 漲到 → 賣出 */}
+                    {/* 賣出門檻＝上限 β 對應價（高於它就進賣出區） */}
                     <div className="rounded-lg px-3 py-3 bg-bull/10 border border-bull/25 text-center">
-                      <div className="text-[11px] text-zinc-400">漲到此價 → 賣出</div>
+                      <div className="text-[11px] text-zinc-400">賣出門檻（β&gt;{result.upper_band.toFixed(2)}）</div>
                       {result.sell_trigger_price !== null ? (
                         <>
                           <div className="text-2xl font-extrabold font-mono tracking-tight text-bull mt-0.5">
                             ${result.sell_trigger_price.toFixed(2)}
                           </div>
-                          {config.price > 0 && (
-                            <div className="text-[11px] text-zinc-500 mt-0.5">
-                              距現價 +{(((result.sell_trigger_price - config.price) / config.price) * 100).toFixed(1)}%
-                            </div>
-                          )}
+                          <div className="text-[11px] text-zinc-500 mt-0.5">價格高於此 → 賣出區</div>
                         </>
                       ) : (
                         <div className="text-sm text-zinc-600 mt-2">—<div className="text-[10px] font-normal">上限 β≥{config.etf_beta.toFixed(1)}，漲不觸發</div></div>
                       )}
                     </div>
                   </div>
+
+                  {/* 目前價格落在哪一區 */}
+                  {config.price > 0 && result.status !== 'empty' && (
+                    <div className={`text-[11px] text-center rounded-md py-1.5 border ${priceZone.cls}`}>
+                      目前 00631L <span className="font-mono font-semibold">${config.price.toFixed(2)}</span> → 位於 <strong>{priceZone.label}</strong>
+                    </div>
+                  )}
+
                   <p className="text-[11px] text-zinc-500 leading-relaxed">
-                    以目前持股 <span className="font-mono text-zinc-400">{config.shares ? Math.round(config.shares).toLocaleString() : 0}</span> 股、現金 <span className="font-mono text-zinc-400">${Math.round(config.cash).toLocaleString()}</span> 固定推算：00631L 現價
-                    {config.price > 0 ? <> <span className="font-mono text-zinc-300">${config.price.toFixed(2)}</span></> : '（未填）'}。
-                    此區間內投組 β 落在容忍範圍、無須動作；一旦價格越過上/下限對應價位，即進入建議買/賣。（持股或現金一變動，觸發價會跟著改。）
+                    以目前持股 <span className="font-mono text-zinc-400">{config.shares ? Math.round(config.shares).toLocaleString() : 0}</span> 股、現金 <span className="font-mono text-zinc-400">${Math.round(config.cash).toLocaleString()}</span> <strong className="text-zinc-400">固定不動</strong>推算：只靠 00631L 漲跌，價格落在
+                    {result.buy_trigger_price !== null && result.sell_trigger_price !== null ? (
+                      <> <span className="font-mono text-zinc-300">${result.buy_trigger_price.toFixed(2)}～${result.sell_trigger_price.toFixed(2)}</span></>
+                    ) : ' 門檻之間'} 時 β 才在容忍區間內。
+                    {result.status === 'buy' && '目前現價遠低於買進門檻＝部位偏現金、β 太低，已在買進區（見上方建議買進金額）。'}
+                    {result.status === 'sell' && '目前現價已高於賣出門檻＝部位偏槓桿、β 太高，已在賣出區（見上方建議賣出金額）。'}
+                    <strong className="text-zinc-400"> 注意這是「持倉不動」的假設</strong>——你一旦依建議買/賣，持股與現金改變，這條價帶會整個重算。
                   </p>
                 </>
               )}
