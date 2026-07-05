@@ -115,7 +115,34 @@ export interface RebalanceResult {
   post_etf_weight: number | null;
   post_cash_weight: number | null;
   post_beta: number | null;
+  // 觸發價位（持倉股數與現金固定，反解 00631L 價格）：
+  //   價格↑→ETF權重↑→β↑，漲到 sell_trigger_price 時 β 觸上限→該賣；
+  //   跌到 buy_trigger_price 時 β 觸下限→該買。無解（如現金=0、上限≥etf_beta）→null。
+  sell_trigger_price: number | null;
+  buy_trigger_price: number | null;
   note?: string;
+}
+
+/**
+ * 反解：在持倉股數 shares 與現金 cash 固定下，使投組 β 恰好等於 targetBeta 的 00631L 價格。
+ *   β = etf_beta × (shares×P)/(shares×P + cash)  ⇒  P = targetBeta×cash / (shares×(etf_beta − targetBeta))
+ * 僅在 shares>0、cash>0、0<targetBeta<etf_beta 時有解；否則（如現金=0 時 β 恆為 etf_beta 與價格無關、
+ * 或目標 β 已達/超過滿槓桿 etf_beta）回 null。
+ */
+export function triggerPriceForBeta(
+  targetBeta: number,
+  shares: number,
+  cash: number,
+  etf_beta: number,
+): number | null {
+  const s = safeNum(shares, 0);
+  const c = safeNum(cash, 0);
+  const eb = safeNum(etf_beta, 2);
+  const b = safeNum(targetBeta, 0);
+  if (!(s > 0) || !(c > 0) || !(eb > 0)) return null;
+  if (!(b > 0) || b >= eb) return null;
+  const p = (b * c) / (s * (eb - b));
+  return Number.isFinite(p) && p > 0 ? p : null;
 }
 
 function clamp(val: number, min: number, max: number): number {
@@ -202,6 +229,8 @@ export function computeRebalance(input: RebalanceInput): RebalanceResult {
       post_etf_weight: null,
       post_cash_weight: null,
       post_beta: null,
+      sell_trigger_price: null,
+      buy_trigger_price: null,
       note: '尚未輸入持倉',
     };
   }
@@ -256,6 +285,10 @@ export function computeRebalance(input: RebalanceInput): RebalanceResult {
     post_beta = post_etf_weight * etf_beta;
   }
 
+  // 觸發價位：持倉/現金固定，反解讓 β 觸上/下限的 00631L 價格
+  const sell_trigger_price = triggerPriceForBeta(upper_band, shares, cash, etf_beta);
+  const buy_trigger_price = triggerPriceForBeta(lower_band, shares, cash, etf_beta);
+
   let action_label = '';
   if (status === 'normal') {
     if (tolerance_mode === 'abs') {
@@ -303,6 +336,8 @@ export function computeRebalance(input: RebalanceInput): RebalanceResult {
     post_etf_weight,
     post_cash_weight,
     post_beta,
+    sell_trigger_price,
+    buy_trigger_price,
     note,
   };
 }

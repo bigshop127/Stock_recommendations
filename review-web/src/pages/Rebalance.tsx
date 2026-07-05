@@ -682,6 +682,71 @@ export function Rebalance() {
                 )}
               </div>
             </div>
+
+            {/* 觸發價位：持倉不動下，00631L 到多少價位該買 / 該賣 */}
+            <div className="p-4 rounded-xl border border-zinc-800 bg-zinc-900/60 space-y-3">
+              <div className="text-xs font-semibold text-zinc-400 flex items-center gap-1.5">
+                <SlidersHorizontal className="w-4 h-4 text-primary" />
+                觸發價位（持倉不動、只看 00631L 價格）
+              </div>
+              {result.sell_trigger_price === null && result.buy_trigger_price === null ? (
+                <p className="text-xs text-zinc-500 leading-relaxed">
+                  目前持倉無可反解的觸發價
+                  {config.cash <= 0
+                    ? '（現金為 0，投組 Beta 恆等於滿槓桿，與價格無關）'
+                    : config.shares <= 0
+                      ? '（尚無 00631L 持股）'
+                      : '（容忍區間超出 0～滿槓桿可達範圍）'}
+                  。
+                </p>
+              ) : (
+                <>
+                  <div className="grid grid-cols-2 gap-3">
+                    {/* 跌到 → 買進 */}
+                    <div className="rounded-lg px-3 py-3 bg-bear/10 border border-bear/25 text-center">
+                      <div className="text-[11px] text-zinc-400">跌到此價 → 買進</div>
+                      {result.buy_trigger_price !== null ? (
+                        <>
+                          <div className="text-2xl font-extrabold font-mono tracking-tight text-bear mt-0.5">
+                            ${result.buy_trigger_price.toFixed(2)}
+                          </div>
+                          {config.price > 0 && (
+                            <div className="text-[11px] text-zinc-500 mt-0.5">
+                              距現價 {(((result.buy_trigger_price - config.price) / config.price) * 100).toFixed(1)}%
+                            </div>
+                          )}
+                        </>
+                      ) : (
+                        <div className="text-sm text-zinc-600 mt-2">—<div className="text-[10px] font-normal">下限 β≤0，跌不觸發</div></div>
+                      )}
+                    </div>
+                    {/* 漲到 → 賣出 */}
+                    <div className="rounded-lg px-3 py-3 bg-bull/10 border border-bull/25 text-center">
+                      <div className="text-[11px] text-zinc-400">漲到此價 → 賣出</div>
+                      {result.sell_trigger_price !== null ? (
+                        <>
+                          <div className="text-2xl font-extrabold font-mono tracking-tight text-bull mt-0.5">
+                            ${result.sell_trigger_price.toFixed(2)}
+                          </div>
+                          {config.price > 0 && (
+                            <div className="text-[11px] text-zinc-500 mt-0.5">
+                              距現價 +{(((result.sell_trigger_price - config.price) / config.price) * 100).toFixed(1)}%
+                            </div>
+                          )}
+                        </>
+                      ) : (
+                        <div className="text-sm text-zinc-600 mt-2">—<div className="text-[10px] font-normal">上限 β≥{config.etf_beta.toFixed(1)}，漲不觸發</div></div>
+                      )}
+                    </div>
+                  </div>
+                  <p className="text-[11px] text-zinc-500 leading-relaxed">
+                    以目前持股 <span className="font-mono text-zinc-400">{config.shares ? Math.round(config.shares).toLocaleString() : 0}</span> 股、現金 <span className="font-mono text-zinc-400">${Math.round(config.cash).toLocaleString()}</span> 固定推算：00631L 現價
+                    {config.price > 0 ? <> <span className="font-mono text-zinc-300">${config.price.toFixed(2)}</span></> : '（未填）'}。
+                    此區間內投組 β 落在容忍範圍、無須動作；一旦價格越過上/下限對應價位，即進入建議買/賣。（持股或現金一變動，觸發價會跟著改。）
+                  </p>
+                </>
+              )}
+            </div>
           </div>
         </div>
       </div>

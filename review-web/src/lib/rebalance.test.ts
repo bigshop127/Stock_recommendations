@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { computeRebalance, aggregatePosition, type Trade } from './rebalance';
+import { computeRebalance, aggregatePosition, triggerPriceForBeta, type Trade } from './rebalance';
 
 const mk = (side: 'buy' | 'sell', date: string, shares: number, price: number): Trade => ({
   id: `${side}_${date}_${shares}_${price}`,
@@ -406,5 +406,64 @@ describe('computeRebalance', () => {
     expect(res.status).toBe('empty');
     expect(res.cost_basis).toBeNull();
     expect(res.unrealized_pnl).toBeNull();
+  });
+
+  // ===== 觸發價位（反解 β → 價格） =====
+
+  it('surfaces sell/buy trigger prices that reproduce the band betas', () => {
+    // shares 6500、cash 350,000、etf_beta 2.0、target 1.3、abs ±0.1 → band [1.2, 1.4]
+    const res = computeRebalance({
+      shares: 6500,
+      price: 100,
+      cash: 350000,
+      target_beta: 1.3,
+      tolerance_mode: 'abs',
+      threshold_pct: 10,
+      threshold_abs: 0.1,
+      etf_beta: 2.0,
+    });
+    // 賣點 β=1.4：P = 1.4×350000/(6500×0.6) = 125.6410…
+    expect(res.sell_trigger_price).toBeCloseTo(125.641, 2);
+    // 買點 β=1.2：P = 1.2×350000/(6500×0.8) = 80.7692…
+    expect(res.buy_trigger_price).toBeCloseTo(80.769, 2);
+    // 反代回去 β 應等於上/下限
+    for (const [price, band] of [
+      [res.sell_trigger_price!, 1.4],
+      [res.buy_trigger_price!, 1.2],
+    ] as const) {
+      const etf = 6500 * price;
+      const beta = (etf / (etf + 350000)) * 2.0;
+      expect(beta).toBeCloseTo(band, 6);
+    }
+  });
+});
+
+describe('triggerPriceForBeta', () => {
+  it('solves price so that beta hits the target', () => {
+    // β=1.4, shares 6500, cash 350000, etf_beta 2 → 125.641
+    expect(triggerPriceForBeta(1.4, 6500, 350000, 2.0)).toBeCloseTo(125.641, 2);
+  });
+
+  it('returns null when cash is 0 (beta independent of price)', () => {
+    expect(triggerPriceForBeta(1.4, 6500, 0, 2.0)).toBeNull();
+  });
+
+  it('returns null when no shares held', () => {
+    expect(triggerPriceForBeta(1.4, 0, 350000, 2.0)).toBeNull();
+  });
+
+  it('returns null when target beta >= etf_beta (unreachable at any price)', () => {
+    expect(triggerPriceForBeta(2.0, 6500, 350000, 2.0)).toBeNull();
+    expect(triggerPriceForBeta(2.5, 6500, 350000, 2.0)).toBeNull();
+  });
+
+  it('returns null when target beta <= 0 (never triggers falling)', () => {
+    expect(triggerPriceForBeta(0, 6500, 350000, 2.0)).toBeNull();
+    expect(triggerPriceForBeta(-0.5, 6500, 350000, 2.0)).toBeNull();
+  });
+
+  it('guards NaN inputs', () => {
+    expect(triggerPriceForBeta(NaN, 6500, 350000, 2.0)).toBeNull();
+    expect(triggerPriceForBeta(1.4, NaN, 350000, 2.0)).toBeNull();
   });
 });
