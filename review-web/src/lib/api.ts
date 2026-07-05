@@ -485,6 +485,28 @@ export interface StockNews {
   items: NewsItem[];
 }
 
+export interface ShareholdingLevelItem {
+  people: number;
+  people_delta: number | null;
+  shares_pct: number;
+}
+
+export interface ShareholdingWeek {
+  date: string;
+  retail: ShareholdingLevelItem;
+  mid: ShareholdingLevelItem;
+  large: ShareholdingLevelItem;
+}
+
+export interface ShareholdingDispersion {
+  code: string;
+  name: string;
+  levels: { retail: string; mid: string; large: string };
+  weekly: ShareholdingWeek[];
+  source: string;
+  as_of: string;
+}
+
 export interface CompanyProfile {
   code: string;
   name: string | null;
@@ -536,6 +558,7 @@ export const api = {
     req<StockChips>(`/stocks/${code}/chips${qs({ days: o?.days, start: o?.start, end: o?.end })}`),
   stockFundamentals: (code: string) => req<StockFundamentals>(`/stocks/${code}/fundamentals`),
   stockProfile: (code: string) => req<CompanyProfile>(`/stocks/${code}/profile`),
+  stockShareholding: (code: string, weeks?: number) => req<ShareholdingDispersion>(`/stocks/${code}/shareholding${qs({ weeks })}`),
   stockNews: (code: string) => req<StockNews>(`/stocks/${code}/news`),
   symbolSearch: (q: string, limit?: number) => req<SymbolSearch>(`/symbols/search${qs({ q, limit })}`),
   marketCapitalTide: (o?: { date?: string; universe?: string }) => req<CapitalTideData>(`/market/capital-tide${qs(o)}`),

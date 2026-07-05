@@ -44,6 +44,7 @@ const T = {
   intraday: 45000, // 富果盤中分K
   fundamentals: 90000, // 給長一點 timeout，多 dataset 首抓慢
   profile: 30000,      // TWSE OpenAPI 公司基本檔
+  shareholding: 30000, // 集保戶股權分散表
   news: 30000,     // 個股新聞輿情及情緒標記
 };
 
@@ -241,6 +242,16 @@ router.get('/api/stocks/:code/fundamentals', async (req, res) => {
 router.get('/api/stocks/:code/profile', async (req, res) => {
   try {
     res.json(await engineGet('/data/profile', { code: req.params.code }, T.profile));
+  } catch (err) {
+    sendError(res, err);
+  }
+});
+
+// ── GET /api/stocks/:code/shareholding ── 集保戶股權分散表（大戶/散戶結構） ──
+router.get('/api/stocks/:code/shareholding', async (req, res) => {
+  try {
+    const weeks = req.query.weeks || 16;
+    res.json(await engineGet('/data/shareholding', { code: req.params.code, weeks }, T.shareholding));
   } catch (err) {
     sendError(res, err);
   }

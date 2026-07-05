@@ -5,10 +5,13 @@ interface ChipsChartsProps {
   data: ChipRow[];
   name: string;
   asOf: string;
+  only?: 'inst' | 'margin' | 'all';
 }
 
-export const ChipsCharts: React.FC<ChipsChartsProps> = ({ data, name, asOf }) => {
-  const [activeTab, setActiveTab] = useState<'institutional' | 'margin' | 'shareholding'>('institutional');
+export const ChipsCharts: React.FC<ChipsChartsProps> = ({ data, name, asOf, only = 'all' }) => {
+  const [internalTab, setInternalTab] = useState<'institutional' | 'margin' | 'shareholding'>('institutional');
+  const activeTab = only === 'inst' ? 'institutional' : only === 'margin' ? 'margin' : internalTab;
+  const setActiveTab = (tab: 'institutional' | 'margin' | 'shareholding') => setInternalTab(tab);
   const [hoverIndex, setHoverIndex] = useState<number | null>(null);
 
   if (!data || data.length === 0) {
@@ -196,39 +199,41 @@ export const ChipsCharts: React.FC<ChipsChartsProps> = ({ data, name, asOf }) =>
         )}
       </div>
 
-      {/* Tabs Selector */}
-      <div className="flex border-b border-border/60 mb-4 bg-zinc-950/20 p-0.5 rounded-lg">
-        <button
-          onClick={() => { setActiveTab('institutional'); setHoverIndex(null); }}
-          className={`flex-1 py-1.5 text-xs font-medium rounded-md transition-all ${
-            activeTab === 'institutional'
-              ? 'bg-zinc-800 text-zinc-100 shadow-sm'
-              : 'text-zinc-400 hover:text-zinc-200'
-          }`}
-        >
-          三大法人買賣超
-        </button>
-        <button
-          onClick={() => { setActiveTab('margin'); setHoverIndex(null); }}
-          className={`flex-1 py-1.5 text-xs font-medium rounded-md transition-all ${
-            activeTab === 'margin'
-              ? 'bg-zinc-800 text-zinc-100 shadow-sm'
-              : 'text-zinc-400 hover:text-zinc-200'
-          }`}
-        >
-          信用交易 (融資券)
-        </button>
-        <button
-          onClick={() => { setActiveTab('shareholding'); setHoverIndex(null); }}
-          className={`flex-1 py-1.5 text-xs font-medium rounded-md transition-all ${
-            activeTab === 'shareholding'
-              ? 'bg-zinc-800 text-zinc-100 shadow-sm'
-              : 'text-zinc-400 hover:text-zinc-200'
-          }`}
-        >
-          外資持股比
-        </button>
-      </div>
+      {/* Internal Tab Selector Bar (only shown when only === 'all') */}
+      {only === 'all' && (
+        <div className="flex border-b border-border/60 mb-4 bg-zinc-950/20 p-0.5 rounded-lg">
+          <button
+            onClick={() => { setActiveTab('institutional'); setHoverIndex(null); }}
+            className={`flex-1 py-1.5 text-xs font-medium rounded-md transition-all ${
+              activeTab === 'institutional'
+                ? 'bg-zinc-800 text-zinc-100 shadow-sm'
+                : 'text-zinc-400 hover:text-zinc-200'
+            }`}
+          >
+            三大法人買賣超
+          </button>
+          <button
+            onClick={() => { setActiveTab('margin'); setHoverIndex(null); }}
+            className={`flex-1 py-1.5 text-xs font-medium rounded-md transition-all ${
+              activeTab === 'margin'
+                ? 'bg-zinc-800 text-zinc-100 shadow-sm'
+                : 'text-zinc-400 hover:text-zinc-200'
+            }`}
+          >
+            信用交易 (融資券)
+          </button>
+          <button
+            onClick={() => { setActiveTab('shareholding'); setHoverIndex(null); }}
+            className={`flex-1 py-1.5 text-xs font-medium rounded-md transition-all ${
+              activeTab === 'shareholding'
+                ? 'bg-zinc-800 text-zinc-100 shadow-sm'
+                : 'text-zinc-400 hover:text-zinc-200'
+            }`}
+          >
+            外資持股比
+          </button>
+        </div>
+      )}
 
       {/* Chart Section */}
       <div className="relative flex-1 bg-zinc-950/30 rounded-xl border border-border/40 p-2 min-h-[220px]">

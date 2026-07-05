@@ -19,6 +19,7 @@ from app.data import (
     fugle_client,
     news_client,
     taifex_client,
+    tdcc_client,
     twse_mis_client,
     twse_openapi_client,
     yfinance_client,
@@ -677,5 +678,148 @@ def search_symbols(q: str, limit: int = 20) -> list[dict[str, str]]:
 
 def get_company_profile(code: str) -> dict:
     return twse_openapi_client.fetch_company_profile(code)
+
+
+DEFAULT_THRESHOLDS = {
+    "retail": "≤50 張",
+    "mid": "50–400 張",
+    "large": ">400 張"
+}
+
+
+def _classify_dispersion_level(level_raw: Any) -> str | None:
+    """歸併級距至 retail (1-8: ≤50張), mid (9-11: 50–400張), large (12-15: >400張)。
+    Level 16 (差異數調整) / Level 17 (合計) 排除 (回傳 None)。
+    """
+    try:
+        lvl_int = int(level_raw)
+        if lvl_int <= 8:
+            return "retail"
+        elif lvl_int <= 11:
+            return "mid"
+        elif lvl_int <= 15:
+            return "large"
+        else:
+            return None
+    except (ValueError, TypeError):
+        pass
+
+    s = str(level_raw).replace(",", "").strip()
+    if "差異" in s or "合計" in s or "總計" in s:
+        return None
+
+    if "-" in s:
+        parts = s.split("-")
+        try:
+            high = int(parts[1].rstrip("股張"))
+            if high <= 50000:
+                return "retail"
+            elif high <= 400000:
+                return "mid"
+            else:
+                return "large"
+        except (ValueError, IndexError):
+            pass
+    elif ">" in s or "以上" in s or "超過" in s:
+        return "large"
+
+    return None
+
+
+def aggregate_dispersion(rows: list[dict[str, Any]], thresholds: dict[str, str] | None = None) -> list[dict[str, Any]]:
+    """將每週級距聚合為 retail / mid / large 三組，排除 level 16/17，並計算人數與 delta。"""
+    if not rows:
+        return []
+
+    by_date: dict[str, dict[str, Any]] = {}
+    for r in rows:
+        d = str(r.get("date") or "").strip()
+        if not d:
+            continue
+
+        cat = _classify_dispersion_level(r.get("HoldingSharesLevel") or r.get("holding_shares_level") or r.get("level"))
+        if cat is None:
+            continue
+
+        if d not in by_date:
+            by_date[d] = {
+                "retail": {"people": 0, "shares_pct": 0.0},
+                "mid": {"people": 0, "shares_pct": 0.0},
+                "large": {"people": 0, "shares_pct": 0.0},
+            }
+
+        p_val = r.get("people") or r.get("People") or r.get("number_of_people") or 0
+        try:
+            people_cnt = int(p_val)
+        except (ValueError, TypeError):
+            people_cnt = 0
+        by_date[d][cat]["people"] += people_cnt
+
+        pct_val = r.get("percent") or r.get("Percent") or r.get("shares_pct") or 0.0
+        try:
+            pct_float = float(pct_val)
+        except (ValueError, TypeError):
+            pct_float = 0.0
+        by_date[d][cat]["shares_pct"] += pct_float
+
+    sorted_dates = sorted(by_date.keys())
+    weekly: list[dict[str, Any]] = []
+
+    prev_counts: dict[str, int] | None = None
+
+    for d in sorted_dates:
+        day_data = by_date[d]
+        item: dict[str, Any] = {"date": d}
+
+        for cat in ("retail", "mid", "large"):
+            cnt = day_data[cat]["people"]
+            pct = round(day_data[cat]["shares_pct"], 2)
+
+            delta: int | None = None
+            if prev_counts is not None and cat in prev_counts:
+                delta = cnt - prev_counts[cat]
+
+            item[cat] = {
+                "people": cnt,
+                "people_delta": delta,
+                "shares_pct": pct
+            }
+
+        prev_counts = {cat: day_data[cat]["people"] for cat in ("retail", "mid", "large")}
+        weekly.append(item)
+
+    return weekly
+
+
+def get_shareholding_dispersion(code: str, weeks: int = 16) -> dict:
+    today_str = _date.today().isoformat()
+    try:
+        tdcc_client.save_snapshot()
+        rows = tdcc_client.load_history(code, weeks)
+        weekly = aggregate_dispersion(rows, DEFAULT_THRESHOLDS)
+        if len(weekly) > weeks:
+            weekly = weekly[-weeks:]
+
+        stock_name = finmind_client.get_stock_name(code)
+        return {
+            "code": code,
+            "name": stock_name if stock_name != code else "個股",
+            "levels": DEFAULT_THRESHOLDS,
+            "weekly": weekly,
+            "source": "TDCC 集保戶股權分散表 (id=1-5)",
+            "as_of": weekly[-1]["date"] if weekly else today_str
+        }
+    except Exception as exc:
+        print(f"[service] get_shareholding_dispersion error: {exc}")
+
+    stock_name = finmind_client.get_stock_name(code)
+    return {
+        "code": code,
+        "name": stock_name if stock_name != code else "個股",
+        "levels": DEFAULT_THRESHOLDS,
+        "weekly": [],
+        "source": "TDCC 集保戶股權分散表 (id=1-5)",
+        "as_of": today_str
+    }
 
 

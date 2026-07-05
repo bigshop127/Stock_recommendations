@@ -1,5 +1,7 @@
 # 優化專案 14 — 個股「籌碼分析」分頁強化：股權分散（大戶/散戶）＋三大法人/融資融券子頁
 
+> ⚠️ **§2–§3 的資料源已作廢**：FinMind `TaiwanStockHoldingSharesPer` 實測被鎖付費級（本案 token 打不到），且級距歸併漏排除 level 16/17（合計）。改用免費 TDCC 源＋修 bug 的做法見 **`opt14b-tdcc-shareholding-migration.md`**。本檔 §1、§4（前端 UI）、§5 仍有效。
+>
 > 互動模式（沿用全案）：Claude 給規格＋驗收標準；**你寫 code**，寫完 Claude review。
 > 開工方式：開新對話「請你幫我去閱讀 `review-web\docs\prompts\opt14-stock-chips-plus.md`，然後根據裡面的說明進行」。
 > 參考範本：aistockmap `籌碼分析` 分頁（子頁：大戶資訊／三大法人／融資融券；「持股人數趨勢」折線＝大戶/中實戶/散戶人數；「大戶資訊」表＝每週各級距人數/增減、可切人數/佔比）。**資料走自家 engine（FinMind 集保股權分散表）。**

@@ -505,3 +505,38 @@
 | `capital` | number \| null | — | 實收資本額（元） |
 | `source` | string | ✓ | `"TWSE OpenAPI t187ap03_L"` 或 `"TWSE OpenAPI (Degraded)"` |
 | `as_of` | string | ✓ | 抓取日期 YYYY-MM-DD |
+
+### 2.15 個股集保戶股權分散 `/api/stocks/:code/shareholding`
+* **Method**: `GET`
+* **Description**: 個股集保戶股權分散（大戶／中實戶／散戶結構）週頻趨勢。資料源＝**TDCC 集保結算所開放資料 `id=1-5`**（免費官方，`opendata.tdcc.com.tw`；即 FinMind 付費資料集 `TaiwanStockHoldingSharesPer` 的原始來源）。engine `tdcc_client` 於請求時惰性抓最新一週全市場快照落地 `engine/data_cache/tdcc_shareholding/{date}.parquet`（冪等，已存在秒跳），再 `load_history` 讀近 N 週、`aggregate_dispersion` 歸併。**級距歸併**：TDCC 持股分級 1–17，Level 1–8＝散戶（≤50 張）、9–11＝中實戶（50–400 張）、12–15＝大戶（>400 張）；**Level 16（差異數調整）、17（合計）排除**（否則大戶人數與佔比會被合計列污染）。gateway 薄轉發（`T.shareholding` 30s timeout）。**限制**：TDCC 僅提供最新一週，歷史靠每週快照累積 → 上線初期 `weekly` 週數可能 < 16。**空態**：查無資料（新股/純 ETF/尚無快照）→ 回 `weekly: []`（不捏造資料），前端走「資料累積中」空態卡。
+* **Query**：`code`（必填，台股代號，例 `3450`）、`weeks`（選填，預設 16，回傳週數上限）。
+* **Response (200 OK)**：`ShareholdingDispersion`
+```json
+{
+  "code": "3450",
+  "name": "聯鈞",
+  "levels": { "retail": "≤50 張", "mid": "50–400 張", "large": ">400 張" },
+  "weekly": [
+    {
+      "date": "2026-07-03",
+      "retail": { "people": 71047, "people_delta": 1047, "shares_pct": 39.75 },
+      "mid":    { "people": 145,   "people_delta": 0,    "shares_pct": 12.59 },
+      "large":  { "people": 49,    "people_delta": 0,    "shares_pct": 47.57 }
+    }
+  ],
+  "source": "TDCC 集保戶股權分散表 (id=1-5)",
+  "as_of": "2026-07-03"
+}
+```
+| 欄位 | 型別 | 必填 | 說明 |
+|---|---|---|---|
+| `code` | string | ✓ | 台股代號 |
+| `name` | string | ✓ | 股名（查無退回 `"個股"`） |
+| `levels` | object | ✓ | 三組級距門檻標籤 |
+| `weekly` | array | ✓ | 週頻紀錄（日期升冪；空態時 `[]`） |
+| `weekly[].date` | string | ✓ | 資料日期 YYYY-MM-DD |
+| `weekly[].{retail,mid,large}.people` | number | ✓ | 該組總人數 |
+| `weekly[].{retail,mid,large}.people_delta` | number \| null | ✓ | 對前一週人數增減（首週 null） |
+| `weekly[].{retail,mid,large}.shares_pct` | number | ✓ | 該組持股佔集保庫存比例（%） |
+| `source` | string | ✓ | `"TDCC 集保戶股權分散表 (id=1-5)"` |
+| `as_of` | string | ✓ | 最新一週資料日期（空態時為今日） |

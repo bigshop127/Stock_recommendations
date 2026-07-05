@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useMemo } from 'react';
 import { useParams, Link, useSearchParams } from 'react-router-dom';
 import { api } from '../lib/api';
-import type { StockDetail as IStockDetail, StockChips, StockFundamentals, StockNews, Book, OhlcvRow, AgentDecision, DebateParticipant, CompanyProfile } from '../lib/api';
+import type { StockDetail as IStockDetail, StockChips, StockFundamentals, StockNews, Book, OhlcvRow, AgentDecision, DebateParticipant, CompanyProfile, ShareholdingDispersion } from '../lib/api';
 import { RefreshCw, BarChart2, TrendingUp, Cpu, Newspaper, DollarSign, AlertTriangle, Users, MessageSquare, Info, AlertCircle, ArrowLeft } from 'lucide-react';
 import { PriceChart } from '../components/PriceChart';
 import { ChipsCharts } from '../components/ChipsCharts';
@@ -73,6 +73,10 @@ export const StockDetail: React.FC = () => {
   const [chipsState, setChipsState] = useState<{ data: StockChips | null; loading: boolean; error: string | null }>({ data: null, loading: true, error: null });
   const [fundamentalsState, setFundamentalsState] = useState<{ data: StockFundamentals | null; loading: boolean; error: string | null }>({ data: null, loading: true, error: null });
   const [profileState, setProfileState] = useState<{ data: CompanyProfile | null; loading: boolean; error: string | null }>({ data: null, loading: true, error: null });
+  const [dispersionState, setDispersionState] = useState<{ data: ShareholdingDispersion | null; loading: boolean; error: string | null }>({ data: null, loading: true, error: null });
+  const [chipsSubTab, setChipsSubTab] = useState<'dispersion' | 'inst' | 'margin'>('dispersion');
+  const [dispersionMode, setDispersionMode] = useState<'people' | 'pct'>('people');
+  const [dispHoverIdx, setDispHoverIdx] = useState<number | null>(null);
   const [newsState, setNewsState] = useState<{ data: StockNews | null; loading: boolean; error: string | null }>({ data: null, loading: true, error: null });
   const [fundTab, setFundTab] = useState<'valuation' | 'revenue' | 'financials' | 'dividend'>('valuation');
   const [fundHoverIdx, setFundHoverIdx] = useState<number | null>(null);
@@ -226,6 +230,48 @@ export const StockDetail: React.FC = () => {
         }
       ],
       source: 'FinMind'
+    };
+  };
+
+  const getMockShareholdingDispersion = (c: string): ShareholdingDispersion => {
+    const dates = [
+      '2026-03-20', '2026-03-27', '2026-04-03', '2026-04-10', '2026-04-17',
+      '2026-04-24', '2026-05-02', '2026-05-09', '2026-05-16', '2026-05-23',
+      '2026-05-30', '2026-06-06', '2026-06-13', '2026-06-20', '2026-06-27', '2026-07-03'
+    ];
+    const baseRetail = c === '3450' ? 71000 : c === '2330' ? 550000 : 120000;
+    const baseMid = c === '3450' ? 145 : c === '2330' ? 2500 : 800;
+    const baseLarge = c === '3450' ? 49 : c === '2330' ? 1500 : 350;
+
+    let prevR: number | null = null;
+    let prevM: number | null = null;
+    let prevL: number | null = null;
+
+    const weekly = dates.map((d, idx) => {
+      const r = baseRetail + (idx * 120) + (idx % 3 * 50);
+      const m = baseMid + (idx * 1) - (idx % 2 * 2);
+      const l = Math.max(10, baseLarge - (idx * 1) + (idx % 4 * 1));
+
+      const item = {
+        date: d,
+        retail: { people: r, people_delta: prevR !== null ? r - prevR : null, shares_pct: Number((42.1 + (idx % 3) * 0.1).toFixed(2)) },
+        mid: { people: m, people_delta: prevM !== null ? m - prevM : null, shares_pct: Number((18.3 + (idx % 2) * 0.1).toFixed(2)) },
+        large: { people: l, people_delta: prevL !== null ? l - prevL : null, shares_pct: Number((39.6 - (idx % 3) * 0.1).toFixed(2)) }
+      };
+
+      prevR = r;
+      prevM = m;
+      prevL = l;
+      return item;
+    });
+
+    return {
+      code: c,
+      name: c === '2330' ? '台積電' : c === '2454' ? '聯發科' : c === '3450' ? '聯鈞' : '鴻海',
+      levels: { retail: '≤50 張', mid: '50–400 張', large: '>400 張' },
+      weekly,
+      source: 'FinMind TaiwanStockHoldingSharesPer (Mock)',
+      as_of: '2026-07-03'
     };
   };
 
@@ -698,6 +744,22 @@ export const StockDetail: React.FC = () => {
     }
   };
 
+  const fetchShareholding = async () => {
+    setDispersionState(prev => ({ ...prev, loading: true, error: null }));
+    try {
+      let data: ShareholdingDispersion;
+      if (useMock) {
+        data = getMockShareholdingDispersion(activeCode);
+      } else {
+        data = await api.stockShareholding(activeCode, 16);
+      }
+      setDispersionState({ data, loading: false, error: null });
+    } catch (err: any) {
+      console.error('Fetch shareholding dispersion failed:', err);
+      setDispersionState({ data: null, loading: false, error: err.message || '無法載入股權分散資料' });
+    }
+  };
+
   const fetchNews = async () => {
     setNewsState(prev => ({ ...prev, loading: true, error: null }));
     try {
@@ -721,6 +783,7 @@ export const StockDetail: React.FC = () => {
     fetchChips();
     fetchFundamentals();
     fetchProfile();
+    fetchShareholding();
     fetchNews();
   };
 
@@ -2355,6 +2418,251 @@ export const StockDetail: React.FC = () => {
     );
   };
 
+  const renderDispersionSection = () => {
+    const disp = dispersionState.data;
+    if (dispersionState.loading) {
+      return <div className="text-xs text-zinc-500 animate-pulse text-center py-12">載入集保戶股權分散資料中...</div>;
+    }
+    if (dispersionState.error && !disp) {
+      return (
+        <div className="p-4 border border-bull/20 bg-bull/5 rounded-lg text-center text-xs text-bull">
+          <div>{dispersionState.error}</div>
+          <button onClick={fetchShareholding} className="mt-2 px-3 py-1 bg-zinc-800 hover:bg-zinc-700 rounded text-[10px] text-zinc-300">重試</button>
+        </div>
+      );
+    }
+    if (!disp || !disp.weekly || disp.weekly.length === 0) {
+      return (
+        <div className="bg-card border border-border rounded-xl p-12 flex flex-col items-center justify-center text-center">
+          <Info className="w-8 h-8 text-primary mb-3" />
+          <h4 className="text-sm font-semibold text-zinc-200 mb-1">集保股權分散資料累積中</h4>
+          <p className="text-xs text-zinc-500">TDCC 開放資料每週更新，趨勢圖將隨時間逐週增長。</p>
+        </div>
+      );
+    }
+
+    const weekly = disp.weekly;
+    const isSingleWeek = weekly.length === 1;
+    const svgWidth = 600;
+    const svgHeight = 220;
+    const padL = 60;
+    const padR = 60;
+    const padT = 20;
+    const padB = 35;
+    const plotW = svgWidth - padL - padR;
+    const plotH = svgHeight - padT - padB;
+
+    const retailVals = weekly.map(w => w.retail.people);
+    const minRetail = Math.min(...retailVals);
+    const maxRetail = Math.max(...retailVals);
+    const rangeRetail = maxRetail - minRetail || (maxRetail * 0.1) || 1;
+
+    const lmVals = weekly.flatMap(w => [w.large.people, w.mid.people]);
+    const minLM = Math.min(...lmVals);
+    const maxLM = Math.max(...lmVals);
+    const rangeLM = maxLM - minLM || (maxLM * 0.1) || 1;
+
+    const stepX = isSingleWeek ? plotW / 2 : plotW / Math.max(1, weekly.length - 1);
+    const getX = (i: number) => isSingleWeek ? padL + plotW / 2 : padL + i * stepX;
+
+    const getRetailY = (val: number) => isSingleWeek ? padT + plotH / 2 : padT + plotH - ((val - minRetail) / rangeRetail) * plotH;
+    const getLMY = (val: number) => isSingleWeek ? padT + plotH / 2 : padT + plotH - ((val - minLM) / rangeLM) * plotH;
+
+    const retailPoints = weekly.map((w, i) => `${getX(i)},${getRetailY(w.retail.people)}`).join(' ');
+    const midPoints = weekly.map((w, i) => `${getX(i)},${getLMY(w.mid.people)}`).join(' ');
+    const largePoints = weekly.map((w, i) => `${getX(i)},${getLMY(w.large.people)}`).join(' ');
+
+    const hoverRow = dispHoverIdx !== null && dispHoverIdx >= 0 && dispHoverIdx < weekly.length ? weekly[dispHoverIdx] : (isSingleWeek ? weekly[0] : null);
+
+    const formatDelta = (delta: number | null) => {
+      if (delta === null || delta === undefined) return <span className="text-zinc-500">—</span>;
+      if (delta > 0) return <span className="text-bull font-semibold">+{delta.toLocaleString()}</span>;
+      if (delta < 0) return <span className="text-bear font-semibold">{delta.toLocaleString()}</span>;
+      return <span className="text-zinc-400">0</span>;
+    };
+
+    return (
+      <div className="space-y-6">
+        <div className="bg-zinc-950/40 rounded-xl border border-border/40 p-4">
+          <div className="flex items-center justify-between mb-3 text-xs flex-wrap gap-2">
+            <div className="flex items-center gap-4 text-[11px]">
+              <div className="flex items-center gap-1.5">
+                <span className="w-3 h-3 rounded-full bg-[#10b981] inline-block"></span>
+                <span className="text-zinc-300">散戶 ≤50張 (左軸)</span>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <span className="w-3 h-3 rounded-full bg-[#3b82f6] inline-block"></span>
+                <span className="text-zinc-300">中實戶 50-400張 (右軸)</span>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <span className="w-3 h-3 rounded-full bg-[#a855f7] inline-block"></span>
+                <span className="text-zinc-300">大戶 &gt;400張 (右軸)</span>
+              </div>
+            </div>
+            <div className="flex items-center gap-2">
+              {isSingleWeek && (
+                <span className="text-[10px] bg-primary/10 border border-primary/20 text-primary px-2 py-0.5 rounded font-mono">
+                  趨勢資料累積中 (第 1 週快照)
+                </span>
+              )}
+              {disp.source && (
+                <span className="text-[10px] text-zinc-500 font-mono">來源: {disp.source}</span>
+              )}
+            </div>
+          </div>
+
+          <div className="relative h-[220px]">
+            <svg
+              width="100%"
+              height="100%"
+              viewBox={`0 0 ${svgWidth} ${svgHeight}`}
+              preserveAspectRatio="xMidYMid meet"
+              className="overflow-visible select-none cursor-crosshair"
+              onMouseMove={(e) => {
+                const rect = e.currentTarget.getBoundingClientRect();
+                const mouseX = ((e.clientX - rect.left) / rect.width) * svgWidth - padL;
+                const idx = isSingleWeek ? 0 : Math.max(0, Math.min(weekly.length - 1, Math.round(mouseX / stepX)));
+                setDispHoverIdx(idx);
+              }}
+              onMouseLeave={() => setDispHoverIdx(null)}
+            >
+              {[0, 0.25, 0.5, 0.75, 1].map((val) => {
+                const y = padT + val * plotH;
+                return (
+                  <line key={val} x1={padL} y1={y} x2={svgWidth - padR} y2={y} stroke="#27272a" strokeWidth="1" strokeDasharray="2,2" />
+                );
+              })}
+
+              {!isSingleWeek && (
+                <>
+                  <polyline fill="none" stroke="#10b981" strokeWidth="2" points={retailPoints} />
+                  <polyline fill="none" stroke="#3b82f6" strokeWidth="2" points={midPoints} />
+                  <polyline fill="none" stroke="#a855f7" strokeWidth="2" points={largePoints} />
+                </>
+              )}
+
+              {weekly.map((w, i) => {
+                const cx = getX(i);
+                return (
+                  <g key={i}>
+                    <circle cx={cx} cy={getRetailY(w.retail.people)} r={isSingleWeek ? 6 : 4} fill="#10b981" />
+                    <circle cx={cx} cy={getLMY(w.mid.people)} r={isSingleWeek ? 6 : 4} fill="#3b82f6" />
+                    <circle cx={cx} cy={getLMY(w.large.people)} r={isSingleWeek ? 6 : 4} fill="#a855f7" />
+                  </g>
+                );
+              })}
+
+              {dispHoverIdx !== null && (
+                <line
+                  x1={padL + dispHoverIdx * stepX}
+                  y1={padT}
+                  x2={padL + dispHoverIdx * stepX}
+                  y2={padT + plotH}
+                  stroke="#a1a1aa"
+                  strokeWidth="1"
+                  strokeDasharray="3,3"
+                />
+              )}
+
+              {weekly.map((w, i) => {
+                if (i % Math.ceil(weekly.length / 6) === 0 || i === weekly.length - 1) {
+                  return (
+                    <text key={i} x={padL + i * stepX} y={svgHeight - 10} fill="#71717a" fontSize="9" textAnchor="middle" className="font-mono">
+                      {w.date.slice(5)}
+                    </text>
+                  );
+                }
+                return null;
+              })}
+            </svg>
+
+            {hoverRow && (
+              <div className="absolute top-2 right-2 bg-zinc-900/90 border border-zinc-700/60 p-2.5 rounded-lg text-[11px] space-y-1 backdrop-blur shadow-lg z-10 font-mono">
+                <div className="text-zinc-400 font-bold border-b border-border/50 pb-1 mb-1">{hoverRow.date} 週報</div>
+                <div className="flex items-center justify-between gap-4">
+                  <span className="text-[#10b981]">散戶 ≤50張</span>
+                  <span className="text-zinc-200 font-bold">{hoverRow.retail.people.toLocaleString()} 人 ({hoverRow.retail.shares_pct}%)</span>
+                </div>
+                <div className="flex items-center justify-between gap-4">
+                  <span className="text-[#3b82f6]">中實戶 50-400張</span>
+                  <span className="text-zinc-200 font-bold">{hoverRow.mid.people.toLocaleString()} 人 ({hoverRow.mid.shares_pct}%)</span>
+                </div>
+                <div className="flex items-center justify-between gap-4">
+                  <span className="text-[#a855f7]">大戶 &gt;400張</span>
+                  <span className="text-zinc-200 font-bold">{hoverRow.large.people.toLocaleString()} 人 ({hoverRow.large.shares_pct}%)</span>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+
+        <div className="space-y-3">
+          <div className="flex items-center justify-between flex-wrap gap-2">
+            <h4 className="font-semibold text-xs text-zinc-300">每週股權分散明細</h4>
+            <div className="flex bg-zinc-950 p-1 rounded-lg border border-border/80 text-[11px]">
+              <button
+                onClick={() => setDispersionMode('people')}
+                className={`px-2.5 py-0.5 rounded transition ${dispersionMode === 'people' ? 'bg-zinc-800 text-zinc-100 font-semibold' : 'text-zinc-400 hover:text-zinc-200'}`}
+              >
+                人數模式
+              </button>
+              <button
+                onClick={() => setDispersionMode('pct')}
+                className={`px-2.5 py-0.5 rounded transition ${dispersionMode === 'pct' ? 'bg-zinc-800 text-zinc-100 font-semibold' : 'text-zinc-400 hover:text-zinc-200'}`}
+              >
+                佔比模式 (%)
+              </button>
+            </div>
+          </div>
+
+          <div className="overflow-x-auto rounded-lg border border-border/60">
+            <table className="w-full text-xs text-left">
+              <thead className="bg-zinc-900/60 text-zinc-400 font-mono text-[11px] border-b border-border/60">
+                <tr>
+                  <th className="p-3">日期</th>
+                  <th className="p-3 text-right">大戶 &gt;400張</th>
+                  <th className="p-3 text-right">大戶增減</th>
+                  <th className="p-3 text-right">中實戶 50-400張</th>
+                  <th className="p-3 text-right">中實戶增減</th>
+                  <th className="p-3 text-right">散戶 ≤50張</th>
+                  <th className="p-3 text-right">散戶增減</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-border/30 font-mono">
+                {[...weekly].reverse().map((row) => (
+                  <tr key={row.date} className="hover:bg-zinc-800/30 transition">
+                    <td className="p-3 font-semibold text-zinc-300">{row.date}</td>
+                    
+                    <td className="p-3 text-right text-zinc-200 font-semibold">
+                      {dispersionMode === 'people' ? `${row.large.people.toLocaleString()} 人` : `${row.large.shares_pct}%`}
+                    </td>
+                    <td className="p-3 text-right">
+                      {formatDelta(row.large.people_delta)}
+                    </td>
+
+                    <td className="p-3 text-right text-zinc-200 font-semibold">
+                      {dispersionMode === 'people' ? `${row.mid.people.toLocaleString()} 人` : `${row.mid.shares_pct}%`}
+                    </td>
+                    <td className="p-3 text-right">
+                      {formatDelta(row.mid.people_delta)}
+                    </td>
+
+                    <td className="p-3 text-right text-zinc-200 font-semibold">
+                      {dispersionMode === 'people' ? `${row.retail.people.toLocaleString()} 人` : `${row.retail.shares_pct}%`}
+                    </td>
+                    <td className="p-3 text-right">
+                      {formatDelta(row.retail.people_delta)}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
   const renderBasicTab = () => {
     const profile = profileState.data;
     const fundamentals = fundamentalsState.data;
@@ -2657,25 +2965,74 @@ export const StockDetail: React.FC = () => {
 
         {activeTab === 'chips' && (
           <div className="bg-card border border-border rounded-xl p-6">
-            <div className="flex items-center gap-2 mb-4 border-b border-border/60 pb-3">
-              <TrendingUp className="w-5 h-5 text-primary" />
-              <h3 className="font-semibold text-sm text-zinc-200">多天期主力與法人籌碼</h3>
-            </div>
-            {chipsState.loading ? (
-              <div className="text-xs text-zinc-500 animate-pulse text-center py-8">載入籌碼資料中...</div>
-            ) : chipsState.error ? (
-              <div className="p-4 border border-bull/20 bg-bull/5 rounded-lg text-center text-xs text-bull">
-                <div>{chipsState.error}</div>
-                <button onClick={fetchChips} className="mt-2 px-3 py-1 bg-zinc-800 hover:bg-zinc-700 rounded text-[10px] text-zinc-300">重試</button>
+            <div className="flex items-center justify-between border-b border-border/60 pb-3 mb-6 flex-wrap gap-3">
+              <div className="flex items-center gap-2">
+                <TrendingUp className="w-5 h-5 text-primary" />
+                <h3 className="font-semibold text-sm text-zinc-200">籌碼與股權結構分析</h3>
               </div>
-            ) : chipsState.data && chipsState.data.data.length > 0 ? (
-              <ChipsCharts
-                data={chipsState.data.data}
-                name={chipsState.data.name || chipsState.data.code}
-                asOf={chipsState.data.as_of || ''}
-              />
-            ) : (
-              <div className="text-xs text-zinc-500 text-center py-8">無籌碼資料</div>
+
+              <div className="flex bg-zinc-950/60 p-1 rounded-lg border border-border/80 text-xs">
+                <button
+                  onClick={() => setChipsSubTab('dispersion')}
+                  className={`px-3 py-1 rounded-md transition ${chipsSubTab === 'dispersion' ? 'bg-primary text-white font-semibold' : 'text-zinc-400 hover:text-zinc-200'}`}
+                >
+                  大戶／散戶結構
+                </button>
+                <button
+                  onClick={() => setChipsSubTab('inst')}
+                  className={`px-3 py-1 rounded-md transition ${chipsSubTab === 'inst' ? 'bg-primary text-white font-semibold' : 'text-zinc-400 hover:text-zinc-200'}`}
+                >
+                  三大法人
+                </button>
+                <button
+                  onClick={() => setChipsSubTab('margin')}
+                  className={`px-3 py-1 rounded-md transition ${chipsSubTab === 'margin' ? 'bg-primary text-white font-semibold' : 'text-zinc-400 hover:text-zinc-200'}`}
+                >
+                  融資融券
+                </button>
+              </div>
+            </div>
+
+            {chipsSubTab === 'dispersion' && renderDispersionSection()}
+
+            {chipsSubTab === 'inst' && (
+              chipsState.loading ? (
+                <div className="text-xs text-zinc-500 animate-pulse text-center py-8">載入籌碼資料中...</div>
+              ) : chipsState.error ? (
+                <div className="p-4 border border-bull/20 bg-bull/5 rounded-lg text-center text-xs text-bull">
+                  <div>{chipsState.error}</div>
+                  <button onClick={fetchChips} className="mt-2 px-3 py-1 bg-zinc-800 hover:bg-zinc-700 rounded text-[10px] text-zinc-300">重試</button>
+                </div>
+              ) : chipsState.data && chipsState.data.data.length > 0 ? (
+                <ChipsCharts
+                  data={chipsState.data.data}
+                  name={chipsState.data.name || chipsState.data.code}
+                  asOf={chipsState.data.as_of || ''}
+                  only="inst"
+                />
+              ) : (
+                <div className="text-xs text-zinc-500 text-center py-8">無三大法人籌碼資料</div>
+              )
+            )}
+
+            {chipsSubTab === 'margin' && (
+              chipsState.loading ? (
+                <div className="text-xs text-zinc-500 animate-pulse text-center py-8">載入籌碼資料中...</div>
+              ) : chipsState.error ? (
+                <div className="p-4 border border-bull/20 bg-bull/5 rounded-lg text-center text-xs text-bull">
+                  <div>{chipsState.error}</div>
+                  <button onClick={fetchChips} className="mt-2 px-3 py-1 bg-zinc-800 hover:bg-zinc-700 rounded text-[10px] text-zinc-300">重試</button>
+                </div>
+              ) : chipsState.data && chipsState.data.data.length > 0 ? (
+                <ChipsCharts
+                  data={chipsState.data.data}
+                  name={chipsState.data.name || chipsState.data.code}
+                  asOf={chipsState.data.as_of || ''}
+                  only="margin"
+                />
+              ) : (
+                <div className="text-xs text-zinc-500 text-center py-8">無融資融券籌碼資料</div>
+              )
             )}
           </div>
         )}
@@ -2919,3 +3276,4 @@ export const StockDetail: React.FC = () => {
     </div>
   );
 };
+

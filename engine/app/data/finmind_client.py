@@ -182,6 +182,14 @@ def fetch_valuation(code: str, start: str, end: str) -> pd.DataFrame:
     return out[cols].sort_values("date").reset_index(drop=True)
 
 
+def fetch_shareholding_per(code: str, start: str, end: str) -> pd.DataFrame:
+    """集保戶股權分散表：date, HoldingSharesLevel, people, percent。"""
+    try:
+        return _finmind_get("TaiwanStockHoldingSharesPer", code, start, end)
+    except Exception:
+        return pd.DataFrame()
+
+
 # ── 月營收（YoY/MoM 計算移至 service，此處只抓 raw 資料）→ Phase 4 ───────────────
 def fetch_month_revenue(code: str, start: str, end: str) -> pd.DataFrame:
     """月營收：date, revenue。"""
