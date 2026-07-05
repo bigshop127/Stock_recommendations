@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useMemo } from 'react';
 import { useParams, Link, useSearchParams } from 'react-router-dom';
 import { api } from '../lib/api';
-import type { StockDetail as IStockDetail, StockChips, StockFundamentals, StockNews, Book, OhlcvRow, AgentDecision, DebateParticipant, CompanyProfile, ShareholdingDispersion } from '../lib/api';
+import type { StockDetail as IStockDetail, StockChips, StockFundamentals, StockNews, Book, OhlcvRow, AgentDecision, DebateParticipant, CompanyProfile, ShareholdingDispersion, StockHeatmap } from '../lib/api';
 import { RefreshCw, BarChart2, TrendingUp, Cpu, Newspaper, DollarSign, AlertTriangle, Users, MessageSquare, Info, AlertCircle, ArrowLeft } from 'lucide-react';
 import { PriceChart } from '../components/PriceChart';
 import { ChipsCharts } from '../components/ChipsCharts';
@@ -19,7 +19,7 @@ interface TabItem {
 
 const STOCK_TABS: TabItem[] = [
   { id: 'basic', label: '基本資料' },
-  { id: 'industry', label: '產業分析', isSoon: true },
+  { id: 'industry', label: '產業分析' },
   { id: 'financials', label: '財務分析' },
   { id: 'chips', label: '籌碼分析' },
   { id: 'etf', label: 'ETF 持倉', isSoon: true },
@@ -74,6 +74,9 @@ export const StockDetail: React.FC = () => {
   const [fundamentalsState, setFundamentalsState] = useState<{ data: StockFundamentals | null; loading: boolean; error: string | null }>({ data: null, loading: true, error: null });
   const [profileState, setProfileState] = useState<{ data: CompanyProfile | null; loading: boolean; error: string | null }>({ data: null, loading: true, error: null });
   const [dispersionState, setDispersionState] = useState<{ data: ShareholdingDispersion | null; loading: boolean; error: string | null }>({ data: null, loading: true, error: null });
+  const [peersState, setPeersState] = useState<{ data: StockHeatmap | null; loading: boolean; error: string | null }>({ data: null, loading: false, error: null });
+  const [peerSortKey, setPeerSortKey] = useState<'turnover' | 'change_pct'>('turnover');
+  const [peerSortOrder, setPeerSortOrder] = useState<'asc' | 'desc'>('desc');
   const [chipsSubTab, setChipsSubTab] = useState<'dispersion' | 'inst' | 'margin'>('dispersion');
   const [dispersionMode, setDispersionMode] = useState<'people' | 'pct'>('people');
   const [dispHoverIdx, setDispHoverIdx] = useState<number | null>(null);
@@ -759,6 +762,24 @@ export const StockDetail: React.FC = () => {
       setDispersionState({ data: null, loading: false, error: err.message || '無法載入股權分散資料' });
     }
   };
+
+  const fetchPeers = async () => {
+    if (peersState.data && !peersState.error) return;
+    setPeersState(prev => ({ ...prev, loading: true, error: null }));
+    try {
+      const data = await api.marketStockHeatmap();
+      setPeersState({ data, loading: false, error: null });
+    } catch (err: any) {
+      console.error('Fetch industry peers failed:', err);
+      setPeersState({ data: null, loading: false, error: err.message || '無法載入同產業數據' });
+    }
+  };
+
+  useEffect(() => {
+    if (activeTab === 'industry') {
+      fetchPeers();
+    }
+  }, [activeTab, activeCode]);
 
   const fetchNews = async () => {
     setNewsState(prev => ({ ...prev, loading: true, error: null }));
@@ -2663,6 +2684,213 @@ export const StockDetail: React.FC = () => {
     );
   };
 
+  const renderIndustryTab = () => {
+    const heatmap = peersState.data;
+    const targetSector = profileState.data?.industry || (heatmap?.stocks.find(s => s.code === activeCode)?.sector) || '';
+
+    const allStocks = heatmap?.stocks || [];
+    const peerStocks = allStocks.filter(s => {
+      if (!targetSector) return true;
+      return s.sector === targetSector || s.sector.includes(targetSector) || targetSector.includes(s.sector);
+    });
+
+    const peerCount = peerStocks.length;
+    const validChanges = peerStocks.map(s => s.change_pct).filter((v): v is number => v !== null && v !== undefined);
+    const avgChange = validChanges.length > 0 ? validChanges.reduce((a, b) => a + b, 0) / validChanges.length : null;
+    const totalTurnover = peerStocks.reduce((sum, s) => sum + (s.turnover || 0), 0);
+
+    const formatMoney = (val: number | null | undefined) => {
+      if (val === null || val === undefined) return '—';
+      if (val >= 1e12) return `${(val / 1e12).toFixed(2)} 兆`;
+      if (val >= 1e8) return `${(val / 1e8).toFixed(1)} 億`;
+      if (val >= 1e4) return `${(val / 1e4).toFixed(0)} 萬`;
+      return `${val.toLocaleString()} 元`;
+    };
+
+    const sortedPeers = [...peerStocks].sort((a, b) => {
+      let valA = a[peerSortKey] ?? -Infinity;
+      let valB = b[peerSortKey] ?? -Infinity;
+      if (peerSortOrder === 'asc') {
+        return valA > valB ? 1 : -1;
+      }
+      return valA < valB ? 1 : -1;
+    });
+
+    const handleSort = (key: 'turnover' | 'change_pct') => {
+      if (peerSortKey === key) {
+        setPeerSortOrder(prev => prev === 'desc' ? 'asc' : 'desc');
+      } else {
+        setPeerSortKey(key);
+        setPeerSortOrder('desc');
+      }
+    };
+
+    return (
+      <div className="space-y-6">
+        {/* Industry Position Summary Bar */}
+        <div className="bg-card border border-border rounded-xl p-6">
+          <div className="flex items-center justify-between border-b border-border/60 pb-3 mb-4 flex-wrap gap-3">
+            <div className="flex items-center gap-2">
+              <Users className="w-5 h-5 text-primary" />
+              <h3 className="font-semibold text-sm text-zinc-200">產業同儕與市場定位</h3>
+            </div>
+            {targetSector && (
+              <span className="text-xs px-2.5 py-1 rounded-full font-semibold bg-primary/10 text-primary border border-primary/20">
+                {targetSector}
+              </span>
+            )}
+          </div>
+
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+            <div className="p-3.5 rounded-xl bg-zinc-950/40 border border-border/40 space-y-1">
+              <div className="text-[11px] text-zinc-500 font-medium">所屬產業</div>
+              <div className="text-base font-bold text-zinc-100 truncate">
+                {targetSector || '同儕分析'}
+              </div>
+            </div>
+
+            <div className="p-3.5 rounded-xl bg-zinc-950/40 border border-border/40 space-y-1">
+              <div className="text-[11px] text-zinc-500 font-medium">產業成分股</div>
+              <div className="text-base font-bold text-zinc-100 font-mono">
+                {peerCount > 0 ? `${peerCount} 檔` : '—'}
+              </div>
+            </div>
+
+            <div className="p-3.5 rounded-xl bg-zinc-950/40 border border-border/40 space-y-1">
+              <div className="text-[11px] text-zinc-500 font-medium">同業今日平均漲跌</div>
+              <div className="text-base font-bold font-mono">
+                {avgChange !== null ? (
+                  <span className={avgChange >= 0 ? 'text-bull' : 'text-bear'}>
+                    {avgChange >= 0 ? '+' : ''}{avgChange.toFixed(2)}%
+                  </span>
+                ) : '—'}
+              </div>
+            </div>
+
+            <div className="p-3.5 rounded-xl bg-zinc-950/40 border border-border/40 space-y-1">
+              <div className="text-[11px] text-zinc-500 font-medium">同業總成交值</div>
+              <div className="text-base font-bold text-zinc-100 font-mono">
+                {formatMoney(totalTurnover)}
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Peer Comparison Table */}
+        <div className="bg-card border border-border rounded-xl p-6 space-y-4">
+          <div className="flex items-center justify-between flex-wrap gap-3">
+            <div>
+              <h3 className="font-semibold text-sm text-zinc-200">同產業個股即時比較</h3>
+              <p className="text-[11px] text-zinc-500 mt-0.5">點擊同業可快速切換審查；高亮標示當前查看之個股</p>
+            </div>
+            
+            <div className="flex items-center gap-2 text-xs">
+              <span className="text-zinc-500">排序:</span>
+              <button
+                onClick={() => handleSort('turnover')}
+                className={`px-2.5 py-1 rounded-lg transition border ${peerSortKey === 'turnover' ? 'bg-zinc-800 text-zinc-100 border-zinc-700 font-semibold' : 'bg-zinc-950 text-zinc-400 border-border/60 hover:text-zinc-200'}`}
+              >
+                成交金額 {peerSortKey === 'turnover' ? (peerSortOrder === 'desc' ? '↓' : '↑') : ''}
+              </button>
+              <button
+                onClick={() => handleSort('change_pct')}
+                className={`px-2.5 py-1 rounded-lg transition border ${peerSortKey === 'change_pct' ? 'bg-zinc-800 text-zinc-100 border-zinc-700 font-semibold' : 'bg-zinc-950 text-zinc-400 border-border/60 hover:text-zinc-200'}`}
+              >
+                漲跌幅 {peerSortKey === 'change_pct' ? (peerSortOrder === 'desc' ? '↓' : '↑') : ''}
+              </button>
+            </div>
+          </div>
+
+          {peersState.loading ? (
+            <div className="text-xs text-zinc-500 animate-pulse text-center py-12">載入同產業個股中...</div>
+          ) : peersState.error && !heatmap ? (
+            <div className="p-4 border border-bull/20 bg-bull/5 rounded-lg text-center text-xs text-bull">
+              <div>{peersState.error}</div>
+              <button onClick={fetchPeers} className="mt-2 px-3 py-1 bg-zinc-800 hover:bg-zinc-700 rounded text-[10px] text-zinc-300">重試</button>
+            </div>
+          ) : sortedPeers.length === 0 ? (
+            <div className="text-xs text-zinc-500 text-center py-12">同產業可比個股不足</div>
+          ) : (
+            <div className="overflow-x-auto rounded-lg border border-border/60">
+              <table className="w-full text-xs text-left">
+                <thead className="bg-zinc-900/60 text-zinc-400 font-mono text-[11px] border-b border-border/60">
+                  <tr>
+                    <th className="p-3">股票代號 / 名稱</th>
+                    <th className="p-3 text-right">當前成交價</th>
+                    <th className="p-3 text-right cursor-pointer hover:text-zinc-200" onClick={() => handleSort('change_pct')}>
+                      今日漲跌幅 {peerSortKey === 'change_pct' ? (peerSortOrder === 'desc' ? '↓' : '↑') : ''}
+                    </th>
+                    <th className="p-3 text-right cursor-pointer hover:text-zinc-200" onClick={() => handleSort('turnover')}>
+                      成交金額 {peerSortKey === 'turnover' ? (peerSortOrder === 'desc' ? '↓' : '↑') : ''}
+                    </th>
+                    <th className="p-3 text-center">操作</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-border/30 font-mono">
+                  {sortedPeers.map((item) => {
+                    const isSelf = item.code === activeCode;
+                    const chg = item.change_pct;
+                    return (
+                      <tr
+                        key={item.code}
+                        className={`transition ${isSelf ? 'bg-primary/10 border-l-4 border-l-primary font-bold' : 'hover:bg-zinc-800/40'}`}
+                      >
+                        <td className="p-3">
+                          <Link to={`/stock/${item.code}`} className="flex items-center gap-2 hover:text-primary">
+                            <span className="font-semibold text-zinc-200">{item.name}</span>
+                            <span className="text-[11px] text-zinc-500">({item.code})</span>
+                            {isSelf && (
+                              <span className="text-[10px] bg-primary text-white px-1.5 py-0.5 rounded font-sans font-medium">
+                                本股
+                              </span>
+                            )}
+                          </Link>
+                        </td>
+
+                        <td className="p-3 text-right font-semibold text-zinc-200">
+                          {item.close !== null && item.close !== undefined ? item.close.toFixed(2) : '—'}
+                        </td>
+
+                        <td className="p-3 text-right font-semibold">
+                          {chg !== null && chg !== undefined ? (
+                            <span className={`px-1.5 py-0.5 rounded ${chg >= 0 ? 'bg-bull/10 text-bull' : 'bg-bear/10 text-bear'}`}>
+                              {chg >= 0 ? '+' : ''}{chg.toFixed(2)}%
+                            </span>
+                          ) : (
+                            <span className="text-zinc-500">—</span>
+                          )}
+                        </td>
+
+                        <td className="p-3 text-right text-zinc-300">
+                          {formatMoney(item.turnover)}
+                        </td>
+
+                        <td className="p-3 text-center">
+                          {!isSelf && (
+                            <Link
+                              to={`/stock/${item.code}`}
+                              className="text-[11px] px-2 py-1 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded font-sans inline-block"
+                            >
+                              檢視 ↗
+                            </Link>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+
+          <div className="text-[10px] text-zinc-500 pt-2 border-t border-border/40 font-mono">
+            同儕圈＝TWSE 官方產業別，非第三方策展題材；資料源 TWSE
+          </div>
+        </div>
+      </div>
+    );
+  };
+
   const renderBasicTab = () => {
     const profile = profileState.data;
     const fundamentals = fundamentalsState.data;
@@ -2950,7 +3178,7 @@ export const StockDetail: React.FC = () => {
       {/* Tab Content Section */}
       <div className="space-y-6">
         {activeTab === 'basic' && renderBasicTab()}
-        {activeTab === 'industry' && <ComingSoon label="產業分析" />}
+        {activeTab === 'industry' && renderIndustryTab()}
         {activeTab === 'etf' && <ComingSoon label="ETF 持倉" />}
 
         {activeTab === 'financials' && (
