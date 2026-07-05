@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useMemo } from 'react';
 import { useParams, Link, useSearchParams } from 'react-router-dom';
 import { api } from '../lib/api';
-import type { StockDetail as IStockDetail, StockChips, StockFundamentals, StockNews, Book, OhlcvRow, AgentDecision, DebateParticipant } from '../lib/api';
+import type { StockDetail as IStockDetail, StockChips, StockFundamentals, StockNews, Book, OhlcvRow, AgentDecision, DebateParticipant, CompanyProfile } from '../lib/api';
 import { RefreshCw, BarChart2, TrendingUp, Cpu, Newspaper, DollarSign, AlertTriangle, Users, MessageSquare, Info, AlertCircle, ArrowLeft } from 'lucide-react';
 import { PriceChart } from '../components/PriceChart';
 import { ChipsCharts } from '../components/ChipsCharts';
@@ -18,7 +18,7 @@ interface TabItem {
 }
 
 const STOCK_TABS: TabItem[] = [
-  { id: 'basic', label: '基本資料', isSoon: true },
+  { id: 'basic', label: '基本資料' },
   { id: 'industry', label: '產業分析', isSoon: true },
   { id: 'financials', label: '財務分析' },
   { id: 'chips', label: '籌碼分析' },
@@ -72,6 +72,7 @@ export const StockDetail: React.FC = () => {
   const [signalState, setSignalState] = useState<{ data: IStockDetail | null; loading: boolean; error: string | null }>({ data: null, loading: true, error: null });
   const [chipsState, setChipsState] = useState<{ data: StockChips | null; loading: boolean; error: string | null }>({ data: null, loading: true, error: null });
   const [fundamentalsState, setFundamentalsState] = useState<{ data: StockFundamentals | null; loading: boolean; error: string | null }>({ data: null, loading: true, error: null });
+  const [profileState, setProfileState] = useState<{ data: CompanyProfile | null; loading: boolean; error: string | null }>({ data: null, loading: true, error: null });
   const [newsState, setNewsState] = useState<{ data: StockNews | null; loading: boolean; error: string | null }>({ data: null, loading: true, error: null });
   const [fundTab, setFundTab] = useState<'valuation' | 'revenue' | 'financials' | 'dividend'>('valuation');
   const [fundHoverIdx, setFundHoverIdx] = useState<number | null>(null);
@@ -225,6 +226,22 @@ export const StockDetail: React.FC = () => {
         }
       ],
       source: 'FinMind'
+    };
+  };
+
+  const getMockCompanyProfile = (c: string): CompanyProfile => {
+    return {
+      code: c,
+      name: c === '2330' ? '台積電' : c === '2454' ? '聯發科' : '鴻海',
+      full_name: c === '2330' ? '台灣積體電路製造股份有限公司' : c === '2454' ? '聯發科技股份有限公司' : '鴻海精密工業股份有限公司',
+      industry: c === '2330' ? '半導體業' : c === '2454' ? '半導體業' : '其他電子業',
+      founded: c === '2330' ? '1987' : c === '2454' ? '1997' : '1974',
+      chairman: c === '2330' ? '魏哲家' : c === '2454' ? '蔡明介' : '劉揚偉',
+      address: c === '2330' ? '新竹科學園區力行六路8號' : c === '2454' ? '新竹科學園區展業一路1號' : '新北市土城區自由街2號',
+      website: c === '2330' ? 'https://www.tsmc.com' : c === '2454' ? 'https://www.mediatek.tw' : 'https://www.honhai.com',
+      capital: c === '2330' ? 259303804580 : c === '2454' ? 15998000000 : 138629900000,
+      source: 'TWSE OpenAPI t187ap03_L (Mock)',
+      as_of: new Date().toISOString().split('T')[0]
     };
   };
 
@@ -665,6 +682,22 @@ export const StockDetail: React.FC = () => {
     }
   };
 
+  const fetchProfile = async () => {
+    setProfileState(prev => ({ ...prev, loading: true, error: null }));
+    try {
+      let data: CompanyProfile;
+      if (useMock) {
+        data = getMockCompanyProfile(activeCode);
+      } else {
+        data = await api.stockProfile(activeCode);
+      }
+      setProfileState({ data, loading: false, error: null });
+    } catch (err: any) {
+      console.error('Fetch company profile failed:', err);
+      setProfileState({ data: null, loading: false, error: err.message || '無法載入公司基本檔' });
+    }
+  };
+
   const fetchNews = async () => {
     setNewsState(prev => ({ ...prev, loading: true, error: null }));
     try {
@@ -687,6 +720,7 @@ export const StockDetail: React.FC = () => {
     fetchSignal();
     fetchChips();
     fetchFundamentals();
+    fetchProfile();
     fetchNews();
   };
 
@@ -2321,6 +2355,207 @@ export const StockDetail: React.FC = () => {
     );
   };
 
+  const renderBasicTab = () => {
+    const profile = profileState.data;
+    const fundamentals = fundamentalsState.data;
+    const summary = fundamentals?.summary;
+
+    const financialsList = fundamentals?.financials || [];
+    const latestFin = financialsList.length > 0 ? financialsList[financialsList.length - 1] : null;
+
+    const valuationList = fundamentals?.valuation || [];
+    const latestVal = valuationList.length > 0 ? valuationList[valuationList.length - 1] : null;
+
+    const revenueList = fundamentals?.revenue || [];
+    const latestRev = revenueList.length > 0 ? revenueList[revenueList.length - 1] : null;
+
+    const pe = summary?.pe_ratio ?? latestVal?.pe_ratio;
+    const pb = summary?.pb_ratio ?? latestVal?.pb_ratio;
+    const marketCap = summary?.market_cap;
+
+    const formatMoney = (val: number | null | undefined) => {
+      if (val === null || val === undefined) return '—';
+      if (val >= 1e12) return `${(val / 1e12).toFixed(2)} 兆`;
+      if (val >= 1e8) return `${(val / 1e8).toFixed(1)} 億`;
+      return `${val.toLocaleString()} 元`;
+    };
+
+    return (
+      <div className="space-y-6">
+        {/* Company Profile Card */}
+        <div className="bg-card border border-border rounded-xl p-6">
+          <div className="flex items-center justify-between border-b border-border/60 pb-3 mb-6">
+            <div className="flex items-center gap-2">
+              <Info className="w-5 h-5 text-primary" />
+              <h3 className="font-semibold text-sm text-zinc-200">公司基本檔</h3>
+            </div>
+            {profile?.source && (
+              <span className="text-[10px] text-zinc-500 font-mono">
+                來源: {profile.source}
+              </span>
+            )}
+          </div>
+
+          {profileState.loading ? (
+            <div className="text-xs text-zinc-500 animate-pulse text-center py-8">載入公司基本檔中...</div>
+          ) : profileState.error && !profile ? (
+            <div className="p-4 border border-bull/20 bg-bull/5 rounded-lg text-center text-xs text-bull">
+              <div>{profileState.error}</div>
+              <button onClick={fetchProfile} className="mt-2 px-3 py-1 bg-zinc-800 hover:bg-zinc-700 rounded text-[10px] text-zinc-300">重試</button>
+            </div>
+          ) : (
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-6">
+              <div className="space-y-1">
+                <div className="text-[11px] text-zinc-500 font-medium">公司全名</div>
+                <div className="text-sm font-semibold text-zinc-200">
+                  {profile?.full_name || profile?.name || activeCode}
+                </div>
+              </div>
+
+              <div className="space-y-1">
+                <div className="text-[11px] text-zinc-500 font-medium">產業分類</div>
+                <div className="text-sm font-semibold text-zinc-200">
+                  {profile?.industry || '—'}
+                </div>
+              </div>
+
+              <div className="space-y-1">
+                <div className="text-[11px] text-zinc-500 font-medium">成立年份</div>
+                <div className="text-sm font-semibold text-zinc-200 font-mono">
+                  {profile?.founded ? `${profile.founded} 年` : '—'}
+                </div>
+              </div>
+
+              <div className="space-y-1">
+                <div className="text-[11px] text-zinc-500 font-medium">董事長</div>
+                <div className="text-sm font-semibold text-zinc-200">
+                  {profile?.chairman || '—'}
+                </div>
+              </div>
+
+              <div className="space-y-1 md:col-span-2">
+                <div className="text-[11px] text-zinc-500 font-medium">總部地址</div>
+                <div className="text-sm font-semibold text-zinc-200 truncate" title={profile?.address || ''}>
+                  {profile?.address || '—'}
+                </div>
+              </div>
+
+              <div className="space-y-1 md:col-span-2">
+                <div className="text-[11px] text-zinc-500 font-medium">官方網站</div>
+                <div className="text-sm font-semibold text-zinc-200">
+                  {profile?.website ? (
+                    <a
+                      href={profile.website}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-primary hover:underline font-mono text-xs inline-flex items-center gap-1"
+                    >
+                      {profile.website.replace(/^https?:\/\//, '')} ↗
+                    </a>
+                  ) : (
+                    '—'
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Latest Financial Overview Card (Six-to-Eight Grid) */}
+        <div className="bg-card border border-border rounded-xl p-6">
+          <div className="flex items-center justify-between border-b border-border/60 pb-3 mb-6">
+            <div className="flex items-center gap-2">
+              <DollarSign className="w-5 h-5 text-primary" />
+              <h3 className="font-semibold text-sm text-zinc-200">最新財務概況</h3>
+            </div>
+            {latestFin?.quarter && (
+              <span className="text-[10px] text-zinc-500 font-mono">
+                最新一季: {latestFin.quarter}
+              </span>
+            )}
+          </div>
+
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+            {/* 1. 市值 */}
+            <div className="p-4 rounded-xl bg-zinc-950/40 border border-border/40 space-y-1">
+              <div className="text-[11px] text-zinc-500 font-medium">總市值</div>
+              <div className="text-lg font-bold text-zinc-100 font-mono tracking-tight">
+                {formatMoney(marketCap)}
+              </div>
+            </div>
+
+            {/* 2. 本益比 */}
+            <div className="p-4 rounded-xl bg-zinc-950/40 border border-border/40 space-y-1">
+              <div className="text-[11px] text-zinc-500 font-medium">本益比 (PE)</div>
+              <div className="text-lg font-bold text-zinc-100 font-mono tracking-tight">
+                {pe !== undefined && pe !== null ? `${pe.toFixed(1)} x` : '—'}
+              </div>
+            </div>
+
+            {/* 3. 股價淨值比 */}
+            <div className="p-4 rounded-xl bg-zinc-950/40 border border-border/40 space-y-1">
+              <div className="text-[11px] text-zinc-500 font-medium">股價淨值比 (PB)</div>
+              <div className="text-lg font-bold text-zinc-100 font-mono tracking-tight">
+                {pb !== undefined && pb !== null ? `${pb.toFixed(1)} x` : '—'}
+              </div>
+            </div>
+
+            {/* 4. 最新單季 EPS */}
+            <div className="p-4 rounded-xl bg-zinc-950/40 border border-border/40 space-y-1">
+              <div className="text-[11px] text-zinc-500 font-medium">最新單季 EPS</div>
+              <div className="text-lg font-bold text-primary font-mono tracking-tight">
+                {latestFin?.eps !== undefined && latestFin?.eps !== null ? `${latestFin.eps.toFixed(2)} 元` : '—'}
+              </div>
+            </div>
+
+            {/* 5. 毛利率 */}
+            <div className="p-4 rounded-xl bg-zinc-950/40 border border-border/40 space-y-1">
+              <div className="text-[11px] text-zinc-500 font-medium">毛利率</div>
+              <div className="text-lg font-bold text-zinc-100 font-mono tracking-tight">
+                {latestFin?.gross_margin !== undefined && latestFin?.gross_margin !== null ? `${latestFin.gross_margin.toFixed(1)} %` : '—'}
+              </div>
+            </div>
+
+            {/* 6. 營益率 */}
+            <div className="p-4 rounded-xl bg-zinc-950/40 border border-border/40 space-y-1">
+              <div className="text-[11px] text-zinc-500 font-medium">營利事業率 (營益率)</div>
+              <div className="text-lg font-bold text-zinc-100 font-mono tracking-tight">
+                {latestFin?.operating_margin !== undefined && latestFin?.operating_margin !== null ? `${latestFin.operating_margin.toFixed(1)} %` : '—'}
+              </div>
+            </div>
+
+            {/* 7. 淨利率 */}
+            <div className="p-4 rounded-xl bg-zinc-950/40 border border-border/40 space-y-1">
+              <div className="text-[11px] text-zinc-500 font-medium">稅後淨利率</div>
+              <div className="text-lg font-bold text-zinc-100 font-mono tracking-tight">
+                {latestFin?.net_margin !== undefined && latestFin?.net_margin !== null ? `${latestFin.net_margin.toFixed(1)} %` : '—'}
+              </div>
+            </div>
+
+            {/* 8. 最新月營收 */}
+            <div className="p-4 rounded-xl bg-zinc-950/40 border border-border/40 space-y-1">
+              <div className="flex items-center justify-between">
+                <span className="text-[11px] text-zinc-500 font-medium">最新月營收</span>
+                {(() => {
+                  const yoy = latestRev?.yoy;
+                  if (yoy === undefined || yoy === null) return null;
+                  return (
+                    <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded font-mono ${yoy >= 0 ? 'bg-bull/10 text-bull' : 'bg-bear/10 text-bear'}`}>
+                      YoY {yoy >= 0 ? '+' : ''}{yoy.toFixed(1)}%
+                    </span>
+                  );
+                })()}
+              </div>
+              <div className="text-lg font-bold text-zinc-100 font-mono tracking-tight">
+                {latestRev?.revenue ? formatMoney(latestRev.revenue) : '—'}
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
   return (
     <div className="space-y-6">
       {/* 標題與個股快速搜尋 */}
@@ -2406,7 +2641,7 @@ export const StockDetail: React.FC = () => {
 
       {/* Tab Content Section */}
       <div className="space-y-6">
-        {activeTab === 'basic' && <ComingSoon label="基本資料" />}
+        {activeTab === 'basic' && renderBasicTab()}
         {activeTab === 'industry' && <ComingSoon label="產業分析" />}
         {activeTab === 'etf' && <ComingSoon label="ETF 持倉" />}
 

@@ -43,6 +43,7 @@ const T = {
   book: 15000,    // 即時五檔 live snapshot（TWSE MIS，快）
   intraday: 45000, // 富果盤中分K
   fundamentals: 90000, // 給長一點 timeout，多 dataset 首抓慢
+  profile: 30000,      // TWSE OpenAPI 公司基本檔
   news: 30000,     // 個股新聞輿情及情緒標記
 };
 
@@ -231,6 +232,15 @@ router.get('/api/stocks/:code/chips', async (req, res) => {
 router.get('/api/stocks/:code/fundamentals', async (req, res) => {
   try {
     res.json(await engineGet('/data/fundamentals', { code: req.params.code }, T.fundamentals));
+  } catch (err) {
+    sendError(res, err);
+  }
+});
+
+// ── GET /api/stocks/:code/profile ── 個股公司基本檔（TWSE OpenAPI + 降級） ──
+router.get('/api/stocks/:code/profile', async (req, res) => {
+  try {
+    res.json(await engineGet('/data/profile', { code: req.params.code }, T.profile));
   } catch (err) {
     sendError(res, err);
   }

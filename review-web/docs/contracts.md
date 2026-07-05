@@ -471,3 +471,37 @@
 （檔不存在時 `{ "exists": false, "holdings": null }`。）
 * **POST Body**：同 `holdings` 物件（頂層 `shares`/`avg_cost` 會被伺服端依 `opening`+`trades` 重算覆蓋）。**Response**：`{ "ok": true, "holdings": {...清洗後...}, "saved_at": "ISO時間" }`。
 
+
+### 2.14 個股公司基本檔 `/api/stocks/:code/profile`
+* **Method**: `GET`
+* **Description**: 個股公司靜態基本檔（成立年份、董事長、總部地址、官方網站、產業別、實收資本額）。資料源＝**TWSE OpenAPI `t187ap03_L`（上市公司基本資料）**，engine `twse_openapi_client` 於首次請求抓全市場一次、**依日期記憶體快取**（同一天不重打 TWSE）；gateway 薄轉發（`T.profile` 30s timeout，無獨立 TTL 層、靠 engine 日快取）。**降級**：查無代號（上櫃/興櫃/ETF 未涵蓋或 TWSE 端斷線）→ 回傳同結構但欄位多為 `null`、`name` 退回 FinMind 股名、`source` 標 `"TWSE OpenAPI (Degraded)"`；前端各欄顯示「—」、財務概況卡走既有 fundamentals 不受影響。
+* **Query**：`code`（必填，台股代號，例 `2330`）。
+* **Response (200 OK)**：`CompanyProfile`
+```json
+{
+  "code": "2330",
+  "name": "台積電",
+  "full_name": "台灣積體電路製造股份有限公司",
+  "industry": "半導體業",
+  "founded": "1987",
+  "chairman": "魏哲家",
+  "address": "新竹科學園區力行六路8號",
+  "website": "https://www.tsmc.com",
+  "capital": 259303804580,
+  "source": "TWSE OpenAPI t187ap03_L",
+  "as_of": "2026-07-05"
+}
+```
+| 欄位 | 型別 | 必填 | 說明 |
+|---|---|---|---|
+| `code` | string | ✓ | 台股代號 |
+| `name` | string \| null | ✓ | 公司簡稱（降級時退回 FinMind 股名，仍可能 null） |
+| `full_name` | string \| null | — | 公司全名 |
+| `industry` | string \| null | — | 產業分類（TWSE 產業別代碼對照名） |
+| `founded` | string \| null | — | 成立年份（`成立日期` 取前 4 碼西元年） |
+| `chairman` | string \| null | — | 董事長姓名 |
+| `address` | string \| null | — | 總部地址 |
+| `website` | string \| null | — | 官方網站（自動補 `https://`） |
+| `capital` | number \| null | — | 實收資本額（元） |
+| `source` | string | ✓ | `"TWSE OpenAPI t187ap03_L"` 或 `"TWSE OpenAPI (Degraded)"` |
+| `as_of` | string | ✓ | 抓取日期 YYYY-MM-DD |

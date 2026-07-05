@@ -485,6 +485,20 @@ export interface StockNews {
   items: NewsItem[];
 }
 
+export interface CompanyProfile {
+  code: string;
+  name: string | null;
+  full_name?: string | null;
+  industry: string | null;
+  founded: string | null;
+  chairman: string | null;
+  address: string | null;
+  website: string | null;
+  capital: number | null;
+  source: string;
+  as_of: string;
+}
+
 // === API Client 整合出口 ===
 export const api = {
   health: () => req<Health>('/health'),
@@ -518,8 +532,10 @@ export const api = {
   marketBreadth: (o?: { date?: string }) => req<MarketBreadth>(`/market/breadth${qs(o)}`),
   marketSectors: (o?: { date?: string }) => req<MarketSectors>(`/market/sectors${qs(o)}`),
   marketInstitutional: (o?: { date?: string; days?: number }) => req<MarketInstitutional>(`/market/institutional${qs(o)}`),
-  stockChips: (code: string, o?: { days?: number; start?: string; end?: string }) => req<StockChips>(`/stocks/${code}/chips${qs(o)}`),
+  stockChips: (code: string, o?: { days?: number; start?: string; end?: string }) =>
+    req<StockChips>(`/stocks/${code}/chips${qs({ days: o?.days, start: o?.start, end: o?.end })}`),
   stockFundamentals: (code: string) => req<StockFundamentals>(`/stocks/${code}/fundamentals`),
+  stockProfile: (code: string) => req<CompanyProfile>(`/stocks/${code}/profile`),
   stockNews: (code: string) => req<StockNews>(`/stocks/${code}/news`),
   symbolSearch: (q: string, limit?: number) => req<SymbolSearch>(`/symbols/search${qs({ q, limit })}`),
   marketCapitalTide: (o?: { date?: string; universe?: string }) => req<CapitalTideData>(`/market/capital-tide${qs(o)}`),

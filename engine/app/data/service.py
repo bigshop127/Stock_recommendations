@@ -20,6 +20,7 @@ from app.data import (
     news_client,
     taifex_client,
     twse_mis_client,
+    twse_openapi_client,
     yfinance_client,
 )
 
@@ -672,5 +673,9 @@ def search_symbols(q: str, limit: int = 20) -> list[dict[str, str]]:
             "name": sname
         })
     return results
+
+
+def get_company_profile(code: str) -> dict:
+    return twse_openapi_client.fetch_company_profile(code)
 
 

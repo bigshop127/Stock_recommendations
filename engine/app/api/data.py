@@ -71,6 +71,13 @@ def fundamentals(
     return _guard(service.get_fundamentals, code)
 
 
+@router.get("/profile", summary="個股公司基本檔（TWSE OpenAPI + 降級）")
+def profile(
+    code: str = Query(..., description="台股代號，例 2330"),
+):
+    return _guard(service.get_company_profile, code)
+
+
 
 @router.get("/book", summary="即時最佳五檔（預設 TWSE MIS 免費；富果可選；live-only）")
 def book(code: str = Query(..., description="台股代號，例 2330")):
