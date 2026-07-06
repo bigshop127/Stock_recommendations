@@ -586,13 +586,13 @@ export interface RebalanceHoldingsPayload {
   shares: number;       // 衍生（伺服端會再重算）
   avg_cost: number;     // 衍生
   price: number;
-  cash: number;
+  cash: number;         // 衍生【增修H】（期初現金 − 買進 ＋ 賣出，伺服端會再重算）
   target_beta: number;
   tolerance_mode: 'pct' | 'abs';
   threshold_pct: number;
   threshold_abs: number;
   etf_beta: number;
-  opening: { shares: number; avg_cost: number };
+  opening: { shares: number; avg_cost: number; cash: number };
   trades: RebalanceTrade[];
 }
 export interface RebalanceHoldingsResp {

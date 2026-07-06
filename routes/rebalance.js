@@ -30,10 +30,11 @@ function safeNum(v, fb) {
   return fb;
 }
 
-// 部位累算（移植自 lib/rebalance.ts aggregatePosition，單一標的）
+// 部位累算（移植自 lib/rebalance.ts aggregatePosition，單一標的；【增修H】含現金流：買扣賣加）
 function aggregatePosition(opening, trades) {
   let shares = Math.max(0, safeNum(opening && opening.shares, 0));
   let avg_cost = Math.max(0, safeNum(opening && opening.avg_cost, 0));
+  let cash = Math.max(0, safeNum(opening && opening.cash, 0));
   let cost_basis = shares * avg_cost;
   const list = Array.isArray(trades) ? trades.slice() : [];
   list.sort((a, b) => {
@@ -48,6 +49,7 @@ function aggregatePosition(opening, trades) {
     if (t && t.side === 'sell') {
       const sold = Math.min(tShares, shares);
       if (sold > 0) {
+        cash += sold * tPrice;
         cost_basis -= avg_cost * sold;
         shares -= sold;
         if (shares <= 0) { shares = 0; cost_basis = 0; avg_cost = 0; }
@@ -56,11 +58,13 @@ function aggregatePosition(opening, trades) {
       cost_basis += tShares * tPrice;
       shares += tShares;
       avg_cost = shares > 0 ? cost_basis / shares : 0;
+      cash -= tShares * tPrice;
     }
   }
   return {
     shares: Number.isFinite(shares) ? shares : 0,
     avg_cost: Number.isFinite(avg_cost) ? avg_cost : 0,
+    cash: Number.isFinite(cash) ? cash : 0,
   };
 }
 
@@ -88,12 +92,15 @@ function sanitizeHoldings(body) {
     opening = {
       shares: Math.max(0, safeNum(b.opening.shares, 0)),
       avg_cost: Math.max(0, safeNum(b.opening.avg_cost, 0)),
+      // 【增修H】遷移：opening 無 cash 時用頂層 cash 當期初現金
+      cash: Math.max(0, safeNum(b.opening.cash, Math.max(0, safeNum(b.cash, 0)))),
     };
   } else {
-    // 遷移：無 opening 時用頂層 shares/avg_cost 當期初
+    // 遷移：無 opening 時用頂層 shares/avg_cost/cash 當期初
     opening = {
       shares: Math.max(0, safeNum(b.shares, 0)),
       avg_cost: Math.max(0, safeNum(b.avg_cost, 0)),
+      cash: Math.max(0, safeNum(b.cash, 0)),
     };
   }
   const agg = aggregatePosition(opening, trades);
@@ -101,7 +108,7 @@ function sanitizeHoldings(body) {
     shares: agg.shares,       // 衍生（告警腳本讀這個）
     avg_cost: agg.avg_cost,   // 衍生
     price: Math.max(0, safeNum(b.price, 0)),
-    cash: Math.max(0, safeNum(b.cash, 0)),
+    cash: Math.max(0, agg.cash), // 衍生【增修H】（告警腳本讀這個；負值 clamp 0）
     target_beta: safeNum(b.target_beta, 1.3),
     tolerance_mode: b.tolerance_mode === 'pct' ? 'pct' : 'abs',
     threshold_pct: Math.max(0, safeNum(b.threshold_pct, 10)),

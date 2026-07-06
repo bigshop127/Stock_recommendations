@@ -149,9 +149,9 @@ export function Rebalance() {
 
   // 直接編輯欄位的本地暫存（允許打字未完，如 "12."）
   const [priceStr, setPriceStr] = useState<string>(() => String(config.price || ''));
-  const [cashStr, setCashStr] = useState<string>(() => String(config.cash || ''));
   const [openSharesStr, setOpenSharesStr] = useState<string>(() => String(config.opening.shares || ''));
   const [openAvgStr, setOpenAvgStr] = useState<string>(() => String(config.opening.avg_cost || ''));
+  const [openCashStr, setOpenCashStr] = useState<string>(() => String(config.opening.cash || ''));
   const [showAdvanced, setShowAdvanced] = useState(false);
 
   // 報價單：新增一筆交易的表單
@@ -181,16 +181,21 @@ export function Rebalance() {
   // 同步 input 欄位，若外部 store 改變
   useEffect(() => {
     setPriceStr(config.price ? String(config.price) : '');
-    setCashStr(config.cash ? String(config.cash) : '');
     setOpenSharesStr(config.opening.shares ? String(config.opening.shares) : '');
     setOpenAvgStr(config.opening.avg_cost ? String(config.opening.avg_cost) : '');
-  }, [config.price, config.cash, config.opening.shares, config.opening.avg_cost]);
+    setOpenCashStr(config.opening.cash ? String(config.opening.cash) : '');
+  }, [config.price, config.opening.shares, config.opening.avg_cost, config.opening.cash]);
 
-  // 套用設定：合併 partial → 重算衍生 shares/avg_cost（＝aggregatePosition）→ 存 localStorage
+  // 套用設定：合併 partial → 重算衍生 shares/avg_cost/cash（＝aggregatePosition）→ 存 localStorage
   const applyConfig = (partial: Partial<RebalanceConfig>): RebalanceConfig => {
     const merged = { ...config, ...partial };
     const agg = aggregatePosition(merged.opening, merged.trades);
-    const next: RebalanceConfig = { ...merged, shares: agg.shares, avg_cost: agg.avg_cost };
+    const next: RebalanceConfig = {
+      ...merged,
+      shares: agg.shares,
+      avg_cost: agg.avg_cost,
+      cash: Math.max(0, agg.cash), // 【增修H】現金亦為衍生（買扣賣加），負值 clamp 0
+    };
     setConfig(next);
     saveRebalanceConfig(next);
     return next;
@@ -296,10 +301,10 @@ export function Rebalance() {
     setPriceFetch((s) => ({ ...s, date: null, error: null }));
   };
 
-  const handleCashChange = (val: string) => {
-    setCashStr(val);
+  const handleOpenCashChange = (val: string) => {
+    setOpenCashStr(val);
     const parsed = parseFloat(val);
-    applyConfig({ cash: Number.isFinite(parsed) && parsed >= 0 ? parsed : 0 });
+    applyConfig({ opening: { ...config.opening, cash: Number.isFinite(parsed) && parsed >= 0 ? parsed : 0 } });
   };
 
   const handleOpenSharesChange = (val: string) => {
@@ -847,21 +852,25 @@ export function Rebalance() {
             </p>
           </div>
 
-          {/* 現金 TWD */}
+          {/* 閒置現金（衍生唯讀：期初現金 − 買進 ＋ 賣出）【增修H】 */}
           <div className="space-y-1.5">
             <label className="text-xs font-medium text-zinc-300">閒置現金 (TWD)</label>
             <div className="relative">
               <input
-                type="number"
-                min="0"
-                step="1000"
-                placeholder="例如: 400000"
-                value={cashStr}
-                onChange={(e) => handleCashChange(e.target.value)}
-                className="w-full px-3 py-2 bg-zinc-950 border border-zinc-800 rounded-lg font-mono text-sm text-zinc-100 focus:outline-none focus:border-primary pr-10"
+                type="text"
+                readOnly
+                value={`$${Math.round(config.cash).toLocaleString()}`}
+                className="w-full px-3 py-2 bg-zinc-900/60 border border-zinc-800 rounded-lg font-mono text-sm text-zinc-300 cursor-not-allowed pr-10"
               />
               <span className="absolute right-3 top-2.5 text-xs text-zinc-500 font-mono">元</span>
             </div>
+            <p className="text-[10px] leading-tight">
+              {agg.cash < 0 ? (
+                <span className="text-amber-400">⚠ 買進金額已超過期初現金 ${Math.abs(Math.round(agg.cash)).toLocaleString()}，以 0 計算——請到下方報價單校正「期初現金」</span>
+              ) : (
+                <span className="text-zinc-600">由期初現金＋報價單累算（買進扣、賣出加）</span>
+              )}
+            </p>
           </div>
         </div>
 
@@ -945,32 +954,54 @@ export function Rebalance() {
         <div className="space-y-2">
           <div className="text-xs font-medium text-zinc-300 flex items-center gap-1.5">
             期初／建倉部位
-            <span className="text-[10px] text-zinc-600 font-normal">（開始記帳前已持有的部位，之後的買賣疊在其上）</span>
+            <span className="text-[10px] text-zinc-600 font-normal">（開始記帳前已持有的部位與現金，之後的買賣疊在其上）</span>
           </div>
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <div className="relative">
-              <input
-                type="number"
-                min="0"
-                step="1"
-                placeholder="期初股數，例如: 19000"
-                value={openSharesStr}
-                onChange={(e) => handleOpenSharesChange(e.target.value)}
-                className="w-full px-3 py-2 bg-zinc-950 border border-zinc-800 rounded-lg font-mono text-sm text-zinc-100 focus:outline-none focus:border-primary pr-12"
-              />
-              <span className="absolute right-3 top-2.5 text-xs text-zinc-500 font-mono">股</span>
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+            <div className="space-y-1">
+              <label className="text-[10px] text-zinc-500">期初股數</label>
+              <div className="relative">
+                <input
+                  type="number"
+                  min="0"
+                  step="1"
+                  placeholder="例如: 19000"
+                  value={openSharesStr}
+                  onChange={(e) => handleOpenSharesChange(e.target.value)}
+                  className="w-full px-3 py-2 bg-zinc-950 border border-zinc-800 rounded-lg font-mono text-sm text-zinc-100 focus:outline-none focus:border-primary pr-12"
+                />
+                <span className="absolute right-3 top-2.5 text-xs text-zinc-500 font-mono">股</span>
+              </div>
             </div>
-            <div className="relative">
-              <input
-                type="number"
-                min="0"
-                step="0.01"
-                placeholder="期初平均成本，例如: 35.37"
-                value={openAvgStr}
-                onChange={(e) => handleOpenAvgChange(e.target.value)}
-                className="w-full px-3 py-2 bg-zinc-950 border border-zinc-800 rounded-lg font-mono text-sm text-zinc-100 focus:outline-none focus:border-primary pr-10"
-              />
-              <span className="absolute right-3 top-2.5 text-xs text-zinc-500 font-mono">元</span>
+            <div className="space-y-1">
+              <label className="text-[10px] text-zinc-500">期初平均成本</label>
+              <div className="relative">
+                <input
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  placeholder="例如: 35.37"
+                  value={openAvgStr}
+                  onChange={(e) => handleOpenAvgChange(e.target.value)}
+                  className="w-full px-3 py-2 bg-zinc-950 border border-zinc-800 rounded-lg font-mono text-sm text-zinc-100 focus:outline-none focus:border-primary pr-10"
+                />
+                <span className="absolute right-3 top-2.5 text-xs text-zinc-500 font-mono">元</span>
+              </div>
+            </div>
+            {/* 期初現金【增修H】：閒置現金改由此累算（買進扣、賣出加） */}
+            <div className="space-y-1">
+              <label className="text-[10px] text-zinc-500">期初現金（記帳起點的閒置資金）</label>
+              <div className="relative">
+                <input
+                  type="number"
+                  min="0"
+                  step="1000"
+                  placeholder="例如: 1000000"
+                  value={openCashStr}
+                  onChange={(e) => handleOpenCashChange(e.target.value)}
+                  className="w-full px-3 py-2 bg-zinc-950 border border-zinc-800 rounded-lg font-mono text-sm text-zinc-100 focus:outline-none focus:border-primary pr-10"
+                />
+                <span className="absolute right-3 top-2.5 text-xs text-zinc-500 font-mono">元</span>
+              </div>
             </div>
           </div>
         </div>
@@ -1098,7 +1129,7 @@ export function Rebalance() {
         <div>
           <strong className="text-zinc-400 font-medium">系統聲明與警語：</strong>
           <p className="mt-0.5 leading-relaxed">
-            本工具為個人資產配置輔助試算。持有股數與平均成本由「期初部位＋買賣報價單」以加權平均法自動累算（賣出只減股數、不改均價）；00631L 現價可「抓最新價」自動帶入<strong className="text-zinc-400">最新收盤價</strong>（非盤中即時報價，經 <span className="font-mono">/api</span> 讀取，可手動覆寫）；未實現損益依累算均價計算，僅供參考、不影響再平衡；投組 Beta 以 00631L β=2.0、現金 β=0 計算。按「送出並同步雲端」或新增/刪除交易時，持倉會存到伺服器（<span className="font-mono">data/rebalance_holdings.json</span>，與每日再平衡 Email 告警同一份），僅供個人內網自用。非投資建議。
+            本工具為個人資產配置輔助試算。持有股數、平均成本與閒置現金由「期初部位＋買賣報價單」自動累算（均價採加權平均法、賣出只減股數不改均價；現金＝期初現金 − 買進金額 ＋ 賣出金額，未計手續費/交易稅）；00631L 現價可「抓最新價」自動帶入<strong className="text-zinc-400">最新收盤價</strong>（非盤中即時報價，經 <span className="font-mono">/api</span> 讀取，可手動覆寫）；未實現損益依累算均價計算，僅供參考、不影響再平衡；投組 Beta 以 00631L β=2.0、現金 β=0 計算。按「送出並同步雲端」或新增/刪除交易時，持倉會存到伺服器（<span className="font-mono">data/rebalance_holdings.json</span>，與每日再平衡 Email 告警同一份），僅供個人內網自用。非投資建議。
           </p>
         </div>
       </div>

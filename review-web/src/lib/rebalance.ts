@@ -10,23 +10,26 @@ export interface Trade {
 export interface PositionAgg {
   shares: number;        // 期末總股數（期初 + 所有交易後）
   avg_cost: number;      // 加權平均成本（0＝無成本資訊或已清空）
+  cash: number;          // 期末閒置現金（期初現金 − 買進金額 ＋ 賣出金額；可為負，供 UI 警示，落地時 clamp≥0）
   realized_pnl: number;  // 累計已實現損益（賣出時 (賣價−均價)×賣出股數）
   invalid_sells: number; // 超賣（賣超過持有）被 clamp 的筆數，供 UI 提示
 }
 
 /**
- * 由「期初部位」＋依日期排序的交易紀錄，累算期末總股數與加權平均成本。
- *   - 買進：成本基礎 += 股數×價格，均價＝成本基礎/總股數。
+ * 由「期初部位」＋依日期排序的交易紀錄，累算期末總股數、加權平均成本與閒置現金。
+ *   - 買進：成本基礎 += 股數×價格，均價＝成本基礎/總股數；現金 −= 股數×價格。
  *   - 賣出：只減股數（標準加權平均法，均價不變）；已實現損益＝(賣價−均價)×賣出股數；
+ *           現金 += 實際賣出股數×價格（超賣 clamp 後只計實際成交部分）；
  *           超賣（賣超過持有）clamp 到持有量並計入 invalid_sells。股數歸零時均價與成本歸零。
  * 純函式、全路徑防 NaN；不依賴 Date/crypto。
  */
 export function aggregatePosition(
-  opening: { shares?: number; avg_cost?: number } | null | undefined,
+  opening: { shares?: number; avg_cost?: number; cash?: number } | null | undefined,
   trades: Trade[] | null | undefined,
 ): PositionAgg {
   let shares = Math.max(0, safeNum(opening?.shares, 0));
   let avg_cost = Math.max(0, safeNum(opening?.avg_cost, 0));
+  let cash = Math.max(0, safeNum(opening?.cash, 0));
   let cost_basis = shares * avg_cost;
   let realized_pnl = 0;
   let invalid_sells = 0;
@@ -48,6 +51,7 @@ export function aggregatePosition(
       if (tShares > shares) invalid_sells += 1;
       if (sold > 0) {
         realized_pnl += (tPrice - avg_cost) * sold;
+        cash += sold * tPrice;
         cost_basis -= avg_cost * sold;
         shares -= sold;
         if (shares <= 0) {
@@ -61,12 +65,14 @@ export function aggregatePosition(
       cost_basis += tShares * tPrice;
       shares += tShares;
       avg_cost = shares > 0 ? cost_basis / shares : 0;
+      cash -= tShares * tPrice;
     }
   }
 
   return {
     shares: Number.isFinite(shares) ? shares : 0,
     avg_cost: Number.isFinite(avg_cost) ? avg_cost : 0,
+    cash: Number.isFinite(cash) ? cash : 0,
     realized_pnl: Number.isFinite(realized_pnl) ? realized_pnl : 0,
     invalid_sells,
   };

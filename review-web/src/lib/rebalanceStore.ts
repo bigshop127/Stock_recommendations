@@ -7,14 +7,14 @@ export interface RebalanceConfig {
   shares: number;                // 期末總股數（衍生：由 opening + trades 累算，唯讀）
   avg_cost: number;              // 加權平均成本（衍生，唯讀）
   price: number;
-  cash: number;
+  cash: number;                  // 閒置現金（衍生：期初現金 − 買進 ＋ 賣出，clamp≥0，唯讀）【增修H】
   target_beta: number;           // 預設 1.3
   tolerance_mode: 'pct' | 'abs'; // 容忍口徑，預設 'abs'
   threshold_pct: number;         // 預設 10
   threshold_abs: number;         // 預設 0.1
   etf_beta: number;              // 預設 2.0
   // 買賣報價單機制
-  opening: { shares: number; avg_cost: number }; // 期初/建倉部位（可編輯）
+  opening: { shares: number; avg_cost: number; cash: number }; // 期初/建倉部位＋期初現金（可編輯）【增修H】
   trades: Trade[];               // 買賣紀錄（可增刪）
 }
 
@@ -28,7 +28,7 @@ const SEED_CONFIG: RebalanceConfig = {
   threshold_pct: 10,
   threshold_abs: 0.1,
   etf_beta: 2.0,
-  opening: { shares: 0, avg_cost: 0 },
+  opening: { shares: 0, avg_cost: 0, cash: 0 },
   trades: [],
 };
 
@@ -74,18 +74,21 @@ function sanitizeTrades(val: unknown): Trade[] {
 function normalizeConfig(parsed: Record<string, unknown>): RebalanceConfig {
   const trades = sanitizeTrades(parsed.trades);
 
-  // 遷移：舊資料無 opening 欄位時，用舊頂層 shares/avg_cost 作為期初部位（不丟失原持倉）
-  let opening: { shares: number; avg_cost: number };
+  // 遷移：舊資料無 opening 欄位時，用舊頂層 shares/avg_cost 作為期初部位（不丟失原持倉）；
+  // 【增修H】opening 無 cash 欄位時，用舊頂層 cash 作為期初現金（既有交易的現金流會在累算時補扣/補回）
+  let opening: { shares: number; avg_cost: number; cash: number };
   const op = parsed.opening as Record<string, unknown> | undefined;
   if (op && typeof op === 'object') {
     opening = {
       shares: Math.max(0, safeNumber(op.shares, 0)),
       avg_cost: Math.max(0, safeNumber(op.avg_cost, 0)),
+      cash: Math.max(0, safeNumber(op.cash, Math.max(0, safeNumber(parsed.cash, 0)))),
     };
   } else {
     opening = {
       shares: Math.max(0, safeNumber(parsed.shares, 0)),
       avg_cost: Math.max(0, safeNumber(parsed.avg_cost, 0)),
+      cash: Math.max(0, safeNumber(parsed.cash, 0)),
     };
   }
 
@@ -95,7 +98,7 @@ function normalizeConfig(parsed: Record<string, unknown>): RebalanceConfig {
     shares: agg.shares,       // 衍生
     avg_cost: agg.avg_cost,   // 衍生
     price: Math.max(0, safeNumber(parsed.price, SEED_CONFIG.price)),
-    cash: Math.max(0, safeNumber(parsed.cash, SEED_CONFIG.cash)),
+    cash: Math.max(0, agg.cash), // 衍生【增修H】（負值 clamp 0，UI 另行警示）
     target_beta: safeNumber(parsed.target_beta, SEED_CONFIG.target_beta),
     tolerance_mode: safeMode(parsed.tolerance_mode),
     threshold_pct: Math.max(0, safeNumber(parsed.threshold_pct, SEED_CONFIG.threshold_pct)),

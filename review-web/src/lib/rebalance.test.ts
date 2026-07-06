@@ -61,6 +61,40 @@ describe('aggregatePosition', () => {
     expect(r.shares).toBe(100);
     expect(r.avg_cost).toBeCloseTo(10, 6);
   });
+
+  // ── 【增修H】現金流累算：買進扣現金、賣出加現金 ─────────────────
+  it('【增修H】buy deducts trade amount from opening cash (使用者實例 7/06)', () => {
+    // 期初 19000@35.37＋期初現金 1,000,000，買 10000@39 → 現金 1,000,000 − 390,000 = 610,000
+    const r = aggregatePosition(
+      { shares: 19000, avg_cost: 35.37, cash: 1_000_000 },
+      [mk('buy', '2026-07-06', 10000, 39)],
+    );
+    expect(r.shares).toBe(29000);
+    expect(r.avg_cost).toBeCloseTo((19000 * 35.37 + 10000 * 39) / 29000, 6);
+    expect(r.cash).toBeCloseTo(610_000, 6);
+  });
+
+  it('【增修H】sell credits proceeds to cash', () => {
+    // 期初 2000@15＋現金 100,000，賣 500@25 → 現金 100,000 + 12,500 = 112,500
+    const r = aggregatePosition({ shares: 2000, avg_cost: 15, cash: 100_000 }, [mk('sell', '2026-02-01', 500, 25)]);
+    expect(r.cash).toBeCloseTo(112_500, 6);
+  });
+
+  it('【增修H】oversell credits only clamped (actually sold) shares', () => {
+    // 期初 1000@10＋現金 0，賣 5000@12 → 只成交 1000 股，現金 +12,000（非 +60,000）
+    const r = aggregatePosition({ shares: 1000, avg_cost: 10, cash: 0 }, [mk('sell', '2026-03-01', 5000, 12)]);
+    expect(r.cash).toBeCloseTo(12_000, 6);
+  });
+
+  it('【增修H】buy beyond opening cash yields negative cash (供 UI 警示，落地端 clamp)', () => {
+    const r = aggregatePosition({ shares: 0, avg_cost: 0, cash: 100_000 }, [mk('buy', '2026-01-02', 10000, 20)]);
+    expect(r.cash).toBeCloseTo(-100_000, 6);
+  });
+
+  it('【增修H】opening without cash defaults to 0 (向後相容)', () => {
+    const r = aggregatePosition({ shares: 1000, avg_cost: 10 }, []);
+    expect(r.cash).toBe(0);
+  });
 });
 
 describe('computeRebalance', () => {
