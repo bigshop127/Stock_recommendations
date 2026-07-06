@@ -163,6 +163,7 @@ Python engine  FastAPI :8000         ← 既有，本案會新增 /data 或 /mar
 | 14 | 籌碼分頁強化＋股權分散 | `opt14-stock-chips-plus.md`＋`opt14b-tdcc-shareholding-migration.md` | 籌碼 tab 子頁化（大戶/散戶結構＋三大法人＋融資融券）；股權分散因 FinMind 鎖付費**改走 TDCC 官方免費源**（14b） | engine+gateway `/stocks/:code/shareholding`（契約 §2.15） | ✅ 完工 (2026-07-05) |
 | 15 | 產業分析分頁＝同儕比較 | `opt15-stock-peer-compare.md` | 同產業同儕比較表（TWSE 官方產業別、非題材策展）；復用 `/api/market/stock-heatmap` 前端過濾 | 無（零新後端） | ✅ 完工 (2026-07-05) |
 | 16 | ETF 持倉分頁（選配・最低優先） | `opt16-stock-etf-holdings.md` | 反向查詢（個股→持有它的 ETF）；§2 可行性調查三路（FinMind/TWSE·TPEx OpenAPI/投信 PCF）皆無可用資料源 | 無 | 🚫 結案不實作 (2026-07-06，維持佔位；詳下方結案紀錄) |
+| 17 | 量化訊號整合（tw-stock-quant → review-web） | `opt17-quant-signals.md` | tw-stock-quant daily_scan 多輸出 JSON push 進本 repo `reports/quant_signals/<date>.json`（cross-repo PAT）；Dashboard 量化訊號卡（大盤雙濾網三態＋訊號表）＋StockDetail 命中 badge；M2 誠實口徑（資料失敗≠空頭≠零訊號）；兩專案不合併 repo、零 cron 變更 | gateway `/api/quant/signals`（本地檔優先＋public raw fallback） | 📝 提示詞就緒 (2026-07-06)；**前置：≥2026-07-16 且 N5 未回滾**（f36664d 回滾條款觀察期後） |
 
 **共用基礎與相依**：
 - 無使用者 DB／免登入 → 使用者自管清單（資料夾、持股、自選）一律 **localStorage**，共用 `review-web/src/lib/userStore.ts`（專案 1 建立、3 擴充）。同 `aiReview:{code}:{date}` 快取模式。
