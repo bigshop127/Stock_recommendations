@@ -3,6 +3,8 @@
 > 單一事實來源（SSOT）。任何進度／更新／優化都先改這份，再同步 Obsidian vault `C:\obsidian\儲存庫\個股全面審視網` 與 `.claude` 記憶。
 > 建立日：2026-06-21。狀態：**Phase 0–8 ✅ 全案完工。Phase 8（整合・RWD 打磨・PWA・部署上既有 Oracle VM，gateway 同源 serve `review-web/dist`）2026-06-25 實作並部署完成：① 後端 gateway 同源 serve `review-web/dist` 在子路徑 `/review`；② 前端 base、Router basename、PWA scope/start_url 對齊 `/review`，未知路由重定向；③ RWD 斷點打磨及 `ChipsCharts` SVG 縮放 tooltip 比例修正；④ PWA 包含 192/512 PNG/maskable 圖標、manifest 修改與 API 快取從嚴設定；⑤ 效能分塊與路由 lazy-loading，使 build size 無 >500kB 警告。VM 上 `git pull` + `npm ci` + build + gateway 重啟及本機 `ssh -L` 與端點驗收全綠。**
 
+> 〔行動網路存取 2026-07-07 追記〕使用者要「隨時用手機打開」，原設計「免登入、走內網/`ssh -L`」對手機離開家用 WiFi（用行動網路）不成立。**改用 Tailscale 私人網路**（不對外開任何公網 port，維持零公網暴露）：VM 與手機各自安裝 Tailscale App、以使用者同一帳號（`a4980678@gmail.com`）加入同一 tailnet；啟用 Tailscale 帳號層級 HTTPS Certificates 與 Serve 功能後，執行 `sudo tailscale serve --bg 3000`（背景常駐、`tailscaled.service` 已 `enabled` 開機自啟，serve 設定存於 tailscaled 狀態、重開機後沿用），gateway（含既有 `web/` 與 `review-web/` 兩者）改在 `https://puhui-oracle-vm.tail73ac0d.ts.net/` 對外（僅限同一 tailnet 裝置，此網域只有登入該帳號的裝置能解析/連線）。VM 端驗證 `curl https://puhui-oracle-vm.tail73ac0d.ts.net/review/` 200＋`/api/health` 正常（有效憑證免 `-k`）；**手機實測（Android，行動網路）通過**：`/review/` 正常開啟＋「加到主畫面」PWA 安裝正常（既有 manifest/service worker 皆已就緒，缺的只是連線方式）。桌面既有 `ssh -L` 捷徑不動、並存。詳見 `docs/deploy.md` §4.5。
+
 > 〔Phase 6 紀錄〕Phase 6（新聞輿情・情緒）2026-06-24 實作完成並通過 Claude review：engine `service.get_stock_news`（code→股名、逐則詞典情緒、`published` ISO 化、整體輿情摘要）+ `/data/stock_news` 端點 + 抽共用 `classify_polarity` helper（複用 `factors/sentiment.py` 同一份極性詞典、F_sentiment 因子分數不變、回歸綠）；gateway `/api/stocks/:code/news` 薄轉發＋300s 短 TTL 快取；前端 `StockDetail.tsx` 新聞區（逐則情緒徽章＋整體輿情摘要 chip＋F_sentiment 交叉佐證＋相對時間＋載入/空/失敗三態＋手動刷新、無 5s 輪詢、無逐則 LLM）；著色利多=紅/利空=綠/中性=灰（台股慣例）；review 修掉 `docs/contracts.md §2.7` 契約同步、Google News 標題去除「- 媒體」尾、TS `url/published` 可為 null 的 runtime 安全。engine pytest 66 綠、`tsc -b && vite build` 乾淨。下一步 Phase 7（AI 全面審視・招牌段，複用 `POST /api/agents/decide`，按鈕觸發+localStorage 快取）。**
 
 ---
@@ -23,7 +25,7 @@
 | 技術棧 | Vite + React + TS + Tailwind + lightweight-charts | 與既有 `web/` 一致，元件可借用 |
 | 版面 | **桌面優先 RWD**（多欄 dashboard）→ 手機自動收合單欄/分頁 | 與舊 `web/`（手機單欄）最大差異 |
 | 行動 | **PWA**（manifest + service worker）→ 手機「加到主畫面」像 APP；保留 Capacitor 上架後路 | 不寫原生、不上架商店（現階段） |
-| 對象 | 個人自用、免登入；走內網 / `ssh -L` | 不需 SEO/SSR → 不採 Next.js |
+| 對象 | 個人自用、免登入；桌面走內網 / `ssh -L`，手機走 Tailscale 私人網路（2026-07-07 追記，見上方追記段） | 不需 SEO/SSR → 不採 Next.js；兩種存取管道皆零公網暴露 |
 | 文件 | 本檔（SSOT）＋ Obsidian vault `個股全面審視網`（沿用財經APP 整理法） | 每階段完成後更新 |
 | **API 命名** | **新端點欄位一律 `snake_case`**（2026-06-21 定）| 與既有 API/Python 後端一致，前端 client 不分裂；Phase 0 誤用的 camelCase 於 Phase 1 一併遷移 |
 

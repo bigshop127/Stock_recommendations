@@ -119,3 +119,19 @@ if (fs.existsSync(webDist)) {
 2. 同頁 **Storage → Clear site data**（清掉 Cache Storage / 舊 precache）。
 3. 再 `Ctrl+Shift+R` 硬重整一次。
 4. 回 Console 確認 chunk hash 已換成新的，才算真的吃到新版。
+
+### 4.5 手機存取（Tailscale，2026-07-07 新增）
+
+桌面走 `ssh -L`（§4.3）手機不適用（離開家用 WiFi、用行動網路時無法建立 SSH 通道）。改用 **Tailscale** 私人網路：VM 與手機各自加入同一 tailnet，湊不到公網曝露，也不需要另外管理帳密/憑證。
+
+**一次性設定（已完成，供日後重建 VM 或除錯參考）**：
+1. VM 安裝：`curl -fsSL https://tailscale.com/install.sh | sh`（Ubuntu 22.04 aarch64 已驗證）。
+2. `sudo tailscale up --hostname=puhui-oracle-vm`，印出的登入連結需**使用者本人**開啟並用其 Tailscale 帳號（`a4980678@gmail.com`）授權——這步驟無法由 Claude 代為完成。
+3. 手機安裝 Tailscale App（iOS/Android），登入**同一帳號**。
+4. Tailscale 帳號需**啟用 HTTPS Certificates 與 Serve**（首次執行 `tailscale serve` 若未啟用會印出一次性啟用連結，開啟並用該帳號登入核可即可，同樣需使用者本人操作）。
+5. VM 執行 `sudo tailscale serve --bg 3000`（背景常駐；設定存在 tailscaled 狀態內，`tailscaled.service` 已 `systemctl enable`，重開機自動恢復，不需寫額外 systemd unit）。
+6. 確認：`tailscale serve status` 應顯示 `https://puhui-oracle-vm.tail73ac0d.ts.net` proxy 到 `http://127.0.0.1:3000`。
+
+**日常使用**：手機 Tailscale App 保持連線（背景 VPN 開關，不需手動操作），瀏覽器開 `https://puhui-oracle-vm.tail73ac0d.ts.net/review/`——有效 HTTPS 憑證（Tailscale 自動核發/續期），PWA manifest/service worker 沿用既有設定，「加到主畫面」可正常安裝離線可用的 APP 圖示。**2026-07-07 手機（Android，行動網路）實測通過**。
+
+**安全性**：僅限已登入同一 Tailscale 帳號的裝置能解析/連線該網域，未對 Oracle Cloud 安全清單開任何新 inbound port，與桌面 `ssh -L` 管道並存不衝突。若要新增裝置（如平板）：安裝 Tailscale App 登入同帳號即可，VM 端不需任何改動。
