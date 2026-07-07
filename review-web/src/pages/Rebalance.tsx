@@ -453,10 +453,6 @@ export function Rebalance() {
   const targetEtfPctStr = result.target_etf_weight !== null ? (result.target_etf_weight * 100).toFixed(0) : '—';
   const targetDefPctStr = result.target_cash_weight !== null ? (result.target_cash_weight * 100).toFixed(0) : '—';
 
-  // 目前配比 %
-  const currentEtfPctStr = result.etf_weight !== null ? (result.etf_weight * 100).toFixed(1) : '—';
-  const currentDefPctStr = result.defensive_weight !== null ? (result.defensive_weight * 100).toFixed(1) : '—';
-
   // 未實現損益合計（00631L＋債券，任一有值即顯示）
   const pnlParts = [result.unrealized_pnl, ...result.bond_plans.map((p) => p.unrealized_pnl)];
   const hasPnl = pnlParts.some((v) => v !== null);
@@ -464,13 +460,14 @@ export function Rebalance() {
   const totalCost = (result.cost_basis ?? 0) + result.bond_plans.reduce((s, p) => s + (p.cost_basis ?? 0), 0);
   const totalPnlPct = totalCost > 0 ? totalPnl / totalCost : null;
 
-  // 配置條顏色（現況/目標共用）：00631L 藍、現金 綠、00687B 青、00953B 紫
-  const barSegments = (weights: { etf: number; cash: number; bonds: number[] }) => [
-    { w: weights.etf, cls: 'bg-blue-500', label: '00631L' },
-    { w: weights.cash, cls: 'bg-emerald-500/80', label: '現金' },
-    { w: weights.bonds[0] ?? 0, cls: 'bg-cyan-500/80', label: BOND_ETFS[0].code },
-    { w: weights.bonds[1] ?? 0, cls: 'bg-violet-500/80', label: BOND_ETFS[1].code },
-  ];
+  // 配置條顏色（現況/目標共用）：00631L 紅、現金 綠、00687B 深藍、00953B 紫；依佔比大→小排列
+  const barSegments = (weights: { etf: number; cash: number; bonds: number[] }) =>
+    [
+      { w: weights.etf, cls: 'bg-red-500', txt: 'text-red-400', label: '00631L' },
+      { w: weights.cash, cls: 'bg-emerald-500/80', txt: 'text-emerald-400', label: '現金' },
+      { w: weights.bonds[0] ?? 0, cls: 'bg-blue-700', txt: 'text-blue-400', label: BOND_ETFS[0].code },
+      { w: weights.bonds[1] ?? 0, cls: 'bg-violet-500/80', txt: 'text-violet-400', label: BOND_ETFS[1].code },
+    ].sort((a, b) => b.w - a.w);
 
   const currentSegs = barSegments({
     etf: result.etf_weight ?? 0,
@@ -608,10 +605,15 @@ export function Rebalance() {
 
             {/* 目前配比 */}
             <div className="space-y-1">
-              <div className="flex justify-between text-[11px]">
+              <div className="flex justify-between gap-2 flex-wrap text-[11px]">
                 <span className="text-zinc-400">目前實況</span>
                 <span className="font-mono text-zinc-300">
-                  00631L: <strong className="text-blue-400">{currentEtfPctStr}%</strong> | 防守端: <strong className="text-emerald-400">{currentDefPctStr}%</strong>
+                  {currentSegs.map((s, i) => (
+                    <React.Fragment key={s.label}>
+                      {i > 0 && <span className="text-zinc-600"> | </span>}
+                      {s.label} <strong className={s.txt}>{(s.w * 100).toFixed(1)}%</strong>
+                    </React.Fragment>
+                  ))}
                 </span>
               </div>
               <div className="h-3 w-full bg-zinc-800 rounded-full overflow-hidden flex">
@@ -628,10 +630,15 @@ export function Rebalance() {
 
             {/* 目標配比 */}
             <div className="space-y-1">
-              <div className="flex justify-between text-[11px]">
+              <div className="flex justify-between gap-2 flex-wrap text-[11px]">
                 <span className="text-zinc-400">目標配置</span>
                 <span className="font-mono text-zinc-300">
-                  00631L: <strong className="text-blue-400/80">{targetEtfPctStr}%</strong> | 防守端: <strong className="text-emerald-400/80">{targetDefPctStr}%</strong>
+                  {targetSegs.map((s, i) => (
+                    <React.Fragment key={s.label}>
+                      {i > 0 && <span className="text-zinc-600"> | </span>}
+                      {s.label} <strong className={s.txt}>{(s.w * 100).toFixed(1)}%</strong>
+                    </React.Fragment>
+                  ))}
                 </span>
               </div>
               <div className="h-3 w-full bg-zinc-800/80 rounded-full overflow-hidden flex border border-zinc-700/50">
@@ -648,9 +655,9 @@ export function Rebalance() {
 
             {/* 圖例 */}
             <div className="flex flex-wrap gap-x-3 gap-y-1 text-[10px] text-zinc-500">
-              <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-sm bg-blue-500 inline-block" />00631L</span>
+              <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-sm bg-red-500 inline-block" />00631L</span>
               <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-sm bg-emerald-500/80 inline-block" />現金</span>
-              <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-sm bg-cyan-500/80 inline-block" />{BOND_ETFS[0].code} {BOND_ETFS[0].name}</span>
+              <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-sm bg-blue-700 inline-block" />{BOND_ETFS[0].code} {BOND_ETFS[0].name}</span>
               <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-sm bg-violet-500/80 inline-block" />{BOND_ETFS[1].code} {BOND_ETFS[1].name}</span>
             </div>
           </div>
