@@ -4,6 +4,7 @@ import {
   aggregatePosition,
   aggregatePortfolio,
   triggerPriceForBeta,
+  allocateDefensive,
   ETF_CODE,
   DEFAULT_CASH_RESERVE,
   type Trade,
@@ -673,6 +674,71 @@ describe('computeRebalance with bonds (增修I)', () => {
     const [b687, b953] = res.bond_plans;
     expect(b687.unrealized_pnl).toBeCloseTo(5000 * (28 - 30), 6);
     expect(b953.unrealized_pnl).toBeCloseTo(6000 * (10 - 9.5), 6);
+  });
+
+  // 【增修K】加碼抽錢時優先變現 00687B（美債），00953B（月配息）保留到 00687B 榨乾才動
+  it('drawdown financing drains bond1 (00687B) before touching bond2 (增修K waterfall)', () => {
+    const res = computeRebalance({
+      shares: 4000,
+      price: 100,
+      cash: 430_000,
+      target_beta: 1.6,
+      tolerance_mode: 'abs',
+      threshold_pct: 10,
+      threshold_abs: 0.1,
+      etf_beta: 2.0,
+      bonds: [
+        { code: '00687B', shares: 2000, price: 40 }, // 80,000
+        { code: '00953B', shares: 9000, price: 10 }, // 90,000
+      ],
+      cash_reserve: 100_000,
+      bond_split: 0.6,
+    });
+    expect(res.total_value).toBeCloseTo(1_000_000, 6);
+    expect(res.status).toBe('buy');
+    // 防守端目標 200,000 → 現金保留 100,000、債券池目標 100,000（現有 170,000，需縮 70,000）
+    const [b687, b953] = res.bond_plans;
+    expect(b687.target_value).toBeCloseTo(10_000, 6); // 80,000 − 70,000，優先賣
+    expect(b687.value_delta).toBeCloseTo(-70_000, 6);
+    expect(b953.target_value).toBeCloseTo(90_000, 6); // 完全不動
+    expect(b953.value_delta).toBeCloseTo(0, 6);
+  });
+});
+
+// ===== 【增修K】allocateDefensive：優先變現瀑布（縮水）／等比例（擴張）=====
+
+describe('allocateDefensive (增修K)', () => {
+  it('shrink: drains index 0 (priority bond) fully before touching index 1', () => {
+    const r = allocateDefensive(100_000, [80_000, 90_000], 0, 0.6);
+    expect(r.cash).toBe(0);
+    expect(r.bond_values[0]).toBeCloseTo(10_000, 6); // 80,000 − 70,000
+    expect(r.bond_values[1]).toBeCloseTo(90_000, 6); // 未動用
+  });
+
+  it('shrink deep enough to fully drain bond1 spills into bond2', () => {
+    const r = allocateDefensive(30_000, [80_000, 90_000], 0, 0.6);
+    expect(r.bond_values[0]).toBeCloseTo(0, 6); // 全數賣出
+    expect(r.bond_values[1]).toBeCloseTo(30_000, 6); // 90,000 − 60,000
+  });
+
+  it('grow: snaps to bondSplit ratio regardless of current split', () => {
+    const r = allocateDefensive(200_000, [10_000, 5_000], 0, 0.6);
+    expect(r.bond_values[0]).toBeCloseTo(120_000, 6);
+    expect(r.bond_values[1]).toBeCloseTo(80_000, 6);
+  });
+
+  it('cash reserve floors before the bond pool is computed', () => {
+    // target 50,000 < cashReserve 100,000 → 現金吃光全部，債券池目標 0（雙檔清空）
+    const r = allocateDefensive(50_000, [10_000, 10_000], 100_000, 0.6);
+    expect(r.cash).toBeCloseTo(50_000, 6);
+    expect(r.bond_values[0]).toBeCloseTo(0, 6);
+    expect(r.bond_values[1]).toBeCloseTo(0, 6);
+  });
+
+  it('zero delta is treated as the grow branch (snap to ratio)', () => {
+    const r = allocateDefensive(100_000, [60_000, 40_000], 0, 0.6);
+    expect(r.bond_values[0]).toBeCloseTo(60_000, 6);
+    expect(r.bond_values[1]).toBeCloseTo(40_000, 6);
   });
 });
 

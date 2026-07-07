@@ -6,14 +6,18 @@ import type { OhlcvRow } from '../lib/api';
 import { toTime } from '../lib/indicators';
 import {
   alignSeries,
+  alignSeries4,
   runBacktest,
   type BacktestParams,
   type CurvePoint,
   type EquityCurve,
 } from '../lib/crashBacktest';
+import { DEFAULT_CASH_RESERVE, DEFAULT_BOND_SPLIT } from '../lib/rebalance';
 
 const ETF_CODE = '00631L';
 const MKT_CODE = '0050';
+const BOND1_CODE = '00687B';
+const BOND2_CODE = '00953B';
 const START = '2020-01-01';
 const PARAMS_KEY = 'review:backtest:v1';
 
@@ -29,6 +33,9 @@ const DEFAULT_PARAMS: BacktestParams = {
   mode: 'oneshot',
   ladder_step: 0.05,
   ladder_full_at: 0.3,
+  cash_reserve: DEFAULT_CASH_RESERVE,
+  bond_split: DEFAULT_BOND_SPLIT,
+  bond_priority: 'bond1_first',
 };
 
 function loadParams(): BacktestParams {
@@ -51,6 +58,9 @@ const SERIES_COLORS: Record<string, string> = {
   bench_0050: '#94a3b8', // 全倉 0050
   bench_631: '#eab308', // 全倉 00631L
   bench_static: '#3b82f6', // 初始配置不再平衡
+  cmp_bond1_first: '#22c55e', // 雙軌－美債優先變現【增修K】
+  cmp_bond2_first: '#f97316', // 雙軌－非投等優先變現【增修K】
+  cmp_proportional: '#64748b', // 雙軌－等比例變現【增修K】
 };
 
 /** 通用多線折線圖（lightweight-charts），沿用個股 K 線的暗色調。 */
@@ -135,7 +145,9 @@ export const CrashBacktest: React.FC = () => {
     error: string | null;
     etf: OhlcvRow[] | null;
     mkt: OhlcvRow[] | null;
-  }>({ loading: true, error: null, etf: null, mkt: null });
+    bond1: OhlcvRow[] | null; // 00687B【增修K】；抓不到時為 null，退回雙資產模型
+    bond2: OhlcvRow[] | null; // 00953B【增修K】
+  }>({ loading: true, error: null, etf: null, mkt: null, bond1: null, bond2: null });
   const [params, setParams] = useState<BacktestParams>(() => loadParams());
 
   const fetchData = async () => {
@@ -145,9 +157,23 @@ export const CrashBacktest: React.FC = () => {
         api.ohlcv(ETF_CODE, { start: START, adjust: true }),
         api.ohlcv(MKT_CODE, { start: START, adjust: true }),
       ]);
-      setState({ loading: false, error: null, etf: etfRes.data ?? [], mkt: mktRes.data ?? [] });
+      // 債券歷史價為選配（雙軌變現比較用）：抓不到就降級回雙資產模型，不擋主回測【增修K】
+      let bond1: OhlcvRow[] | null = null;
+      let bond2: OhlcvRow[] | null = null;
+      try {
+        const [b1Res, b2Res] = await Promise.all([
+          api.ohlcv(BOND1_CODE, { start: START, adjust: true }),
+          api.ohlcv(BOND2_CODE, { start: START, adjust: true }),
+        ]);
+        bond1 = b1Res.data ?? [];
+        bond2 = b2Res.data ?? [];
+      } catch {
+        bond1 = null;
+        bond2 = null;
+      }
+      setState({ loading: false, error: null, etf: etfRes.data ?? [], mkt: mktRes.data ?? [], bond1, bond2 });
     } catch (err: any) {
-      setState({ loading: false, error: err?.message || '無法載入歷史行情', etf: null, mkt: null });
+      setState({ loading: false, error: err?.message || '無法載入歷史行情', etf: null, mkt: null, bond1: null, bond2: null });
     }
   };
 
@@ -162,23 +188,48 @@ export const CrashBacktest: React.FC = () => {
 
   const update = (patch: Partial<BacktestParams>) => setParams((p) => ({ ...p, ...patch }));
 
+  // 【增修K】兩檔債券歷史價都到位才啟用三資產模型；任一缺就乾脆退回雙資產（不半套）
+  const hasBonds = !!state.bond1?.length && !!state.bond2?.length;
+
   const result = useMemo(() => {
     if (!state.etf || !state.mkt) return null;
-    const bars = alignSeries(state.etf, state.mkt);
+    const bars =
+      hasBonds && state.bond1 && state.bond2
+        ? alignSeries4(state.etf, state.mkt, state.bond1, state.bond2)
+        : alignSeries(state.etf, state.mkt);
     return runBacktest(bars, params);
-  }, [state.etf, state.mkt, params]);
+  }, [state.etf, state.mkt, state.bond1, state.bond2, hasBonds, params]);
+
+  // 【增修K】雙軌變現優先順序比較：固定跑三種 bond_priority（其餘參數含 mode/ladder 皆沿用目前設定），
+  // 直接對照報告的方案 A（等比例）／B（美債優先）／C（非投等優先）比較表，但數字來自本站真實回測引擎。
+  const bondCompareSeries = useMemo((): EquityCurve[] => {
+    if (!hasBonds || !state.etf || !state.mkt || !state.bond1 || !state.bond2) return [];
+    const bars = alignSeries4(state.etf, state.mkt, state.bond1, state.bond2);
+    const variants: { priority: BacktestParams['bond_priority']; key: string; name: string }[] = [
+      { priority: 'bond1_first', key: 'cmp_bond1_first', name: '雙軌－美債優先變現（00687B 優先）' },
+      { priority: 'bond2_first', key: 'cmp_bond2_first', name: '雙軌－非投等優先變現（00953B 優先）' },
+      { priority: 'proportional', key: 'cmp_proportional', name: '雙軌－等比例變現（6:4 不分優先）' },
+    ];
+    return variants.map((v) => {
+      const r = runBacktest(bars, { ...params, bond_priority: v.priority });
+      return { key: v.key, name: v.name, points: r.strategy.points, metrics: r.strategy.metrics };
+    });
+  }, [hasBonds, state.etf, state.mkt, state.bond1, state.bond2, params]);
+
+  const allCurves = useMemo((): EquityCurve[] => {
+    if (!result) return [];
+    return [result.strategy, ...result.benchmarks, ...bondCompareSeries];
+  }, [result, bondCompareSeries]);
 
   const equitySeries = useMemo(() => {
-    if (!result) return [];
-    const all: EquityCurve[] = [result.strategy, ...result.benchmarks];
-    return all.map((c) => ({
+    return allCurves.map((c) => ({
       key: c.key,
       name: c.name,
       color: SERIES_COLORS[c.key] ?? '#71717a',
       points: c.points,
       lineWidth: c.key === 'strategy' ? 3 : 1,
     }));
-  }, [result]);
+  }, [allCurves]);
 
   const targetWeightPct = Math.round((Math.min(Math.max(params.target_beta / params.etf_beta, 0), 1)) * 100);
 
@@ -192,7 +243,8 @@ export const CrashBacktest: React.FC = () => {
             崩盤策略回測實驗室
           </h1>
           <p className="text-sm text-zinc-500 mt-1">
-            00631L（正2）＋現金，以 0050 偵測崩盤：一次 all-in 或每跌一階分批加碼，創新高回目標 β。
+            00631L（正2）＋防守端（現金＋00687B＋00953B），以 0050 偵測崩盤：一次 all-in 或每跌一階分批加碼，創新高回目標 β；
+            {hasBonds ? '雙軌變現優先順序可比較（見下方績效表）。' : '尚未取得債券歷史價時退回雙資產（僅現金）模型。'}
           </p>
         </div>
         <button
@@ -363,6 +415,60 @@ export const CrashBacktest: React.FC = () => {
           </div>
         </div>
 
+        {/* 防守端變現優先順序（雙軌債券）【增修K】 */}
+        <div>
+          <div className="flex items-center justify-between text-sm mb-2">
+            <span className="text-zinc-300 font-medium">防守端變現優先順序</span>
+            <div className="flex rounded-lg overflow-hidden border border-border">
+              <button
+                onClick={() => update({ bond_priority: 'bond1_first' })}
+                className={`px-2.5 py-1.5 text-xs font-medium ${
+                  params.bond_priority === 'bond1_first' ? 'bg-primary text-white' : 'text-zinc-400 hover:text-zinc-200'
+                }`}
+              >
+                美債優先
+              </button>
+              <button
+                onClick={() => update({ bond_priority: 'bond2_first' })}
+                className={`px-2.5 py-1.5 text-xs font-medium ${
+                  params.bond_priority === 'bond2_first' ? 'bg-primary text-white' : 'text-zinc-400 hover:text-zinc-200'
+                }`}
+              >
+                非投等優先
+              </button>
+              <button
+                onClick={() => update({ bond_priority: 'proportional' })}
+                className={`px-2.5 py-1.5 text-xs font-medium ${
+                  params.bond_priority === 'proportional' ? 'bg-primary text-white' : 'text-zinc-400 hover:text-zinc-200'
+                }`}
+              >
+                等比例
+              </button>
+            </div>
+          </div>
+          <div className="flex items-center justify-between text-xs mb-1">
+            <span className="text-zinc-400">加碼抽錢時先賣 00687B 或 00953B（僅影響縮水方向；回補一律等比例）</span>
+            <span className="font-mono text-primary font-bold">
+              00687B {Math.round(params.bond_split * 100)}:{Math.round((1 - params.bond_split) * 100)} 00953B
+            </span>
+          </div>
+          <input
+            type="range"
+            min={0}
+            max={1}
+            step={0.05}
+            value={params.bond_split}
+            onChange={(e) => update({ bond_split: Number(e.target.value) })}
+            className="w-full accent-primary"
+            disabled={!hasBonds}
+          />
+          {!hasBonds && (
+            <p className="text-[10px] text-zinc-600 mt-1">
+              尚未取得 00687B/00953B 歷史還原價，本次回測退回雙資產模型（僅 00631L＋現金），此區暫不生效。
+            </p>
+          )}
+        </div>
+
         {/* 期初資金 + 成本 */}
         <div className="grid grid-cols-2 gap-4">
           <label className="block">
@@ -393,7 +499,7 @@ export const CrashBacktest: React.FC = () => {
         <div className="flex h-40 items-center justify-center text-zinc-400">
           <div className="flex flex-col items-center gap-3">
             <div className="h-8 w-8 animate-spin rounded-full border-2 border-primary border-t-transparent" />
-            <span className="text-xs font-mono animate-pulse">抓取 00631L / 0050 歷史還原價...</span>
+            <span className="text-xs font-mono animate-pulse">抓取 00631L / 0050 / 00687B / 00953B 歷史還原價...</span>
           </div>
         </div>
       )}
@@ -431,7 +537,7 @@ export const CrashBacktest: React.FC = () => {
                       </tr>
                     </thead>
                     <tbody>
-                      {[result.strategy, ...result.benchmarks].map((c) => (
+                      {allCurves.map((c) => (
                         <tr
                           key={c.key}
                           className={`border-b border-border/50 last:border-0 ${
@@ -592,12 +698,15 @@ export const CrashBacktest: React.FC = () => {
 
       {/* 聲明 */}
       <p className="text-[11px] text-zinc-600 leading-relaxed">
-        本回測為單一標的（00631L＋現金）簡化模型：投組 β＝00631L 佔比×2、現金 β＝0；崩盤偵測以 0050
-        自歷史高點回撤為準。「一次 all-in」＝觸發後現金全數加碼至滿槓桿（100%/2x，故不再實作研究文的第二階 −50%
-        加碼）；「分批加碼」＝每多跌一階，用進入回撤時的現金等分買一筆，跌到買滿深度為止，回撤期間暫停容忍區間再平衡。兩種模式皆於
-        0050 創新高後再平衡回目標 β。歷史還原價來自 <span className="font-mono">/api/stocks/:code/ohlcv?adjust=1</span>；
+        本回測模型：投組 β＝00631L 佔比×2、防守端（現金＋債券）β＝0；崩盤偵測以 0050
+        自歷史高點回撤為準。「一次 all-in」＝觸發後防守端全數加碼至滿槓桿（100%/2x，故不再實作研究文的第二階 −50%
+        加碼）；「分批加碼」＝每多跌一階，用進入回撤時的防守端市值等分買一筆，跌到買滿深度為止，回撤期間暫停容忍區間再平衡。兩種模式皆於
+        0050 創新高後再平衡回目標 β。取得 00687B/00953B 歷史價時，加碼抽錢依「變現優先順序」設定優先賣出其中一檔（縮水瀑布），
+        獲利了結回補一律依配置比例；未取得債券歷史價則退回僅現金的雙資產模型。歷史還原價來自{' '}
+        <span className="font-mono">/api/stocks/:code/ohlcv?adjust=1</span>；
         回測結果為過去資料的機械式模擬，不含滑價與稅費（除非自行填入成本），非投資建議。門檻類參數對結果高度敏感（歷史上大跌谷底
-        −27.5% 與 −28% 觸發只差 0.5%），單一門檻的回測優勢未必能外推。
+        −27.5% 與 −28% 觸發只差 0.5%），單一門檻的回測優勢未必能外推。雙軌變現比較（美債優先／非投等優先／等比例）之數字為本站
+        以真實歷史還原價跑本回測引擎所得，用以檢驗使用者提供之研究報告核心主張；報告原文列出的具體數字未經驗證，不採用。
       </p>
     </div>
   );

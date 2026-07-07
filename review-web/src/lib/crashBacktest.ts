@@ -11,13 +11,23 @@
 // ladder_step（如 −5%）就用「進入回撤時的現金」等分買一筆，跌到 ladder_full_at（如 −30%）
 // 買滿；創新高退出邏輯與 oneshot 相同。回撤期間（regime 內）暫停容忍區間再平衡，
 // 避免再平衡把剛加碼的部位賣回去。mode 預設 'oneshot'，舊參數/舊 localStorage 行為不變。
+//
+// 【增修K 2026-07-07】防守端擴充為真三資產（現金＋00687B＋00953B），比照 lib/rebalance.ts
+// 的 allocateDefensive：加碼/分批抽錢時依 bond_priority 走優先變現瀑布（bond1_first／
+// bond2_first）或維持等比例（proportional），回補（獲利了結/期初建倉）一律等比例。僅當
+// bars 帶有 bond1/bond2（alignSeries4）才啟用；用 alignSeries（雙資產）呼叫則完全走舊邏輯，
+// 逐位元不變。用來實測使用者提供之研究報告核心主張（跌時優先變現美債 00687B、保留
+// 00953B 月配息）在真實歷史還原價下是否成立，而非採信報告本身的估計數字。
 
 import type { OhlcvRow } from './api';
+import { allocateDefensive, DEFAULT_CASH_RESERVE, DEFAULT_BOND_SPLIT } from './rebalance';
 
 export interface AlignedBar {
   date: string;
   etf: number; // 00631L 還原收盤
   mkt: number; // 0050 還原收盤
+  bond1?: number; // 00687B 還原收盤（優先變現）【增修K】
+  bond2?: number; // 00953B 還原收盤（保留供息）【增修K】
 }
 
 export interface BacktestParams {
@@ -32,6 +42,10 @@ export interface BacktestParams {
   mode: 'oneshot' | 'ladder'; // 加碼模式：一次 all-in（預設）/ 分批加碼【增修J】
   ladder_step: number; // ladder：每多跌多少買一筆（0.05 = −5%）
   ladder_full_at: number; // ladder：跌到多深買滿（0.30 = −30%；筆數 = full_at/step）
+  // 【增修K】防守端三資產（現金＋00687B＋00953B）；bars 未帶 bond1/bond2 時完全不啟用，行為與舊版一致
+  cash_reserve: number; // 固定保留現金（預設 100,000，同 lib/rebalance.ts）
+  bond_split: number; // 債券池中 bond1 佔比（預設 0.6）
+  bond_priority: 'bond1_first' | 'bond2_first' | 'proportional'; // 變現優先順序：對照報告 B/C/A 方案
 }
 
 export interface Metrics {
@@ -96,14 +110,20 @@ function clamp(v: number, lo: number, hi: number): number {
   return Math.min(Math.max(v, lo), hi);
 }
 
-/** 依日期 inner-join 兩條收盤序列，只保留兩邊都有、且價格為有限正數的交易日。 */
-export function alignSeries(etfRows: OhlcvRow[], mktRows: OhlcvRow[]): AlignedBar[] {
-  const mkt = new Map<string, number>();
-  for (const r of mktRows ?? []) {
+/** 收盤序列轉 date→close 對照表，只收有限正數。alignSeries / alignSeries4 共用。 */
+function toCloseMap(rows: OhlcvRow[]): Map<string, number> {
+  const m = new Map<string, number>();
+  for (const r of rows ?? []) {
     const d = String(r?.date ?? '').slice(0, 10);
     const c = safeNum(r?.close, NaN);
-    if (d && Number.isFinite(c) && c > 0) mkt.set(d, c);
+    if (d && Number.isFinite(c) && c > 0) m.set(d, c);
   }
+  return m;
+}
+
+/** 依日期 inner-join 兩條收盤序列，只保留兩邊都有、且價格為有限正數的交易日。 */
+export function alignSeries(etfRows: OhlcvRow[], mktRows: OhlcvRow[]): AlignedBar[] {
+  const mkt = toCloseMap(mktRows);
   const out: AlignedBar[] = [];
   for (const r of etfRows ?? []) {
     const d = String(r?.date ?? '').slice(0, 10);
@@ -111,6 +131,34 @@ export function alignSeries(etfRows: OhlcvRow[], mktRows: OhlcvRow[]): AlignedBa
     const m = mkt.get(d);
     if (d && Number.isFinite(e) && e > 0 && m !== undefined) {
       out.push({ date: d, etf: e, mkt: m });
+    }
+  }
+  out.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+  return out;
+}
+
+/**
+ * 依日期 4 路 inner-join（00631L／0050／00687B／00953B），只保留四邊皆有效正數收盤的交易日【增修K】。
+ * 用於崩盤實驗室的三資產（現金＋兩檔債券）防守端模擬；不影響既有 alignSeries（雙資產）呼叫端。
+ */
+export function alignSeries4(
+  etfRows: OhlcvRow[],
+  mktRows: OhlcvRow[],
+  bond1Rows: OhlcvRow[],
+  bond2Rows: OhlcvRow[],
+): AlignedBar[] {
+  const mkt = toCloseMap(mktRows);
+  const b1 = toCloseMap(bond1Rows);
+  const b2 = toCloseMap(bond2Rows);
+  const out: AlignedBar[] = [];
+  for (const r of etfRows ?? []) {
+    const d = String(r?.date ?? '').slice(0, 10);
+    const e = safeNum(r?.close, NaN);
+    const m = mkt.get(d);
+    const v1 = b1.get(d);
+    const v2 = b2.get(d);
+    if (d && Number.isFinite(e) && e > 0 && m !== undefined && v1 !== undefined && v2 !== undefined) {
+      out.push({ date: d, etf: e, mkt: m, bond1: v1, bond2: v2 });
     }
   }
   out.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
@@ -172,6 +220,12 @@ export function runBacktest(bars: AlignedBar[], rawParams: Partial<BacktestParam
     mode: rawParams?.mode === 'ladder' ? 'ladder' : 'oneshot',
     ladder_step: clamp(safeNum(rawParams?.ladder_step, 0.05), 0.01, 0.5),
     ladder_full_at: 0, // 佔位，下一行以 step 為下限修正
+    cash_reserve: Math.max(0, safeNum(rawParams?.cash_reserve, DEFAULT_CASH_RESERVE)),
+    bond_split: clamp(safeNum(rawParams?.bond_split, DEFAULT_BOND_SPLIT), 0, 1),
+    bond_priority:
+      rawParams?.bond_priority === 'bond2_first' || rawParams?.bond_priority === 'proportional'
+        ? rawParams.bond_priority
+        : 'bond1_first',
   };
   params.ladder_full_at = clamp(safeNum(rawParams?.ladder_full_at, 0.3), params.ladder_step, 0.95);
 
@@ -191,7 +245,7 @@ export function runBacktest(bars: AlignedBar[], rawParams: Partial<BacktestParam
 
   const {
     initial_capital, target_beta, etf_beta, tolerance_mode, threshold_pct, threshold_abs,
-    crash_dd, cost_bps, mode, ladder_step, ladder_full_at,
+    crash_dd, cost_bps, mode, ladder_step, ladder_full_at, cash_reserve, bond_split, bond_priority,
   } = params;
 
   const targetWeight = clamp(target_beta / etf_beta, 0, 1);
@@ -203,16 +257,53 @@ export function runBacktest(bars: AlignedBar[], rawParams: Partial<BacktestParam
   );
   const costRate = cost_bps / 10_000;
 
+  // 【增修K】防守端三資產模型：僅當 bars 帶有 bond1/bond2 收盤才啟用；否則行為與雙資產舊版逐位元一致
+  const hasBonds = typeof bars[0]?.bond1 === 'number' && typeof bars[0]?.bond2 === 'number';
+
+  // bond_priority='proportional' 兩方向都走等比例（報告方案A）；否則縮水時依優先順序 waterfall、
+  // 擴張時仍等比例（見 lib/rebalance.ts allocateDefensive）。無論優先順序為何，bond_split 永遠代表
+  // 「bond1（00687B）的目標佔比」這個固定物理意義——為此把陣列順序丟給 allocateDefensive 做 waterfall
+  // 判斷時，同步把 split 值也對調，換回來時才不會把 bond_split 語意搞反。
+  function allocateProportional(targetDefensiveValue: number): { cash: number; bond1: number; bond2: number } {
+    const c = clamp(cash_reserve, 0, Math.max(0, targetDefensiveValue));
+    const bondPool = Math.max(0, targetDefensiveValue - c);
+    return { cash: c, bond1: bondPool * bond_split, bond2: bondPool * (1 - bond_split) };
+  }
+  function allocateDefensiveTarget(
+    targetDefensiveValue: number,
+    bond1Value: number,
+    bond2Value: number,
+  ): { cash: number; bond1: number; bond2: number } {
+    if (bond_priority === 'proportional') return allocateProportional(targetDefensiveValue);
+    const swapped = bond_priority === 'bond2_first';
+    const order = swapped ? [bond2Value, bond1Value] : [bond1Value, bond2Value];
+    const splitForOrder = swapped ? 1 - bond_split : bond_split;
+    const alloc = allocateDefensive(targetDefensiveValue, order, cash_reserve, splitForOrder);
+    return swapped
+      ? { cash: alloc.cash, bond1: alloc.bond_values[1] ?? 0, bond2: alloc.bond_values[0] ?? 0 }
+      : { cash: alloc.cash, bond1: alloc.bond_values[0] ?? 0, bond2: alloc.bond_values[1] ?? 0 };
+  }
+
   // 期初：直接以目標權重建倉（此為起始部位，不計為一筆交易）。
   let etfUnits = (targetWeight * initial_capital) / bars[0].etf;
   let cash = (1 - targetWeight) * initial_capital;
+  let bond1Units = 0;
+  let bond2Units = 0;
+  if (hasBonds) {
+    const p1 = bars[0].bond1 ?? 0;
+    const p2 = bars[0].bond2 ?? 0;
+    const seed = allocateDefensiveTarget(cash, 0, 0);
+    cash = seed.cash;
+    bond1Units = p1 > 0 ? seed.bond1 / p1 : 0;
+    bond2Units = p2 > 0 ? seed.bond2 / p2 : 0;
+  }
 
   let peakMkt = bars[0].mkt;
   let inCrash = false;
   let curCrash: CrashEvent | null = null;
-  // ladder 模式狀態【增修J】：進入回撤 regime 時的現金基準與已買階數
+  // ladder 模式狀態【增修J】：進入回撤 regime 時的防守端（現金＋債券）基準與已買階數【增修K 擴充為防守端】
   const nLevels = Math.max(1, Math.round(ladder_full_at / ladder_step));
-  let regimeCash = 0;
+  let regimeDefensive = 0;
   let deployedLevels = 0;
 
   const stratPoints: CurvePoint[] = [];
@@ -229,10 +320,28 @@ export function runBacktest(bars: AlignedBar[], rawParams: Partial<BacktestParam
     const dd = peakMkt > 0 ? (peakMkt - bar.mkt) / peakMkt : 0;
     mktDd.push({ date: bar.date, value: dd });
 
-    // 收盤時的部位市值
+    // 收盤時的部位市值（防守端＝現金＋兩檔債券市值，無債券時債券項恆為 0）【增修K】
+    const bond1Price = bar.bond1 ?? 0;
+    const bond2Price = bar.bond2 ?? 0;
     const etfValue = etfUnits * bar.etf;
-    const total = etfValue + cash;
+    const bond1Value = hasBonds ? bond1Units * bond1Price : 0;
+    const bond2Value = hasBonds ? bond2Units * bond2Price : 0;
+    const defensiveValue = cash + bond1Value + bond2Value;
+    const total = etfValue + defensiveValue;
     const curBeta = total > 0 ? (etfValue / total) * etf_beta : 0;
+
+    // 交易結算：依目標 ETF 市值反推防守端目標，無債券時逐位元等同舊版純量現金公式【增修K】
+    const settleTrade = (desiredEtfValue: number, traded: number, cost: number) => {
+      if (!hasBonds) {
+        cash = cash - traded - cost;
+        return;
+      }
+      const targetDefensive = total - desiredEtfValue - cost;
+      const alloc = allocateDefensiveTarget(targetDefensive, bond1Value, bond2Value);
+      cash = alloc.cash;
+      bond1Units = bond1Price > 0 ? alloc.bond1 / bond1Price : 0;
+      bond2Units = bond2Price > 0 ? alloc.bond2 / bond2Price : 0;
+    };
 
     // ── 狀態機（i>0 才交易，i=0 為建倉基準日）──
     if (i > 0) {
@@ -240,9 +349,9 @@ export function runBacktest(bars: AlignedBar[], rawParams: Partial<BacktestParam
       const level = mode === 'ladder' ? Math.floor(dd / ladder_step + 1e-12) : 0;
 
       if (mode === 'ladder' && !inCrash && level >= 1) {
-        // 進入回撤 regime：鎖定現金基準、開始分批（本日即會買第一階）
+        // 進入回撤 regime：鎖定防守端基準、開始分批（本日即會買第一階）
         inCrash = true;
-        regimeCash = cash;
+        regimeDefensive = defensiveValue;
         deployedLevels = 0;
         curCrash = { enter: bar.date, exit: null, max_dd: dd };
       }
@@ -253,7 +362,7 @@ export function runBacktest(bars: AlignedBar[], rawParams: Partial<BacktestParam
         const traded = desiredValue - etfValue;
         const cost = Math.abs(traded) * costRate;
         etfUnits = desiredValue / bar.etf;
-        cash = cash - traded - cost;
+        settleTrade(desiredValue, traded, cost);
         const toBeta = total > 0 ? (desiredValue / total) * etf_beta : 0;
         trades.push({ date: bar.date, type: 'crash_enter', from_beta: curBeta, to_beta: toBeta, traded_value: traded, cost });
         inCrash = true;
@@ -264,7 +373,7 @@ export function runBacktest(bars: AlignedBar[], rawParams: Partial<BacktestParam
         const traded = desiredValue - etfValue;
         const cost = Math.abs(traded) * costRate;
         etfUnits = desiredValue / bar.etf;
-        cash = cash - traded - cost;
+        settleTrade(desiredValue, traded, cost);
         const toBeta = total > 0 ? (desiredValue / total) * etf_beta : 0;
         trades.push({ date: bar.date, type: 'crash_exit', from_beta: curBeta, to_beta: toBeta, traded_value: traded, cost });
         inCrash = false;
@@ -276,14 +385,14 @@ export function runBacktest(bars: AlignedBar[], rawParams: Partial<BacktestParam
       } else if (inCrash) {
         if (curCrash && dd > curCrash.max_dd) curCrash.max_dd = dd;
         if (mode === 'ladder') {
-          // 回撤加深到新的階 → 補買到應部署階數（跳空跌多階就一次補多筆）
+          // 回撤加深到新的階 → 補買到應部署階數（跳空跌多階就一次補多筆），資金來源＝防守端（現金＋債券）
           const want = Math.min(level, nLevels);
-          if (want > deployedLevels && cash > 0) {
-            const tranche = regimeCash / nLevels;
-            const traded = Math.min(cash, tranche * (want - deployedLevels));
+          if (want > deployedLevels && defensiveValue > 0) {
+            const tranche = regimeDefensive / nLevels;
+            const traded = Math.min(defensiveValue, tranche * (want - deployedLevels));
             const cost = traded * costRate;
             etfUnits += traded / bar.etf;
-            cash = cash - traded - cost;
+            settleTrade(etfValue + traded, traded, cost);
             const toBeta = total > 0 ? ((etfValue + traded) / total) * etf_beta : 0;
             trades.push({ date: bar.date, type: 'ladder_buy', from_beta: curBeta, to_beta: toBeta, traded_value: traded, cost });
             deployedLevels = want;
@@ -296,7 +405,7 @@ export function runBacktest(bars: AlignedBar[], rawParams: Partial<BacktestParam
         const traded = desiredValue - etfValue;
         const cost = Math.abs(traded) * costRate;
         etfUnits = desiredValue / bar.etf;
-        cash = cash - traded - cost;
+        settleTrade(desiredValue, traded, cost);
         const toBeta = total > 0 ? (desiredValue / total) * etf_beta : 0;
         trades.push({ date: bar.date, type: 'rebalance', from_beta: curBeta, to_beta: toBeta, traded_value: traded, cost });
       }
@@ -304,7 +413,9 @@ export function runBacktest(bars: AlignedBar[], rawParams: Partial<BacktestParam
 
     // 交易後（或無交易）當日權益與 β
     const postEtfValue = etfUnits * bar.etf;
-    const postTotal = postEtfValue + cash;
+    const postBond1Value = hasBonds ? bond1Units * bond1Price : 0;
+    const postBond2Value = hasBonds ? bond2Units * bond2Price : 0;
+    const postTotal = postEtfValue + cash + postBond1Value + postBond2Value;
     stratPoints.push({ date: bar.date, value: postTotal });
     betaCurve.push({ date: bar.date, value: postTotal > 0 ? (postEtfValue / postTotal) * etf_beta : 0 });
   }
@@ -314,10 +425,26 @@ export function runBacktest(bars: AlignedBar[], rawParams: Partial<BacktestParam
 
   const bench0050 = buyHold(bars, (b) => b.mkt, initial_capital);
   const bench631 = buyHold(bars, (b) => b.etf, initial_capital);
-  // 初始配置不再平衡：期初以目標權重建倉後放著不動
+  // 初始配置不再平衡：期初以目標權重建倉後放著不動（有債券時比照主策略的期初配置邏輯建倉、之後永不交易）【增修K】
   const staticUnits = (targetWeight * initial_capital) / bars[0].etf;
-  const staticCash = (1 - targetWeight) * initial_capital;
-  const benchStatic: CurvePoint[] = bars.map((b) => ({ date: b.date, value: staticUnits * b.etf + staticCash }));
+  let staticCash = (1 - targetWeight) * initial_capital;
+  let staticBond1Units = 0;
+  let staticBond2Units = 0;
+  if (hasBonds) {
+    const p1 = bars[0].bond1 ?? 0;
+    const p2 = bars[0].bond2 ?? 0;
+    const seed = allocateDefensiveTarget(staticCash, 0, 0);
+    staticCash = seed.cash;
+    staticBond1Units = p1 > 0 ? seed.bond1 / p1 : 0;
+    staticBond2Units = p2 > 0 ? seed.bond2 / p2 : 0;
+  }
+  const benchStatic: CurvePoint[] = bars.map((b) => ({
+    date: b.date,
+    value:
+      staticUnits * b.etf +
+      staticCash +
+      (hasBonds ? staticBond1Units * (b.bond1 ?? 0) + staticBond2Units * (b.bond2 ?? 0) : 0),
+  }));
 
   return {
     aligned_days: bars.length,

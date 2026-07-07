@@ -295,6 +295,58 @@ function clamp(val: number, min: number, max: number): number {
   return Math.min(Math.max(val, min), max);
 }
 
+// ── 防守端內部配置【增修K】────────────────────────────────────────
+export interface DefensiveAllocation {
+  cash: number;
+  bond_values: number[]; // 依傳入 currentBondValues 的順序（index 0＝優先保留／最後才變現的那一檔）
+}
+
+/**
+ * 決定防守端（現金＋債券池）內部如何配置到目標值。固定保留 cashReserve 現金，
+ * 剩餘（bondPool）與現有債券總值比較：
+ *   - 縮水（bondPool < 現有債券總值，例如加碼 00631L 要從防守端抽錢）：**優先變現瀑布**——
+ *     依 currentBondValues 陣列順序（index 0 優先），先把第一檔賣到 0，賣不夠才動下一檔。
+ *     這是報告「美債優先變現」的核心：index 0 放最適合在股災時變現的資產（如 00687B，
+ *     具避險溢價），保留其餘資產（如 00953B 月配息）繼續供息。
+ *   - 擴張或不變（bondPool ≥ 現有債券總值，例如賣 00631L 獲利了結回補防守端）：
+ *     依 bondSplit 比例 snap 到目標值（第一檔佔 bondSplit、其餘平分剩下 1−bondSplit）——
+ *     報告只對「變現方向」主張優先順序，回補方向維持等比例。
+ * 純函式、全路徑防 NaN；currentBondValues 僅支援 1~2 檔（本站防守端固定兩檔債券）。
+ */
+export function allocateDefensive(
+  targetDefensiveValue: number,
+  currentBondValues: number[],
+  cashReserve: number,
+  bondSplit: number,
+): DefensiveAllocation {
+  const target = Math.max(0, safeNum(targetDefensiveValue, 0));
+  const reserve = Math.max(0, safeNum(cashReserve, 0));
+  const split = clamp(safeNum(bondSplit, DEFAULT_BOND_SPLIT), 0, 1);
+  const values = (Array.isArray(currentBondValues) ? currentBondValues : []).map((v) => Math.max(0, safeNum(v, 0)));
+
+  const cash = clamp(reserve, 0, target);
+  const bondPool = Math.max(0, target - cash);
+  const currentTotal = values.reduce((s, v) => s + v, 0);
+  const delta = bondPool - currentTotal;
+
+  let bond_values: number[];
+  if (delta < 0) {
+    // 縮水：優先變現瀑布，index 0 先賣到 0
+    let remaining = -delta;
+    bond_values = values.map((v) => {
+      const sell = Math.min(v, remaining);
+      remaining -= sell;
+      return v - sell;
+    });
+  } else {
+    // 擴張或不變：依 bondSplit 比例 snap 到目標值（僅支援兩檔，第三檔以上均分剩餘 0）
+    const splits = values.map((_, i) => (i === 0 ? split : i === 1 ? 1 - split : 0));
+    bond_values = splits.map((s) => bondPool * s);
+  }
+
+  return { cash, bond_values };
+}
+
 function safeNum(val: unknown, fallback: number = 0): number {
   if (typeof val === 'number' && Number.isFinite(val)) {
     return val;
@@ -465,11 +517,15 @@ export function computeRebalance(input: RebalanceInput): RebalanceResult {
     target_cash_value = Math.min(cash_reserve, target_defensive_value);
     cash_adjust_delta = target_cash_value - cash;
 
-    const bond_pool = Math.max(0, target_defensive_value - target_cash_value);
-    const splits = [bond_split, 1 - bond_split];
+    // 【增修K】防守端內部配置：縮水（加碼抽錢）走優先變現瀑布、擴張（獲利回補）走等比例
+    const allocation = allocateDefensive(
+      target_defensive_value,
+      bond_plans.map((p) => p.value),
+      cash_reserve,
+      bond_split,
+    );
     bond_plans.forEach((p, i) => {
-      const share = i < splits.length ? splits[i] : 0;
-      p.target_value = bond_pool * share;
+      p.target_value = allocation.bond_values[i] ?? 0;
       p.value_delta = p.target_value - p.value;
       if (p.price > 0) {
         p.trade_shares = Math.round(p.value_delta / p.price);

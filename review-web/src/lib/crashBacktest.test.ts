@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { alignSeries, runBacktest, type AlignedBar } from './crashBacktest';
+import { alignSeries, alignSeries4, runBacktest, type AlignedBar } from './crashBacktest';
 import type { OhlcvRow } from './api';
 
 // 產生連續日期（YYYY-MM-DD），i 天後
@@ -11,6 +11,11 @@ function d(i: number): string {
 // 由 etf/mkt 收盤陣列組出對齊列
 function bars(etf: number[], mkt: number[]): AlignedBar[] {
   return etf.map((e, i) => ({ date: d(i), etf: e, mkt: mkt[i] }));
+}
+
+// 【增修K】由 etf/mkt/bond1/bond2 收盤陣列組出三資產對齊列
+function bars4(etf: number[], mkt: number[], bond1: number[], bond2: number[]): AlignedBar[] {
+  return etf.map((e, i) => ({ date: d(i), etf: e, mkt: mkt[i], bond1: bond1[i], bond2: bond2[i] }));
 }
 
 function row(date: string, close: number): OhlcvRow {
@@ -32,6 +37,19 @@ describe('alignSeries', () => {
     const mkt = [row('2020-01-01', 10), row('2020-01-02', 20), row('2020-01-03', 30)];
     const out = alignSeries(etf, mkt);
     expect(out.map((b) => b.date)).toEqual(['2020-01-01', '2020-01-02', '2020-01-03']);
+  });
+});
+
+describe('alignSeries4（增修K）', () => {
+  it('inner-joins on common dates across all four series, dropping any single-side gap', () => {
+    const etf = [row('2020-01-01', 100), row('2020-01-02', 101), row('2020-01-03', 102)];
+    const mkt = [row('2020-01-01', 50), row('2020-01-02', 50), row('2020-01-03', 50)];
+    const bond1 = [row('2020-01-02', 28), row('2020-01-03', 28)]; // 缺 01-01
+    const bond2 = [row('2020-01-02', 10), row('2020-01-03', 0)]; // 01-03 收盤 0（無效）
+    const out = alignSeries4(etf, mkt, bond1, bond2);
+    // 只有 01-02 四邊皆有效正數（01-01 缺債券資料；01-03 bond2=0 被丟）
+    expect(out).toHaveLength(1);
+    expect(out[0]).toEqual({ date: '2020-01-02', etf: 101, mkt: 50, bond1: 28, bond2: 10 });
   });
 });
 
@@ -191,5 +209,77 @@ describe('runBacktest — benchmarks & metrics', () => {
     const stat = res.benchmarks.find((b) => b.key === 'bench_static')!;
     // 期初 0.6×1M 買 etf@100 → 6000 單位；etf 翻倍到 200 → 1,200,000 + 現金 400,000 = 1,600,000
     expect(stat.metrics.final_value).toBeCloseTo(1_600_000, 2);
+  });
+});
+
+// 【增修K】崩盤實驗室三資產防守端（現金＋00687B＋00953B）：驗證用網站自己的引擎、真實資料
+// 才能檢驗報告「美債優先變現」主張是否成立——而非直接採信報告數字。
+describe('runBacktest — 三資產防守端（增修K）', () => {
+  const P3 = {
+    initial_capital: 1_000_000,
+    target_beta: 1.2,
+    etf_beta: 2.0,
+    tolerance_mode: 'abs' as const,
+    threshold_abs: 0.1,
+    mode: 'ladder' as const,
+    ladder_step: 0.05,
+    ladder_full_at: 0.15, // 3 筆等分
+    cash_reserve: 100_000,
+    bond_split: 0.6,
+  };
+
+  it('bars without bond1/bond2 stay on the legacy 2-asset path (hasBonds=false)', () => {
+    // 沿用 alignSeries（雙資產）產生的 bars 完全沒有 bond1/bond2 欄位 → 三資產路徑不啟用
+    const res = runBacktest(bars([100, 70, 130], [100, 70, 110]), { ...P3, mode: 'oneshot', crash_dd: 0.28 });
+    expect(res.trades.map((t) => t.type)).toEqual(['crash_enter', 'crash_exit']);
+    expect(Math.max(...res.beta_curve.map((p) => p.value))).toBeCloseTo(2.0, 6);
+  });
+
+  it('bond_priority does not leak into the initial seed split (regression guard)', () => {
+    // etf/mkt 全平盤（避免正常模式再平衡干擾），bond1 期初翻倍、bond2 不動：
+    // 若 bond_priority 錯誤污染期初等比例分配（曾經的 bug：swap 陣列時 split 忘了跟著換），
+    // 兩種優先順序的期初 00687B/00953B 股數會不同，翻倍後金額就會兜不起來。
+    const b = bars4([100, 100], [100, 100], [1, 2], [1, 1]);
+    const r1 = runBacktest(b, { ...P3, bond_priority: 'bond1_first' });
+    const r2 = runBacktest(b, { ...P3, bond_priority: 'bond2_first' });
+    const s1 = r1.benchmarks.find((x) => x.key === 'bench_static')!;
+    const s2 = r2.benchmarks.find((x) => x.key === 'bench_static')!;
+    // 600,000(etf 不動) + 100,000(現金) + 180,000×2(00687B 翻倍) + 120,000×1(00953B 不動) = 1,180,000
+    expect(s1.metrics.final_value).toBeCloseTo(1_180_000, 1);
+    expect(s2.metrics.final_value).toBeCloseTo(1_180_000, 1);
+  });
+
+  it('bond1_first vs bond2_first drain different bonds first, producing different outcomes when their paths diverge', () => {
+    // 00687B(bond1) 從 1 一路漲到 1.8（模擬股災避險溢價），00953B(bond2) 全程持平於 1。
+    // bar1 回撤 6% 觸發第一階分批加碼：bond1_first 優先賣掉正在增值的 00687B（事後看少賺）、
+    // bond2_first 優先賣持平的 00953B、保留持續增值的 00687B（事後看多賺）——兩者應產生不同總值。
+    const b = bars4([100, 100, 100], [100, 94, 100], [1, 1.4, 1.8], [1, 1, 1]);
+    const r1 = runBacktest(b, { ...P3, bond_priority: 'bond1_first' });
+    const r2 = runBacktest(b, { ...P3, bond_priority: 'bond2_first' });
+    expect(r1.trades.map((t) => t.type)).toEqual(['ladder_buy', 'crash_exit']);
+    expect(r2.trades.map((t) => t.type)).toEqual(['ladder_buy', 'crash_exit']);
+    // 手算：bar1 買進同額 00631L（不受優先順序影響）；bar2 創新高再平衡、總值等於崩盤前市值總和
+    expect(r1.strategy.points[2].value).toBeCloseTo(1_099_047.62, 1);
+    expect(r2.strategy.points[2].value).toBeCloseTo(1_133_333.33, 1);
+    expect(r1.strategy.points[2].value).not.toBeCloseTo(r2.strategy.points[2].value, 0);
+  });
+
+  it('proportional mode shrinks both bonds together instead of draining one first', () => {
+    const b = bars4([100, 100, 100], [100, 94, 100], [1, 1.4, 1.8], [1, 1, 1]);
+    const prop = runBacktest(b, { ...P3, bond_priority: 'proportional' });
+    const bond1First = runBacktest(b, { ...P3, bond_priority: 'bond1_first' });
+    // proportional 在 bar1 縮水時兩檔一起按比例減少，結果應與「優先變現單一檔」不同
+    expect(prop.strategy.points[2].value).not.toBeCloseTo(bond1First.strategy.points[2].value, 0);
+  });
+
+  it('never yields NaN/Infinity with bonds enabled across modes', () => {
+    const b = bars4([100, 110, 90, 130], [50, 55, 45, 65], [28, 28.5, 29, 28.8], [10, 10.05, 10.1, 10.08]);
+    for (const bond_priority of ['bond1_first', 'bond2_first', 'proportional'] as const) {
+      const res = runBacktest(b, { ...P3, mode: 'oneshot', crash_dd: 0.1, bond_priority });
+      for (const p of [...res.strategy.points, ...res.beta_curve, ...res.mkt_drawdown]) {
+        expect(Number.isFinite(p.value)).toBe(true);
+      }
+      for (const bd of res.benchmarks) expect(Number.isFinite(bd.metrics.final_value)).toBe(true);
+    }
   });
 });

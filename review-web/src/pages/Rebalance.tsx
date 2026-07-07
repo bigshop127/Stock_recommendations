@@ -1139,7 +1139,10 @@ export function Rebalance() {
               />
               <span className="absolute right-3 top-2.5 text-xs text-zinc-500 font-mono">元</span>
             </div>
-            <p className="text-[10px] text-zinc-600 leading-tight">防守端先保留這筆現金，剩餘依 {Math.round(config.bond_split * 100)}:{Math.round((1 - config.bond_split) * 100)} 配到 {BOND_ETFS[0].code}/{BOND_ETFS[1].code}</p>
+            <p className="text-[10px] text-zinc-600 leading-tight">
+              防守端先保留這筆現金；加碼 00631L 需要抽錢時優先賣 {BOND_ETFS[0].code}（美債），賣完才動 {BOND_ETFS[1].code}（保留月配息）。
+              獲利了結回補時依 {Math.round(config.bond_split * 100)}:{Math.round((1 - config.bond_split) * 100)} 配到 {BOND_ETFS[0].code}/{BOND_ETFS[1].code}。
+            </p>
           </div>
         </div>
 
