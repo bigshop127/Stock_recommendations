@@ -120,6 +120,54 @@ describe('runBacktest — crash state machine', () => {
   });
 });
 
+describe('runBacktest — ladder mode（增修J 分批加碼）', () => {
+  const P = {
+    initial_capital: 1_000_000,
+    target_beta: 1.2,
+    etf_beta: 2.0,
+    tolerance_mode: 'abs' as const,
+    threshold_abs: 0.1,
+    mode: 'ladder' as const,
+    ladder_step: 0.05,
+    ladder_full_at: 0.15, // 3 筆等分
+  };
+
+  it('deploys one tranche per −5% level, caps at full_at, exits on new high', () => {
+    // etf 平盤（排除 β 漂移干擾），0050：100 → −6% → −11% → −16% → −20% → 創新高
+    const res = runBacktest(bars([100, 100, 100, 100, 100, 100], [100, 94, 89, 84, 80, 101]), P);
+    expect(res.trades.map((t) => t.type)).toEqual(['ladder_buy', 'ladder_buy', 'ladder_buy', 'crash_exit']);
+    // 期初現金 40 萬、3 筆等分 → 每筆 133,333.33；−20% 已買滿不再加碼
+    const tranche = 400_000 / 3;
+    for (const t of res.trades.slice(0, 3)) expect(t.traded_value).toBeCloseTo(tranche, 4);
+    // 買滿後全數在 00631L → β ≈ 2.0；創新高退出後回目標 1.2
+    expect(Math.max(...res.beta_curve.map((p) => p.value))).toBeCloseTo(2.0, 6);
+    expect(res.beta_curve[res.beta_curve.length - 1].value).toBeCloseTo(1.2, 6);
+    expect(res.crash_events).toHaveLength(1);
+    expect(res.crash_events[0].enter).toBe(d(1));
+    expect(res.crash_events[0].exit).toBe(d(5));
+    expect(res.strategy.name).toContain('分批');
+  });
+
+  it('gap through multiple levels buys the summed tranches in one trade', () => {
+    // 一天直落 −12%（跳過 −5% 階）→ 一筆補買 2 個 tranche
+    const res = runBacktest(bars([100, 100], [100, 88]), P);
+    expect(res.trades.map((t) => t.type)).toEqual(['ladder_buy']);
+    expect(res.trades[0].traded_value).toBeCloseTo((400_000 / 3) * 2, 4);
+  });
+
+  it('suspends band rebalancing during a drawdown regime', () => {
+    // etf 大跌使 β 破下限，但已在回撤 regime 內 → 只有 ladder_buy、無 rebalance
+    const res = runBacktest(bars([100, 60], [100, 94]), P);
+    expect(res.trades.map((t) => t.type)).toEqual(['ladder_buy']);
+  });
+
+  it('omitting mode keeps legacy oneshot behavior (backward compat)', () => {
+    const res = runBacktest(bars([100, 70, 130], [100, 70, 110]), { crash_dd: 0.28 });
+    expect(res.trades.map((t) => t.type)).toEqual(['crash_enter', 'crash_exit']);
+    expect(res.strategy.name).toContain('all-in');
+  });
+});
+
 describe('runBacktest — benchmarks & metrics', () => {
   it('buy-and-hold 0050 metrics: total_return and max_drawdown correct', () => {
     // 100 → 150 → 75 → 150：期末 +50%，最大回撤 (150−75)/150 = 50%

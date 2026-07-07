@@ -6,6 +6,11 @@
 // 加碼 00631L 拉到滿槓桿（weight=1、β≈2）；0050 再創新高 → 退出崩盤、再平衡回目標 β。
 // 註：研究文的「第二階 −50% 再加碼」在單一標的下已無可加碼空間（最高 100%/2x），故本
 // 模型只實作「一階崩盤加碼 ＋ 創新高退出」，此設計假設於規格與 UI 明列。
+//
+// 【增修J 2026-07-07】新增「分批加碼」模式（mode='ladder'）：0050 每自高點多跌
+// ladder_step（如 −5%）就用「進入回撤時的現金」等分買一筆，跌到 ladder_full_at（如 −30%）
+// 買滿；創新高退出邏輯與 oneshot 相同。回撤期間（regime 內）暫停容忍區間再平衡，
+// 避免再平衡把剛加碼的部位賣回去。mode 預設 'oneshot'，舊參數/舊 localStorage 行為不變。
 
 import type { OhlcvRow } from './api';
 
@@ -24,6 +29,9 @@ export interface BacktestParams {
   threshold_abs: number; // abs 模式 ±β
   crash_dd: number; // 崩盤觸發：0050 自高點回撤幅度（0.28 = −28%）
   cost_bps: number; // 單邊交易成本（bps，套在成交金額；預設 0）
+  mode: 'oneshot' | 'ladder'; // 加碼模式：一次 all-in（預設）/ 分批加碼【增修J】
+  ladder_step: number; // ladder：每多跌多少買一筆（0.05 = −5%）
+  ladder_full_at: number; // ladder：跌到多深買滿（0.30 = −30%；筆數 = full_at/step）
 }
 
 export interface Metrics {
@@ -47,7 +55,7 @@ export interface EquityCurve {
 
 export interface Trade {
   date: string;
-  type: 'rebalance' | 'crash_enter' | 'crash_exit';
+  type: 'rebalance' | 'crash_enter' | 'crash_exit' | 'ladder_buy';
   from_beta: number;
   to_beta: number;
   traded_value: number; // + 買 / − 賣（00631L 金額）
@@ -161,7 +169,11 @@ export function runBacktest(bars: AlignedBar[], rawParams: Partial<BacktestParam
     threshold_abs: Math.max(0, safeNum(rawParams?.threshold_abs, 0.1)),
     crash_dd: clamp(safeNum(rawParams?.crash_dd, 0.28), 0.05, 0.95),
     cost_bps: Math.max(0, safeNum(rawParams?.cost_bps, 0)),
+    mode: rawParams?.mode === 'ladder' ? 'ladder' : 'oneshot',
+    ladder_step: clamp(safeNum(rawParams?.ladder_step, 0.05), 0.01, 0.5),
+    ladder_full_at: 0, // 佔位，下一行以 step 為下限修正
   };
+  params.ladder_full_at = clamp(safeNum(rawParams?.ladder_full_at, 0.3), params.ladder_step, 0.95);
 
   const empty: BacktestResult = {
     aligned_days: bars?.length ?? 0,
@@ -177,8 +189,10 @@ export function runBacktest(bars: AlignedBar[], rawParams: Partial<BacktestParam
   };
   if (!bars || bars.length < 2) return empty;
 
-  const { initial_capital, target_beta, etf_beta, tolerance_mode, threshold_pct, threshold_abs, crash_dd, cost_bps } =
-    params;
+  const {
+    initial_capital, target_beta, etf_beta, tolerance_mode, threshold_pct, threshold_abs,
+    crash_dd, cost_bps, mode, ladder_step, ladder_full_at,
+  } = params;
 
   const targetWeight = clamp(target_beta / etf_beta, 0, 1);
   const upper =
@@ -196,6 +210,10 @@ export function runBacktest(bars: AlignedBar[], rawParams: Partial<BacktestParam
   let peakMkt = bars[0].mkt;
   let inCrash = false;
   let curCrash: CrashEvent | null = null;
+  // ladder 模式狀態【增修J】：進入回撤 regime 時的現金基準與已買階數
+  const nLevels = Math.max(1, Math.round(ladder_full_at / ladder_step));
+  let regimeCash = 0;
+  let deployedLevels = 0;
 
   const stratPoints: CurvePoint[] = [];
   const betaCurve: CurvePoint[] = [];
@@ -218,7 +236,18 @@ export function runBacktest(bars: AlignedBar[], rawParams: Partial<BacktestParam
 
     // ── 狀態機（i>0 才交易，i=0 為建倉基準日）──
     if (i > 0) {
-      if (!inCrash && dd >= crash_dd) {
+      // ladder 模式【增修J】：0050 每多跌 ladder_step 就進一階
+      const level = mode === 'ladder' ? Math.floor(dd / ladder_step + 1e-12) : 0;
+
+      if (mode === 'ladder' && !inCrash && level >= 1) {
+        // 進入回撤 regime：鎖定現金基準、開始分批（本日即會買第一階）
+        inCrash = true;
+        regimeCash = cash;
+        deployedLevels = 0;
+        curCrash = { enter: bar.date, exit: null, max_dd: dd };
+      }
+
+      if (mode === 'oneshot' && !inCrash && dd >= crash_dd) {
         // 進入崩盤：全數加碼到滿槓桿
         const desiredValue = 1.0 * total;
         const traded = desiredValue - etfValue;
@@ -230,7 +259,7 @@ export function runBacktest(bars: AlignedBar[], rawParams: Partial<BacktestParam
         inCrash = true;
         curCrash = { enter: bar.date, exit: null, max_dd: dd };
       } else if (inCrash && dd <= 1e-9) {
-        // 0050 創新高 → 退出崩盤、再平衡回目標
+        // 0050 創新高 → 退出、再平衡回目標（oneshot / ladder 共用）
         const desiredValue = targetWeight * total;
         const traded = desiredValue - etfValue;
         const cost = Math.abs(traded) * costRate;
@@ -245,8 +274,22 @@ export function runBacktest(bars: AlignedBar[], rawParams: Partial<BacktestParam
           curCrash = null;
         }
       } else if (inCrash) {
-        // 崩盤持續：維持滿槓桿，記錄期間最大回撤
         if (curCrash && dd > curCrash.max_dd) curCrash.max_dd = dd;
+        if (mode === 'ladder') {
+          // 回撤加深到新的階 → 補買到應部署階數（跳空跌多階就一次補多筆）
+          const want = Math.min(level, nLevels);
+          if (want > deployedLevels && cash > 0) {
+            const tranche = regimeCash / nLevels;
+            const traded = Math.min(cash, tranche * (want - deployedLevels));
+            const cost = traded * costRate;
+            etfUnits += traded / bar.etf;
+            cash = cash - traded - cost;
+            const toBeta = total > 0 ? ((etfValue + traded) / total) * etf_beta : 0;
+            trades.push({ date: bar.date, type: 'ladder_buy', from_beta: curBeta, to_beta: toBeta, traded_value: traded, cost });
+            deployedLevels = want;
+          }
+        }
+        // oneshot：崩盤持續、維持滿槓桿，僅記錄期間最大回撤
       } else if (curBeta > upper || curBeta < lower) {
         // 正常模式：漂出容忍區間 → 再平衡回目標 β
         const desiredValue = targetWeight * total;
@@ -282,7 +325,10 @@ export function runBacktest(bars: AlignedBar[], rawParams: Partial<BacktestParam
     end_date: bars[bars.length - 1].date,
     strategy: {
       key: 'strategy',
-      name: '崩盤策略',
+      name:
+        mode === 'ladder'
+          ? `崩盤策略（每 −${Math.round(ladder_step * 100)}% 分批、−${Math.round(ladder_full_at * 100)}% 買滿）`
+          : `崩盤策略（−${Math.round(crash_dd * 100)}% 一次 all-in）`,
       points: stratPoints,
       metrics: metricsOf(stratPoints, initial_capital),
     },

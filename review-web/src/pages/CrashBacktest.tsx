@@ -26,6 +26,9 @@ const DEFAULT_PARAMS: BacktestParams = {
   threshold_abs: 0.1,
   crash_dd: 0.28,
   cost_bps: 0,
+  mode: 'oneshot',
+  ladder_step: 0.05,
+  ladder_full_at: 0.3,
 };
 
 function loadParams(): BacktestParams {
@@ -189,7 +192,7 @@ export const CrashBacktest: React.FC = () => {
             崩盤策略回測實驗室
           </h1>
           <p className="text-sm text-zinc-500 mt-1">
-            00631L（正2）＋現金，以 0050 偵測崩盤：回撤 ≥ 觸發值全數加碼滿槓桿、創新高回目標 β。
+            00631L（正2）＋現金，以 0050 偵測崩盤：一次 all-in 或每跌一階分批加碼，創新高回目標 β。
           </p>
         </div>
         <button
@@ -227,26 +230,85 @@ export const CrashBacktest: React.FC = () => {
           </div>
         </div>
 
-        {/* 崩盤觸發回撤 */}
+        {/* 加碼模式：一次 all-in / 分批加碼【增修J】 */}
         <div>
           <div className="flex items-center justify-between text-sm mb-2">
-            <span className="text-zinc-300 font-medium">崩盤觸發（0050 回撤）</span>
-            <span className="font-mono text-bear font-bold">−{Math.round(params.crash_dd * 100)}%</span>
+            <span className="text-zinc-300 font-medium">加碼模式（0050 回撤觸發）</span>
+            <div className="flex rounded-lg overflow-hidden border border-border">
+              <button
+                onClick={() => update({ mode: 'oneshot' })}
+                className={`px-3 py-1.5 text-xs font-medium ${
+                  params.mode !== 'ladder' ? 'bg-primary text-white' : 'text-zinc-400 hover:text-zinc-200'
+                }`}
+              >
+                一次 all-in
+              </button>
+              <button
+                onClick={() => update({ mode: 'ladder' })}
+                className={`px-3 py-1.5 text-xs font-medium ${
+                  params.mode === 'ladder' ? 'bg-primary text-white' : 'text-zinc-400 hover:text-zinc-200'
+                }`}
+              >
+                分批加碼
+              </button>
+            </div>
           </div>
-          <input
-            type="range"
-            min={0.1}
-            max={0.5}
-            step={0.01}
-            value={params.crash_dd}
-            onChange={(e) => update({ crash_dd: Number(e.target.value) })}
-            className="w-full accent-primary"
-          />
-          <div className="flex justify-between text-[10px] text-zinc-600 font-mono mt-1">
-            <span>−10%</span>
-            <span>−28%（研究文預設）</span>
-            <span>−50%</span>
-          </div>
+          {params.mode !== 'ladder' ? (
+            <>
+              <div className="flex items-center justify-between text-xs mb-1">
+                <span className="text-zinc-400">觸發回撤（一次全數加碼滿槓桿）</span>
+                <span className="font-mono text-bear font-bold">−{Math.round(params.crash_dd * 100)}%</span>
+              </div>
+              <input
+                type="range"
+                min={0.1}
+                max={0.5}
+                step={0.01}
+                value={params.crash_dd}
+                onChange={(e) => update({ crash_dd: Number(e.target.value) })}
+                className="w-full accent-primary"
+              />
+              <div className="flex justify-between text-[10px] text-zinc-600 font-mono mt-1">
+                <span>−10%</span>
+                <span>−28%（研究文預設）</span>
+                <span>−50%</span>
+              </div>
+            </>
+          ) : (
+            <>
+              <div className="flex items-center justify-between text-xs mb-1">
+                <span className="text-zinc-400">每跌一階買一筆</span>
+                <span className="font-mono text-bear font-bold">−{Math.round(params.ladder_step * 100)}%</span>
+              </div>
+              <input
+                type="range"
+                min={0.01}
+                max={0.1}
+                step={0.01}
+                value={params.ladder_step}
+                onChange={(e) =>
+                  update({
+                    ladder_step: Number(e.target.value),
+                    ladder_full_at: Math.max(params.ladder_full_at, Number(e.target.value)),
+                  })
+                }
+                className="w-full accent-primary"
+              />
+              <div className="flex items-center justify-between text-xs mb-1 mt-2">
+                <span className="text-zinc-400">買滿深度（現金分 {Math.max(1, Math.round(params.ladder_full_at / params.ladder_step))} 筆等分）</span>
+                <span className="font-mono text-bear font-bold">−{Math.round(params.ladder_full_at * 100)}%</span>
+              </div>
+              <input
+                type="range"
+                min={0.1}
+                max={0.5}
+                step={0.05}
+                value={params.ladder_full_at}
+                onChange={(e) => update({ ladder_full_at: Math.max(Number(e.target.value), params.ladder_step) })}
+                className="w-full accent-primary"
+              />
+            </>
+          )}
         </div>
 
         {/* 容忍模式 */}
@@ -413,7 +475,7 @@ export const CrashBacktest: React.FC = () => {
               {/* 投組 β 曲線 */}
               <div className="bg-card border border-border rounded-xl p-5">
                 <div className="text-sm font-semibold text-zinc-200 mb-3">
-                  策略投組 β（崩盤期拉滿槓桿 ≈ 2.0，其餘回目標 {params.target_beta.toFixed(2)}）
+                  策略投組 β（{params.mode === 'ladder' ? '回撤期分批墊高' : '崩盤期拉滿槓桿 ≈ 2.0'}，創新高回目標 {params.target_beta.toFixed(2)}）
                 </div>
                 <MultiLineChart
                   series={[{ key: 'beta', name: '投組 β', color: '#a855f7', points: result.beta_curve }]}
@@ -426,7 +488,11 @@ export const CrashBacktest: React.FC = () => {
               <div className="bg-card border border-border rounded-xl p-5">
                 <div className="text-sm font-semibold text-zinc-200 mb-3 flex items-center gap-2">
                   <TrendingDown className="w-4 h-4 text-bear" />
-                  0050 自高點回撤（觸發線 −{Math.round(params.crash_dd * 100)}%）
+                  0050 自高點回撤（
+                  {params.mode === 'ladder'
+                    ? `首筆 −${Math.round(params.ladder_step * 100)}%／買滿 −${Math.round(params.ladder_full_at * 100)}%`
+                    : `觸發線 −${Math.round(params.crash_dd * 100)}%`}
+                  ）
                 </div>
                 <MultiLineChart
                   series={[
@@ -438,9 +504,16 @@ export const CrashBacktest: React.FC = () => {
                     },
                   ]}
                   height={180}
-                  priceLines={[
-                    { price: -params.crash_dd * 100, color: '#ef4444', title: `觸發 −${Math.round(params.crash_dd * 100)}%` },
-                  ]}
+                  priceLines={
+                    params.mode === 'ladder'
+                      ? [
+                          { price: -params.ladder_step * 100, color: '#f59e0b', title: `首筆 −${Math.round(params.ladder_step * 100)}%` },
+                          { price: -params.ladder_full_at * 100, color: '#ef4444', title: `買滿 −${Math.round(params.ladder_full_at * 100)}%` },
+                        ]
+                      : [
+                          { price: -params.crash_dd * 100, color: '#ef4444', title: `觸發 −${Math.round(params.crash_dd * 100)}%` },
+                        ]
+                  }
                 />
               </div>
 
@@ -480,9 +553,15 @@ export const CrashBacktest: React.FC = () => {
                       <tbody>
                         {result.trades.map((t, i) => {
                           const label =
-                            t.type === 'crash_enter' ? '崩盤加碼' : t.type === 'crash_exit' ? '創新高退出' : '再平衡';
-                          const labelClass =
                             t.type === 'crash_enter'
+                              ? '崩盤加碼'
+                              : t.type === 'ladder_buy'
+                              ? '分批加碼'
+                              : t.type === 'crash_exit'
+                              ? '創新高退出'
+                              : '再平衡';
+                          const labelClass =
+                            t.type === 'crash_enter' || t.type === 'ladder_buy'
                               ? 'text-bull'
                               : t.type === 'crash_exit'
                               ? 'text-bear'
@@ -514,9 +593,11 @@ export const CrashBacktest: React.FC = () => {
       {/* 聲明 */}
       <p className="text-[11px] text-zinc-600 leading-relaxed">
         本回測為單一標的（00631L＋現金）簡化模型：投組 β＝00631L 佔比×2、現金 β＝0；崩盤偵測以 0050
-        自歷史高點回撤為準，觸發後現金全數加碼至滿槓桿（100%/2x，故不再實作研究文的第二階 −50% 加碼），0050
-        創新高後再平衡回目標 β。歷史還原價來自 <span className="font-mono">/api/stocks/:code/ohlcv?adjust=1</span>；
-        回測結果為過去資料的機械式模擬，不含滑價與稅費（除非自行填入成本），非投資建議。
+        自歷史高點回撤為準。「一次 all-in」＝觸發後現金全數加碼至滿槓桿（100%/2x，故不再實作研究文的第二階 −50%
+        加碼）；「分批加碼」＝每多跌一階，用進入回撤時的現金等分買一筆，跌到買滿深度為止，回撤期間暫停容忍區間再平衡。兩種模式皆於
+        0050 創新高後再平衡回目標 β。歷史還原價來自 <span className="font-mono">/api/stocks/:code/ohlcv?adjust=1</span>；
+        回測結果為過去資料的機械式模擬，不含滑價與稅費（除非自行填入成本），非投資建議。門檻類參數對結果高度敏感（歷史上大跌谷底
+        −27.5% 與 −28% 觸發只差 0.5%），單一門檻的回測優勢未必能外推。
       </p>
     </div>
   );
