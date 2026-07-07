@@ -1,22 +1,25 @@
 # 00631L 再平衡 Email 告警（rebalance_alert.cjs）
 
-每日收盤後檢查 00631L「正2 + 現金」投組 Beta，破容忍區間就寄 Email 到 `a4980678@gmail.com`。
+每日收盤後檢查 00631L「正2 + 防守端」投組 Beta，破容忍區間就寄 Email 到 `a4980678@gmail.com`。
 搭配前端計算機（`/review/rebalance`, opt10）——**計算機是互動試算，本腳本是背景自動盯盤**。
+
+**【增修I 2026-07-07】防守端＝閒置現金＋債券 ETF（00687B 國泰20年美債／00953B 群益優選非投等債）市值**，
+皆視為 β=0；β 分母＝00631L 市值＋防守端。舊持倉檔（無 `bonds` 欄位）行為完全不變（防守端＝純現金）。
 
 ## 為什麼是腳本＋排程，不是網頁功能
 前端計算機是互動試算、關掉分頁就不跑。要「該賣出/買進時自動寄信」必須有背景排程盯盤。
 
 ## 持倉檔的兩個寫入者（2026-07-05 起）
 `data/rebalance_holdings.json` 現在有兩條寫入路徑，**讀的都是同一份檔**：
-1. **前端計算機**（雲端同步）：按「送出並同步雲端」或新增/刪除買賣報價單時，經 gateway `POST /api/rebalance/holdings` 寫此檔（見 `routes/rebalance.js`、`contracts.md §2.13`）。頂層 `shares`/`avg_cost` 為衍生值＝`opening`（期初部位）＋`trades`（報價單，加權平均法）由伺服端重算。
-2. **手動編輯**：仍可直接 `nano` 此檔（本告警腳本只讀頂層 `shares`/`avg_cost`/`cash`/`target_beta`/`tolerance_mode`/`threshold_*`/`etf_beta`，忽略 `opening`/`trades`，故手改頂層數字仍有效；但下次前端同步會以報價單重算覆蓋）。
+1. **前端計算機**（雲端同步）：按「送出並同步雲端」或新增/刪除買賣報價單時，經 gateway `POST /api/rebalance/holdings` 寫此檔（見 `routes/rebalance.js`、`contracts.md §2.13`）。頂層 `shares`/`avg_cost`/`cash` 與 `bonds[].shares`/`avg_cost` 為衍生值＝`opening`（期初部位＋期初現金）＋`trades`（報價單，`trade.code` 缺省＝00631L；現金為全資產共用池）由伺服端重算。
+2. **手動編輯**：仍可直接 `nano` 此檔（本告警腳本只讀頂層 `shares`/`avg_cost`/`cash`/`bonds`/`target_beta`/`tolerance_mode`/`threshold_*`/`etf_beta`，忽略 `opening`/`trades`，故手改頂層數字仍有效；但下次前端同步會以報價單重算覆蓋）。
 
 → 好處：在網頁記完當天買賣按送出，VM 上的告警腳本隔天 15:00 就吃到最新持倉，不用再手動改檔。
 
 ## 運作
 1. 讀持倉 `data/rebalance_holdings.json`（**gitignore**，由 `scripts/rebalance_holdings.example.json` 複製後填）。
-2. 打本機 gateway `GET /api/stocks/00631L/ohlcv` 取最新交易日收盤價（未還原）。
-3. 用移植自 `review-web/src/lib/rebalance.ts` 的邏輯算投組 β 與買/賣金額、股數。
+2. 打本機 gateway `GET /api/stocks/00631L/ohlcv` 取最新交易日收盤價（未還原）；【增修I】`bonds` 有持倉（shares>0）的債券 ETF 也各抓一次收盤價，**抓不到退用持倉檔 `bonds[].price`（前端最後同步價）**，兩者皆無以 0 計並於信中註記。
+3. 用移植自 `review-web/src/lib/rebalance.ts` 的邏輯算投組 β 與買/賣金額、股數（防守端＝現金＋債券市值，皆 β=0）。
 4. β 破**上限**→ 該賣出、破**下限**→ 該買進 → 寄 Email（HTML＋純文字）。
 5. **去重**：只在「狀態變化」時寄（`normal→buy`/`normal→sell`/`buy↔sell`），持續同狀態不重複寄；狀態存 `data/rebalance_alert_state.json`。
 

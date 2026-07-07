@@ -1,5 +1,13 @@
 import { describe, it, expect } from 'vitest';
-import { computeRebalance, aggregatePosition, triggerPriceForBeta, type Trade } from './rebalance';
+import {
+  computeRebalance,
+  aggregatePosition,
+  aggregatePortfolio,
+  triggerPriceForBeta,
+  ETF_CODE,
+  DEFAULT_CASH_RESERVE,
+  type Trade,
+} from './rebalance';
 
 const mk = (side: 'buy' | 'sell', date: string, shares: number, price: number): Trade => ({
   id: `${side}_${date}_${shares}_${price}`,
@@ -7,6 +15,13 @@ const mk = (side: 'buy' | 'sell', date: string, shares: number, price: number): 
   side,
   shares,
   price,
+});
+
+// 【增修I】帶標的代號的交易
+const mkc = (code: string, side: 'buy' | 'sell', date: string, shares: number, price: number): Trade => ({
+  ...mk(side, date, shares, price),
+  id: `${code}_${side}_${date}_${shares}_${price}`,
+  code,
 });
 
 describe('aggregatePosition', () => {
@@ -469,6 +484,195 @@ describe('computeRebalance', () => {
       const beta = (etf / (etf + 350000)) * 2.0;
       expect(beta).toBeCloseTo(band, 6);
     }
+  });
+});
+
+// ===== 【增修I】多資產部位累算（共用現金池） =====
+
+describe('aggregatePortfolio', () => {
+  it('trade without code defaults to 00631L (legacy migration)', () => {
+    const r = aggregatePortfolio(
+      { cash: 1_000_000, positions: { [ETF_CODE]: { shares: 19000, avg_cost: 35.37 } } },
+      [mk('buy', '2026-07-06', 10000, 39)],
+    );
+    expect(r.positions[ETF_CODE].shares).toBe(29000);
+    expect(r.positions[ETF_CODE].avg_cost).toBeCloseTo((19000 * 35.37 + 10000 * 39) / 29000, 6);
+    expect(r.cash).toBeCloseTo(610_000, 6);
+  });
+
+  it('bond buy deducts from the shared cash pool', () => {
+    // 期初現金 500,000，買 00687B 5000@28 → 現金 500,000 − 140,000 = 360,000
+    const r = aggregatePortfolio(
+      { cash: 500_000, positions: { [ETF_CODE]: { shares: 1000, avg_cost: 30 } } },
+      [mkc('00687B', 'buy', '2026-07-07', 5000, 28)],
+    );
+    expect(r.cash).toBeCloseTo(360_000, 6);
+    expect(r.positions['00687B'].shares).toBe(5000);
+    expect(r.positions['00687B'].avg_cost).toBeCloseTo(28, 6);
+    // 00631L 不受影響
+    expect(r.positions[ETF_CODE].shares).toBe(1000);
+    expect(r.positions[ETF_CODE].avg_cost).toBeCloseTo(30, 6);
+  });
+
+  it('mixed-code trades: sell one asset funds buying another (date-sorted)', () => {
+    // 賣 00631L 2000@40（+80,000）→ 隔日買 00953B 8000@9.6（−76,800）
+    const r = aggregatePortfolio(
+      { cash: 0, positions: { [ETF_CODE]: { shares: 5000, avg_cost: 35 } } },
+      [
+        mkc('00953B', 'buy', '2026-07-08', 8000, 9.6),
+        mkc(ETF_CODE, 'sell', '2026-07-07', 2000, 40),
+      ],
+    );
+    expect(r.positions[ETF_CODE].shares).toBe(3000);
+    expect(r.positions[ETF_CODE].avg_cost).toBeCloseTo(35, 6); // 賣出不改均價
+    expect(r.positions['00953B'].shares).toBe(8000);
+    expect(r.cash).toBeCloseTo(80_000 - 76_800, 6);
+    expect(r.realized_pnl).toBeCloseTo((40 - 35) * 2000, 6);
+  });
+
+  it('per-code oversell clamps independently and credits only sold shares', () => {
+    const r = aggregatePortfolio(
+      { cash: 0, positions: { '00687B': { shares: 1000, avg_cost: 28 } } },
+      [mkc('00687B', 'sell', '2026-07-07', 5000, 29)],
+    );
+    expect(r.positions['00687B'].shares).toBe(0);
+    expect(r.positions['00687B'].avg_cost).toBe(0);
+    expect(r.invalid_sells).toBe(1);
+    expect(r.cash).toBeCloseTo(29_000, 6); // 只計實際成交 1000 股
+  });
+
+  it('guards null opening / unknown code trade', () => {
+    const r = aggregatePortfolio(null, [mkc('00687B', 'buy', '2026-07-07', 100, 28)]);
+    expect(r.positions['00687B'].shares).toBe(100);
+    expect(r.cash).toBeCloseTo(-2800, 6); // 期初現金 0 → 負值供 UI 警示
+  });
+});
+
+// ===== 【增修I】computeRebalance 防守端（固定現金＋債券池 6:4） =====
+
+describe('computeRebalance with bonds (增修I)', () => {
+  // 基準情境：總資產 1,000,000＝00631L 650,000＋現金 150,000＋00687B 140,000＋00953B 60,000
+  // β = 0.65×2 = 1.3 = 目標 → normal；目標防守端 350,000 → 現金保留 100,000、債券池 250,000（6:4）
+  const base = {
+    shares: 6500,
+    price: 100,
+    cash: 150_000,
+    target_beta: 1.3,
+    tolerance_mode: 'abs' as const,
+    threshold_pct: 10,
+    threshold_abs: 0.1,
+    etf_beta: 2.0,
+    bonds: [
+      { code: '00687B', shares: 5000, price: 28 },
+      { code: '00953B', shares: 6000, price: 10 },
+    ],
+    cash_reserve: 100_000,
+    bond_split: 0.6,
+  };
+
+  it('β denominator includes bond market value (defensive = cash + bonds)', () => {
+    const res = computeRebalance(base);
+    expect(res.bond_value).toBe(200_000);
+    expect(res.defensive_value).toBe(350_000);
+    expect(res.total_value).toBe(1_000_000);
+    expect(res.defensive_weight).toBeCloseTo(0.35, 6);
+    expect(res.current_beta).toBeCloseTo(1.3, 6);
+    expect(res.status).toBe('normal');
+  });
+
+  it('defensive targets: fixed cash reserve + 6:4 bond pool with trade shares', () => {
+    const res = computeRebalance(base);
+    expect(res.target_defensive_value).toBeCloseTo(350_000, 6);
+    expect(res.target_cash_value).toBeCloseTo(100_000, 6); // min(100,000, 350,000)
+    expect(res.cash_adjust_delta).toBeCloseTo(-50_000, 6); // 現金 150,000 → 100,000
+    const [b687, b953] = res.bond_plans;
+    expect(b687.code).toBe('00687B');
+    expect(b687.target_value).toBeCloseTo(150_000, 6); // 250,000 × 0.6
+    expect(b687.value_delta).toBeCloseTo(10_000, 6);
+    expect(b687.trade_shares).toBe(Math.round(10_000 / 28)); // 357
+    expect(b953.target_value).toBeCloseTo(100_000, 6); // 250,000 × 0.4
+    expect(b953.value_delta).toBeCloseTo(40_000, 6);
+    expect(b953.trade_shares).toBe(4000);
+  });
+
+  it('post-trade cash reflects bond legs; post_beta returns to target', () => {
+    const res = computeRebalance(base);
+    expect(res.trade_shares).toBe(0); // 00631L 已達標
+    // post_cash = 150,000 − 0 − (357×28 ＋ 4000×10) = 150,000 − 49,996 = 100,004
+    expect(res.post_cash).toBeCloseTo(100_004, 6);
+    expect(res.post_beta).toBeCloseTo(1.3, 3);
+  });
+
+  it('cash_reserve clamps to target defensive when defensive side is small', () => {
+    // 目標 β 1.9 → 目標防守端僅 5%＝50,000 < 保留額 100,000 → 全給現金、債券池 0
+    const res = computeRebalance({ ...base, target_beta: 1.9 });
+    expect(res.target_defensive_value).toBeCloseTo(50_000, 6);
+    expect(res.target_cash_value).toBeCloseTo(50_000, 6);
+    for (const p of res.bond_plans) {
+      expect(p.target_value).toBeCloseTo(0, 6);
+      expect(p.value_delta).toBeCloseTo(-p.value, 6); // 應全數賣出
+    }
+  });
+
+  it('bond with price 0 cannot compute trade shares but keeps value at 0', () => {
+    const res = computeRebalance({
+      ...base,
+      bonds: [
+        { code: '00687B', shares: 5000, price: 0 },
+        { code: '00953B', shares: 6000, price: 10 },
+      ],
+    });
+    const [b687] = res.bond_plans;
+    expect(b687.value).toBe(0);
+    expect(b687.trade_shares).toBeNull();
+    expect(b687.post_shares).toBeNull();
+    expect(res.bond_value).toBe(60_000);
+  });
+
+  it('trigger prices solve against full defensive value (cash + bonds)', () => {
+    const res = computeRebalance(base);
+    // band [1.2, 1.4]，defensive=350,000 → 與舊「純現金 350,000」數字一致
+    expect(res.sell_trigger_price).toBeCloseTo(125.641, 2);
+    expect(res.buy_trigger_price).toBeCloseTo(80.769, 2);
+  });
+
+  it('custom bond_split changes the pool allocation', () => {
+    const res = computeRebalance({ ...base, bond_split: 0.5 });
+    const [b687, b953] = res.bond_plans;
+    expect(b687.target_value).toBeCloseTo(125_000, 6);
+    expect(b953.target_value).toBeCloseTo(125_000, 6);
+  });
+
+  it('no bonds → identical to legacy pure-cash model with defaults echoed', () => {
+    const res = computeRebalance({
+      shares: 6500,
+      price: 100,
+      cash: 350_000,
+      target_beta: 1.3,
+      tolerance_mode: 'abs',
+      threshold_pct: 10,
+      threshold_abs: 0.1,
+      etf_beta: 2.0,
+    });
+    expect(res.bond_value).toBe(0);
+    expect(res.defensive_value).toBe(350_000);
+    expect(res.bond_plans).toEqual([]);
+    expect(res.cash_reserve).toBe(DEFAULT_CASH_RESERVE);
+    expect(res.current_beta).toBeCloseTo(1.3, 6);
+    expect(res.status).toBe('normal');
+  });
+
+  it('bond unrealized P&L shown when avg_cost provided', () => {
+    const res = computeRebalance({
+      ...base,
+      bonds: [
+        { code: '00687B', shares: 5000, price: 28, avg_cost: 30 },
+        { code: '00953B', shares: 6000, price: 10, avg_cost: 9.5 },
+      ],
+    });
+    const [b687, b953] = res.bond_plans;
+    expect(b687.unrealized_pnl).toBeCloseTo(5000 * (28 - 30), 6);
+    expect(b953.unrealized_pnl).toBeCloseTo(6000 * (10 - 9.5), 6);
   });
 });
 

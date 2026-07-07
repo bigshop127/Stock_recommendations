@@ -581,18 +581,33 @@ export interface RebalanceTrade {
   side: 'buy' | 'sell';
   shares: number;
   price: number;
+  code?: string;        // 標的代碼（缺省＝00631L，舊資料相容）【增修I】
+}
+export interface RebalanceBondHolding {
+  code: string;
+  shares: number;       // 衍生
+  avg_cost: number;     // 衍生
+  price: number;
 }
 export interface RebalanceHoldingsPayload {
   shares: number;       // 衍生（伺服端會再重算）
   avg_cost: number;     // 衍生
   price: number;
   cash: number;         // 衍生【增修H】（期初現金 − 買進 ＋ 賣出，伺服端會再重算）
+  bonds: RebalanceBondHolding[]; // 防守端債券 ETF（00687B / 00953B）【增修I】
+  cash_reserve: number; // 固定保留現金【增修I】
+  bond_split: number;   // 債券池 00687B 佔比【增修I】
   target_beta: number;
   tolerance_mode: 'pct' | 'abs';
   threshold_pct: number;
   threshold_abs: number;
   etf_beta: number;
-  opening: { shares: number; avg_cost: number; cash: number };
+  opening: {
+    shares: number;
+    avg_cost: number;
+    cash: number;
+    bonds: { code: string; shares: number; avg_cost: number }[];
+  };
   trades: RebalanceTrade[];
 }
 export interface RebalanceHoldingsResp {
