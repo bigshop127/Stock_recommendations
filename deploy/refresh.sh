@@ -32,10 +32,45 @@ alert() {
 }
 ok() { echo "[refresh] $(date '+%F %T') $1"; }
 
+# 「同日雙生報告」衝突自救（2026-07-08 事故：pull --rebase 撞到 VM/本機備援同日都產報告的
+# AA 衝突時，原本只 alert 就放著，repo 卡在 rebase 中間到人工發現才修）。
+# 回傳：0=沒卡住或已自動解掉（呼叫端不必再 alert）／1=卡住但無法安全自動解，已在此函式內 alert 過。
+# 2=沒卡在 rebase（pull 失敗是別的原因，例如網路），呼叫端仍應照舊 alert。
+resolve_reports_conflict() {
+  if [ ! -d .git/rebase-merge ] && [ ! -d .git/rebase-apply ]; then
+    return 2
+  fi
+  local conflicts non_reports
+  conflicts="$(git diff --name-only --diff-filter=U)"
+  non_reports="$(echo "$conflicts" | grep -v '^reports/' || true)"
+  if [ -z "$conflicts" ] || [ -n "$non_reports" ]; then
+    alert "rebase 卡住且衝突超出 reports/ 範圍（$conflicts），已 abort 回復乾淨狀態，需人工檢查"
+    git rebase --abort
+    return 1
+  fi
+  ok "偵測到 reports/ 範圍內同日雙生報告衝突，VM 為 production，自動取 VM 版本並繼續：$conflicts"
+  echo "$conflicts" | while IFS= read -r f; do
+    [ -z "$f" ] && continue
+    git checkout --theirs -- "$f"
+    git add "$f"
+  done
+  if GIT_EDITOR=true git rebase --continue >/dev/null 2>&1; then
+    ok "衝突已自動解決，rebase 完成"
+    return 0
+  else
+    alert "rebase --continue 仍失敗，已 abort 回復乾淨狀態，需人工檢查"
+    git rebase --abort
+    return 1
+  fi
+}
+
 ok "start date=$DATE gateway=$GATEWAY_URL"
 
 # 1) 先同步 repo（避免與本機/手機分岔）
-git pull --rebase --autostash origin "$BRANCH" 2>&1 | tail -2 || alert "git pull --rebase 失敗（稍後 push 可能衝突）"
+if ! git pull --rebase --autostash origin "$BRANCH" 2>&1 | tail -5; then
+  resolve_reports_conflict
+  [ $? -eq 2 ] && alert "git pull --rebase 失敗（稍後 push 可能衝突）"
+fi
 
 # 2) 暖快取 + 3) 存當日訊號快照
 mkdir -p "$SNAP_DIR"
@@ -59,7 +94,17 @@ else
     ok "已 push reports/signals/$DATE.json"
   else
     ok "push 第一次失敗，rebase 後重試"
-    git pull --rebase --autostash origin "$BRANCH" >/dev/null 2>&1 && git push 2>&1 | tail -2 || alert "git push 失敗（檢查 deploy key/PAT）"
+    if git pull --rebase --autostash origin "$BRANCH" >/dev/null 2>&1; then
+      git push 2>&1 | tail -2 || alert "git push 失敗（檢查 deploy key/PAT）"
+    else
+      resolve_reports_conflict; rc=$?
+      if [ $rc -eq 0 ]; then
+        git push 2>&1 | tail -2 || alert "git push 失敗（檢查 deploy key/PAT）"
+      elif [ $rc -eq 2 ]; then
+        alert "git push 失敗（rebase 失敗，檢查 deploy key/PAT）"
+      fi
+      # rc=1：已在 resolve_reports_conflict 內 alert 過且 abort 回復乾淨狀態，這裡不再重複 push/alert
+    fi
   fi
 fi
 ok "done"

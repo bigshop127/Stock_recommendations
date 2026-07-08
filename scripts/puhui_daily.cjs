@@ -969,6 +969,70 @@ function extractPuhuiCache(markdown) {
   }
 }
 
+// ── Git 同步輔助（2026-07-08 事故後加）───────────────────────
+// 「同日雙生報告」是已知會發生的競態：VM(B1)與本機備援(B2)各自產生當天報告並各自 commit+push，
+// 若對方已先推送，這邊 git pull --rebase 在 reports/ 底下會撞真正的 AA content 衝突而非單純
+// fast-forward 被拒——舊版只 log「非致命」就放著，repo 會卡在 rebase 中間到人工發現才修
+// （2026-07-08 卡了 6+ 小時）。
+// 慣例：VM 是 production，衝突時一律讓 VM 版本贏；本機備援角色是「補位」，一旦發現當天已有人
+// （通常是 VM）推送過，本機這次重複產生的版本就該讓步、精準丟掉自己那一個 commit，而非硬推蓋過去。
+// 回傳 'ok'（已同步或已解決衝突，可以/已經 push）｜'deferred'（本機讓步，當日已無新內容需推送）｜
+// 'failed'（衝突超出已知範圍或無法安全處理，已 log，需人工看）。
+function gitSyncReports(repoDir, branch) {
+  const run = (cmd, opts = {}) => execSync(cmd, { cwd: repoDir, stdio: 'pipe', encoding: 'utf8', ...opts });
+  try {
+    run(`git pull --rebase --autostash origin ${branch}`);
+    return 'ok';
+  } catch (e) {
+    const gitDir = path.join(repoDir, '.git');
+    const midRebase = fs.existsSync(path.join(gitDir, 'rebase-merge')) || fs.existsSync(path.join(gitDir, 'rebase-apply'));
+    if (!midRebase) {
+      log(`git pull --rebase 失敗但未卡在 rebase 中（可能暫時性問題): ${String(e.message).slice(0, 150)}`);
+      return 'failed';
+    }
+    let conflicts = [];
+    try {
+      conflicts = run(`git diff --name-only --diff-filter=U`).split('\n').map(s => s.trim()).filter(Boolean);
+    } catch (_) {}
+    const allReports = conflicts.length > 0 && conflicts.every(f => f.startsWith('reports/'));
+    if (!allReports) {
+      log(`⚠️ rebase 卡住且衝突超出 reports/ 範圍（${conflicts.join(', ')}），abort 回復乾淨狀態，需人工檢查`);
+      try { run(`git rebase --abort`); } catch (_) {}
+      return 'failed';
+    }
+    if (RUN_TARGET === 'vm') {
+      log(`偵測到 reports/ 範圍內同日雙生報告衝突，VM 為 production，自動取 VM 版本並繼續：${conflicts.join(', ')}`);
+      for (const f of conflicts) {
+        run(`git checkout --theirs -- "${f}"`);
+        run(`git add "${f}"`);
+      }
+      try {
+        run(`git rebase --continue`, { env: { ...process.env, GIT_EDITOR: 'true' } });
+        log('衝突已自動解決，rebase 完成');
+        return 'ok';
+      } catch (e2) {
+        log(`rebase --continue 仍失敗，abort 回復乾淨狀態: ${String(e2.message).slice(0, 150)}`);
+        try { run(`git rebase --abort`); } catch (_) {}
+        return 'failed';
+      }
+    }
+    // 本機備援：讓步。abort 回到 rebase 前狀態後，若 HEAD 剛好就是這支腳本自己剛產生的
+    // 今日報告 commit（代表本機在這次執行前已與 origin 同步、多出的唯一一個 commit就是它），
+    // 改以 origin 目前的版本為準（reset 目標用 origin/<branch> 而非 HEAD~1：abort 後 HEAD 是
+    // 疊在「rebase 前的舊 origin」之上，不是現在最新的 origin，HEAD~1 會少退一步、缺當日檔案）。
+    try { run(`git rebase --abort`); } catch (_) {}
+    const headMsg = run(`git log -1 --format=%s`).trim();
+    const expectedMsg = `report: ${TARGET_DATE} (local)`;
+    if (headMsg === expectedMsg) {
+      run(`git reset --hard origin/${branch}`);
+      log(`本機備援讓步：偵測到當日報告已由其他來源（通常是 VM）產出並推送，捨棄本機這次重複產生的 commit，改以雲端既有版本為準`);
+      return 'deferred';
+    }
+    log(`⚠️ abort 後 HEAD 不是預期的今日報告 commit（實際：${headMsg}），為安全起見不自動 reset，留給人工檢查`);
+    return 'failed';
+  }
+}
+
 // ── 主流程 ────────────────────────────────────────────────
 async function main() {
   log(`===== puhui_daily 啟動 target=${TARGET_DATE} =====`);
@@ -994,6 +1058,20 @@ async function main() {
       }
     }
   } catch (_) {}
+
+  // 0.5 檢查「今日輸出是否已存在」前，先同步一次 repo（2026-07-08 事故後加）。
+  //     原本兩台機器都只看自己本機檔案存不存在，若對方已推送但這邊還沒 pull 到，
+  //     本機檢查會看不到、誤判成「今天還沒做」而重新生成一份重複報告，正是雙生衝突的根源。
+  //     這裡是 best-effort：失敗也不擋主流程，頂多退回原本行為（用本機現有檔案判斷）。
+  if (!IS_CI) {
+    try {
+      const repoDir = path.join(__dirname, '..');
+      const branch = execSync(`git -C "${repoDir}" rev-parse --abbrev-ref HEAD`, { encoding: 'utf8' }).trim();
+      gitSyncReports(repoDir, branch);
+    } catch (e) {
+      log(`啟動前同步略過（非致命): ${String(e.message).slice(0, 150)}`);
+    }
+  }
 
   // 1. 檢查今日輸出是否已存在（CI 環境略過，--force 時強制重新生成）
   //    本機看 Obsidian 筆記、VM 看 repo 報告（EXISTING_OUTPUT_PATH）
@@ -1232,10 +1310,16 @@ async function main() {
       } catch (pushErr) {
         log(`GitHub push 第一次失敗，rebase 後重試: ${String(pushErr.message).slice(0, 120)}`);
         // rebase 目標用「目前分支」，不硬寫 master（VM 在 phase3-chips 時硬寫 master 會造成分叉）。
-        const branch = execSync(`git -C "${repoDir}" rev-parse --abbrev-ref HEAD`).toString().trim();
-        execSync(`git -C "${repoDir}" pull --rebase origin ${branch}`, { stdio: 'pipe' });
-        execSync(`git -C "${repoDir}" push`, { stdio: 'pipe' });
-        log('報告已推送到 GitHub（rebase 後重試成功）');
+        const branch = execSync(`git -C "${repoDir}" rev-parse --abbrev-ref HEAD`, { encoding: 'utf8' }).trim();
+        const syncResult = gitSyncReports(repoDir, branch);
+        if (syncResult === 'ok') {
+          execSync(`git -C "${repoDir}" push`, { stdio: 'pipe' });
+          log('報告已推送到 GitHub（rebase 後重試成功）');
+        } else if (syncResult === 'deferred') {
+          log('本機備援讓步：當日報告雲端已有其他來源版本，本次不重複推送（非致命）');
+        } else {
+          log('GitHub push 放棄：衝突未能安全解決，已於上方記錄，需人工檢查（非致命）');
+        }
       }
     } catch (e) {
       log(`GitHub push 失敗（非致命）: ${String(e.message).slice(0, 150)}`);
@@ -1260,4 +1344,4 @@ if (require.main === module) {
 }
 
 // 供回歸測試讀取環境解耦旗標（不影響直接執行）
-module.exports = { RUN_TARGET, IS_CI, WRITE_OBSIDIAN, TARGET_DATE, NOTE_PATH, REPORT_PATH, EXISTING_OUTPUT_PATH };
+module.exports = { RUN_TARGET, IS_CI, WRITE_OBSIDIAN, TARGET_DATE, NOTE_PATH, REPORT_PATH, EXISTING_OUTPUT_PATH, gitSyncReports };
