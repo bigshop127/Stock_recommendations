@@ -178,6 +178,7 @@ export function Rebalance() {
   }));
   const [openCashStr, setOpenCashStr] = useState<string>(() => String(config.opening.cash || ''));
   const [cashReserveStr, setCashReserveStr] = useState<string>(() => String(config.cash_reserve || ''));
+  const [cashStr, setCashStr] = useState<string>(() => String(config.cash || ''));
   const [showAdvanced, setShowAdvanced] = useState(false);
 
   // 報價單：新增一筆交易的表單（多資產：加標的選擇【增修I】）
@@ -219,8 +220,9 @@ export function Rebalance() {
     });
     setOpenCashStr(config.opening.cash ? String(config.opening.cash) : '');
     setCashReserveStr(config.cash_reserve ? String(config.cash_reserve) : '');
+    setCashStr(config.cash ? String(config.cash) : '0');
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [config.price, bondPricesKey, config.opening.shares, config.opening.avg_cost, config.opening.cash, openBondsKey, config.cash_reserve]);
+  }, [config.price, bondPricesKey, config.opening.shares, config.opening.avg_cost, config.opening.cash, openBondsKey, config.cash_reserve, config.cash]);
 
   // 套用設定：合併 partial → 重算衍生 shares/avg_cost/cash（＝aggregatePortfolio）→ 存 localStorage
   const applyConfig = (partial: Partial<RebalanceConfig>): RebalanceConfig => {
@@ -394,6 +396,16 @@ export function Rebalance() {
     setOpenCashStr(val);
     const parsed = parseFloat(val);
     applyConfig({ opening: { ...config.opening, cash: Number.isFinite(parsed) && parsed >= 0 ? parsed : 0 } });
+  };
+
+  // 閒置現金＝期初現金＋報價單現金流（衍生）。直接編輯時反解回期初現金，
+  // 讓「買扣賣加」的累算邏輯（增修H）不變，只是把可調整的入口搬到這裡。
+  const handleCashChange = (val: string) => {
+    setCashStr(val);
+    const parsed = parseFloat(val);
+    const desired = Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;
+    const tradesCashDelta = agg.cash - config.opening.cash;
+    applyConfig({ opening: { ...config.opening, cash: Math.max(0, desired - tradesCashDelta) } });
   };
 
   const handleCashReserveChange = (val: string) => {
@@ -1113,24 +1125,26 @@ export function Rebalance() {
           })}
         </div>
 
-        {/* 現金列：閒置現金（衍生）＋現金保留額（可調） */}
+        {/* 現金列：閒置現金（可手動覆寫，底層仍反解回期初現金）＋現金保留額（可調） */}
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           <div className="space-y-1.5">
             <label className="text-xs font-medium text-zinc-300">閒置現金 (TWD)</label>
             <div className="relative">
               <input
-                type="text"
-                readOnly
-                value={`$${Math.round(config.cash).toLocaleString()}`}
-                className="w-full px-3 py-2 bg-zinc-900/60 border border-zinc-800 rounded-lg font-mono text-sm text-zinc-300 cursor-not-allowed pr-10"
+                type="number"
+                min="0"
+                step="1000"
+                value={cashStr}
+                onChange={(e) => handleCashChange(e.target.value)}
+                className="w-full px-3 py-2 bg-zinc-950 border border-zinc-800 rounded-lg font-mono text-sm text-zinc-100 focus:outline-none focus:border-primary pr-10"
               />
               <span className="absolute right-3 top-2.5 text-xs text-zinc-500 font-mono">元</span>
             </div>
             <p className="text-[10px] leading-tight">
               {agg.cash < 0 ? (
-                <span className="text-amber-400">⚠ 買進金額已超過期初現金 ${Math.abs(Math.round(agg.cash)).toLocaleString()}，以 0 計算——請到下方報價單校正「期初現金」</span>
+                <span className="text-amber-400">⚠ 買進金額已超過期初現金 ${Math.abs(Math.round(agg.cash)).toLocaleString()}，以 0 計算——可直接在此改回正確金額</span>
               ) : (
-                <span className="text-zinc-600">由期初現金＋報價單累算（任一標的買進扣、賣出加）</span>
+                <span className="text-zinc-600">預設由期初現金＋報價單累算（買進扣、賣出加），可直接在此手動覆寫</span>
               )}
             </p>
           </div>
