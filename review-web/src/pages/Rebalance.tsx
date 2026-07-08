@@ -277,7 +277,7 @@ export function Rebalance() {
     }
   };
 
-  // 掛載：先從雲端載入（雲端為主）；本機為離線快取。載入後對缺現價的資產自動抓一次收盤價。
+  // 掛載：先從雲端載入（雲端為主）；本機為離線快取。載入後對缺現價的資產自動抓一次即時報價。
   const didInit = useRef(false);
   useEffect(() => {
     if (didInit.current) return;
@@ -319,19 +319,17 @@ export function Rebalance() {
     return applyConfig({ bonds: config.bonds.map((b) => (b.code === code ? { ...b, price } : b)) });
   };
 
-  // 抓取某資產最新收盤價（未還原原始價；市值＝股數×實際成交價，故不用還原）
+  // 抓取某資產「現在」最新價（TWSE MIS 即時報價，非前一天收盤；市值＝股數×實際成交價，故不用還原）
   const fetchLatestPrice = async (code: string) => {
     setPriceFetch((s) => ({ ...s, [code]: { ...s[code], loading: true, error: null } }));
     try {
-      const res = await api.ohlcv(code);
-      const rows = res?.data ?? [];
-      if (rows.length === 0) throw new Error('查無報價資料');
-      const latest = rows.reduce((a, b) => (b.date > a.date ? b : a));
-      const close = latest.close;
-      if (!Number.isFinite(close) || close <= 0) throw new Error('收盤價無效');
-      setPriceStrs((s) => ({ ...s, [code]: String(close) }));
-      applyAssetPrice(code, close);
-      setPriceFetch((s) => ({ ...s, [code]: { loading: false, error: null, date: latest.date } }));
+      const res = await api.book(code);
+      const book = res?.book as { last_price?: number | null; time?: string | null } | undefined;
+      const last = book?.last_price;
+      if (!Number.isFinite(last) || (last as number) <= 0) throw new Error('查無即時報價');
+      setPriceStrs((s) => ({ ...s, [code]: String(last) }));
+      applyAssetPrice(code, last as number);
+      setPriceFetch((s) => ({ ...s, [code]: { loading: false, error: null, date: book?.time ?? null } }));
     } catch (e) {
       setPriceFetch((s) => ({ ...s, [code]: { loading: false, error: e instanceof Error ? e.message : '抓取失敗', date: null } }));
     }
@@ -1005,7 +1003,7 @@ export function Rebalance() {
             onClick={fetchAllPrices}
             disabled={ASSETS.some((a) => priceFetch[a.code]?.loading)}
             className="text-[11px] text-primary hover:text-primary/80 disabled:text-zinc-600 flex items-center gap-1 transition-colors font-normal"
-            title="抓取全部標的最新收盤價"
+            title="抓取全部標的現在最新價（即時報價）"
           >
             {ASSETS.some((a) => priceFetch[a.code]?.loading) ? (
               <Loader2 className="w-3 h-3 animate-spin" />
@@ -1035,7 +1033,7 @@ export function Rebalance() {
                     onClick={() => void fetchLatestPrice(a.code)}
                     disabled={fetchSt.loading}
                     className="text-[11px] text-primary hover:text-primary/80 disabled:text-zinc-600 flex items-center gap-1 transition-colors"
-                    title="抓取最新收盤價"
+                    title="抓取現在最新價（即時報價）"
                   >
                     {fetchSt.loading ? <Loader2 className="w-3 h-3 animate-spin" /> : <RefreshCw className="w-3 h-3" />}
                     {fetchSt.loading ? '抓取中' : '抓最新價'}
@@ -1094,7 +1092,7 @@ export function Rebalance() {
                   {fetchSt.error ? (
                     <span className="text-amber-400">抓取失敗：{fetchSt.error}（可手動輸入）</span>
                   ) : fetchSt.date ? (
-                    <span className="text-zinc-600">自動帶入 {fetchSt.date} 收盤價</span>
+                    <span className="text-zinc-600">已帶入即時報價（{fetchSt.date}）</span>
                   ) : (
                     <span className="text-zinc-600">&nbsp;</span>
                   )}
@@ -1291,6 +1289,34 @@ export function Rebalance() {
               </div>
             </div>
           </div>
+
+          {/* 建倉完成後一鍵儲存並同步雲端（期初部位輸入時已即時存本機，此鈕用來確保雲端拿到最新版） */}
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-end gap-2 pt-2">
+            <div className="text-[11px] flex items-center gap-1.5 min-h-[16px] order-2 sm:order-1">
+              {cloud.status === 'syncing' && (
+                <span className="text-primary flex items-center gap-1"><Loader2 className="w-3 h-3 animate-spin" /> 同步中…</span>
+              )}
+              {cloud.status === 'saved' && (
+                <span className="text-emerald-400 flex items-center gap-1">
+                  <Cloud className="w-3.5 h-3.5" />
+                  {cloud.savedAt
+                    ? `已同步雲端 ${new Date(cloud.savedAt).toLocaleTimeString('zh-TW', { hour12: false })}`
+                    : cloud.msg || '已同步雲端'}
+                </span>
+              )}
+              {cloud.status === 'error' && (
+                <span className="text-amber-400 flex items-center gap-1"><CloudOff className="w-3.5 h-3.5" /> {cloud.msg || '雲端同步失敗（已存本機）'}</span>
+              )}
+            </div>
+            <button
+              onClick={() => void syncToCloud(config)}
+              disabled={cloud.status === 'syncing' || cloud.status === 'loading'}
+              className="order-1 sm:order-2 inline-flex items-center justify-center gap-1.5 px-3.5 py-1.5 rounded-lg bg-primary text-white text-xs font-semibold hover:bg-primary/90 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+            >
+              {cloud.status === 'syncing' ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <UploadCloud className="w-3.5 h-3.5" />}
+              建倉完成，儲存並同步
+            </button>
+          </div>
         </div>
 
         {/* 新增交易表單 */}
@@ -1432,7 +1458,7 @@ export function Rebalance() {
         <div>
           <strong className="text-zinc-400 font-medium">系統聲明與警語：</strong>
           <p className="mt-0.5 leading-relaxed">
-            本工具為個人資產配置輔助試算。各標的持有股數、平均成本與閒置現金由「期初部位＋買賣報價單」自動累算（均價採加權平均法、賣出只減股數不改均價；現金＝期初現金 − 全部買進金額 ＋ 全部賣出金額，未計手續費/交易稅）；各標的現價可「抓最新價」自動帶入<strong className="text-zinc-400">最新收盤價</strong>（非盤中即時報價，經 <span className="font-mono">/api</span> 讀取，可手動覆寫）；未實現損益依累算均價計算，僅供參考、不影響再平衡；投組 Beta 以 00631L β=2.0、防守端（現金＋{BOND_ETFS[0].code}＋{BOND_ETFS[1].code}）β=0 計算——債券 ETF 實際仍有利率/信用風險，β=0 為簡化假設。防守端配置＝固定保留現金 ${config.cash_reserve.toLocaleString()}，剩餘依 {Math.round(config.bond_split * 100)}:{Math.round((1 - config.bond_split) * 100)} 分配 {BOND_ETFS[0].code}/{BOND_ETFS[1].code}。按「送出並同步雲端」或新增/刪除交易時，持倉會存到伺服器（<span className="font-mono">data/rebalance_holdings.json</span>，與每日再平衡 Email 告警同一份），僅供個人內網自用。非投資建議。
+            本工具為個人資產配置輔助試算。各標的持有股數、平均成本與閒置現金由「期初部位＋買賣報價單」自動累算（均價採加權平均法、賣出只減股數不改均價；現金＝期初現金 − 全部買進金額 ＋ 全部賣出金額，未計手續費/交易稅）；各標的現價可「抓最新價」自動帶入<strong className="text-zinc-400">現在最新成交價（即時報價）</strong>（TWSE MIS 官方報價，經 <span className="font-mono">/api</span> 讀取，盤中約數秒～數十秒延遲、非交易時段回最近一筆成交，可手動覆寫）；未實現損益依累算均價計算，僅供參考、不影響再平衡；投組 Beta 以 00631L β=2.0、防守端（現金＋{BOND_ETFS[0].code}＋{BOND_ETFS[1].code}）β=0 計算——債券 ETF 實際仍有利率/信用風險，β=0 為簡化假設。防守端配置＝固定保留現金 ${config.cash_reserve.toLocaleString()}，剩餘依 {Math.round(config.bond_split * 100)}:{Math.round((1 - config.bond_split) * 100)} 分配 {BOND_ETFS[0].code}/{BOND_ETFS[1].code}。按「送出並同步雲端」或新增/刪除交易時，持倉會存到伺服器（<span className="font-mono">data/rebalance_holdings.json</span>，與每日再平衡 Email 告警同一份），僅供個人內網自用。非投資建議。
           </p>
         </div>
       </div>
