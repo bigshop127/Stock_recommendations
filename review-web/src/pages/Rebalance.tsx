@@ -319,17 +319,28 @@ export function Rebalance() {
     return applyConfig({ bonds: config.bonds.map((b) => (b.code === code ? { ...b, price } : b)) });
   };
 
-  // 抓取某資產「現在」最新價（TWSE MIS 即時報價，非前一天收盤；市值＝股數×實際成交價，故不用還原）
+  // /api/.../book 的 time 欄位視來源而異：TWSE MIS 給 "HH:MM:SS" 字串；富果給 epoch 數字（us 或 ms）
+  const formatQuoteTime = (raw: unknown): string | null => {
+    if (typeof raw === 'string' && raw.trim()) return raw;
+    if (typeof raw === 'number' && Number.isFinite(raw) && raw > 0) {
+      const ms = raw > 1e14 ? raw / 1000 : raw < 1e11 ? raw * 1000 : raw; // us→ms／s→ms／已是ms
+      const d = new Date(ms);
+      return Number.isNaN(d.getTime()) ? null : d.toLocaleString('zh-TW', { hour12: false });
+    }
+    return null;
+  };
+
+  // 抓取某資產「現在」最新價（即時報價，非前一天收盤；市值＝股數×實際成交價，故不用還原）
   const fetchLatestPrice = async (code: string) => {
     setPriceFetch((s) => ({ ...s, [code]: { ...s[code], loading: true, error: null } }));
     try {
       const res = await api.book(code);
-      const book = res?.book as { last_price?: number | null; time?: string | null } | undefined;
+      const book = res?.book as { last_price?: number | null; time?: unknown } | undefined;
       const last = book?.last_price;
       if (!Number.isFinite(last) || (last as number) <= 0) throw new Error('查無即時報價');
       setPriceStrs((s) => ({ ...s, [code]: String(last) }));
       applyAssetPrice(code, last as number);
-      setPriceFetch((s) => ({ ...s, [code]: { loading: false, error: null, date: book?.time ?? null } }));
+      setPriceFetch((s) => ({ ...s, [code]: { loading: false, error: null, date: formatQuoteTime(book?.time) } }));
     } catch (e) {
       setPriceFetch((s) => ({ ...s, [code]: { loading: false, error: e instanceof Error ? e.message : '抓取失敗', date: null } }));
     }
