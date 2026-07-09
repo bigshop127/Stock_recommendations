@@ -80,14 +80,20 @@ def _f(v) -> float | None:
 
 
 def _query(channel: str) -> dict | None:
-    """打一次 MIS，回 msgArray[0]；查無回 None。"""
+    """打一次 MIS，回 msgArray[0]；查無回 None。
+
+    代號打錯市場（如 OTC 代號打 tse_ 頻道）時 MIS 仍回 200 + 一筆幾乎全空的
+    placeholder（`c` 空字串、`z` 為 "-"），不能當「有找到」——否則會誤鎖錯頻道
+    並快取起來，之後永遠拿不到價。用 `c`（代號回顯）非空判定真的查到資料。
+    """
     _ensure_cookie()
     params = {"ex_ch": channel, "json": "1", "delay": "0", "_": str(int(time.time() * 1000))}
     payload = get_json(API, params=params, headers=_HEADERS)
     if not isinstance(payload, dict):
         raise DataSourceError(f"TWSE MIS 非預期回應：{str(payload)[:200]}")
     arr = payload.get("msgArray") or []
-    return arr[0] if arr else None
+    row = arr[0] if arr else None
+    return row if row and row.get("c") else None
 
 
 def get_quote(code: str) -> dict:
