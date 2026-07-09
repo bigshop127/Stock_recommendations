@@ -634,3 +634,104 @@ export function computeRebalance(input: RebalanceInput): RebalanceResult {
     note,
   };
 }
+
+// ── 資金流向百分比計算【優化專案 18】 ─────────────────────────────────
+export interface FundFlowNode {
+  key: string;       // 'etf' | 'cash' | 債券 code
+  label: string;     // 顯示名稱：'00631L'｜'現金儲備'｜'00687B 國泰20年美債'
+  amount: number;     // 絕對金額（>0）
+  breakdown: { key: string; label: string; amount: number; pct: number }[];
+  // ↑ 只在「對面清單（用途 for 來源／來源 for 用途）」筆數 ≥ 2 時才非空；
+  //   否則回傳 []（1 對 1 搬錢時 100% 是廢話，不顯示）
+}
+
+export interface FundFlowBreakdown {
+  sources: FundFlowNode[]; // value_delta < 0（且 |value_delta| ≥ 1）的 bucket，依金額大到小排序
+  uses: FundFlowNode[];    // value_delta > 0（且 value_delta ≥ 1）的 bucket，依金額大到小排序
+}
+
+export function computeFundFlows(result: RebalanceResult): FundFlowBreakdown {
+  if (result.status === 'empty' || result.status === 'normal') {
+    return { sources: [], uses: [] };
+  }
+
+  // 1. 組出候選 bucket 清單
+  const candidates: { key: string; label: string; delta: number | null }[] = [
+    { key: 'etf', label: '00631L', delta: result.etf_value_delta },
+    { key: 'cash', label: '現金儲備', delta: result.cash_adjust_delta },
+  ];
+
+  for (const p of result.bond_plans) {
+    const bondName = BOND_ETFS.find((b) => b.code === p.code)?.name ?? '';
+    candidates.push({
+      key: p.code,
+      label: bondName ? `${p.code} ${bondName}` : p.code,
+      delta: p.value_delta,
+    });
+  }
+
+  // 2. 過濾 delta === null 或 |delta| < 1 的 bucket
+  const sources: FundFlowNode[] = [];
+  const uses: FundFlowNode[] = [];
+
+  for (const c of candidates) {
+    if (c.delta === null) continue;
+    const absDelta = Math.abs(c.delta);
+    if (absDelta < 1) continue;
+
+    if (c.delta < 0) {
+      sources.push({
+        key: c.key,
+        label: c.label,
+        amount: absDelta,
+        breakdown: [],
+      });
+    } else {
+      uses.push({
+        key: c.key,
+        label: c.label,
+        amount: absDelta,
+        breakdown: [],
+      });
+    }
+  }
+
+  // 3. 依金額大到小排序
+  sources.sort((a, b) => b.amount - a.amount);
+  uses.sort((a, b) => b.amount - a.amount);
+
+  const total_source = sources.reduce((sum, s) => sum + s.amount, 0);
+  const total_use = uses.reduce((sum, u) => sum + u.amount, 0);
+
+  // 7. 全路徑防 NaN／除以零
+  if (total_source <= 0 || total_use <= 0) {
+    return { sources: [], uses: [] };
+  }
+
+  // 5. 若 uses.length >= 2：每個 source 的 breakdown = uses.map(...)
+  if (uses.length >= 2) {
+    for (const s of sources) {
+      s.breakdown = uses.map((u) => ({
+        key: u.key,
+        label: u.label,
+        amount: u.amount,
+        pct: u.amount / total_use,
+      }));
+    }
+  }
+
+  // 6. 對稱處理 uses 的 breakdown (來源側，sources.length >= 2 才非空，比例 = s.amount / total_source)
+  if (sources.length >= 2) {
+    for (const u of uses) {
+      u.breakdown = sources.map((s) => ({
+        key: s.key,
+        label: s.label,
+        amount: s.amount,
+        pct: s.amount / total_source,
+      }));
+    }
+  }
+
+  return { sources, uses };
+}
+

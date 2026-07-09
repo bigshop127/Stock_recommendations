@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { SlidersHorizontal, AlertTriangle, CheckCircle2, Info, ArrowRightLeft, ShieldAlert, RefreshCw, Loader2, Plus, Trash2, UploadCloud, Cloud, CloudOff } from 'lucide-react';
 import { getRebalanceConfig, saveRebalanceConfig, subscribeRebalance, type RebalanceConfig } from '../lib/rebalanceStore';
-import { computeRebalance, aggregatePortfolio, BOND_ETFS, ETF_CODE, type RebalanceResult, type Trade } from '../lib/rebalance';
+import { computeRebalance, aggregatePortfolio, BOND_ETFS, ETF_CODE, type RebalanceResult, type Trade, computeFundFlows } from '../lib/rebalance';
 import { api } from '../lib/api';
 
 // 資產清單（00631L＋防守端債券 ETF）【增修I】
@@ -357,6 +357,41 @@ export function Rebalance() {
   const result: RebalanceResult = useMemo(() => {
     return computeRebalance(config);
   }, [config]);
+
+  const fundFlows = useMemo(() => {
+    return computeFundFlows(result);
+  }, [result]);
+
+  const renderBreakdown = (key: string) => {
+    const sourceNode = fundFlows.sources.find((s) => s.key === key);
+    const useNode = fundFlows.uses.find((u) => u.key === key);
+    const node = sourceNode || useNode;
+    if (!node || !node.breakdown || node.breakdown.length < 2) return null;
+
+    const isSource = !!sourceNode;
+    const getVerb = (targetKey: string) => {
+      if (isSource) {
+        return targetKey === 'cash' ? '補' : '買';
+      } else {
+        return targetKey === 'cash' ? '提領' : '賣';
+      }
+    };
+
+    const breakdownText = node.breakdown
+      .map((item) => {
+        const verb = getVerb(item.key);
+        const pctText = (item.pct * 100).toFixed(0);
+        return `${pctText}% ${verb}${item.label}`;
+      })
+      .join('、');
+
+    return (
+      <div className="text-[10px] text-zinc-500 mt-1 leading-normal whitespace-normal break-words">
+        └ 其中 {breakdownText}
+      </div>
+    );
+  };
+
 
   // 報價單累算（已實現損益 / 超賣提示）
   const agg = useMemo(
@@ -839,6 +874,7 @@ export function Rebalance() {
                         : '（轉回防守端）'}
                     </div>
                   )}
+                  {renderBreakdown('etf')}
                 </div>
               )}
 
@@ -856,6 +892,7 @@ export function Rebalance() {
                     <div className="text-[10px] text-zinc-500 mt-0.5">
                       目標 ${result.target_cash_value !== null ? Math.round(result.target_cash_value).toLocaleString() : '—'}
                     </div>
+                    {renderBreakdown('cash')}
                   </div>
                   {/* 債券兩檔 */}
                   {result.bond_plans.map((p) => {
@@ -885,6 +922,7 @@ export function Rebalance() {
                               ? '填入現價才能換算股數'
                               : `目標 $${p.target_value !== null ? Math.round(p.target_value).toLocaleString() : '—'}`}
                         </div>
+                        {renderBreakdown(p.code)}
                       </div>
                     );
                   })}
