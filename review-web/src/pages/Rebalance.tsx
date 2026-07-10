@@ -580,26 +580,43 @@ export function Rebalance() {
   const totalPnlPct = totalCost > 0 ? totalPnl / totalCost : null;
 
   // 配置條顏色（現況/目標共用）：00631L 紅、現金 綠、00687B 深藍、00953B 紫；依佔比大→小排列
-  const barSegments = (weights: { etf: number; cash: number; bonds: number[] }) =>
+  const barSegments = (
+    weights: { etf: number; cash: number; bonds: number[] },
+    values: { etf: number; cash: number; bonds: number[] },
+  ) =>
     [
-      { w: weights.etf, cls: 'bg-red-500', txt: 'text-red-400', label: '00631L' },
-      { w: weights.cash, cls: 'bg-emerald-500/80', txt: 'text-emerald-400', label: '現金' },
-      { w: weights.bonds[0] ?? 0, cls: 'bg-blue-700', txt: 'text-blue-400', label: BOND_ETFS[0].code },
-      { w: weights.bonds[1] ?? 0, cls: 'bg-violet-500/80', txt: 'text-violet-400', label: BOND_ETFS[1].code },
+      { w: weights.etf, v: values.etf, cls: 'bg-red-500', txt: 'text-red-400', label: '00631L' },
+      { w: weights.cash, v: values.cash, cls: 'bg-emerald-500/80', txt: 'text-emerald-400', label: '現金' },
+      { w: weights.bonds[0] ?? 0, v: values.bonds[0] ?? 0, cls: 'bg-blue-700', txt: 'text-blue-400', label: BOND_ETFS[0].code },
+      { w: weights.bonds[1] ?? 0, v: values.bonds[1] ?? 0, cls: 'bg-violet-500/80', txt: 'text-violet-400', label: BOND_ETFS[1].code },
     ].sort((a, b) => b.w - a.w);
 
-  const currentSegs = barSegments({
-    etf: result.etf_weight ?? 0,
-    cash: result.cash_weight ?? 0,
-    bonds: result.bond_plans.map((p) => p.weight ?? 0),
-  });
-  const targetSegs = barSegments({
-    etf: result.target_etf_weight ?? 0,
-    cash: result.total_value > 0 && result.target_cash_value !== null ? result.target_cash_value / result.total_value : 0,
-    bonds: result.bond_plans.map((p) =>
-      result.total_value > 0 && p.target_value !== null ? p.target_value / result.total_value : 0,
-    ),
-  });
+  const currentSegs = barSegments(
+    {
+      etf: result.etf_weight ?? 0,
+      cash: result.cash_weight ?? 0,
+      bonds: result.bond_plans.map((p) => p.weight ?? 0),
+    },
+    {
+      etf: result.etf_value,
+      cash: config.cash,
+      bonds: result.bond_plans.map((p) => p.value),
+    },
+  );
+  const targetSegs = barSegments(
+    {
+      etf: result.target_etf_weight ?? 0,
+      cash: result.total_value > 0 && result.target_cash_value !== null ? result.target_cash_value / result.total_value : 0,
+      bonds: result.bond_plans.map((p) =>
+        result.total_value > 0 && p.target_value !== null ? p.target_value / result.total_value : 0,
+      ),
+    },
+    {
+      etf: result.target_etf_value ?? 0,
+      cash: result.target_cash_value ?? 0,
+      bonds: result.bond_plans.map((p) => p.target_value ?? 0),
+    },
+  );
 
   // 防守端調整項（現金＋兩檔債券）是否有實質動作或存在鎖定
   const hasDefensiveMoves =
@@ -893,20 +910,22 @@ export function Rebalance() {
 
           {/* 配置比例條 */}
           <div className="space-y-3 pt-2 border-t border-border/50">
-            <div className="text-xs font-semibold text-zinc-300">資產配置比例對比</div>
+            <div className="flex items-center justify-between">
+              <div className="text-xs font-semibold text-zinc-300">資產配置比例對比</div>
+              <div className="text-[10px] font-mono text-zinc-500">總資產 ${Math.round(result.total_value).toLocaleString()}</div>
+            </div>
 
             {/* 目前配比 */}
-            <div className="space-y-1">
-              <div className="flex justify-between gap-2 flex-wrap text-[11px]">
-                <span className="text-zinc-400">目前實況</span>
-                <span className="font-mono text-zinc-300">
-                  {currentSegs.map((s, i) => (
-                    <React.Fragment key={s.label}>
-                      {i > 0 && <span className="text-zinc-600"> | </span>}
-                      {s.label} <strong className={s.txt}>{(s.w * 100).toFixed(1)}%</strong>
-                    </React.Fragment>
-                  ))}
-                </span>
+            <div className="space-y-1.5">
+              <div className="text-[11px] text-zinc-400">目前實況</div>
+              <div className="grid grid-cols-4 gap-1.5">
+                {currentSegs.map((s) => (
+                  <div key={s.label} className="text-center">
+                    <div className={`text-[10px] font-medium ${s.txt}`}>{s.label}</div>
+                    <div className="font-mono text-xs font-bold text-zinc-100 leading-tight">${Math.round(s.v).toLocaleString()}</div>
+                    <div className="text-[10px] text-zinc-500">{(s.w * 100).toFixed(1)}%</div>
+                  </div>
+                ))}
               </div>
               <div className="h-3 w-full bg-zinc-800 rounded-full overflow-hidden flex">
                 {currentSegs.map((s) => (
@@ -914,24 +933,23 @@ export function Rebalance() {
                     key={s.label}
                     className={`${s.cls} h-full transition-all duration-300`}
                     style={{ width: `${s.w * 100}%` }}
-                    title={`${s.label}: ${(s.w * 100).toFixed(1)}%`}
+                    title={`${s.label}: ${(s.w * 100).toFixed(1)}%（$${Math.round(s.v).toLocaleString()}）`}
                   />
                 ))}
               </div>
             </div>
 
             {/* 目標配比 */}
-            <div className="space-y-1">
-              <div className="flex justify-between gap-2 flex-wrap text-[11px]">
-                <span className="text-zinc-400">目標配置</span>
-                <span className="font-mono text-zinc-300">
-                  {targetSegs.map((s, i) => (
-                    <React.Fragment key={s.label}>
-                      {i > 0 && <span className="text-zinc-600"> | </span>}
-                      {s.label} <strong className={s.txt}>{(s.w * 100).toFixed(1)}%</strong>
-                    </React.Fragment>
-                  ))}
-                </span>
+            <div className="space-y-1.5">
+              <div className="text-[11px] text-zinc-400">目標配置</div>
+              <div className="grid grid-cols-4 gap-1.5">
+                {targetSegs.map((s) => (
+                  <div key={s.label} className="text-center">
+                    <div className={`text-[10px] font-medium ${s.txt}`}>{s.label}</div>
+                    <div className="font-mono text-xs font-bold text-zinc-100 leading-tight">${Math.round(s.v).toLocaleString()}</div>
+                    <div className="text-[10px] text-zinc-500">{(s.w * 100).toFixed(1)}%</div>
+                  </div>
+                ))}
               </div>
               <div className="h-3 w-full bg-zinc-800/80 rounded-full overflow-hidden flex border border-zinc-700/50">
                 {targetSegs.map((s) => (
@@ -939,7 +957,7 @@ export function Rebalance() {
                     key={s.label}
                     className={`${s.cls} opacity-50 h-full transition-all duration-300`}
                     style={{ width: `${s.w * 100}%` }}
-                    title={`${s.label}: ${(s.w * 100).toFixed(1)}%`}
+                    title={`${s.label}: ${(s.w * 100).toFixed(1)}%（$${Math.round(s.v).toLocaleString()}）`}
                   />
                 ))}
               </div>
@@ -952,6 +970,75 @@ export function Rebalance() {
               <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-sm bg-blue-700 inline-block" />{BOND_ETFS[0].code} {BOND_ETFS[0].name}</span>
               <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-sm bg-violet-500/80 inline-block" />{BOND_ETFS[1].code} {BOND_ETFS[1].name}</span>
             </div>
+          </div>
+
+          {/* 觸發價帶：持倉不動下，β 落在容忍區間對應的 00631L 價格上下界 */}
+          <div className="p-4 rounded-xl border border-zinc-800 bg-zinc-900/60 space-y-3">
+            <div className="text-xs font-semibold text-zinc-400 flex items-center gap-1.5">
+              <SlidersHorizontal className="w-4 h-4 text-primary" />
+              觸發價帶（持倉不動、只看 00631L 價格）
+            </div>
+            {result.sell_trigger_price === null && result.buy_trigger_price === null ? (
+              <p className="text-xs text-zinc-500 leading-relaxed">
+                目前持倉無可反解的觸發價
+                {result.defensive_value <= 0
+                  ? '（防守端為 0，投組 Beta 恆等於滿槓桿，與價格無關）'
+                  : config.shares <= 0
+                    ? '（尚無 00631L 持股）'
+                    : '（容忍區間超出 0～滿槓桿可達範圍）'}
+                。
+              </p>
+            ) : (
+              <>
+                <div className="grid grid-cols-2 gap-3">
+                  {/* 買進門檻＝下限 β 對應價（低於它就進買進區） */}
+                  <div className="rounded-lg px-3 py-3 bg-bear/10 border border-bear/25 text-center">
+                    <div className="text-[11px] text-zinc-400">買進門檻（β&lt;{result.lower_band.toFixed(2)}）</div>
+                    {result.buy_trigger_price !== null ? (
+                      <>
+                        <div className="text-2xl font-extrabold font-mono tracking-tight text-bear mt-0.5">
+                          ${result.buy_trigger_price.toFixed(2)}
+                        </div>
+                        <div className="text-[11px] text-zinc-500 mt-0.5">價格低於此 → 買進區</div>
+                      </>
+                    ) : (
+                      <div className="text-sm text-zinc-600 mt-2">—<div className="text-[10px] font-normal">下限 β≤0，跌不觸發</div></div>
+                    )}
+                  </div>
+                  {/* 賣出門檻＝上限 β 對應價（高於它就進賣出區） */}
+                  <div className="rounded-lg px-3 py-3 bg-bull/10 border border-bull/25 text-center">
+                    <div className="text-[11px] text-zinc-400">賣出門檻（β&gt;{result.upper_band.toFixed(2)}）</div>
+                    {result.sell_trigger_price !== null ? (
+                      <>
+                        <div className="text-2xl font-extrabold font-mono tracking-tight text-bull mt-0.5">
+                          ${result.sell_trigger_price.toFixed(2)}
+                        </div>
+                        <div className="text-[11px] text-zinc-500 mt-0.5">價格高於此 → 賣出區</div>
+                      </>
+                    ) : (
+                      <div className="text-sm text-zinc-600 mt-2">—<div className="text-[10px] font-normal">上限 β≥{config.etf_beta.toFixed(1)}，漲不觸發</div></div>
+                    )}
+                  </div>
+                </div>
+
+                {/* 目前價格落在哪一區 */}
+                {config.price > 0 && result.status !== 'empty' && (
+                  <div className={`text-[11px] text-center rounded-md py-1.5 border ${priceZone.cls}`}>
+                    目前 00631L <span className="font-mono font-semibold">${config.price.toFixed(2)}</span> → 位於 <strong>{priceZone.label}</strong>
+                  </div>
+                )}
+
+                <p className="text-[11px] text-zinc-500 leading-relaxed">
+                  以目前持股 <span className="font-mono text-zinc-400">{config.shares ? Math.round(config.shares).toLocaleString() : 0}</span> 股、防守端（現金＋債券市值）<span className="font-mono text-zinc-400">${Math.round(result.defensive_value).toLocaleString()}</span> <strong className="text-zinc-400">固定不動</strong>推算：只靠 00631L 漲跌，價格落在
+                  {result.buy_trigger_price !== null && result.sell_trigger_price !== null ? (
+                    <> <span className="font-mono text-zinc-300">${result.buy_trigger_price.toFixed(2)}～${result.sell_trigger_price.toFixed(2)}</span></>
+                  ) : ' 門檻之間'} 時 β 才在容忍區間內。
+                  {result.status === 'buy' && '目前現價遠低於買進門檻＝部位偏防守、β 太低，已在買進區（見上方建議買進金額）。'}
+                  {result.status === 'sell' && '目前現價已高於賣出門檻＝部位偏槓桿、β 太高，已在賣出區（見上方建議賣出金額）。'}
+                  <strong className="text-zinc-400"> 注意這是「持倉不動」的假設</strong>——你一旦依建議買/賣，持股與防守端改變，這條價帶會整個重算（債券價格波動也會微調 β，但幅度遠小於正2）。
+                </p>
+              </>
+            )}
           </div>
         </div>
 
@@ -1268,75 +1355,6 @@ export function Rebalance() {
                   <div className="text-zinc-500 italic">無可用數值</div>
                 )}
               </div>
-            </div>
-
-            {/* 觸發價帶：持倉不動下，β 落在容忍區間對應的 00631L 價格上下界 */}
-            <div className="p-4 rounded-xl border border-zinc-800 bg-zinc-900/60 space-y-3">
-              <div className="text-xs font-semibold text-zinc-400 flex items-center gap-1.5">
-                <SlidersHorizontal className="w-4 h-4 text-primary" />
-                觸發價帶（持倉不動、只看 00631L 價格）
-              </div>
-              {result.sell_trigger_price === null && result.buy_trigger_price === null ? (
-                <p className="text-xs text-zinc-500 leading-relaxed">
-                  目前持倉無可反解的觸發價
-                  {result.defensive_value <= 0
-                    ? '（防守端為 0，投組 Beta 恆等於滿槓桿，與價格無關）'
-                    : config.shares <= 0
-                      ? '（尚無 00631L 持股）'
-                      : '（容忍區間超出 0～滿槓桿可達範圍）'}
-                  。
-                </p>
-              ) : (
-                <>
-                  <div className="grid grid-cols-2 gap-3">
-                    {/* 買進門檻＝下限 β 對應價（低於它就進買進區） */}
-                    <div className="rounded-lg px-3 py-3 bg-bear/10 border border-bear/25 text-center">
-                      <div className="text-[11px] text-zinc-400">買進門檻（β&lt;{result.lower_band.toFixed(2)}）</div>
-                      {result.buy_trigger_price !== null ? (
-                        <>
-                          <div className="text-2xl font-extrabold font-mono tracking-tight text-bear mt-0.5">
-                            ${result.buy_trigger_price.toFixed(2)}
-                          </div>
-                          <div className="text-[11px] text-zinc-500 mt-0.5">價格低於此 → 買進區</div>
-                        </>
-                      ) : (
-                        <div className="text-sm text-zinc-600 mt-2">—<div className="text-[10px] font-normal">下限 β≤0，跌不觸發</div></div>
-                      )}
-                    </div>
-                    {/* 賣出門檻＝上限 β 對應價（高於它就進賣出區） */}
-                    <div className="rounded-lg px-3 py-3 bg-bull/10 border border-bull/25 text-center">
-                      <div className="text-[11px] text-zinc-400">賣出門檻（β&gt;{result.upper_band.toFixed(2)}）</div>
-                      {result.sell_trigger_price !== null ? (
-                        <>
-                          <div className="text-2xl font-extrabold font-mono tracking-tight text-bull mt-0.5">
-                            ${result.sell_trigger_price.toFixed(2)}
-                          </div>
-                          <div className="text-[11px] text-zinc-500 mt-0.5">價格高於此 → 賣出區</div>
-                        </>
-                      ) : (
-                        <div className="text-sm text-zinc-600 mt-2">—<div className="text-[10px] font-normal">上限 β≥{config.etf_beta.toFixed(1)}，漲不觸發</div></div>
-                      )}
-                    </div>
-                  </div>
-
-                  {/* 目前價格落在哪一區 */}
-                  {config.price > 0 && result.status !== 'empty' && (
-                    <div className={`text-[11px] text-center rounded-md py-1.5 border ${priceZone.cls}`}>
-                      目前 00631L <span className="font-mono font-semibold">${config.price.toFixed(2)}</span> → 位於 <strong>{priceZone.label}</strong>
-                    </div>
-                  )}
-
-                  <p className="text-[11px] text-zinc-500 leading-relaxed">
-                    以目前持股 <span className="font-mono text-zinc-400">{config.shares ? Math.round(config.shares).toLocaleString() : 0}</span> 股、防守端（現金＋債券市值）<span className="font-mono text-zinc-400">${Math.round(result.defensive_value).toLocaleString()}</span> <strong className="text-zinc-400">固定不動</strong>推算：只靠 00631L 漲跌，價格落在
-                    {result.buy_trigger_price !== null && result.sell_trigger_price !== null ? (
-                      <> <span className="font-mono text-zinc-300">${result.buy_trigger_price.toFixed(2)}～${result.sell_trigger_price.toFixed(2)}</span></>
-                    ) : ' 門檻之間'} 時 β 才在容忍區間內。
-                    {result.status === 'buy' && '目前現價遠低於買進門檻＝部位偏防守、β 太低，已在買進區（見上方建議買進金額）。'}
-                    {result.status === 'sell' && '目前現價已高於賣出門檻＝部位偏槓桿、β 太高，已在賣出區（見上方建議賣出金額）。'}
-                    <strong className="text-zinc-400"> 注意這是「持倉不動」的假設</strong>——你一旦依建議買/賣，持股與防守端改變，這條價帶會整個重算（債券價格波動也會微調 β，但幅度遠小於正2）。
-                  </p>
-                </>
-              )}
             </div>
           </div>
         </div>
