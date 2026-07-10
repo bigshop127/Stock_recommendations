@@ -854,6 +854,22 @@ export function Rebalance() {
                 {result.action_label}
               </div>
 
+              {/* 防守端有資產鎖定、既有資金不足以達標時：需先從外部注入新現金，全額用於買進00631L */}
+              {result.cash_injection_needed !== null && result.cash_injection_needed >= 1 && (
+                <div className="rounded-lg px-4 py-3 text-center bg-primary/10 border border-primary/30">
+                  <div className="text-[11px] text-zinc-400 flex items-center justify-center gap-1">
+                    <ShieldAlert className="w-3.5 h-3.5 text-primary" />
+                    步驟① 需先注入新現金（防守端已鎖定資產不足以支應）
+                  </div>
+                  <div className="text-2xl font-extrabold font-mono tracking-tight mt-0.5 text-primary">
+                    ${Math.round(result.cash_injection_needed).toLocaleString()}
+                  </div>
+                  <div className="text-[11px] text-zinc-500 mt-0.5">
+                    不動用鎖定資產，這筆錢會全額用於下方步驟② 買進 00631L
+                  </div>
+                </div>
+              )}
+
               {/* 顯眼行動數字：目前配置要搬多少錢回目標 β */}
               {result.status !== 'empty' && result.etf_value_delta !== null && Math.abs(result.etf_value_delta) >= 1 && (
                 <div
@@ -864,6 +880,7 @@ export function Rebalance() {
                   }`}
                 >
                   <div className="text-[11px] text-zinc-400">
+                    {result.cash_injection_needed !== null && result.cash_injection_needed >= 1 && '步驟② '}
                     {result.etf_value_delta > 0 ? '應買進 00631L' : '應賣出 00631L'}
                   </div>
                   <div className={`text-2xl font-extrabold font-mono tracking-tight mt-0.5 ${result.etf_value_delta > 0 ? 'text-bear' : 'text-bull'}`}>
@@ -881,9 +898,15 @@ export function Rebalance() {
                 </div>
               )}
 
-              {result.lock_capped && result.lock_note && (
-                <div className="text-xs text-amber-400 font-medium font-mono leading-normal bg-amber-500/5 border border-amber-500/20 rounded-lg px-3 py-2 mt-2 flex items-start gap-1">
-                  <span>⚠</span>
+              {result.lock_note && (
+                <div
+                  className={`text-xs font-medium font-mono leading-normal rounded-lg px-3 py-2 mt-2 flex items-start gap-1 ${
+                    result.lock_capped
+                      ? 'text-amber-400 bg-amber-500/5 border border-amber-500/20'
+                      : 'text-primary bg-primary/5 border border-primary/20'
+                  }`}
+                >
+                  <span>{result.lock_capped ? '⚠' : 'ℹ'}</span>
                   <span>{result.lock_note}</span>
                 </div>
               )}
@@ -960,6 +983,15 @@ export function Rebalance() {
                   <div className="text-amber-400 font-mono">{result.note}</div>
                 ) : result.etf_value_delta !== null ? (
                   <div className="space-y-1 font-mono pl-2 border-l-2 border-primary/40">
+                    {result.cash_injection_needed !== null && result.cash_injection_needed >= 1 && (
+                      <div>
+                        • 注入新現金：
+                        <span className="text-primary font-bold">
+                          ${Math.round(result.cash_injection_needed).toLocaleString()}
+                        </span>
+                        <span className="text-zinc-400 font-normal">（防守端鎖定資產不足，需額外注入）</span>
+                      </div>
+                    )}
                     <div>
                       • 00631L 調整：
                       <span className={result.etf_value_delta > 0 ? 'text-bear font-bold' : result.etf_value_delta < 0 ? 'text-bull font-bold' : 'text-zinc-300'}>

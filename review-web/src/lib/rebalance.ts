@@ -270,9 +270,10 @@ export interface RebalanceResult {
   sell_trigger_price: number | null;
   buy_trigger_price: number | null;
   note?: string;
-  lock_capped: boolean;      // true＝因鎖定導致無法精確達成目標 β（target_etf_value_actual !== naive）
-  lock_note: string | null;  // 說明文字；未鎖定或鎖定未造成影響時為 null
-  achieved_beta: number | null; // 依 lock_capped 後實際能達到的 β
+  lock_capped: boolean;      // true＝即使注入新現金也無法精確達成目標 β（現金也鎖定，或目標β≥滿槓桿）
+  lock_note: string | null;  // 說明文字；未鎖定、鎖定未造成影響、或已靠注入現金解決時為 null
+  achieved_beta: number | null; // 依 lock_capped／注入現金後實際能達到的 β
+  cash_injection_needed: number | null; // 現金未鎖定但既有防守端資金不足時，需額外「注入」多少新現金才能達成目標（全額用於買進00631L，不動用鎖定資產、不補現金保留額）；無需注入或現金也鎖定時為 null
 }
 
 /**
@@ -570,6 +571,7 @@ export function computeRebalance(input: RebalanceInput): RebalanceResult {
       lock_capped: false,
       lock_note: null,
       achieved_beta: null,
+      cash_injection_needed: null,
     };
   }
 
@@ -603,6 +605,7 @@ export function computeRebalance(input: RebalanceInput): RebalanceResult {
   let lock_capped = false;
   let lock_note: string | null = null;
   let achieved_beta: number | null = null;
+  let cash_injection_needed: number | null = null;
 
   if (target_etf_weight !== null) {
     const naive_target_etf_value = target_etf_weight * total_value;
@@ -613,6 +616,7 @@ export function computeRebalance(input: RebalanceInput): RebalanceResult {
       lockedCash && (bonds.length > 0 ? lockedBonds.every(Boolean) : true);
 
     let target_etf_value_actual = 0;
+    let effective_total_value = total_value; // 注入新現金時，防守端配置改以「原總資產＋注入」為分母
 
     if (allDefensiveLocked) {
       target_etf_value_actual = etf_value;
@@ -624,26 +628,41 @@ export function computeRebalance(input: RebalanceInput): RebalanceResult {
       const locked_defensive_sum =
         (lockedCash ? cash : 0) +
         bonds.reduce((s, b, i) => s + (lockedBonds[i] ? b.shares * b.price : 0), 0);
-      target_etf_value_actual = Math.min(naive_target_etf_value, total_value - locked_defensive_sum);
-      lock_capped = Math.abs(target_etf_value_actual - naive_target_etf_value) >= 1;
-      lock_note = lock_capped
-        ? `已鎖定資產現值合計 $${Math.round(locked_defensive_sum).toLocaleString()} 超過目標防守端可用空間，00631L 僅能達成部分調整`
-        : null;
+      const headroom = total_value - locked_defensive_sum;
+      const shortfall = naive_target_etf_value - headroom;
+
+      // 現金未鎖定、且既有（未鎖定）資金不足以達到目標 β 時：可從外部「注入」新現金，
+      // 全額用於買進 00631L（不動用鎖定資產、不強制補現金保留額——見 opt19 增修對話定案）。
+      // 解 X：(headroom+X) = target_etf_weight×(total_value+X) ⇒ X = shortfall/(1−target_etf_weight)。
+      if (shortfall >= 1 && !lockedCash && 1 - target_etf_weight > 1e-9) {
+        const injected = shortfall / (1 - target_etf_weight);
+        target_etf_value_actual = headroom + injected;
+        effective_total_value = total_value + injected;
+        cash_injection_needed = injected;
+        lock_capped = false;
+        lock_note = `已鎖定資產現值合計 $${Math.round(locked_defensive_sum).toLocaleString()} 超過目前可用空間，需先注入新現金 $${Math.round(injected).toLocaleString()}（全額用於買進 00631L，不動用鎖定資產）才能達成目標`;
+      } else {
+        target_etf_value_actual = Math.min(naive_target_etf_value, headroom);
+        lock_capped = Math.abs(target_etf_value_actual - naive_target_etf_value) >= 1;
+        lock_note = lock_capped
+          ? `已鎖定資產現值合計 $${Math.round(locked_defensive_sum).toLocaleString()} 超過目標防守端可用空間，00631L 僅能達成部分調整`
+          : null;
+      }
     }
 
     target_etf_value = target_etf_value_actual;
     etf_value_delta = target_etf_value - etf_value;
     cash_delta = -etf_value_delta;
 
-    target_defensive_value = total_value - target_etf_value;
+    target_defensive_value = effective_total_value - target_etf_value;
 
     const defensiveInput: DefensiveAllocationLockedInput = {
       targetDefensiveValue: target_defensive_value,
-      cash: { value: cash, reserve: cash_reserve, locked: lockedCash },
+      cash: { value: cash, reserve: cash_reserve, locked: input.locked?.cash === true },
       bonds: bonds.map((b, i) => ({
         code: b.code,
         value: b.shares * b.price,
-        locked: lockedBonds[i],
+        locked: input.locked?.bonds?.[b.code] === true,
       })),
       bondSplit: bond_split,
     };
@@ -661,7 +680,7 @@ export function computeRebalance(input: RebalanceInput): RebalanceResult {
       }
     });
 
-    achieved_beta = total_value > 0 ? (target_etf_value / total_value) * etf_beta : null;
+    achieved_beta = effective_total_value > 0 ? (target_etf_value / effective_total_value) * etf_beta : null;
   }
 
   let note: string | undefined = undefined;
@@ -693,7 +712,7 @@ export function computeRebalance(input: RebalanceInput): RebalanceResult {
         post_bond_value += p.value; // 無價無法交易 → 維持現值
       }
     }
-    post_cash = cash - trade_shares * price - bondTradeAmount;
+    post_cash = cash + (cash_injection_needed ?? 0) - trade_shares * price - bondTradeAmount;
     const post_total = post_etf_value + post_cash + post_bond_value;
     post_etf_weight = post_total > 0 ? post_etf_value / post_total : 0;
     post_cash_weight = post_total > 0 ? post_cash / post_total : 0;
@@ -765,6 +784,7 @@ export function computeRebalance(input: RebalanceInput): RebalanceResult {
     lock_capped,
     lock_note,
     achieved_beta,
+    cash_injection_needed,
   };
 }
 
