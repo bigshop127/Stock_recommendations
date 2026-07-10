@@ -168,7 +168,7 @@ function sanitizeHoldings(body) {
     cash_reserve: Math.max(0, safeNum(b.cash_reserve, DEFAULT_CASH_RESERVE)),
     bond_split: Math.min(1, Math.max(0, safeNum(b.bond_split, DEFAULT_BOND_SPLIT))),
     locked: {
-      cash: b.locked && b.locked.cash === true,
+      cash: !!(b.locked && b.locked.cash === true),
       bonds: BOND_ETFS.reduce((acc, bd) => {
         acc[bd.code] = !!(b.locked && b.locked.bonds && b.locked.bonds[bd.code] === true);
         return acc;
