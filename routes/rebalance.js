@@ -167,6 +167,13 @@ function sanitizeHoldings(body) {
     bonds,                       // 【增修I】告警腳本也讀（β 分母含債券市值）
     cash_reserve: Math.max(0, safeNum(b.cash_reserve, DEFAULT_CASH_RESERVE)),
     bond_split: Math.min(1, Math.max(0, safeNum(b.bond_split, DEFAULT_BOND_SPLIT))),
+    locked: {
+      cash: b.locked && b.locked.cash === true,
+      bonds: BOND_ETFS.reduce((acc, bd) => {
+        acc[bd.code] = !!(b.locked && b.locked.bonds && b.locked.bonds[bd.code] === true);
+        return acc;
+      }, {}),
+    },
     target_beta: safeNum(b.target_beta, 1.3),
     tolerance_mode: b.tolerance_mode === 'pct' ? 'pct' : 'abs',
     threshold_pct: Math.max(0, safeNum(b.threshold_pct, 10)),

@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
-import { SlidersHorizontal, AlertTriangle, CheckCircle2, Info, ArrowRightLeft, ShieldAlert, RefreshCw, Loader2, Plus, Trash2, UploadCloud, Cloud, CloudOff } from 'lucide-react';
+import { SlidersHorizontal, AlertTriangle, CheckCircle2, Info, ArrowRightLeft, ShieldAlert, RefreshCw, Loader2, Plus, Trash2, UploadCloud, Cloud, CloudOff, Lock, Unlock } from 'lucide-react';
 import { getRebalanceConfig, saveRebalanceConfig, subscribeRebalance, type RebalanceConfig } from '../lib/rebalanceStore';
 import { computeRebalance, aggregatePortfolio, BOND_ETFS, ETF_CODE, type RebalanceResult, type Trade, computeFundFlows } from '../lib/rebalance';
 import { api } from '../lib/api';
@@ -265,6 +265,7 @@ export function Rebalance() {
         bonds: cfg.bonds,
         cash_reserve: cfg.cash_reserve,
         bond_split: cfg.bond_split,
+        locked: cfg.locked,
         target_beta: cfg.target_beta,
         tolerance_mode: cfg.tolerance_mode,
         threshold_pct: cfg.threshold_pct,
@@ -538,11 +539,13 @@ export function Rebalance() {
     ),
   });
 
-  // 防守端調整項（現金＋兩檔債券）是否有實質動作
+  // 防守端調整項（現金＋兩檔債券）是否有實質動作或存在鎖定
   const hasDefensiveMoves =
     result.status !== 'empty' &&
     ((result.cash_adjust_delta !== null && Math.abs(result.cash_adjust_delta) >= 1) ||
-      result.bond_plans.some((p) => p.value_delta !== null && Math.abs(p.value_delta) >= 1));
+      result.bond_plans.some((p) => p.value_delta !== null && Math.abs(p.value_delta) >= 1) ||
+      config.locked?.cash ||
+      Object.values(config.locked?.bonds || {}).some(Boolean));
 
   return (
     <div className="max-w-6xl mx-auto space-y-6">
@@ -878,12 +881,27 @@ export function Rebalance() {
                 </div>
               )}
 
+              {result.lock_capped && result.lock_note && (
+                <div className="text-xs text-amber-400 font-medium font-mono leading-normal bg-amber-500/5 border border-amber-500/20 rounded-lg px-3 py-2 mt-2 flex items-start gap-1">
+                  <span>⚠</span>
+                  <span>{result.lock_note}</span>
+                </div>
+              )}
+
               {/* 【增修I】防守端配置：固定現金 + 債券池 6:4 的應買賣 */}
               {hasDefensiveMoves && (
                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
                   {/* 現金調整 */}
                   <div className="rounded-lg px-3 py-2.5 bg-emerald-500/5 border border-emerald-500/20 text-center">
-                    <div className="text-[10px] text-zinc-400">現金（保留 ${config.cash_reserve.toLocaleString()}）</div>
+                    <div className="text-[10px] text-zinc-400 flex items-center justify-center gap-1">
+                      <span>現金（保留 ${config.cash_reserve.toLocaleString()}）</span>
+                      {config.locked?.cash && (
+                        <span className="inline-flex items-center gap-0.5 text-zinc-500">
+                          <Lock className="w-3 h-3 text-primary" />
+                          <span>已鎖定</span>
+                        </span>
+                      )}
+                    </div>
                     <div className="text-base font-extrabold font-mono text-emerald-400 mt-0.5">
                       {result.cash_adjust_delta !== null && Math.abs(result.cash_adjust_delta) >= 1
                         ? `${result.cash_adjust_delta > 0 ? '+' : '−'}$${Math.abs(Math.round(result.cash_adjust_delta)).toLocaleString()}`
@@ -909,8 +927,14 @@ export function Rebalance() {
                               : 'bg-bull/10 border-bull/25'
                         }`}
                       >
-                        <div className="text-[10px] text-zinc-400">
-                          {active ? (isBuy ? '應買進 ' : '應賣出 ') : ''}{p.code} {assetName(p.code)}
+                        <div className="text-[10px] text-zinc-400 flex items-center justify-center gap-1 flex-wrap">
+                          <span>{active ? (isBuy ? '應買進 ' : '應賣出 ') : ''}{p.code} {assetName(p.code)}</span>
+                          {config.locked?.bonds?.[p.code] && (
+                            <span className="inline-flex items-center gap-0.5 text-zinc-500">
+                              <Lock className="w-3 h-3 text-primary" />
+                              <span>已鎖定</span>
+                            </span>
+                          )}
                         </div>
                         <div className={`text-base font-extrabold font-mono mt-0.5 ${!active ? 'text-zinc-500' : isBuy ? 'text-bear' : 'text-bull'}`}>
                           {p.value_delta !== null ? (active ? `$${Math.abs(Math.round(p.value_delta)).toLocaleString()}` : '維持') : '—'}
@@ -1090,15 +1114,46 @@ export function Rebalance() {
                     {a.code} <span className="text-zinc-400 font-sans font-normal">{a.name}</span>
                     {!isEtf && <span className="ml-2 text-[10px] px-1.5 py-0.5 rounded bg-zinc-800 text-zinc-400 font-sans">防守端 β≈0</span>}
                   </span>
-                  <button
-                    onClick={() => void fetchLatestPrice(a.code)}
-                    disabled={fetchSt.loading}
-                    className="text-[11px] text-primary hover:text-primary/80 disabled:text-zinc-600 flex items-center gap-1 transition-colors"
-                    title="抓取現在最新價（即時報價）"
-                  >
-                    {fetchSt.loading ? <Loader2 className="w-3 h-3 animate-spin" /> : <RefreshCw className="w-3 h-3" />}
-                    {fetchSt.loading ? '抓取中' : '抓最新價'}
-                  </button>
+                  <div className="flex items-center gap-2">
+                    {!isEtf && (
+                      <button
+                        onClick={() => {
+                          const isLocked = config.locked?.bonds?.[a.code] === true;
+                          applyConfig({
+                            locked: {
+                              ...config.locked,
+                              bonds: {
+                                ...config.locked?.bonds,
+                                [a.code]: !isLocked,
+                              },
+                            },
+                          });
+                        }}
+                        className={`text-[11px] flex items-center gap-1 transition-colors ${
+                          config.locked?.bonds?.[a.code]
+                            ? 'text-primary'
+                            : 'text-zinc-500 hover:text-zinc-400'
+                        }`}
+                        title={config.locked?.bonds?.[a.code] ? '解鎖資產' : '鎖定資產'}
+                      >
+                        {config.locked?.bonds?.[a.code] ? (
+                          <Lock className="w-3 h-3" />
+                        ) : (
+                          <Unlock className="w-3 h-3" />
+                        )}
+                        <span>{config.locked?.bonds?.[a.code] ? '鎖定' : '未鎖'}</span>
+                      </button>
+                    )}
+                    <button
+                      onClick={() => void fetchLatestPrice(a.code)}
+                      disabled={fetchSt.loading}
+                      className="text-[11px] text-primary hover:text-primary/80 disabled:text-zinc-600 flex items-center gap-1 transition-colors"
+                      title="抓取現在最新價（即時報價）"
+                    >
+                      {fetchSt.loading ? <Loader2 className="w-3 h-3 animate-spin" /> : <RefreshCw className="w-3 h-3" />}
+                      {fetchSt.loading ? '抓取中' : '抓最新價'}
+                    </button>
+                  </div>
                 </div>
                 <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
                   <div className="space-y-1">
@@ -1187,7 +1242,32 @@ export function Rebalance() {
             </p>
           </div>
           <div className="space-y-1.5">
-            <label className="text-xs font-medium text-zinc-300">現金保留額（固定保留、不投入債券）</label>
+            <div className="flex items-center justify-between">
+              <label className="text-xs font-medium text-zinc-300">現金保留額（固定保留、不投入債券）</label>
+              <button
+                onClick={() => {
+                  applyConfig({
+                    locked: {
+                      ...config.locked,
+                      cash: !config.locked?.cash,
+                    },
+                  });
+                }}
+                className={`text-[11px] flex items-center gap-1 transition-colors ${
+                  config.locked?.cash
+                    ? 'text-primary'
+                    : 'text-zinc-500 hover:text-zinc-400'
+                }`}
+                title={config.locked?.cash ? '解鎖現金' : '鎖定現金'}
+              >
+                {config.locked?.cash ? (
+                  <Lock className="w-3 h-3" />
+                ) : (
+                  <Unlock className="w-3 h-3" />
+                )}
+                <span>{config.locked?.cash ? '鎖定' : '未鎖'}</span>
+              </button>
+            </div>
             <div className="relative">
               <input
                 type="number"

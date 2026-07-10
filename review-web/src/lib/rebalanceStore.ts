@@ -40,6 +40,7 @@ export interface RebalanceConfig {
   // 買賣報價單機制（多資產：trade.code 缺省＝00631L）
   opening: { shares: number; avg_cost: number; cash: number; bonds: OpeningBond[] }; // 期初部位【增修H/I】
   trades: Trade[];               // 買賣紀錄（可增刪）
+  locked: { cash: boolean; bonds: Record<string, boolean> };
 }
 
 const SEED_CONFIG: RebalanceConfig = {
@@ -62,6 +63,7 @@ const SEED_CONFIG: RebalanceConfig = {
     bonds: BOND_ETFS.map((b) => ({ code: b.code, shares: 0, avg_cost: 0 })),
   },
   trades: [],
+  locked: { cash: false, bonds: { '00687B': false, '00953B': false } },
 };
 
 function seedCopy(): RebalanceConfig {
@@ -70,6 +72,7 @@ function seedCopy(): RebalanceConfig {
     bonds: SEED_CONFIG.bonds.map((b) => ({ ...b })),
     opening: { ...SEED_CONFIG.opening, bonds: SEED_CONFIG.opening.bonds.map((b) => ({ ...b })) },
     trades: [],
+    locked: { cash: SEED_CONFIG.locked.cash, bonds: { ...SEED_CONFIG.locked.bonds } },
   };
 }
 
@@ -176,6 +179,20 @@ function normalizeConfig(parsed: Record<string, unknown>): RebalanceConfig {
   });
 
   const etfPos = agg.positions[ETF_CODE];
+  
+  let locked: RebalanceConfig['locked'];
+  const l = parsed.locked as Record<string, unknown> | undefined;
+  if (l && typeof l === 'object') {
+    const cash = l.cash === true;
+    const bonds: Record<string, boolean> = {};
+    const bObj = l.bonds as Record<string, unknown> | undefined;
+    BOND_ETFS.forEach((b) => {
+      bonds[b.code] = bObj?.[b.code] === true;
+    });
+    locked = { cash, bonds };
+  } else {
+    locked = { cash: false, bonds: { '00687B': false, '00953B': false } };
+  }
 
   return {
     shares: etfPos ? etfPos.shares : 0,   // 衍生
@@ -192,6 +209,7 @@ function normalizeConfig(parsed: Record<string, unknown>): RebalanceConfig {
     etf_beta: Math.max(0.1, safeNumber(parsed.etf_beta, SEED_CONFIG.etf_beta)),
     opening,
     trades,
+    locked,
   };
 }
 

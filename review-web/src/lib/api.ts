@@ -597,6 +597,10 @@ export interface RebalanceHoldingsPayload {
   bonds: RebalanceBondHolding[]; // 防守端債券 ETF（00687B / 00953B）【增修I】
   cash_reserve: number; // 固定保留現金【增修I】
   bond_split: number;   // 債券池 00687B 佔比【增修I】
+  locked: {
+    cash: boolean;
+    bonds: Record<string, boolean>;
+  };
   target_beta: number;
   tolerance_mode: 'pct' | 'abs';
   threshold_pct: number;

@@ -218,6 +218,10 @@ export interface RebalanceInput {
   bonds?: BondInput[];      // 債券 ETF 持倉（缺省＝無債券，退回純現金模型）
   cash_reserve?: number;    // 固定保留現金（預設 100,000）
   bond_split?: number;      // 債券池中第一檔（00687B）佔比（預設 0.6）
+  locked?: {
+    cash?: boolean;
+    bonds?: Record<string, boolean>; // key＝債券 code；缺的 code 視為 false
+  };
 }
 
 export interface RebalanceResult {
@@ -266,6 +270,9 @@ export interface RebalanceResult {
   sell_trigger_price: number | null;
   buy_trigger_price: number | null;
   note?: string;
+  lock_capped: boolean;      // true＝因鎖定導致無法精確達成目標 β（target_etf_value_actual !== naive）
+  lock_note: string | null;  // 說明文字；未鎖定或鎖定未造成影響時為 null
+  achieved_beta: number | null; // 依 lock_capped 後實際能達到的 β
 }
 
 /**
@@ -345,6 +352,88 @@ export function allocateDefensive(
   }
 
   return { cash, bond_values };
+}
+
+// ── 防守端內部鎖定配置【優化專案 19】──────────────────────────────────
+export interface DefensiveAllocationLockedInput {
+  targetDefensiveValue: number;
+  cash: { value: number; reserve: number; locked: boolean };
+  bonds: { code: string; value: number; locked: boolean }[]; // 順序＝優先變現順序，同 allocateDefensive
+  bondSplit: number;
+}
+
+export interface DefensiveAllocationLockedResult {
+  cash_value: number;
+  bond_values: number[]; // 與輸入 bonds 同順序
+}
+
+export function allocateDefensiveWithLocks(
+  input: DefensiveAllocationLockedInput,
+): DefensiveAllocationLockedResult {
+  const targetDef = Math.max(0, safeNum(input.targetDefensiveValue, 0));
+  const cashVal = Math.max(0, safeNum(input.cash.value, 0));
+  const cashReserve = Math.max(0, safeNum(input.cash.reserve, 0));
+  const bondSplit = clamp(safeNum(input.bondSplit, DEFAULT_BOND_SPLIT), 0, 1);
+
+  const lockedCashVal = input.cash.locked ? cashVal : 0;
+  const lockedBondsSum = input.bonds.reduce((s, b) => s + (b.locked ? b.value : 0), 0);
+
+  const unlocked_pool = Math.max(0, targetDef - lockedCashVal - lockedBondsSum);
+
+  let cash_target = 0;
+  let bondPool = 0;
+
+  if (!input.cash.locked) {
+    cash_target = clamp(cashReserve, 0, unlocked_pool);
+    bondPool = unlocked_pool - cash_target;
+  } else {
+    cash_target = cashVal;
+    bondPool = unlocked_pool;
+  }
+
+  const unlockedBonds = input.bonds.filter((b) => !b.locked);
+  const bondValuesMap = new Map<string, number>();
+
+  // Initialize map with locked values
+  for (const b of input.bonds) {
+    if (b.locked) {
+      bondValuesMap.set(b.code, b.value);
+    }
+  }
+
+  if (unlockedBonds.length === 2) {
+    const values = unlockedBonds.map((b) => b.value);
+    const currentTotal = values.reduce((s, v) => s + v, 0);
+    const delta = bondPool - currentTotal;
+    let allocated: number[];
+
+    if (delta < 0) {
+      let remaining = -delta;
+      allocated = values.map((v) => {
+        const sell = Math.min(v, remaining);
+        remaining -= sell;
+        return v - sell;
+      });
+    } else {
+      allocated = [bondPool * bondSplit, bondPool * (1 - bondSplit)];
+    }
+
+    unlockedBonds.forEach((b, i) => {
+      bondValuesMap.set(b.code, allocated[i]);
+    });
+  } else if (unlockedBonds.length === 1) {
+    bondValuesMap.set(unlockedBonds[0].code, bondPool);
+  } else if (unlockedBonds.length === 0) {
+    if (!input.cash.locked) {
+      cash_target += bondPool;
+    }
+  }
+
+  const bond_values = input.bonds.map((b) => bondValuesMap.get(b.code) ?? 0);
+  return {
+    cash_value: cash_target,
+    bond_values,
+  };
 }
 
 function safeNum(val: unknown, fallback: number = 0): number {
@@ -478,6 +567,9 @@ export function computeRebalance(input: RebalanceInput): RebalanceResult {
       sell_trigger_price: null,
       buy_trigger_price: null,
       note: '尚未輸入持倉',
+      lock_capped: false,
+      lock_note: null,
+      achieved_beta: null,
     };
   }
 
@@ -508,22 +600,58 @@ export function computeRebalance(input: RebalanceInput): RebalanceResult {
   const bond_plans: BondPlan[] = bonds.map(mkBondPlanBase);
   for (const p of bond_plans) p.weight = p.value / total_value;
 
+  let lock_capped = false;
+  let lock_note: string | null = null;
+  let achieved_beta: number | null = null;
+
   if (target_etf_weight !== null) {
-    target_etf_value = target_etf_weight * total_value;
+    const naive_target_etf_value = target_etf_weight * total_value;
+
+    const lockedCash = input.locked?.cash === true;
+    const lockedBonds = bonds.map((b) => input.locked?.bonds?.[b.code] === true);
+    const allDefensiveLocked =
+      lockedCash && (bonds.length > 0 ? lockedBonds.every(Boolean) : true);
+
+    let target_etf_value_actual = 0;
+
+    if (allDefensiveLocked) {
+      target_etf_value_actual = etf_value;
+      lock_capped = Math.abs(naive_target_etf_value - etf_value) >= 1;
+      lock_note = lock_capped
+        ? '現金／債券皆已鎖定，投組曝險無法調整（等同鎖死整體配置）'
+        : null;
+    } else {
+      const locked_defensive_sum =
+        (lockedCash ? cash : 0) +
+        bonds.reduce((s, b, i) => s + (lockedBonds[i] ? b.shares * b.price : 0), 0);
+      target_etf_value_actual = Math.min(naive_target_etf_value, total_value - locked_defensive_sum);
+      lock_capped = Math.abs(target_etf_value_actual - naive_target_etf_value) >= 1;
+      lock_note = lock_capped
+        ? `已鎖定資產現值合計 $${Math.round(locked_defensive_sum).toLocaleString()} 超過目標防守端可用空間，00631L 僅能達成部分調整`
+        : null;
+    }
+
+    target_etf_value = target_etf_value_actual;
     etf_value_delta = target_etf_value - etf_value;
     cash_delta = -etf_value_delta;
 
     target_defensive_value = total_value - target_etf_value;
-    target_cash_value = Math.min(cash_reserve, target_defensive_value);
+
+    const defensiveInput: DefensiveAllocationLockedInput = {
+      targetDefensiveValue: target_defensive_value,
+      cash: { value: cash, reserve: cash_reserve, locked: lockedCash },
+      bonds: bonds.map((b, i) => ({
+        code: b.code,
+        value: b.shares * b.price,
+        locked: lockedBonds[i],
+      })),
+      bondSplit: bond_split,
+    };
+
+    const allocation = allocateDefensiveWithLocks(defensiveInput);
+    target_cash_value = allocation.cash_value;
     cash_adjust_delta = target_cash_value - cash;
 
-    // 【增修K】防守端內部配置：縮水（加碼抽錢）走優先變現瀑布、擴張（獲利回補）走等比例
-    const allocation = allocateDefensive(
-      target_defensive_value,
-      bond_plans.map((p) => p.value),
-      cash_reserve,
-      bond_split,
-    );
     bond_plans.forEach((p, i) => {
       p.target_value = allocation.bond_values[i] ?? 0;
       p.value_delta = p.target_value - p.value;
@@ -532,6 +660,8 @@ export function computeRebalance(input: RebalanceInput): RebalanceResult {
         p.post_shares = p.shares + p.trade_shares;
       }
     });
+
+    achieved_beta = total_value > 0 ? (target_etf_value / total_value) * etf_beta : null;
   }
 
   let note: string | undefined = undefined;
@@ -632,6 +762,9 @@ export function computeRebalance(input: RebalanceInput): RebalanceResult {
     sell_trigger_price,
     buy_trigger_price,
     note,
+    lock_capped,
+    lock_note,
+    achieved_beta,
   };
 }
 
