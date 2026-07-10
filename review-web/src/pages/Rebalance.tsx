@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { SlidersHorizontal, AlertTriangle, CheckCircle2, Info, ArrowRightLeft, ShieldAlert, RefreshCw, Loader2, Plus, Trash2, UploadCloud, Cloud, CloudOff, Lock, Unlock } from 'lucide-react';
 import { getRebalanceConfig, saveRebalanceConfig, subscribeRebalance, type RebalanceConfig } from '../lib/rebalanceStore';
-import { computeRebalance, aggregatePortfolio, BOND_ETFS, ETF_CODE, type RebalanceResult, type Trade, computeFundFlows } from '../lib/rebalance';
+import { computeRebalance, aggregatePortfolio, BOND_ETFS, ETF_CODE, type RebalanceResult, type Trade, computeFundFlows, computeMarketStatus, type MarketStatus } from '../lib/rebalance';
 import { api } from '../lib/api';
 
 // 資產清單（00631L＋防守端債券 ETF）【增修I】
@@ -180,6 +180,68 @@ export function Rebalance() {
   const [cashReserveStr, setCashReserveStr] = useState<string>(() => String(config.cash_reserve || ''));
   const [cashStr, setCashStr] = useState<string>(() => String(config.cash || ''));
   const [showAdvanced, setShowAdvanced] = useState(false);
+
+  const [marketStatus, setMarketStatus] = useState<MarketStatus | null>(null);
+  const [marketStatusLoading, setMarketStatusLoading] = useState(false);
+  const [marketStatusError, setMarketStatusError] = useState(false);
+  const taiexClosesRef = useRef<{ date: string; close: number }[]>([]);
+
+  useEffect(() => {
+    let active = true;
+    const fetchMarketStatus = async () => {
+      if (taiexClosesRef.current.length > 0) {
+        const status = computeMarketStatus({
+          closes: taiexClosesRef.current,
+          tier1_dd: config.tier1_dd,
+          tier2_dd: config.tier2_dd,
+          tier3_dd: config.tier3_dd,
+        });
+        setMarketStatus(status);
+        return;
+      }
+
+      setMarketStatusLoading(true);
+      setMarketStatusError(false);
+      try {
+        const d = new Date();
+        d.setFullYear(d.getFullYear() - 3);
+        const y = d.getFullYear();
+        const m = String(d.getMonth() + 1).padStart(2, '0');
+        const day = String(d.getDate()).padStart(2, '0');
+        const start = `${y}-${m}-${day}`;
+
+        const ohlcvData = await api.ohlcv('TAIEX', { start });
+        if (!active) return;
+        if (ohlcvData && Array.isArray(ohlcvData.data)) {
+          const closes = ohlcvData.data.map((r) => ({ date: r.date, close: r.close }));
+          taiexClosesRef.current = closes;
+          const status = computeMarketStatus({
+            closes,
+            tier1_dd: config.tier1_dd,
+            tier2_dd: config.tier2_dd,
+            tier3_dd: config.tier3_dd,
+          });
+          setMarketStatus(status);
+        } else {
+          setMarketStatusError(true);
+        }
+      } catch (e) {
+        console.error('Failed to fetch TAIEX market status', e);
+        if (active) {
+          setMarketStatusError(true);
+        }
+      } finally {
+        if (active) {
+          setMarketStatusLoading(false);
+        }
+      }
+    };
+
+    fetchMarketStatus();
+    return () => {
+      active = false;
+    };
+  }, [config.tier1_dd, config.tier2_dd, config.tier3_dd]);
 
   // 報價單：新增一筆交易的表單（多資產：加標的選擇【增修I】）
   const [tradeCode, setTradeCode] = useState<string>(ETF_CODE);
@@ -562,6 +624,108 @@ export function Rebalance() {
         </div>
       </div>
 
+      {/* 市場狀態 */}
+      <div className="bg-card border border-border rounded-xl p-5 shadow-sm space-y-4">
+        <div className="flex items-center justify-between border-b border-border/60 pb-3">
+          <h2 className="text-sm font-semibold text-zinc-200 flex items-center gap-2">
+            <span className="w-2 h-2 rounded-full bg-cyan-500" />
+            TAIEX 市場狀態燈號
+          </h2>
+        </div>
+
+        {marketStatusLoading && (
+          <div className="flex items-center gap-2 text-xs text-zinc-400 py-2">
+            <Loader2 className="w-4 h-4 animate-spin text-primary" />
+            正在取得 TAIEX 市場狀態...
+          </div>
+        )}
+
+        {marketStatusError && (
+          <div className="text-xs text-zinc-500 py-2">
+            市場狀態暫時無法取得
+          </div>
+        )}
+
+        {!marketStatusLoading && !marketStatusError && marketStatus && (
+          <div className="space-y-4">
+            <div className="flex flex-wrap items-center gap-3">
+              {marketStatus.tier === 0 && (
+                <span className="px-2.5 py-1 text-xs font-semibold rounded-md bg-emerald-500/10 text-emerald-400">
+                  正常
+                </span>
+              )}
+              {marketStatus.tier === 1 && (
+                <span className="px-2.5 py-1 text-xs font-semibold rounded-md bg-[#fab219]/20 text-[#fab219]">
+                  第一警戒
+                </span>
+              )}
+              {marketStatus.tier === 2 && (
+                <span className="px-2.5 py-1 text-xs font-semibold rounded-md bg-[#e34948]/15 text-[#e34948]">
+                  小股災
+                </span>
+              )}
+              {marketStatus.tier === 3 && (
+                <span className="px-2.5 py-1 text-xs font-semibold rounded-md bg-[#e34948] text-white">
+                  股災來臨
+                </span>
+              )}
+
+              <span className="text-xs text-zinc-300">
+                TAIEX 自 {marketStatus.peak_date} 高點 {Math.round(marketStatus.peak_close).toLocaleString()} 回撤 {(marketStatus.drawdown * 100).toFixed(2)}%
+                <span className="text-zinc-500 ml-2">(目前收盤: {Math.round(marketStatus.latest_close).toLocaleString()}，統計截止日: {marketStatus.latest_date})</span>
+              </span>
+            </div>
+
+            {marketStatus.tier === 1 && (
+              <p className="text-xs text-amber-500 font-medium bg-amber-500/10 p-3 rounded-lg border border-amber-500/20">
+                已達第一警戒，純觀察，不需操作。
+              </p>
+            )}
+
+            {marketStatus.tier === 2 && (
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-red-500/10 p-3 rounded-lg border border-red-500/20">
+                <span className="text-xs text-red-400 font-medium">已達小股災門檻，建議加碼至中繼 β。</span>
+                <button
+                  onClick={() => updateConfig({ target_beta: config.beta_mid })}
+                  className="px-3 py-1.5 text-xs font-semibold bg-red-600 hover:bg-red-500 text-white rounded transition-colors"
+                >
+                  套用中繼 β ({config.beta_mid.toFixed(2)})
+                </button>
+              </div>
+            )}
+
+            {marketStatus.tier === 3 && (
+              <div className="space-y-3">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-red-600/20 p-3 rounded-lg border border-red-500/40">
+                  <span className="text-xs text-red-300 font-semibold">股災來臨！建議全力出清防守端拉滿槓桿。</span>
+                  <button
+                    onClick={() => updateConfig({ target_beta: config.etf_beta })}
+                    className="px-3 py-1.5 text-xs font-semibold bg-red-700 hover:bg-red-600 text-white rounded transition-colors"
+                  >
+                    套用股災滿倉 β ({config.etf_beta.toFixed(2)})
+                  </button>
+                </div>
+
+                <div className="p-3 bg-amber-500/10 rounded-lg border border-amber-500/20 text-xs text-amber-500 space-y-1.5">
+                  <div className="font-semibold flex items-center gap-1.5">
+                    <AlertTriangle className="w-4 h-4" />
+                    股災應對操作提醒：
+                  </div>
+                  <ol className="list-decimal list-inside space-y-1 text-zinc-300 text-[11px] pl-1">
+                    <li>防守端立即全數轉進 00631L（已按上方按鈕套用滿倉 β 即完成）</li>
+                    <li>交易順序沿用增修K美債優先變現 waterfall（自動）</li>
+                    <li>尊重 opt19 資產鎖定設定（若有鎖定，lock_note 會照常顯示）</li>
+                    <li>需要的話可用「現金注入模式」補足（cash_injection_needed 照常顯示）</li>
+                    <li>停止手動再平衡，抱到 TAIEX 創新高再回到平常的目標 β</li>
+                    <li>創新高後依 bond_split 重建防守端（把 target_beta 滑桿改回平常數值即可觸發）</li>
+                  </ol>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
       {/* 主要控制與分析區：桌面雙欄，手機單欄 */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {/* 左卡：Beta 儀表 + 滑桿 + 配置條 */}
@@ -615,9 +779,78 @@ export function Rebalance() {
                   </span>
                 </div>
               </div>
-              <p className="text-[11px] text-zinc-500">
+              <p className="text-[11px] text-zinc-500 border-b border-zinc-800 pb-2">
                 防守端扣掉保留現金後的債券池分配：{BOND_ETFS[0].code} {Math.round(config.bond_split * 100)}% / {BOND_ETFS[1].code} {Math.round((1 - config.bond_split) * 100)}%。預設 6:4。
               </p>
+
+              {/* 三層門檻與中繼 Beta */}
+              <div className="flex items-center justify-between pt-1">
+                <label className="text-zinc-300 font-medium">第一警戒門檻 (黃)</label>
+                <input
+                  type="number"
+                  step="0.01"
+                  min="0"
+                  max="1.0"
+                  value={config.tier1_dd}
+                  onChange={(e) => {
+                    const v = parseFloat(e.target.value);
+                    if (Number.isFinite(v)) updateConfig({ tier1_dd: v });
+                  }}
+                  className="w-20 px-2 py-1 bg-zinc-950 border border-zinc-800 rounded text-right font-mono text-zinc-100 focus:outline-none focus:border-primary"
+                />
+              </div>
+              <p className="text-[11px] text-zinc-500">TAIEX自高點回撤門檻。預設 0.10 (10%)。純提醒不操作。</p>
+
+              <div className="flex items-center justify-between pt-1">
+                <label className="text-zinc-300 font-medium">小股災門檻 (淡紅)</label>
+                <input
+                  type="number"
+                  step="0.01"
+                  min="0"
+                  max="1.0"
+                  value={config.tier2_dd}
+                  onChange={(e) => {
+                    const v = parseFloat(e.target.value);
+                    if (Number.isFinite(v)) updateConfig({ tier2_dd: v });
+                  }}
+                  className="w-20 px-2 py-1 bg-zinc-950 border border-zinc-800 rounded text-right font-mono text-zinc-100 focus:outline-none focus:border-primary"
+                />
+              </div>
+              <p className="text-[11px] text-zinc-500">TAIEX自高點回撤門檻。預設 0.15 (15%)。一鍵加碼至中繼 β。</p>
+
+              <div className="flex items-center justify-between pt-1">
+                <label className="text-zinc-300 font-medium">股災確認門檻 (深紅)</label>
+                <input
+                  type="number"
+                  step="0.01"
+                  min="0"
+                  max="1.0"
+                  value={config.tier3_dd}
+                  onChange={(e) => {
+                    const v = parseFloat(e.target.value);
+                    if (Number.isFinite(v)) updateConfig({ tier3_dd: v });
+                  }}
+                  className="w-20 px-2 py-1 bg-zinc-950 border border-zinc-800 rounded text-right font-mono text-zinc-100 focus:outline-none focus:border-primary"
+                />
+              </div>
+              <p className="text-[11px] text-zinc-500">TAIEX自高點回撤門檻。預設 0.20 (20%)。一鍵出清防守端滿倉。</p>
+
+              <div className="flex items-center justify-between pt-2 border-t border-zinc-800/70">
+                <label className="text-zinc-300 font-medium">小股災中繼目標 β</label>
+                <input
+                  type="number"
+                  step="0.05"
+                  min="0.1"
+                  max="3.0"
+                  value={config.beta_mid}
+                  onChange={(e) => {
+                    const v = parseFloat(e.target.value);
+                    if (Number.isFinite(v) && v > 0) updateConfig({ beta_mid: v });
+                  }}
+                  className="w-20 px-2 py-1 bg-zinc-950 border border-zinc-800 rounded text-right font-mono text-zinc-100 focus:outline-none focus:border-primary"
+                />
+              </div>
+              <p className="text-[11px] text-zinc-500">小股災觸發時，供一鍵加碼套用的目標投組 β。預設 1.75。</p>
             </div>
           )}
 

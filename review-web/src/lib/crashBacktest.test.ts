@@ -283,3 +283,84 @@ describe('runBacktest — 三資產防守端（增修K）', () => {
     }
   });
 });
+
+describe('runBacktest — tiered mode (三層股災)', () => {
+  const P_TIERED = {
+    initial_capital: 1_000_000,
+    target_beta: 1.2,
+    etf_beta: 2.0,
+    tolerance_mode: 'abs' as const,
+    threshold_abs: 0.1,
+    mode: 'tiered' as const,
+    tier2_dd: 0.15,
+    beta_mid: 1.75,
+    crash_dd: 0.20,
+  };
+
+  it('progresses tier2_enter -> crash_enter (tier3) -> crash_exit correctly', () => {
+    // 0050: 100 -> 90 (-10% / tier1, 無動作) -> 84 (-16% / tier2, 加碼至 1.75) -> 78 (-22% / tier3, 滿倉 2.0) -> 101 (創新高, 退出回 1.2)
+    const res = runBacktest(bars(
+      [100, 100, 100, 100, 100],
+      [100, 90, 84, 78, 101]
+    ), P_TIERED);
+
+    const tradeTypes = res.trades.map((t) => t.type);
+    expect(tradeTypes).toEqual(['tier2_enter', 'crash_enter', 'crash_exit']);
+
+    expect(res.crash_events).toHaveLength(1);
+    expect(res.crash_events[0].enter).toBe(d(2)); // tier2_enter on 84
+    expect(res.crash_events[0].tier3_date).toBe(d(3)); // crash_enter on 78
+    expect(res.crash_events[0].exit).toBe(d(4)); // crash_exit on 101
+    // 升級當天（78，-22%）才是全程最深回撤，須被記錄，不可停留在 tier2 進場當天（84，-16%）
+    expect(res.crash_events[0].max_dd).toBeCloseTo(0.22, 6);
+
+    // Check portfolio beta transitions
+    // initial: 1.2
+    // day 1 (90): 1.2 (no action)
+    // day 2 (84): 1.75 (tier2_enter)
+    // day 3 (78): 2.0 (crash_enter)
+    // day 4 (101): 1.2 (crash_exit)
+    expect(res.beta_curve[0].value).toBeCloseTo(1.2, 6);
+    expect(res.beta_curve[1].value).toBeCloseTo(1.2, 6);
+    expect(res.beta_curve[2].value).toBeCloseTo(1.75, 6);
+    expect(res.beta_curve[3].value).toBeCloseTo(2.0, 6);
+    expect(res.beta_curve[4].value).toBeCloseTo(1.2, 6);
+  });
+
+  it('recovers to target when dropping below tier2 limit (tier2 -> tier2_exit)', () => {
+    // 0050: 100 -> 84 (-16% / tier2, 加碼至 1.75) -> 95 (-5% / tier2_exit, 回退至 1.2)
+    const res = runBacktest(bars(
+      [100, 100, 100],
+      [100, 84, 95]
+    ), P_TIERED);
+
+    const tradeTypes = res.trades.map((t) => t.type);
+    expect(tradeTypes).toEqual(['tier2_enter', 'tier2_exit']);
+
+    expect(res.crash_events).toHaveLength(1);
+    expect(res.crash_events[0].enter).toBe(d(1)); // tier2_enter on 84
+    expect(res.crash_events[0].exit).toBe(d(2)); // tier2_exit on 95
+    expect(res.crash_events[0].tier3_date).toBeNull(); // never hit tier3
+
+    expect(res.beta_curve[1].value).toBeCloseTo(1.75, 6);
+    expect(res.beta_curve[2].value).toBeCloseTo(1.2, 6);
+  });
+
+  it('jumps straight to crash_enter (tier3) on extreme sudden drops', () => {
+    // 0050: 100 -> 78 (-22% / tier3 directly)
+    const res = runBacktest(bars(
+      [100, 100],
+      [100, 78]
+    ), P_TIERED);
+
+    const tradeTypes = res.trades.map((t) => t.type);
+    expect(tradeTypes).toEqual(['crash_enter']);
+
+    expect(res.crash_events).toHaveLength(1);
+    expect(res.crash_events[0].enter).toBe(d(1));
+    expect(res.crash_events[0].tier3_date).toBe(d(1));
+    expect(res.crash_events[0].exit).toBeNull();
+
+    expect(res.beta_curve[1].value).toBeCloseTo(2.0, 6);
+  });
+});

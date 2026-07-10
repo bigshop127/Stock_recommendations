@@ -5,6 +5,7 @@ import {
   aggregatePortfolio,
   triggerPriceForBeta,
   allocateDefensive,
+  computeMarketStatus,
   ETF_CODE,
   DEFAULT_CASH_RESERVE,
   type Trade,
@@ -769,5 +770,103 @@ describe('triggerPriceForBeta', () => {
   it('guards NaN inputs', () => {
     expect(triggerPriceForBeta(NaN, 6500, 350000, 2.0)).toBeNull();
     expect(triggerPriceForBeta(1.4, NaN, 350000, 2.0)).toBeNull();
+  });
+});
+
+describe('computeMarketStatus', () => {
+  it('handles empty series, single element, or all identical prices', () => {
+    // Empty series / null inputs
+    expect(computeMarketStatus(null as any)).toBeNull();
+    expect(computeMarketStatus({ closes: [] } as any)).toBeNull();
+
+    // Single element
+    const s1 = computeMarketStatus({ closes: [{ date: '2026-01-01', close: 100 }], tier1_dd: 0.10, tier2_dd: 0.15, tier3_dd: 0.20 });
+    expect(s1).not.toBeNull();
+    expect(s1!.tier).toBe(0);
+    expect(s1!.drawdown).toBe(0);
+    expect(s1!.peak_close).toBe(100);
+
+    // All identical prices
+    const s2 = computeMarketStatus({
+      closes: [
+        { date: '2026-01-01', close: 100 },
+        { date: '2026-01-02', close: 100 },
+        { date: '2026-01-03', close: 100 },
+      ],
+      tier1_dd: 0.10,
+      tier2_dd: 0.15,
+      tier3_dd: 0.20
+    });
+    expect(s2!.tier).toBe(0);
+    expect(s2!.drawdown).toBe(0);
+    expect(s2!.peak_close).toBe(100);
+  });
+
+  it('determines correct tiers for various drawdown percentages', () => {
+    const config = {
+      tier1_dd: 0.10,
+      tier2_dd: 0.15,
+      tier3_dd: 0.20,
+    };
+
+    // tier 0: drawdown = 5%
+    const s0 = computeMarketStatus({
+      closes: [
+        { date: '2026-01-01', close: 100 },
+        { date: '2026-01-02', close: 95 },
+      ],
+      ...config
+    });
+    expect(s0!.drawdown).toBeCloseTo(0.05, 6);
+    expect(s0!.tier).toBe(0);
+
+    // tier 1: drawdown = 11%
+    const s1 = computeMarketStatus({
+      closes: [
+        { date: '2026-01-01', close: 100 },
+        { date: '2026-01-02', close: 89 },
+      ],
+      ...config
+    });
+    expect(s1!.drawdown).toBeCloseTo(0.11, 6);
+    expect(s1!.tier).toBe(1);
+
+    // tier 2: drawdown = 16%
+    const s2 = computeMarketStatus({
+      closes: [
+        { date: '2026-01-01', close: 100 },
+        { date: '2026-01-02', close: 84 },
+      ],
+      ...config
+    });
+    expect(s2!.drawdown).toBeCloseTo(0.16, 6);
+    expect(s2!.tier).toBe(2);
+
+    // tier 3: drawdown = 22%
+    const s3 = computeMarketStatus({
+      closes: [
+        { date: '2026-01-01', close: 100 },
+        { date: '2026-01-02', close: 78 },
+      ],
+      ...config
+    });
+    expect(s3!.drawdown).toBeCloseTo(0.22, 6);
+    expect(s3!.tier).toBe(3);
+  });
+
+  it('ensures peak close is calculated over the entire window, not a rolling window', () => {
+    const s = computeMarketStatus({
+      closes: [
+        { date: '2026-01-01', close: 100 },
+        { date: '2026-01-02', close: 80 },
+        { date: '2026-01-03', close: 78 },
+      ],
+      tier1_dd: 0.10,
+      tier2_dd: 0.15,
+      tier3_dd: 0.20,
+    });
+    expect(s!.peak_close).toBe(100);
+    expect(s!.drawdown).toBeCloseTo(0.22, 6);
+    expect(s!.tier).toBe(3);
   });
 });

@@ -37,6 +37,10 @@ export interface RebalanceConfig {
   threshold_pct: number;         // 預設 10
   threshold_abs: number;         // 預設 0.1
   etf_beta: number;              // 預設 2.0
+  tier1_dd: number;              // 預設 0.10
+  tier2_dd: number;              // 預設 0.15
+  tier3_dd: number;              // 預設 0.20
+  beta_mid: number;              // 小股災中繼目標 β，預設 1.75
   // 買賣報價單機制（多資產：trade.code 缺省＝00631L）
   opening: { shares: number; avg_cost: number; cash: number; bonds: OpeningBond[] }; // 期初部位【增修H/I】
   trades: Trade[];               // 買賣紀錄（可增刪）
@@ -56,6 +60,10 @@ const SEED_CONFIG: RebalanceConfig = {
   threshold_pct: 10,
   threshold_abs: 0.1,
   etf_beta: 2.0,
+  tier1_dd: 0.10,
+  tier2_dd: 0.15,
+  tier3_dd: 0.20,
+  beta_mid: 1.75,
   opening: {
     shares: 0,
     avg_cost: 0,
@@ -207,6 +215,10 @@ function normalizeConfig(parsed: Record<string, unknown>): RebalanceConfig {
     threshold_pct: Math.max(0, safeNumber(parsed.threshold_pct, SEED_CONFIG.threshold_pct)),
     threshold_abs: Math.max(0, safeNumber(parsed.threshold_abs, SEED_CONFIG.threshold_abs)),
     etf_beta: Math.max(0.1, safeNumber(parsed.etf_beta, SEED_CONFIG.etf_beta)),
+    tier1_dd: Math.min(1, Math.max(0, safeNumber(parsed.tier1_dd, SEED_CONFIG.tier1_dd))),
+    tier2_dd: Math.min(1, Math.max(0, safeNumber(parsed.tier2_dd, SEED_CONFIG.tier2_dd))),
+    tier3_dd: Math.min(1, Math.max(0, safeNumber(parsed.tier3_dd, SEED_CONFIG.tier3_dd))),
+    beta_mid: Math.max(0.1, safeNumber(parsed.beta_mid, SEED_CONFIG.beta_mid)),
     opening,
     trades,
     locked,

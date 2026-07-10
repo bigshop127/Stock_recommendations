@@ -888,3 +888,85 @@ export function computeFundFlows(result: RebalanceResult): FundFlowBreakdown {
   return { sources, uses };
 }
 
+// ── 市場狀態燈號計算 ──────────────────────────────────────────────────
+export interface MarketStatusInput {
+  closes: { date: string; close: number }[]; // 升冪排序；建議至少抓 3~5 年歷史以取得有意義的高點
+  tier1_dd: number; // 第一警戒門檻，預設 0.10
+  tier2_dd: number; // 小股災門檻，預設 0.15
+  tier3_dd: number; // 股災來臨門檻，預設 0.20
+}
+
+export interface MarketStatus {
+  latest_date: string;
+  latest_close: number;
+  peak_date: string;   // 提供序列中最高收盤發生的日期
+  peak_close: number;
+  drawdown: number;    // (peak_close − latest_close) / peak_close，恆 ≥ 0
+  tier: 0 | 1 | 2 | 3;  // 0=正常 1=第一警戒 2=小股災 3=股災來臨
+  tier_label: '正常' | '第一警戒' | '小股災' | '股災來臨';
+}
+
+export function computeMarketStatus(input: MarketStatusInput): MarketStatus | null {
+  if (!input || !Array.isArray(input.closes) || input.closes.length === 0) {
+    return null;
+  }
+
+  // 防禦性地過濾非正數（closes 為空或全部非正數 → 回傳 null）
+  const validCloses = input.closes.filter(item => safeNum(item?.close, 0) > 0);
+  if (validCloses.length === 0) {
+    return null;
+  }
+
+  // 1. 找到整段序列的最大 close 與對應日期
+  let peak_close = -1;
+  let peak_date = '';
+  for (const item of validCloses) {
+    const c = safeNum(item.close, 0);
+    if (c > peak_close) {
+      peak_close = c;
+      peak_date = item.date || '';
+    }
+  }
+
+  if (peak_close <= 0) {
+    return null;
+  }
+
+  // 2. 最新一筆收盤
+  const latest_item = validCloses[validCloses.length - 1];
+  const latest_close = safeNum(latest_item.close, 0);
+  const latest_date = latest_item.date || '';
+
+  // 3. 計算 drawdown
+  const drawdown = Math.max(0, (peak_close - latest_close) / peak_close);
+
+  // 4. 門檻守衛
+  const t1 = clamp(safeNum(input.tier1_dd, 0.10), 0, 1);
+  const t2 = clamp(safeNum(input.tier2_dd, 0.15), 0, 1);
+  const t3 = clamp(safeNum(input.tier3_dd, 0.20), 0, 1);
+
+  // 5. 判斷 tier
+  let tier: 0 | 1 | 2 | 3 = 0;
+  let tier_label: '正常' | '第一警戒' | '小股災' | '股災來臨' = '正常';
+
+  if (drawdown >= t3) {
+    tier = 3;
+    tier_label = '股災來臨';
+  } else if (drawdown >= t2) {
+    tier = 2;
+    tier_label = '小股災';
+  } else if (drawdown >= t1) {
+    tier = 1;
+    tier_label = '第一警戒';
+  }
+
+  return {
+    latest_date,
+    latest_close,
+    peak_date,
+    peak_close,
+    drawdown,
+    tier,
+    tier_label,
+  };
+}

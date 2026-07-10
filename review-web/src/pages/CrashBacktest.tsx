@@ -15,7 +15,6 @@ import {
 import { DEFAULT_CASH_RESERVE, DEFAULT_BOND_SPLIT } from '../lib/rebalance';
 
 const ETF_CODE = '00631L';
-const MKT_CODE = '0050';
 const BOND1_CODE = '00687B';
 const BOND2_CODE = '00953B';
 const START = '2020-01-01';
@@ -33,6 +32,8 @@ const DEFAULT_PARAMS: BacktestParams = {
   mode: 'oneshot',
   ladder_step: 0.05,
   ladder_full_at: 0.3,
+  tier2_dd: 0.15,
+  beta_mid: 1.75,
   cash_reserve: DEFAULT_CASH_RESERVE,
   bond_split: DEFAULT_BOND_SPLIT,
   bond_priority: 'bond1_first',
@@ -150,12 +151,17 @@ export const CrashBacktest: React.FC = () => {
   }>({ loading: true, error: null, etf: null, mkt: null, bond1: null, bond2: null });
   const [params, setParams] = useState<BacktestParams>(() => loadParams());
 
-  const fetchData = async () => {
+  const [signalSource, setSignalSource] = useState<'0050' | 'TAIEX'>(() => {
+    const saved = localStorage.getItem('review:backtest:signalSource');
+    return (saved === '0050' ? '0050' : 'TAIEX');
+  });
+
+  const fetchData = async (currentSignalSource: '0050' | 'TAIEX') => {
     setState((s) => ({ ...s, loading: true, error: null }));
     try {
       const [etfRes, mktRes] = await Promise.all([
         api.ohlcv(ETF_CODE, { start: START, adjust: true }),
-        api.ohlcv(MKT_CODE, { start: START, adjust: true }),
+        api.ohlcv(currentSignalSource, { start: START, adjust: true }),
       ]);
       // 債券歷史價為選配（雙軌變現比較用）：抓不到就降級回雙資產模型，不擋主回測【增修K】
       let bond1: OhlcvRow[] | null = null;
@@ -178,9 +184,10 @@ export const CrashBacktest: React.FC = () => {
   };
 
   useEffect(() => {
-    fetchData();
+    fetchData(signalSource);
+    localStorage.setItem('review:backtest:signalSource', signalSource);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [signalSource]);
 
   useEffect(() => {
     localStorage.setItem(PARAMS_KEY, JSON.stringify(params));
@@ -243,12 +250,12 @@ export const CrashBacktest: React.FC = () => {
             崩盤策略回測實驗室
           </h1>
           <p className="text-sm text-zinc-500 mt-1">
-            00631L（正2）＋防守端（現金＋00687B＋00953B），以 0050 偵測崩盤：一次 all-in 或每跌一階分批加碼，創新高回目標 β；
+            00631L（正2）＋防守端（現金＋00687B＋00953B），以 {signalSource} 偵測崩盤：一次 all-in 或每跌一階分批加碼，創新高回目標 β；
             {hasBonds ? '雙軌變現優先順序可比較（見下方績效表）。' : '尚未取得債券歷史價時退回雙資產（僅現金）模型。'}
           </p>
         </div>
         <button
-          onClick={fetchData}
+          onClick={() => fetchData(signalSource)}
           className="flex items-center gap-2 text-xs font-medium px-3 py-2 rounded-lg bg-zinc-800/60 hover:bg-zinc-700/60 text-zinc-300 transition-colors"
         >
           <RefreshCw className={`w-3.5 h-3.5 ${state.loading ? 'animate-spin' : ''}`} />
@@ -282,15 +289,33 @@ export const CrashBacktest: React.FC = () => {
           </div>
         </div>
 
-        {/* 加碼模式：一次 all-in / 分批加碼【增修J】 */}
+        {/* 訊號來源 */}
         <div>
           <div className="flex items-center justify-between text-sm mb-2">
-            <span className="text-zinc-300 font-medium">加碼模式（0050 回撤觸發）</span>
+            <span className="text-zinc-300 font-medium">回撤訊號來源</span>
+            <select
+              value={signalSource}
+              onChange={(e) => setSignalSource(e.target.value as '0050' | 'TAIEX')}
+              className="px-3 py-1.5 text-xs font-medium bg-zinc-800 border border-border rounded-lg text-zinc-100 focus:outline-none focus:border-primary"
+            >
+              <option value="TAIEX">TAIEX (加權指數)</option>
+              <option value="0050">0050 (元大台灣50)</option>
+            </select>
+          </div>
+          <p className="text-[11px] text-zinc-500">
+            用於計算歷史回撤的基準訊號。三層系統預設採用 TAIEX (加權指數)。
+          </p>
+        </div>
+
+        {/* 加碼模式：一次 all-in / 分批加碼 / 三層崩盤【優化20】 */}
+        <div>
+          <div className="flex items-center justify-between text-sm mb-2">
+            <span className="text-zinc-300 font-medium">加碼模式（{signalSource} 回撤觸發）</span>
             <div className="flex rounded-lg overflow-hidden border border-border">
               <button
                 onClick={() => update({ mode: 'oneshot' })}
                 className={`px-3 py-1.5 text-xs font-medium ${
-                  params.mode !== 'ladder' ? 'bg-primary text-white' : 'text-zinc-400 hover:text-zinc-200'
+                  params.mode === 'oneshot' ? 'bg-primary text-white' : 'text-zinc-400 hover:text-zinc-200'
                 }`}
               >
                 一次 all-in
@@ -303,9 +328,18 @@ export const CrashBacktest: React.FC = () => {
               >
                 分批加碼
               </button>
+              <button
+                onClick={() => update({ mode: 'tiered', crash_dd: params.mode !== 'tiered' && params.crash_dd === 0.28 ? 0.20 : params.crash_dd })}
+                className={`px-3 py-1.5 text-xs font-medium ${
+                  params.mode === 'tiered' ? 'bg-primary text-white' : 'text-zinc-400 hover:text-zinc-200'
+                }`}
+              >
+                三層崩盤
+              </button>
             </div>
           </div>
-          {params.mode !== 'ladder' ? (
+
+          {params.mode === 'oneshot' && (
             <>
               <div className="flex items-center justify-between text-xs mb-1">
                 <span className="text-zinc-400">觸發回撤（一次全數加碼滿槓桿）</span>
@@ -326,7 +360,9 @@ export const CrashBacktest: React.FC = () => {
                 <span>−50%</span>
               </div>
             </>
-          ) : (
+          )}
+
+          {params.mode === 'ladder' && (
             <>
               <div className="flex items-center justify-between text-xs mb-1">
                 <span className="text-zinc-400">每跌一階買一筆</span>
@@ -357,6 +393,55 @@ export const CrashBacktest: React.FC = () => {
                 step={0.05}
                 value={params.ladder_full_at}
                 onChange={(e) => update({ ladder_full_at: Math.max(Number(e.target.value), params.ladder_step) })}
+                className="w-full accent-primary"
+              />
+            </>
+          )}
+
+          {params.mode === 'tiered' && (
+            <>
+              {/* tier2_dd 滑桿（5%~20%） */}
+              <div className="flex items-center justify-between text-xs mb-1">
+                <span className="text-zinc-400">小股災觸發門檻 (tier2)</span>
+                <span className="font-mono text-bear font-bold">−{Math.round(params.tier2_dd * 100)}%</span>
+              </div>
+              <input
+                type="range"
+                min={0.05}
+                max={0.20}
+                step={0.01}
+                value={params.tier2_dd}
+                onChange={(e) => update({ tier2_dd: Number(e.target.value) })}
+                className="w-full accent-primary"
+              />
+
+              {/* beta_mid 滑桿（範圍可綁定 target_beta ~ etf_beta） */}
+              <div className="flex items-center justify-between text-xs mb-1 mt-2">
+                <span className="text-zinc-400">小股災中繼目標 β</span>
+                <span className="font-mono text-primary font-bold">{params.beta_mid.toFixed(2)}X</span>
+              </div>
+              <input
+                type="range"
+                min={params.target_beta}
+                max={params.etf_beta}
+                step={0.05}
+                value={params.beta_mid}
+                onChange={(e) => update({ beta_mid: Number(e.target.value) })}
+                className="w-full accent-primary"
+              />
+
+              {/* crash_dd 滑桿 (股災確認門檻) */}
+              <div className="flex items-center justify-between text-xs mb-1 mt-2">
+                <span className="text-zinc-400">股災確認門檻 (tier3)</span>
+                <span className="font-mono text-bear font-bold">−{Math.round(params.crash_dd * 100)}%</span>
+              </div>
+              <input
+                type="range"
+                min={0.10}
+                max={0.50}
+                step={0.01}
+                value={params.crash_dd}
+                onChange={(e) => update({ crash_dd: Number(e.target.value) })}
                 className="w-full accent-primary"
               />
             </>
@@ -524,7 +609,9 @@ export const CrashBacktest: React.FC = () => {
 
               {/* 績效比較表 */}
               <div className="bg-card border border-border rounded-xl overflow-hidden">
-                <div className="px-5 py-3 border-b border-border text-sm font-semibold text-zinc-200">績效比較</div>
+                <div className="px-5 py-3 border-b border-border text-sm font-semibold text-zinc-200">
+                  績效比較（{params.mode === 'tiered' ? '三層股災' : params.mode === 'ladder' ? '分批加碼' : '一次全加碼'}）
+                </div>
                 <div className="overflow-x-auto">
                   <table className="w-full text-sm">
                     <thead>
@@ -581,7 +668,7 @@ export const CrashBacktest: React.FC = () => {
               {/* 投組 β 曲線 */}
               <div className="bg-card border border-border rounded-xl p-5">
                 <div className="text-sm font-semibold text-zinc-200 mb-3">
-                  策略投組 β（{params.mode === 'ladder' ? '回撤期分批墊高' : '崩盤期拉滿槓桿 ≈ 2.0'}，創新高回目標 {params.target_beta.toFixed(2)}）
+                  策略投組 β（{params.mode === 'tiered' ? '小股災加碼/股災滿倉' : params.mode === 'ladder' ? '回撤期分批墊高' : '崩盤期拉滿槓桿 ≈ 2.0'}，創新高/回落回目標 {params.target_beta.toFixed(2)}）
                 </div>
                 <MultiLineChart
                   series={[{ key: 'beta', name: '投組 β', color: '#a855f7', points: result.beta_curve }]}
@@ -594,8 +681,10 @@ export const CrashBacktest: React.FC = () => {
               <div className="bg-card border border-border rounded-xl p-5">
                 <div className="text-sm font-semibold text-zinc-200 mb-3 flex items-center gap-2">
                   <TrendingDown className="w-4 h-4 text-bear" />
-                  0050 自高點回撤（
-                  {params.mode === 'ladder'
+                  {signalSource} 自高點回撤（
+                  {params.mode === 'tiered'
+                    ? `警戒 −${Math.round(params.tier2_dd * 100)}%／股災 −${Math.round(params.crash_dd * 100)}%`
+                    : params.mode === 'ladder'
                     ? `首筆 −${Math.round(params.ladder_step * 100)}%／買滿 −${Math.round(params.ladder_full_at * 100)}%`
                     : `觸發線 −${Math.round(params.crash_dd * 100)}%`}
                   ）
@@ -611,7 +700,12 @@ export const CrashBacktest: React.FC = () => {
                   ]}
                   height={180}
                   priceLines={
-                    params.mode === 'ladder'
+                    params.mode === 'tiered'
+                      ? [
+                          { price: -params.tier2_dd * 100, color: '#f59e0b', title: `警戒 −${Math.round(params.tier2_dd * 100)}%` },
+                          { price: -params.crash_dd * 100, color: '#ef4444', title: `股災 −${Math.round(params.crash_dd * 100)}%` },
+                        ]
+                      : params.mode === 'ladder'
                       ? [
                           { price: -params.ladder_step * 100, color: '#f59e0b', title: `首筆 −${Math.round(params.ladder_step * 100)}%` },
                           { price: -params.ladder_full_at * 100, color: '#ef4444', title: `買滿 −${Math.round(params.ladder_full_at * 100)}%` },
@@ -660,16 +754,20 @@ export const CrashBacktest: React.FC = () => {
                         {result.trades.map((t, i) => {
                           const label =
                             t.type === 'crash_enter'
-                              ? '崩盤加碼'
+                              ? '股災滿倉'
                               : t.type === 'ladder_buy'
                               ? '分批加碼'
                               : t.type === 'crash_exit'
                               ? '創新高退出'
+                              : t.type === 'tier2_enter'
+                              ? '小股災加碼'
+                              : t.type === 'tier2_exit'
+                              ? '小股災退出'
                               : '再平衡';
                           const labelClass =
-                            t.type === 'crash_enter' || t.type === 'ladder_buy'
+                            t.type === 'crash_enter' || t.type === 'ladder_buy' || t.type === 'tier2_enter'
                               ? 'text-bull'
-                              : t.type === 'crash_exit'
+                              : t.type === 'crash_exit' || t.type === 'tier2_exit'
                               ? 'text-bear'
                               : 'text-zinc-300';
                           return (

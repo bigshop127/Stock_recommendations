@@ -37,11 +37,13 @@ export interface BacktestParams {
   tolerance_mode: 'pct' | 'abs'; // 容忍口徑（沿用 opt10）
   threshold_pct: number; // pct 模式 ±%
   threshold_abs: number; // abs 模式 ±β
-  crash_dd: number; // 崩盤觸發：0050 自高點回撤幅度（0.28 = −28%）
+  crash_dd: number; // 崩盤確認門檻 (tier3)：0050 自高點回撤幅度（預設 0.28 / tiered 預設 0.20）
   cost_bps: number; // 單邊交易成本（bps，套在成交金額；預設 0）
-  mode: 'oneshot' | 'ladder'; // 加碼模式：一次 all-in（預設）/ 分批加碼【增修J】
+  mode: 'oneshot' | 'ladder' | 'tiered'; // 加碼模式：一次 all-in（預設）/ 分批加碼 / 三層崩盤【優化20】
   ladder_step: number; // ladder：每多跌多少買一筆（0.05 = −5%）
   ladder_full_at: number; // ladder：跌到多深買滿（0.30 = −30%；筆數 = full_at/step）
+  tier2_dd: number; // tiered：小股災回撤門檻（預設 0.15）
+  beta_mid: number; // tiered：小股災中繼目標 β（預設 1.75）
   // 【增修K】防守端三資產（現金＋00687B＋00953B）；bars 未帶 bond1/bond2 時完全不啟用，行為與舊版一致
   cash_reserve: number; // 固定保留現金（預設 100,000，同 lib/rebalance.ts）
   bond_split: number; // 債券池中 bond1 佔比（預設 0.6）
@@ -69,7 +71,7 @@ export interface EquityCurve {
 
 export interface Trade {
   date: string;
-  type: 'rebalance' | 'crash_enter' | 'crash_exit' | 'ladder_buy';
+  type: 'rebalance' | 'crash_enter' | 'crash_exit' | 'ladder_buy' | 'tier2_enter' | 'tier2_exit';
   from_beta: number;
   to_beta: number;
   traded_value: number; // + 買 / − 賣（00631L 金額）
@@ -80,6 +82,7 @@ export interface CrashEvent {
   enter: string;
   exit: string | null;
   max_dd: number; // 該次崩盤期間 0050 最大回撤
+  tier3_date?: string | null; // tiered：從 tier2 惡化為 tier3 的日期，oneshot/ladder 恆為 undefined
 }
 
 export interface BacktestResult {
@@ -217,9 +220,11 @@ export function runBacktest(bars: AlignedBar[], rawParams: Partial<BacktestParam
     threshold_abs: Math.max(0, safeNum(rawParams?.threshold_abs, 0.1)),
     crash_dd: clamp(safeNum(rawParams?.crash_dd, 0.28), 0.05, 0.95),
     cost_bps: Math.max(0, safeNum(rawParams?.cost_bps, 0)),
-    mode: rawParams?.mode === 'ladder' ? 'ladder' : 'oneshot',
+    mode: rawParams?.mode === 'tiered' ? 'tiered' : (rawParams?.mode === 'ladder' ? 'ladder' : 'oneshot'),
     ladder_step: clamp(safeNum(rawParams?.ladder_step, 0.05), 0.01, 0.5),
     ladder_full_at: 0, // 佔位，下一行以 step 為下限修正
+    tier2_dd: clamp(safeNum(rawParams?.tier2_dd, 0.15), 0.01, 0.95),
+    beta_mid: clamp(safeNum(rawParams?.beta_mid, 1.75), 0, Math.max(0.1, safeNum(rawParams?.etf_beta, 2.0))),
     cash_reserve: Math.max(0, safeNum(rawParams?.cash_reserve, DEFAULT_CASH_RESERVE)),
     bond_split: clamp(safeNum(rawParams?.bond_split, DEFAULT_BOND_SPLIT), 0, 1),
     bond_priority:
@@ -245,7 +250,7 @@ export function runBacktest(bars: AlignedBar[], rawParams: Partial<BacktestParam
 
   const {
     initial_capital, target_beta, etf_beta, tolerance_mode, threshold_pct, threshold_abs,
-    crash_dd, cost_bps, mode, ladder_step, ladder_full_at, cash_reserve, bond_split, bond_priority,
+    crash_dd, cost_bps, mode, ladder_step, ladder_full_at, tier2_dd, beta_mid, cash_reserve, bond_split, bond_priority,
   } = params;
 
   const targetWeight = clamp(target_beta / etf_beta, 0, 1);
@@ -300,6 +305,7 @@ export function runBacktest(bars: AlignedBar[], rawParams: Partial<BacktestParam
 
   let peakMkt = bars[0].mkt;
   let inCrash = false;
+  let inTier2 = false;
   let curCrash: CrashEvent | null = null;
   // ladder 模式狀態【增修J】：進入回撤 regime 時的防守端（現金＋債券）基準與已買階數【增修K 擴充為防守端】
   const nLevels = Math.max(1, Math.round(ladder_full_at / ladder_step));
@@ -345,69 +351,142 @@ export function runBacktest(bars: AlignedBar[], rawParams: Partial<BacktestParam
 
     // ── 狀態機（i>0 才交易，i=0 為建倉基準日）──
     if (i > 0) {
-      // ladder 模式【增修J】：0050 每多跌 ladder_step 就進一階
-      const level = mode === 'ladder' ? Math.floor(dd / ladder_step + 1e-12) : 0;
-
-      if (mode === 'ladder' && !inCrash && level >= 1) {
-        // 進入回撤 regime：鎖定防守端基準、開始分批（本日即會買第一階）
-        inCrash = true;
-        regimeDefensive = defensiveValue;
-        deployedLevels = 0;
-        curCrash = { enter: bar.date, exit: null, max_dd: dd };
-      }
-
-      if (mode === 'oneshot' && !inCrash && dd >= crash_dd) {
-        // 進入崩盤：全數加碼到滿槓桿
-        const desiredValue = 1.0 * total;
-        const traded = desiredValue - etfValue;
-        const cost = Math.abs(traded) * costRate;
-        etfUnits = desiredValue / bar.etf;
-        settleTrade(desiredValue, traded, cost);
-        const toBeta = total > 0 ? (desiredValue / total) * etf_beta : 0;
-        trades.push({ date: bar.date, type: 'crash_enter', from_beta: curBeta, to_beta: toBeta, traded_value: traded, cost });
-        inCrash = true;
-        curCrash = { enter: bar.date, exit: null, max_dd: dd };
-      } else if (inCrash && dd <= 1e-9) {
-        // 0050 創新高 → 退出、再平衡回目標（oneshot / ladder 共用）
-        const desiredValue = targetWeight * total;
-        const traded = desiredValue - etfValue;
-        const cost = Math.abs(traded) * costRate;
-        etfUnits = desiredValue / bar.etf;
-        settleTrade(desiredValue, traded, cost);
-        const toBeta = total > 0 ? (desiredValue / total) * etf_beta : 0;
-        trades.push({ date: bar.date, type: 'crash_exit', from_beta: curBeta, to_beta: toBeta, traded_value: traded, cost });
-        inCrash = false;
-        if (curCrash) {
-          curCrash.exit = bar.date;
-          crashEvents.push(curCrash);
-          curCrash = null;
-        }
-      } else if (inCrash) {
-        if (curCrash && dd > curCrash.max_dd) curCrash.max_dd = dd;
-        if (mode === 'ladder') {
-          // 回撤加深到新的階 → 補買到應部署階數（跳空跌多階就一次補多筆），資金來源＝防守端（現金＋債券）
-          const want = Math.min(level, nLevels);
-          if (want > deployedLevels && defensiveValue > 0) {
-            const tranche = regimeDefensive / nLevels;
-            const traded = Math.min(defensiveValue, tranche * (want - deployedLevels));
-            const cost = traded * costRate;
-            etfUnits += traded / bar.etf;
-            settleTrade(etfValue + traded, traded, cost);
-            const toBeta = total > 0 ? ((etfValue + traded) / total) * etf_beta : 0;
-            trades.push({ date: bar.date, type: 'ladder_buy', from_beta: curBeta, to_beta: toBeta, traded_value: traded, cost });
-            deployedLevels = want;
+      if (mode === 'tiered') {
+        if (!inCrash && dd >= crash_dd) {
+          // 進入/升級為 tier 3 股災來臨
+          const desiredValue = 1.0 * total;
+          const traded = desiredValue - etfValue;
+          const cost = Math.abs(traded) * costRate;
+          etfUnits = desiredValue / bar.etf;
+          settleTrade(desiredValue, traded, cost);
+          const toBeta = total > 0 ? (desiredValue / total) * etf_beta : 0;
+          trades.push({ date: bar.date, type: 'crash_enter', from_beta: curBeta, to_beta: toBeta, traded_value: traded, cost });
+          
+          inCrash = true;
+          inTier2 = false;
+          if (curCrash) {
+            curCrash.tier3_date = bar.date;
+            if (dd > curCrash.max_dd) curCrash.max_dd = dd;
+          } else {
+            curCrash = { enter: bar.date, exit: null, max_dd: dd, tier3_date: bar.date };
           }
+        } else if (!inCrash && !inTier2 && dd >= tier2_dd) {
+          // 進入 tier 2 小股災
+          const desiredValue = (beta_mid / etf_beta) * total;
+          const traded = desiredValue - etfValue;
+          const cost = Math.abs(traded) * costRate;
+          etfUnits = desiredValue / bar.etf;
+          settleTrade(desiredValue, traded, cost);
+          const toBeta = total > 0 ? (desiredValue / total) * etf_beta : 0;
+          trades.push({ date: bar.date, type: 'tier2_enter', from_beta: curBeta, to_beta: toBeta, traded_value: traded, cost });
+          
+          inTier2 = true;
+          curCrash = { enter: bar.date, exit: null, max_dd: dd, tier3_date: null };
+        } else if (inCrash && dd <= 1e-9) {
+          // 0050 創新高 → 退出、再平衡回目標
+          const desiredValue = targetWeight * total;
+          const traded = desiredValue - etfValue;
+          const cost = Math.abs(traded) * costRate;
+          etfUnits = desiredValue / bar.etf;
+          settleTrade(desiredValue, traded, cost);
+          const toBeta = total > 0 ? (desiredValue / total) * etf_beta : 0;
+          trades.push({ date: bar.date, type: 'crash_exit', from_beta: curBeta, to_beta: toBeta, traded_value: traded, cost });
+          
+          inCrash = false;
+          if (curCrash) {
+            curCrash.exit = bar.date;
+            crashEvents.push(curCrash);
+            curCrash = null;
+          }
+        } else if (inTier2 && dd < tier2_dd) {
+          // 回落退出小股災
+          const desiredValue = targetWeight * total;
+          const traded = desiredValue - etfValue;
+          const cost = Math.abs(traded) * costRate;
+          etfUnits = desiredValue / bar.etf;
+          settleTrade(desiredValue, traded, cost);
+          const toBeta = total > 0 ? (desiredValue / total) * etf_beta : 0;
+          trades.push({ date: bar.date, type: 'tier2_exit', from_beta: curBeta, to_beta: toBeta, traded_value: traded, cost });
+          
+          inTier2 = false;
+          if (curCrash) {
+            curCrash.exit = bar.date;
+            crashEvents.push(curCrash);
+            curCrash = null;
+          }
+        } else if (inCrash) {
+          // 持續滿倉中，僅記錄期間最大回撤
+          if (curCrash && dd > curCrash.max_dd) curCrash.max_dd = dd;
+        } else if (inTier2) {
+          // 持續小股災中，僅記錄期間最大回撤
+          if (curCrash && dd > curCrash.max_dd) curCrash.max_dd = dd;
+        } else if (curBeta > upper || curBeta < lower) {
+          // 正常模式：漂出容忍區間
+          const desiredValue = targetWeight * total;
+          const traded = desiredValue - etfValue;
+          const cost = Math.abs(traded) * costRate;
+          etfUnits = desiredValue / bar.etf;
+          settleTrade(desiredValue, traded, cost);
+          const toBeta = total > 0 ? (desiredValue / total) * etf_beta : 0;
+          trades.push({ date: bar.date, type: 'rebalance', from_beta: curBeta, to_beta: toBeta, traded_value: traded, cost });
         }
-        // oneshot：崩盤持續、維持滿槓桿，僅記錄期間最大回撤
-      } else if (curBeta > upper || curBeta < lower) {
-        // 正常模式：漂出容忍區間 → 再平衡回目標 β
-        const desiredValue = targetWeight * total;
-        const traded = desiredValue - etfValue;
-        const cost = Math.abs(traded) * costRate;
-        etfUnits = desiredValue / bar.etf;
-        settleTrade(desiredValue, traded, cost);
-        const toBeta = total > 0 ? (desiredValue / total) * etf_beta : 0;
-        trades.push({ date: bar.date, type: 'rebalance', from_beta: curBeta, to_beta: toBeta, traded_value: traded, cost });
+      } else {
+        // 既有 oneshot / ladder 邏輯（完全不動）
+        const level = Math.floor(dd / ladder_step + 1e-12);
+        if (mode === 'ladder' && !inCrash && level >= 1) {
+          inCrash = true;
+          regimeDefensive = defensiveValue;
+          deployedLevels = 0;
+          curCrash = { enter: bar.date, exit: null, max_dd: dd };
+        }
+        if (mode === 'oneshot' && !inCrash && dd >= crash_dd) {
+          const desiredValue = 1.0 * total;
+          const traded = desiredValue - etfValue;
+          const cost = Math.abs(traded) * costRate;
+          etfUnits = desiredValue / bar.etf;
+          settleTrade(desiredValue, traded, cost);
+          const toBeta = total > 0 ? (desiredValue / total) * etf_beta : 0;
+          trades.push({ date: bar.date, type: 'crash_enter', from_beta: curBeta, to_beta: toBeta, traded_value: traded, cost });
+          inCrash = true;
+          curCrash = { enter: bar.date, exit: null, max_dd: dd };
+        } else if (inCrash && dd <= 1e-9) {
+          const desiredValue = targetWeight * total;
+          const traded = desiredValue - etfValue;
+          const cost = Math.abs(traded) * costRate;
+          etfUnits = desiredValue / bar.etf;
+          settleTrade(desiredValue, traded, cost);
+          const toBeta = total > 0 ? (desiredValue / total) * etf_beta : 0;
+          trades.push({ date: bar.date, type: 'crash_exit', from_beta: curBeta, to_beta: toBeta, traded_value: traded, cost });
+          inCrash = false;
+          if (curCrash) {
+            curCrash.exit = bar.date;
+            crashEvents.push(curCrash);
+            curCrash = null;
+          }
+        } else if (inCrash) {
+          if (curCrash && dd > curCrash.max_dd) curCrash.max_dd = dd;
+          if (mode === 'ladder') {
+            const want = Math.min(level, nLevels);
+            if (want > deployedLevels && defensiveValue > 0) {
+              const tranche = regimeDefensive / nLevels;
+              const traded = Math.min(defensiveValue, tranche * (want - deployedLevels));
+              const cost = traded * costRate;
+              etfUnits += traded / bar.etf;
+              settleTrade(etfValue + traded, traded, cost);
+              const toBeta = total > 0 ? ((etfValue + traded) / total) * etf_beta : 0;
+              trades.push({ date: bar.date, type: 'ladder_buy', from_beta: curBeta, to_beta: toBeta, traded_value: traded, cost });
+              deployedLevels = want;
+            }
+          }
+        } else if (curBeta > upper || curBeta < lower) {
+          const desiredValue = targetWeight * total;
+          const traded = desiredValue - etfValue;
+          const cost = Math.abs(traded) * costRate;
+          etfUnits = desiredValue / bar.etf;
+          settleTrade(desiredValue, traded, cost);
+          const toBeta = total > 0 ? (desiredValue / total) * etf_beta : 0;
+          trades.push({ date: bar.date, type: 'rebalance', from_beta: curBeta, to_beta: toBeta, traded_value: traded, cost });
+        }
       }
     }
 
@@ -453,9 +532,11 @@ export function runBacktest(bars: AlignedBar[], rawParams: Partial<BacktestParam
     strategy: {
       key: 'strategy',
       name:
-        mode === 'ladder'
-          ? `崩盤策略（每 −${Math.round(ladder_step * 100)}% 分批、−${Math.round(ladder_full_at * 100)}% 買滿）`
-          : `崩盤策略（−${Math.round(crash_dd * 100)}% 一次 all-in）`,
+        mode === 'tiered'
+          ? `崩盤策略（三層，警戒 −${Math.round(tier2_dd * 100)}% / 股災 −${Math.round(crash_dd * 100)}%）`
+          : mode === 'ladder'
+            ? `崩盤策略（每 −${Math.round(ladder_step * 100)}% 分批、−${Math.round(ladder_full_at * 100)}% 買滿）`
+            : `崩盤策略（−${Math.round(crash_dd * 100)}% 一次 all-in）`,
       points: stratPoints,
       metrics: metricsOf(stratPoints, initial_capital),
     },
