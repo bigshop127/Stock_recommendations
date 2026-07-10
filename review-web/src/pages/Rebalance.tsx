@@ -1129,19 +1129,19 @@ export function Rebalance() {
                             },
                           });
                         }}
-                        className={`text-[11px] flex items-center gap-1 transition-colors ${
+                        className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold border-2 transition-colors ${
                           config.locked?.bonds?.[a.code]
-                            ? 'text-primary'
-                            : 'text-zinc-500 hover:text-zinc-400'
+                            ? 'bg-bull/15 border-bull text-bull shadow-sm shadow-bull/20'
+                            : 'bg-zinc-900 border-zinc-700 text-zinc-400 hover:border-zinc-500 hover:text-zinc-200'
                         }`}
                         title={config.locked?.bonds?.[a.code] ? '解鎖資產' : '鎖定資產'}
                       >
                         {config.locked?.bonds?.[a.code] ? (
-                          <Lock className="w-3 h-3" />
+                          <Lock className="w-4 h-4" />
                         ) : (
-                          <Unlock className="w-3 h-3" />
+                          <Unlock className="w-4 h-4" />
                         )}
-                        <span>{config.locked?.bonds?.[a.code] ? '鎖定' : '未鎖'}</span>
+                        <span>{config.locked?.bonds?.[a.code] ? '已鎖定' : '未鎖'}</span>
                       </button>
                     )}
                     <button
@@ -1242,7 +1242,7 @@ export function Rebalance() {
             </p>
           </div>
           <div className="space-y-1.5">
-            <div className="flex items-center justify-between">
+            <div className="flex items-center justify-between flex-wrap gap-2">
               <label className="text-xs font-medium text-zinc-300">現金保留額（固定保留、不投入債券）</label>
               <button
                 onClick={() => {
@@ -1253,19 +1253,19 @@ export function Rebalance() {
                     },
                   });
                 }}
-                className={`text-[11px] flex items-center gap-1 transition-colors ${
+                className={`shrink-0 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold border-2 transition-colors ${
                   config.locked?.cash
-                    ? 'text-primary'
-                    : 'text-zinc-500 hover:text-zinc-400'
+                    ? 'bg-bull/15 border-bull text-bull shadow-sm shadow-bull/20'
+                    : 'bg-zinc-900 border-zinc-700 text-zinc-400 hover:border-zinc-500 hover:text-zinc-200'
                 }`}
                 title={config.locked?.cash ? '解鎖現金' : '鎖定現金'}
               >
                 {config.locked?.cash ? (
-                  <Lock className="w-3 h-3" />
+                  <Lock className="w-4 h-4" />
                 ) : (
-                  <Unlock className="w-3 h-3" />
+                  <Unlock className="w-4 h-4" />
                 )}
-                <span>{config.locked?.cash ? '鎖定' : '未鎖'}</span>
+                <span>{config.locked?.cash ? '已鎖定' : '未鎖'}</span>
               </button>
             </div>
             <div className="relative">
