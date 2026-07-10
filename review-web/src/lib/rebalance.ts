@@ -659,7 +659,7 @@ export function computeRebalance(input: RebalanceInput): RebalanceResult {
     const defensiveInput: DefensiveAllocationLockedInput = {
       targetDefensiveValue: target_defensive_value,
       cash: { value: cash, reserve: cash_reserve, locked: input.locked?.cash === true },
-      bonds: bonds.map((b, i) => ({
+      bonds: bonds.map((b) => ({
         code: b.code,
         value: b.shares * b.price,
         locked: input.locked?.bonds?.[b.code] === true,
