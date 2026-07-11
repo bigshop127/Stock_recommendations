@@ -1201,73 +1201,93 @@ export function Rebalance() {
             </div>
           </div>
 
-          {/* 觸發價帶：持倉不動下，β 落在容忍區間對應的 00631L 價格上下界 */}
-          <div className="p-4 rounded-xl border border-zinc-800 bg-zinc-900/60 space-y-3">
-            <div className="text-xs font-semibold text-zinc-400 flex items-center gap-1.5">
-              <SlidersHorizontal className="w-4 h-4 text-primary" />
-              觸發價帶（持倉不動、只看 00631L 價格）
-            </div>
-            {result.sell_trigger_price === null && result.buy_trigger_price === null ? (
-              <p className="text-xs text-zinc-500 leading-relaxed">
-                目前持倉無可反解的觸發價
-                {result.defensive_value <= 0
-                  ? '（防守端為 0，投組 Beta 恆等於滿槓桿，與價格無關）'
-                  : config.shares <= 0
-                    ? '（尚無 00631L 持股）'
-                    : '（容忍區間超出 0～滿槓桿可達範圍）'}
-                。
-              </p>
-            ) : (
-              <>
-                <div className="grid grid-cols-2 gap-3">
-                  {/* 買進門檻＝下限 β 對應價（低於它就進買進區） */}
-                  <div className="rounded-lg px-3 py-3 bg-bear/10 border border-bear/25 text-center">
-                    <div className="text-[11px] text-zinc-400">買進門檻（β&lt;{result.lower_band.toFixed(2)}）</div>
-                    {result.buy_trigger_price !== null ? (
-                      <>
-                        <div className="text-2xl font-extrabold font-mono tracking-tight text-bear mt-0.5">
-                          ${result.buy_trigger_price.toFixed(2)}
-                        </div>
-                        <div className="text-[11px] text-zinc-500 mt-0.5">價格低於此 → 買進區</div>
-                      </>
-                    ) : (
-                      <div className="text-sm text-zinc-600 mt-2">—<div className="text-[10px] font-normal">下限 β≤0，跌不觸發</div></div>
-                    )}
-                  </div>
-                  {/* 賣出門檻＝上限 β 對應價（高於它就進賣出區） */}
-                  <div className="rounded-lg px-3 py-3 bg-bull/10 border border-bull/25 text-center">
-                    <div className="text-[11px] text-zinc-400">賣出門檻（β&gt;{result.upper_band.toFixed(2)}）</div>
-                    {result.sell_trigger_price !== null ? (
-                      <>
-                        <div className="text-2xl font-extrabold font-mono tracking-tight text-bull mt-0.5">
-                          ${result.sell_trigger_price.toFixed(2)}
-                        </div>
-                        <div className="text-[11px] text-zinc-500 mt-0.5">價格高於此 → 賣出區</div>
-                      </>
-                    ) : (
-                      <div className="text-sm text-zinc-600 mt-2">—<div className="text-[10px] font-normal">上限 β≥{config.etf_beta.toFixed(1)}，漲不觸發</div></div>
-                    )}
-                  </div>
+          {/* 容忍區間設定 & 區間指標 */}
+          <div className="bg-zinc-950/40 p-4 rounded-lg border border-border/50 space-y-3">
+            <div className="flex items-center justify-between text-xs gap-2 flex-wrap">
+              <div className="flex items-center gap-2">
+                <label className="text-zinc-300 font-medium">容忍區間</label>
+                {/* 模式切換：±β / ±% */}
+                <div className="flex rounded-md overflow-hidden border border-zinc-700 text-[11px]">
+                  <button
+                    onClick={() => updateConfig({ tolerance_mode: 'abs' })}
+                    className={`px-2 py-1 font-medium transition-colors ${config.tolerance_mode === 'abs' ? 'bg-primary text-white' : 'bg-zinc-900 text-zinc-400 hover:text-zinc-200'}`}
+                  >
+                    ±β
+                  </button>
+                  <button
+                    onClick={() => updateConfig({ tolerance_mode: 'pct' })}
+                    className={`px-2 py-1 font-medium transition-colors ${config.tolerance_mode === 'pct' ? 'bg-primary text-white' : 'bg-zinc-900 text-zinc-400 hover:text-zinc-200'}`}
+                  >
+                    ±%
+                  </button>
                 </div>
-
-                {/* 目前價格落在哪一區 */}
-                {config.price > 0 && result.status !== 'empty' && (
-                  <div className={`text-[11px] text-center rounded-md py-1.5 border ${priceZone.cls}`}>
-                    目前 00631L <span className="font-mono font-semibold">${config.price.toFixed(2)}</span> → 位於 <strong>{priceZone.label}</strong>
-                  </div>
+              </div>
+              <div className="flex items-center gap-2">
+                {config.tolerance_mode === 'abs' ? (
+                  <>
+                    <input
+                      type="range"
+                      min="0.05"
+                      max="1"
+                      step="0.05"
+                      value={config.threshold_abs}
+                      onChange={(e) => updateConfig({ threshold_abs: parseFloat(e.target.value) })}
+                      className="w-24 h-1.5 bg-zinc-800 rounded-lg appearance-none cursor-pointer accent-emerald-500"
+                    />
+                    <span className="font-mono font-bold text-zinc-100 w-12 text-right">±{config.threshold_abs.toFixed(2)}</span>
+                  </>
+                ) : (
+                  <>
+                    <input
+                      type="range"
+                      min="1"
+                      max="30"
+                      step="1"
+                      value={config.threshold_pct}
+                      onChange={(e) => updateConfig({ threshold_pct: parseInt(e.target.value, 10) })}
+                      className="w-24 h-1.5 bg-zinc-800 rounded-lg appearance-none cursor-pointer accent-emerald-500"
+                    />
+                    <span className="font-mono font-bold text-zinc-100 w-12 text-right">±{config.threshold_pct}%</span>
+                  </>
                 )}
+              </div>
+            </div>
 
-                <p className="text-[11px] text-zinc-500 leading-relaxed">
-                  以目前持股 <span className="font-mono text-zinc-400">{config.shares ? Math.round(config.shares).toLocaleString() : 0}</span> 股、防守端（現金＋債券市值）<span className="font-mono text-zinc-400">${Math.round(result.defensive_value).toLocaleString()}</span> <strong className="text-zinc-400">固定不動</strong>推算：只靠 00631L 漲跌，價格落在
-                  {result.buy_trigger_price !== null && result.sell_trigger_price !== null ? (
-                    <> <span className="font-mono text-zinc-300">${result.buy_trigger_price.toFixed(2)}～${result.sell_trigger_price.toFixed(2)}</span></>
-                  ) : ' 門檻之間'} 時 β 才在容忍區間內。
-                  {result.status === 'buy' && '目前現價遠低於買進門檻＝部位偏防守、β 太低，已在買進區（見上方建議買進金額）。'}
-                  {result.status === 'sell' && '目前現價已高於賣出門檻＝部位偏槓桿、β 太高，已在賣出區（見上方建議賣出金額）。'}
-                  <strong className="text-zinc-400"> 注意這是「持倉不動」的假設</strong>——你一旦依建議買/賣，持股與防守端改變，這條價帶會整個重算（債券價格波動也會微調 β，但幅度遠小於正2）。
-                </p>
-              </>
-            )}
+            {/* 上下限 Beta 數據 */}
+            <div className="grid grid-cols-3 gap-2 pt-2 border-t border-zinc-800/60 text-center font-mono">
+              <div className="p-2 rounded bg-zinc-900/80">
+                <div className="text-[10px] text-zinc-500">下限 Beta (買點)</div>
+                <div className="text-sm font-bold text-bear mt-0.5">{result.lower_band.toFixed(2)}X</div>
+              </div>
+              <div className="p-2 rounded bg-zinc-900/80">
+                <div className="text-[10px] text-zinc-500">目標 Beta</div>
+                <div className="text-sm font-bold text-zinc-200 mt-0.5">{config.target_beta.toFixed(2)}X</div>
+              </div>
+              <div className="p-2 rounded bg-zinc-900/80">
+                <div className="text-[10px] text-zinc-500">上限 Beta (賣點)</div>
+                <div className="text-sm font-bold text-bull mt-0.5">{result.upper_band.toFixed(2)}X</div>
+              </div>
+            </div>
+          </div>
+
+          {/* 偏離分析指標 */}
+          <div className="grid grid-cols-2 gap-3 font-mono">
+            <div className="p-3 rounded-lg bg-zinc-900/40 border border-zinc-800">
+              <div className="text-xs text-zinc-400">Beta 絕對偏離量</div>
+              <div className="text-lg font-bold text-zinc-100 mt-1">
+                {result.deviation_abs !== null
+                  ? `${result.deviation_abs >= 0 ? '+' : ''}${result.deviation_abs.toFixed(3)}`
+                  : '—'}
+              </div>
+            </div>
+            <div className="p-3 rounded-lg bg-zinc-900/40 border border-zinc-800">
+              <div className="text-xs text-zinc-400">相對偏離比例</div>
+              <div className="text-lg font-bold text-zinc-100 mt-1">
+                {result.deviation_pct !== null
+                  ? `${result.deviation_pct >= 0 ? '+' : ''}${(result.deviation_pct * 100).toFixed(1)}%`
+                  : '—'}
+              </div>
+            </div>
           </div>
         </div>
       )}
@@ -1306,93 +1326,73 @@ export function Rebalance() {
               </div>
             </div>
 
-            {/* 容忍區間設定 & 區間指標 */}
-            <div className="bg-zinc-950/40 p-4 rounded-lg border border-border/50 space-y-3">
-              <div className="flex items-center justify-between text-xs gap-2 flex-wrap">
-                <div className="flex items-center gap-2">
-                  <label className="text-zinc-300 font-medium">容忍區間</label>
-                  {/* 模式切換：±β / ±% */}
-                  <div className="flex rounded-md overflow-hidden border border-zinc-700 text-[11px]">
-                    <button
-                      onClick={() => updateConfig({ tolerance_mode: 'abs' })}
-                      className={`px-2 py-1 font-medium transition-colors ${config.tolerance_mode === 'abs' ? 'bg-primary text-white' : 'bg-zinc-900 text-zinc-400 hover:text-zinc-200'}`}
-                    >
-                      ±β
-                    </button>
-                    <button
-                      onClick={() => updateConfig({ tolerance_mode: 'pct' })}
-                      className={`px-2 py-1 font-medium transition-colors ${config.tolerance_mode === 'pct' ? 'bg-primary text-white' : 'bg-zinc-900 text-zinc-400 hover:text-zinc-200'}`}
-                    >
-                      ±%
-                    </button>
+            {/* 觸發價帶：持倉不動下，β 落在容忍區間對應的 00631L 價格上下界 */}
+            <div className="p-4 rounded-xl border border-zinc-800 bg-zinc-900/60 space-y-3">
+              <div className="text-xs font-semibold text-zinc-400 flex items-center gap-1.5">
+                <SlidersHorizontal className="w-4 h-4 text-primary" />
+                觸發價帶（持倉不動、只看 00631L 價格）
+              </div>
+              {result.sell_trigger_price === null && result.buy_trigger_price === null ? (
+                <p className="text-xs text-zinc-500 leading-relaxed">
+                  目前持倉無可反解的觸發價
+                  {result.defensive_value <= 0
+                    ? '（防守端為 0，投組 Beta 恆等於滿槓桿，與價格無關）'
+                    : config.shares <= 0
+                      ? '（尚無 00631L 持股）'
+                      : '（容忍區間超出 0～滿槓桿可達範圍）'}
+                  。
+                </p>
+              ) : (
+                <>
+                  <div className="grid grid-cols-2 gap-3">
+                    {/* 買進門檻＝下限 β 對應價（低於它就進買進區） */}
+                    <div className="rounded-lg px-3 py-3 bg-bear/10 border border-bear/25 text-center">
+                      <div className="text-[11px] text-zinc-400">買進門檻（β&lt;{result.lower_band.toFixed(2)}）</div>
+                      {result.buy_trigger_price !== null ? (
+                        <>
+                          <div className="text-2xl font-extrabold font-mono tracking-tight text-bear mt-0.5">
+                            ${result.buy_trigger_price.toFixed(2)}
+                          </div>
+                          <div className="text-[11px] text-zinc-500 mt-0.5">價格低於此 → 買進區</div>
+                        </>
+                      ) : (
+                        <div className="text-sm text-zinc-600 mt-2">—<div className="text-[10px] font-normal">下限 β≤0，跌不觸發</div></div>
+                      )}
+                    </div>
+                    {/* 賣出門檻＝上限 β 對應價（高於它就進賣出區） */}
+                    <div className="rounded-lg px-3 py-3 bg-bull/10 border border-bull/25 text-center">
+                      <div className="text-[11px] text-zinc-400">賣出門檻（β&gt;{result.upper_band.toFixed(2)}）</div>
+                      {result.sell_trigger_price !== null ? (
+                        <>
+                          <div className="text-2xl font-extrabold font-mono tracking-tight text-bull mt-0.5">
+                            ${result.sell_trigger_price.toFixed(2)}
+                          </div>
+                          <div className="text-[11px] text-zinc-500 mt-0.5">價格高於此 → 賣出區</div>
+                        </>
+                      ) : (
+                        <div className="text-sm text-zinc-600 mt-2">—<div className="text-[10px] font-normal">上限 β≥{config.etf_beta.toFixed(1)}，漲不觸發</div></div>
+                      )}
+                    </div>
                   </div>
-                </div>
-                <div className="flex items-center gap-2">
-                  {config.tolerance_mode === 'abs' ? (
-                    <>
-                      <input
-                        type="range"
-                        min="0.05"
-                        max="1"
-                        step="0.05"
-                        value={config.threshold_abs}
-                        onChange={(e) => updateConfig({ threshold_abs: parseFloat(e.target.value) })}
-                        className="w-24 h-1.5 bg-zinc-800 rounded-lg appearance-none cursor-pointer accent-emerald-500"
-                      />
-                      <span className="font-mono font-bold text-zinc-100 w-12 text-right">±{config.threshold_abs.toFixed(2)}</span>
-                    </>
-                  ) : (
-                    <>
-                      <input
-                        type="range"
-                        min="1"
-                        max="30"
-                        step="1"
-                        value={config.threshold_pct}
-                        onChange={(e) => updateConfig({ threshold_pct: parseInt(e.target.value, 10) })}
-                        className="w-24 h-1.5 bg-zinc-800 rounded-lg appearance-none cursor-pointer accent-emerald-500"
-                      />
-                      <span className="font-mono font-bold text-zinc-100 w-12 text-right">±{config.threshold_pct}%</span>
-                    </>
+
+                  {/* 目前價格落在哪一區 */}
+                  {config.price > 0 && result.status !== 'empty' && (
+                    <div className={`text-[11px] text-center rounded-md py-1.5 border ${priceZone.cls}`}>
+                      目前 00631L <span className="font-mono font-semibold">${config.price.toFixed(2)}</span> → 位於 <strong>{priceZone.label}</strong>
+                    </div>
                   )}
-                </div>
-              </div>
 
-              {/* 上下限 Beta 數據 */}
-              <div className="grid grid-cols-3 gap-2 pt-2 border-t border-zinc-800/60 text-center font-mono">
-                <div className="p-2 rounded bg-zinc-900/80">
-                  <div className="text-[10px] text-zinc-500">下限 Beta (買點)</div>
-                  <div className="text-sm font-bold text-bear mt-0.5">{result.lower_band.toFixed(2)}X</div>
-                </div>
-                <div className="p-2 rounded bg-zinc-900/80">
-                  <div className="text-[10px] text-zinc-500">目標 Beta</div>
-                  <div className="text-sm font-bold text-zinc-200 mt-0.5">{config.target_beta.toFixed(2)}X</div>
-                </div>
-                <div className="p-2 rounded bg-zinc-900/80">
-                  <div className="text-[10px] text-zinc-500">上限 Beta (賣點)</div>
-                  <div className="text-sm font-bold text-bull mt-0.5">{result.upper_band.toFixed(2)}X</div>
-                </div>
-              </div>
-            </div>
-
-            {/* 偏離分析指標 */}
-            <div className="grid grid-cols-2 gap-3 font-mono">
-              <div className="p-3 rounded-lg bg-zinc-900/40 border border-zinc-800">
-                <div className="text-xs text-zinc-400">Beta 絕對偏離量</div>
-                <div className="text-lg font-bold text-zinc-100 mt-1">
-                  {result.deviation_abs !== null
-                    ? `${result.deviation_abs >= 0 ? '+' : ''}${result.deviation_abs.toFixed(3)}`
-                    : '—'}
-                </div>
-              </div>
-              <div className="p-3 rounded-lg bg-zinc-900/40 border border-zinc-800">
-                <div className="text-xs text-zinc-400">相對偏離比例</div>
-                <div className="text-lg font-bold text-zinc-100 mt-1">
-                  {result.deviation_pct !== null
-                    ? `${result.deviation_pct >= 0 ? '+' : ''}${(result.deviation_pct * 100).toFixed(1)}%`
-                    : '—'}
-                </div>
-              </div>
+                  <p className="text-[11px] text-zinc-500 leading-relaxed">
+                    以目前持股 <span className="font-mono text-zinc-400">{config.shares ? Math.round(config.shares).toLocaleString() : 0}</span> 股、防守端（現金＋債券市值）<span className="font-mono text-zinc-400">${Math.round(result.defensive_value).toLocaleString()}</span> <strong className="text-zinc-400">固定不動</strong>推算：只靠 00631L 漲跌，價格落在
+                    {result.buy_trigger_price !== null && result.sell_trigger_price !== null ? (
+                      <> <span className="font-mono text-zinc-300">${result.buy_trigger_price.toFixed(2)}～${result.sell_trigger_price.toFixed(2)}</span></>
+                    ) : ' 門檻之間'} 時 β 才在容忍區間內。
+                    {result.status === 'buy' && '目前現價遠低於買進門檻＝部位偏防守、β 太低，已在買進區（見上方建議買進金額）。'}
+                    {result.status === 'sell' && '目前現價已高於賣出門檻＝部位偏槓桿、β 太高，已在賣出區（見上方建議賣出金額）。'}
+                    <strong className="text-zinc-400"> 注意這是「持倉不動」的假設</strong>——你一旦依建議買/賣，持股與防守端改變，這條價帶會整個重算（債券價格波動也會微調 β，但幅度遠小於正2）。
+                  </p>
+                </>
+              )}
             </div>
 
             {/* 建議區塊 */}
