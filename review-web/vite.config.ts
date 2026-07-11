@@ -43,6 +43,14 @@ export default defineConfig({
       },
       workbox: {
         navigateFallback: '/review/index.html',
+        // skipWaiting 只讓新 SW 自己提前 activate，沒有 clientsClaim 的話它不會接管
+        // 「已經開著」的分頁/手機 PWA（要等那個分頁自己整個重新導覽才會換手）——
+        // 這正是 src/main.tsx 的 controllerchange 監聽器實測失靈的根因：沒有
+        // clientsClaim，controllerchange 在已開啟的分頁上根本不會觸發。
+        // cleanupOutdatedCaches 順手清舊版 precache，避免快取膨脹。
+        skipWaiting: true,
+        clientsClaim: true,
+        cleanupOutdatedCaches: true,
         runtimeCaching: [
           {
             urlPattern: /^\/api\/.*/,

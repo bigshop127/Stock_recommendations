@@ -16,9 +16,10 @@ if ('serviceWorker' in navigator) {
   const hadController = !!navigator.serviceWorker.controller
   let reloaded = false
 
-  // sw.js 走 registerType:'autoUpdate'（skipWaiting + clientsClaim），新版 SW 一接管就會
-  // 觸發 controllerchange → 自動重整一次載入新資源，免去每次部署後手動 Ctrl+Shift+R。
-  // 僅在「更新」情境重整（首次安裝不重整，避免多餘 reload），並用旗標防重複/迴圈。
+  // sw.js 走 registerType:'autoUpdate'＋workbox skipWaiting+clientsClaim（見
+  // vite.config.ts）：新版 SW 一接管就會觸發 controllerchange → 自動重整一次載入新
+  // 資源，免去每次部署後手動 Ctrl+Shift+R。僅在「更新」情境重整（首次安裝不重整，
+  // 避免多餘 reload），並用旗標防重複/迴圈。
   navigator.serviceWorker.addEventListener('controllerchange', () => {
     if (reloaded || !hadController) return
     reloaded = true
@@ -26,6 +27,13 @@ if ('serviceWorker' in navigator) {
   })
 
   window.addEventListener('load', () => {
-    navigator.serviceWorker.register('/review/sw.js', { scope: '/review/' }).catch(() => {})
+    navigator.serviceWorker.register('/review/sw.js', { scope: '/review/' }).then((reg) => {
+      // 手機 PWA 從背景切回來通常不會觸發真正的重新導覽（不會自動重新 register/
+      // 檢查更新），主動在「頁面重新可見」時檢查一次，讓 clientsClaim 有機會接管、
+      // 進而觸發上面的 controllerchange 自動重整。
+      document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'visible') reg.update().catch(() => {})
+      })
+    }).catch(() => {})
   })
 }
