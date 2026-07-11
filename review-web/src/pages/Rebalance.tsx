@@ -691,6 +691,12 @@ export function Rebalance() {
       config.locked?.cash ||
       Object.values(config.locked?.bonds || {}).some(Boolean));
 
+  // 目前鎖定中的防守端資產名稱（股災來臨時用來提示使用者考慮解鎖，而非自動覆蓋鎖定）
+  const lockedDefensiveAssets: string[] = [
+    ...(config.locked?.cash ? ['現金'] : []),
+    ...BOND_ETFS.filter((b) => config.locked?.bonds?.[b.code]).map((b) => `${b.code} ${b.name}`),
+  ];
+
   return (
     <div className="max-w-6xl mx-auto space-y-6">
       {/* 標題與簡介 */}
@@ -817,6 +823,19 @@ export function Rebalance() {
                   </button>
                 </div>
 
+                {lockedDefensiveAssets.length > 0 && (
+                  <div className="p-3 bg-red-500/10 rounded-lg border border-red-500/30 text-xs text-red-300 space-y-1.5">
+                    <div className="font-semibold flex items-center gap-1.5">
+                      <Lock className="w-4 h-4" />
+                      偵測到防守端有資產鎖定：{lockedDefensiveAssets.join('、')}
+                    </div>
+                    <p className="text-zinc-300 leading-relaxed">
+                      股災來臨建議防守端全數轉入 00631L，但鎖定的資產不會被自動賣出——系統只會改算「需額外注入多少現金」補足缺口。
+                      <strong className="text-red-200">如果沒有特別原因要保留這些資產不動，建議先到「持倉現況」分頁解鎖，再套用滿倉 β</strong>，才能真正照 waterfall 順序全力應對；若確定要保留鎖定，準備好對應金額的現金注入即可。
+                    </p>
+                  </div>
+                )}
+
                 <div className="p-3 bg-amber-500/10 rounded-lg border border-amber-500/20 text-xs text-amber-500 space-y-1.5">
                   <div className="font-semibold flex items-center gap-1.5">
                     <AlertTriangle className="w-4 h-4" />
@@ -825,8 +844,8 @@ export function Rebalance() {
                   <ol className="list-decimal list-inside space-y-1 text-zinc-300 text-[11px] pl-1">
                     <li>防守端立即全數轉進 00631L（已按上方按鈕套用滿倉 β 即完成）</li>
                     <li>交易順序沿用增修K美債優先變現 waterfall（自動）</li>
-                    <li>尊重 opt19 資產鎖定設定（若有鎖定，lock_note 會照常顯示）</li>
-                    <li>需要的話可用「現金注入模式」補足（cash_injection_needed 照常顯示）</li>
+                    <li>尊重 opt19 資產鎖定設定，不會自動覆蓋——若有鎖定，上方會提示你考慮解鎖</li>
+                    <li>維持鎖定不解的話，可用「現金注入模式」補足（cash_injection_needed 照常顯示）</li>
                     <li>停止手動再平衡，抱到 TAIEX 創新高再回到平常的目標 β</li>
                     <li>創新高後依 bond_split 重建防守端（把 target_beta 滑桿改回平常數值即可觸發）</li>
                   </ol>
@@ -920,7 +939,7 @@ export function Rebalance() {
               <div className="flex gap-3">
                 <span className="shrink-0 px-2 py-0.5 rounded-md bg-[#e34948] text-white text-[11px] font-semibold h-fit whitespace-nowrap">股災來臨 −20%</span>
                 <span>
-                  防守端<strong className="text-zinc-100">全數轉入 00631L 拉滿 β＝2.0</strong>：沿用美債優先 waterfall 順序、尊重資產鎖定、可用現金注入模式補足。
+                  防守端<strong className="text-zinc-100">全數轉入 00631L 拉滿 β＝2.0</strong>：沿用美債優先 waterfall 順序、尊重資產鎖定（不會自動覆蓋——若有鎖定，市場狀態卡會提示你考慮解鎖，維持鎖定則改用現金注入模式補足）。
                   <strong className="text-zinc-100">一次到位、不分批</strong>——用 1999/2000/2020/2022/2025 五次真實股災事件測過分批進場，V 型急跌急彈事件（如 2020、2025）分批全部打平或小輸，只有緩跌型的 2022 股災分批略勝，但事件當下無法預先判斷屬於哪一種，故維持一次到位。
                 </span>
               </div>
