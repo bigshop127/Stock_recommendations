@@ -689,7 +689,36 @@ export function Rebalance() {
             <span className="w-2 h-2 rounded-full bg-cyan-500" />
             TAIEX 市場狀態燈號
           </h2>
+          <button
+            onClick={() => void syncToCloud(config)}
+            disabled={cloud.status === 'syncing' || cloud.status === 'loading'}
+            className="text-[11px] text-primary hover:text-primary/80 disabled:text-zinc-600 flex items-center gap-1 transition-colors font-normal"
+            title="把目前設定（目標Beta、容忍度、鎖定狀態等）同步到雲端，之後任何裝置重開都不會跑掉"
+          >
+            {cloud.status === 'syncing' ? (
+              <Loader2 className="w-3 h-3 animate-spin" />
+            ) : (
+              <UploadCloud className="w-3 h-3" />
+            )}
+            狀態同步
+          </button>
         </div>
+
+        {(cloud.status === 'saved' || cloud.status === 'error') && (
+          <div className="text-[11px] flex items-center gap-1.5 -mt-2">
+            {cloud.status === 'saved' && (
+              <span className="text-emerald-400 flex items-center gap-1">
+                <Cloud className="w-3.5 h-3.5" />
+                {cloud.savedAt
+                  ? `已同步雲端 ${new Date(cloud.savedAt).toLocaleTimeString('zh-TW', { hour12: false })}`
+                  : cloud.msg || '已同步雲端'}
+              </span>
+            )}
+            {cloud.status === 'error' && (
+              <span className="text-amber-400 flex items-center gap-1"><CloudOff className="w-3.5 h-3.5" /> {cloud.msg || '雲端同步失敗（已存本機）'}</span>
+            )}
+          </div>
+        )}
 
         {marketStatusLoading && (
           <div className="flex items-center gap-2 text-xs text-zinc-400 py-2">
@@ -1408,51 +1437,20 @@ export function Rebalance() {
             <span className="w-2 h-2 rounded-full bg-blue-500" />
             持倉現況（00631L ＋ 防守端：現金 + {BOND_ETFS[0].code} + {BOND_ETFS[1].code}）
           </span>
-          <div className="flex items-center gap-3">
-            <button
-              onClick={() => void syncToCloud(config)}
-              disabled={cloud.status === 'syncing' || cloud.status === 'loading'}
-              className="text-[11px] text-primary hover:text-primary/80 disabled:text-zinc-600 flex items-center gap-1 transition-colors font-normal"
-              title="把目前設定（目標Beta、容忍度、鎖定狀態等）同步到雲端，之後任何裝置重開都不會跑掉"
-            >
-              {cloud.status === 'syncing' ? (
-                <Loader2 className="w-3 h-3 animate-spin" />
-              ) : (
-                <UploadCloud className="w-3 h-3" />
-              )}
-              狀態同步
-            </button>
-            <button
-              onClick={fetchAllPrices}
-              disabled={ASSETS.some((a) => priceFetch[a.code]?.loading)}
-              className="text-[11px] text-primary hover:text-primary/80 disabled:text-zinc-600 flex items-center gap-1 transition-colors font-normal"
-              title="抓取全部標的現在最新價（即時報價）"
-            >
-              {ASSETS.some((a) => priceFetch[a.code]?.loading) ? (
-                <Loader2 className="w-3 h-3 animate-spin" />
-              ) : (
-                <RefreshCw className="w-3 h-3" />
-              )}
-              全部抓最新價
-            </button>
-          </div>
+          <button
+            onClick={fetchAllPrices}
+            disabled={ASSETS.some((a) => priceFetch[a.code]?.loading)}
+            className="text-[11px] text-primary hover:text-primary/80 disabled:text-zinc-600 flex items-center gap-1 transition-colors font-normal"
+            title="抓取全部標的現在最新價（即時報價）"
+          >
+            {ASSETS.some((a) => priceFetch[a.code]?.loading) ? (
+              <Loader2 className="w-3 h-3 animate-spin" />
+            ) : (
+              <RefreshCw className="w-3 h-3" />
+            )}
+            全部抓最新價
+          </button>
         </h2>
-
-        {(cloud.status === 'saved' || cloud.status === 'error') && (
-          <div className="text-[11px] flex items-center gap-1.5 -mt-2">
-            {cloud.status === 'saved' && (
-              <span className="text-emerald-400 flex items-center gap-1">
-                <Cloud className="w-3.5 h-3.5" />
-                {cloud.savedAt
-                  ? `已同步雲端 ${new Date(cloud.savedAt).toLocaleTimeString('zh-TW', { hour12: false })}`
-                  : cloud.msg || '已同步雲端'}
-              </span>
-            )}
-            {cloud.status === 'error' && (
-              <span className="text-amber-400 flex items-center gap-1"><CloudOff className="w-3.5 h-3.5" /> {cloud.msg || '雲端同步失敗（已存本機）'}</span>
-            )}
-          </div>
-        )}
 
         {/* 各標的持倉列 */}
         <div className="space-y-3">
