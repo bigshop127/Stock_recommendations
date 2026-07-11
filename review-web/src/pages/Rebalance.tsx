@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { SlidersHorizontal, AlertTriangle, CheckCircle2, Info, ArrowRightLeft, ShieldAlert, RefreshCw, Loader2, Plus, Trash2, UploadCloud, Cloud, CloudOff, Lock, Unlock } from 'lucide-react';
 import { getRebalanceConfig, saveRebalanceConfig, subscribeRebalance, type RebalanceConfig } from '../lib/rebalanceStore';
 import { computeRebalance, aggregatePortfolio, BOND_ETFS, ETF_CODE, type RebalanceResult, type Trade, computeFundFlows, computeMarketStatus, type MarketStatus } from '../lib/rebalance';
@@ -10,6 +11,16 @@ const ASSETS: { code: string; name: string }[] = [
   ...BOND_ETFS.map((b) => ({ code: b.code, name: b.name })),
 ];
 const assetName = (code: string) => ASSETS.find((a) => a.code === code)?.name ?? code;
+
+// 分頁（像個股頁一樣，點開才看該區塊內容，不用整頁滑）
+type RebalanceTab = 'beta' | 'deviation' | 'holdings' | 'trades';
+const REBALANCE_TABS: { id: RebalanceTab; label: string }[] = [
+  { id: 'beta', label: 'Beta 儀表' },
+  { id: 'deviation', label: '偏離分析 & 建議' },
+  { id: 'holdings', label: '持倉現況' },
+  { id: 'trades', label: '建倉 & 交易紀錄' },
+];
+const DEFAULT_REBALANCE_TAB: RebalanceTab = 'beta';
 
 // 半圓 SVG 儀表元件
 const BetaGauge: React.FC<{
@@ -162,6 +173,18 @@ function assetPrice(cfg: RebalanceConfig, code: string): number {
 
 export function Rebalance() {
   const [config, setConfig] = useState<RebalanceConfig>(() => getRebalanceConfig());
+
+  const [searchParams, setSearchParams] = useSearchParams();
+  const rawTab = searchParams.get('tab') as RebalanceTab | null;
+  const activeTab: RebalanceTab = useMemo(() => {
+    if (rawTab && REBALANCE_TABS.some((t) => t.id === rawTab)) return rawTab;
+    return DEFAULT_REBALANCE_TAB;
+  }, [rawTab]);
+  const handleTabChange = (tabId: RebalanceTab) => {
+    const nextParams = new URLSearchParams(searchParams);
+    nextParams.set('tab', tabId);
+    setSearchParams(nextParams, { replace: true });
+  };
 
   // 直接編輯欄位的本地暫存（允許打字未完，如 "12."）——各資產現價、期初部位
   const [priceStrs, setPriceStrs] = useState<Record<string, string>>(() =>
@@ -813,9 +836,30 @@ export function Rebalance() {
         )}
       </div>
 
-      {/* 主要控制與分析區：桌面雙欄，手機單欄 */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* 左卡：Beta 儀表 + 滑桿 + 配置條 */}
+      {/* 分頁導覽（像個股頁：今天想看什麼再點開什麼） */}
+      <div className="border-b border-border/80">
+        <div className="flex items-center gap-2 overflow-x-auto pb-2 scrollbar-none">
+          {REBALANCE_TABS.map((t) => {
+            const isActive = activeTab === t.id;
+            return (
+              <button
+                key={t.id}
+                onClick={() => handleTabChange(t.id)}
+                className={`flex items-center gap-1.5 px-4 py-2 text-xs font-semibold rounded-lg transition whitespace-nowrap shrink-0 ${
+                  isActive
+                    ? 'bg-primary text-white shadow-sm'
+                    : 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800/40'
+                }`}
+              >
+                {t.label}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* 左卡：Beta 儀表 + 滑桿 + 配置條 */}
+      {activeTab === 'beta' && (
         <div className="bg-card border border-border rounded-xl p-5 shadow-sm space-y-6">
           <div className="flex items-center justify-between border-b border-border/60 pb-3">
             <h2 className="text-sm font-semibold text-zinc-200 flex items-center gap-2">
@@ -1111,8 +1155,10 @@ export function Rebalance() {
             )}
           </div>
         </div>
+      )}
 
-        {/* 右卡：偏離分析 & 再平衡建議面板 */}
+      {/* 右卡：偏離分析 & 再平衡建議面板 */}
+      {activeTab === 'deviation' && (
         <div className="bg-card border border-border rounded-xl p-5 shadow-sm space-y-6 flex flex-col justify-between">
           <div className="space-y-6">
             <div className="flex items-center justify-between border-b border-border/60 pb-3">
@@ -1428,9 +1474,10 @@ export function Rebalance() {
             </div>
           </div>
         </div>
-      </div>
+      )}
 
       {/* 下方：持倉現況面板（股數/均價為報價單累算的衍生值，唯讀） */}
+      {activeTab === 'holdings' && (
       <div className="bg-card border border-border rounded-xl p-5 shadow-sm space-y-4">
         <h2 className="text-sm font-semibold text-zinc-200 flex items-center justify-between border-b border-border/60 pb-3">
           <span className="flex items-center gap-2">
@@ -1711,8 +1758,10 @@ export function Rebalance() {
           </button>
         </div>
       </div>
+      )}
 
       {/* 買賣報價單（交易紀錄，自動累算回填持倉、送出即同步雲端） */}
+      {activeTab === 'trades' && (
       <div className="bg-card border border-border rounded-xl p-5 shadow-sm space-y-5">
         <h2 className="text-sm font-semibold text-zinc-200 flex items-center justify-between border-b border-border/60 pb-3">
           <span className="flex items-center gap-2">
@@ -1987,6 +2036,7 @@ export function Rebalance() {
           )}
         </div>
       </div>
+      )}
 
       {/* 免責聲明卡 */}
       <div className="p-4 rounded-xl border border-zinc-800/60 bg-zinc-950/40 text-xs text-zinc-500 space-y-1 flex items-start gap-3">
