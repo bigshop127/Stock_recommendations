@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { SlidersHorizontal, AlertTriangle, CheckCircle2, Info, ArrowRightLeft, ShieldAlert, RefreshCw, Loader2, Plus, Trash2, UploadCloud, Cloud, CloudOff, Lock, Unlock } from 'lucide-react';
+import { SlidersHorizontal, AlertTriangle, CheckCircle2, Info, ArrowRightLeft, ShieldAlert, RefreshCw, Loader2, Plus, Trash2, UploadCloud, Cloud, CloudOff, Lock, Unlock, BookOpen, TrendingUp } from 'lucide-react';
 import { getRebalanceConfig, saveRebalanceConfig, subscribeRebalance, type RebalanceConfig } from '../lib/rebalanceStore';
 import { computeRebalance, aggregatePortfolio, BOND_ETFS, ETF_CODE, type RebalanceResult, type Trade, computeFundFlows, computeMarketStatus, type MarketStatus } from '../lib/rebalance';
 import { api } from '../lib/api';
@@ -13,8 +13,9 @@ const ASSETS: { code: string; name: string }[] = [
 const assetName = (code: string) => ASSETS.find((a) => a.code === code)?.name ?? code;
 
 // 分頁（像個股頁一樣，點開才看該區塊內容，不用整頁滑）
-type RebalanceTab = 'beta' | 'deviation' | 'holdings' | 'trades';
+type RebalanceTab = 'logic' | 'beta' | 'deviation' | 'holdings' | 'trades';
 const REBALANCE_TABS: { id: RebalanceTab; label: string }[] = [
+  { id: 'logic', label: '整體邏輯' },
   { id: 'beta', label: 'Beta 儀表' },
   { id: 'deviation', label: '偏離分析 & 建議' },
   { id: 'holdings', label: '持倉現況' },
@@ -857,6 +858,120 @@ export function Rebalance() {
           })}
         </div>
       </div>
+
+      {/* 整體邏輯（說明頁，非操作介面：策略規則＋回測結論＋後台待辦，供之後回來複習用） */}
+      {activeTab === 'logic' && (
+        <div className="space-y-6">
+          <div className="bg-card border border-border rounded-xl p-5 shadow-sm space-y-4">
+            <h2 className="text-sm font-semibold text-zinc-200 flex items-center gap-2 border-b border-border/60 pb-3">
+              <BookOpen className="w-4 h-4 text-primary" />
+              策略核心邏輯
+            </h2>
+            <div className="text-xs text-zinc-300 leading-relaxed space-y-2">
+              <p>
+                投組只由兩塊組成：<strong className="text-zinc-100">00631L</strong>（元大台灣50正2，槓桿 β≈2.0）與
+                <strong className="text-zinc-100">防守端</strong>（固定保留現金 + {BOND_ETFS[0].code}/{BOND_ETFS[1].code} 兩檔美債，皆視為 β=0）。
+              </p>
+              <p>
+                投組 Beta＝00631L 市值佔投組總市值的比例 × 2。<strong className="text-zinc-100">目標 β 預設 1.3</strong>（00631L 佔 65%、防守端佔 35%），
+                容忍區間 <strong className="text-zinc-100">±0.1</strong>（正常範圍 1.2～1.4）內完全不動作；一旦突破上下限，「偏離分析 & 建議」分頁會算出精確該買賣多少錢/多少股才能拉回目標 β。
+              </p>
+              <p>
+                <strong className="text-zinc-100">不擇時</strong>——不是猜頭部/底部，而是紀律性再平衡：跌深了 00631L 佔比自然縮水（β 變低）就補回去，漲多了佔比膨脹（β 變高）就賣一點鎖利，維持固定曝險水位。
+              </p>
+            </div>
+          </div>
+
+          <div className="bg-card border border-border rounded-xl p-5 shadow-sm space-y-4">
+            <h2 className="text-sm font-semibold text-zinc-200 flex items-center gap-2 border-b border-border/60 pb-3">
+              <ShieldAlert className="w-4 h-4 text-primary" />
+              防守端管理規則
+            </h2>
+            <ul className="text-xs text-zinc-300 leading-relaxed space-y-2 list-disc list-inside">
+              <li>固定保留現金 <strong className="text-zinc-100">$100,000</strong>（不投入市場的緩衝，隨時可動用）。</li>
+              <li>扣掉保留現金後的防守端資金，依 <strong className="text-zinc-100">6:4</strong> 分配到 {BOND_ETFS[0].code}／{BOND_ETFS[1].code}。</li>
+              <li>
+                <strong className="text-zinc-100">美債優先變現</strong>：需要縮減防守端補錢買 00631L 時，優先賣 {BOND_ETFS[0].code}、留著 {BOND_ETFS[1].code}
+                （用兩檔獨立歷史代理標的全窗口回測驗證過，優於「非投等優先」與「等比例縮減」，報酬/回撤約多贏 1～2 個百分點）。
+              </li>
+              <li>
+                <strong className="text-zinc-100">資產鎖定</strong>：現金／{BOND_ETFS[0].code}／{BOND_ETFS[1].code} 三項可個別鎖定（00631L 不開放鎖定），鎖定後再平衡建議會自動繞過它重算其他資產怎麼調整。
+              </li>
+              <li>
+                <strong className="text-zinc-100">現金注入模式</strong>：若鎖定的防守端資產卡住目標（例如兩檔債都鎖、現金不夠買到位），工具會算出「外部要注入多少現金」才能達標，而不是死鎖不動。
+              </li>
+            </ul>
+          </div>
+
+          <div className="bg-card border border-border rounded-xl p-5 shadow-sm space-y-4">
+            <h2 className="text-sm font-semibold text-zinc-200 flex items-center gap-2 border-b border-border/60 pb-3">
+              <AlertTriangle className="w-4 h-4 text-primary" />
+              三層市場狀態燈號（股災應對，見「TAIEX 市場狀態燈號」卡）
+            </h2>
+            <div className="text-xs text-zinc-300 leading-relaxed space-y-3">
+              <div className="flex gap-3">
+                <span className="shrink-0 px-2 py-0.5 rounded-md bg-[#fab219]/20 text-[#fab219] text-[11px] font-semibold h-fit whitespace-nowrap">第一警戒 −10%</span>
+                <span>TAIEX 自高點回撤達 10%，<strong className="text-zinc-100">純觀察、不動作</strong>——歷史上碰觸這條線的次數裡只有約半數真的惡化成股災，其餘自行止跌回頭，誤報率高不宜貿然動作。</span>
+              </div>
+              <div className="flex gap-3">
+                <span className="shrink-0 px-2 py-0.5 rounded-md bg-[#e34948]/15 text-[#e34948] text-[11px] font-semibold h-fit whitespace-nowrap">小股災 −15%</span>
+                <span>加碼到中繼 <strong className="text-zinc-100">β＝1.75</strong>（00631L 佔比約 87.5%）——回測顯示股災直接升槓桿到 β2.0 比全程維持 β1.3 多賺約 16～19%；但中繼 β 選在 1.75 而非直接衝滿 2.0，只比全程衝滿 2.0 少賺約 6～7%，換取「小股災」與「股災來臨」兩層真正有區隔（若中繼 β 直接設 2.0，兩層等於做同一件事，分層形同虛設）。</span>
+              </div>
+              <div className="flex gap-3">
+                <span className="shrink-0 px-2 py-0.5 rounded-md bg-[#e34948] text-white text-[11px] font-semibold h-fit whitespace-nowrap">股災來臨 −20%</span>
+                <span>
+                  防守端<strong className="text-zinc-100">全數轉入 00631L 拉滿 β＝2.0</strong>：沿用美債優先 waterfall 順序、尊重資產鎖定、可用現金注入模式補足。
+                  <strong className="text-zinc-100">一次到位、不分批</strong>——用 1999/2000/2020/2022/2025 五次真實股災事件測過分批進場，V 型急跌急彈事件（如 2020、2025）分批全部打平或小輸，只有緩跌型的 2022 股災分批略勝，但事件當下無法預先判斷屬於哪一種，故維持一次到位。
+                </span>
+              </div>
+              <div className="flex gap-3">
+                <span className="shrink-0 px-2 py-0.5 rounded-md bg-zinc-800 text-zinc-300 text-[11px] font-semibold h-fit whitespace-nowrap">退出</span>
+                <span>
+                  停止手動再平衡，<strong className="text-zinc-100">抱到 TAIEX 創新高</strong>才退出——同五次事件測過提前鎖利（回到 −15%/−10%/−5% 就出場），結果全部單調變差且無一例外（分別少賺約 11.4%／7.7%／3.6%），因為 2 倍槓桿部位在創新高前最後一段複利效果最強，提前下車等於主動放棄報酬最肥的一段。創新高後依 6:4 重建防守端（把目標 β 滑桿調回平常數值即觸發）。
+                </span>
+              </div>
+            </div>
+          </div>
+
+          <div className="bg-card border border-border rounded-xl p-5 shadow-sm space-y-4">
+            <h2 className="text-sm font-semibold text-zinc-200 flex items-center gap-2 border-b border-border/60 pb-3">
+              <TrendingUp className="w-4 h-4 text-primary" />
+              回測得出的結論（最高收益操作）
+            </h2>
+            <div className="text-xs text-zinc-300 leading-relaxed space-y-2">
+              <p className="text-zinc-500 italic">以下皆為真實歷史價格回測（早期事件用歷史代理標的還原），樣本數僅個位數次股災事件，非嚴謹統計，僅供參考，非投資建議。</p>
+              <ul className="list-disc list-inside space-y-1.5">
+                <li><strong className="text-zinc-100">股災一次全倉勝過分批進場</strong>：見上方「股災來臨」說明，五次真實事件裡一次到位在四次勝出或打平。</li>
+                <li><strong className="text-zinc-100">美債避險別等它漲</strong>：股災確認當下立即出清美債換 00631L，優於等美債漲 5%/10%/15% 才出清（門檻越高，長期報酬越差）——用兩種不同確認條件重新測過都指向同一結論：等待美債續漲的訊號本身已經偏晚，晚出手長期更差。</li>
+                <li><strong className="text-zinc-100">退出別提前</strong>：抱到創新高退出全面優於任何提前鎖利方案（見上方三層燈號「退出」說明）。</li>
+                <li><strong className="text-zinc-100">TAIEX 三層訊號優於舊制 0050 單一 −28% 訊號</strong>：舊訊號 9 年只觸發 2 次，完全漏掉 2025 關稅衝擊那次股災；新制 −20% 訊號 9 年觸發 3 次，能捕捉到該事件。</li>
+                <li><strong className="text-zinc-100">中繼 β 設 1.75，不直接拉滿 2.0</strong>：讓「小股災」與「股災來臨」兩層有意義區隔，僅比理論最優（全程 β2.0）少賺約 6～7%。</li>
+              </ul>
+            </div>
+          </div>
+
+          <div className="bg-card border border-border rounded-xl p-5 shadow-sm space-y-4">
+            <h2 className="text-sm font-semibold text-zinc-200 flex items-center gap-2 border-b border-border/60 pb-3">
+              <Info className="w-4 h-4 text-primary" />
+              後台狀態 / 已定案但尚未整合的項目
+            </h2>
+            <ul className="text-xs text-zinc-300 leading-relaxed space-y-2 list-disc list-inside">
+              <li>
+                <strong className="text-zinc-100">量化訊號整合</strong>：把台股量化選股系統的每日訊號帶進本站個股頁與大盤儀表板，規格已寫好待開工，前置條件＝量化系統那邊的升級版本穩定滿一段時間未回滾。
+              </li>
+              <li>
+                <strong className="text-zinc-100">ETF 持倉分頁（個股頁）</strong>：已結案不實作——FinMind 與 TWSE 官方資料源都沒有 ETF 成分股資料集，調查後放棄爬取第三方（不爬他站策展資料的既定立場）。
+              </li>
+              <li>
+                <strong className="text-zinc-100">每日 Email 告警</strong>：破上限賣出／破下限買進時自動寄信通知，跑在雲端主機、不受這台電腦開關機影響；資產鎖定狀態不影響告警判斷邏輯（告警只看原始目標 β）。
+              </li>
+              <li>
+                <strong className="text-zinc-100">真實同步按鈕</strong>：手機/桌面皆可觸發，但實際登入證券帳戶抓真實庫存的動作留在自己電腦執行，交易憑證不會離開這台電腦；電腦需開機並登入才能同步（詳見「建倉 & 交易紀錄」分頁）。
+              </li>
+            </ul>
+          </div>
+        </div>
+      )}
 
       {/* 左卡：Beta 儀表 + 滑桿 + 配置條 */}
       {activeTab === 'beta' && (
