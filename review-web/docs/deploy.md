@@ -137,3 +137,19 @@ if (fs.existsSync(webDist)) {
 **日常使用**：手機 Tailscale App 保持連線（背景 VPN 開關，不需手動操作），瀏覽器開 `https://puhui-oracle-vm.tail73ac0d.ts.net/review/`——有效 HTTPS 憑證（Tailscale 自動核發/續期），PWA manifest/service worker 沿用既有設定，「加到主畫面」可正常安裝離線可用的 APP 圖示。**2026-07-07 手機（Android，行動網路）實測通過**。
 
 **安全性**：僅限已登入同一 Tailscale 帳號的裝置能解析/連線該網域，未對 Oracle Cloud 安全清單開任何新 inbound port，與桌面 `ssh -L` 管道並存不衝突。若要新增裝置（如平板）：安裝 Tailscale App 登入同帳號即可，VM 端不需任何改動。
+
+### 4.6 真實持倉同步（手機/桌面皆可觸發，2026-07-11 新增）
+
+再平衡頁「期初部位」區塊有一顆「真實同步」按鈕，桌面或手機（Tailscale）點擊皆可，會從玉山證券（Fugle Trade）真實帳戶抓庫存/現金覆蓋期初部位。**交易憑證全程只留在使用者本機 PC，絕不上傳 VM 或 GitHub。**
+
+**架構**：網頁按鈕 → `POST /api/rebalance/sync-holdings-trigger`（`routes/rebalance.js`）→ VM 用 `GH_ACTIONS_PAT`（fine-grained PAT，僅 `Stock_recommendations` repo 的 Actions:read+write 權限）呼叫 GitHub `workflow_dispatch` API → **本機 PC 上的 self-hosted runner**（label `fugle-sync`）接下工作 → 執行既有 `review-web/tools/sync-holdings.ps1`（開 SSH 通道＋跑 `scripts/sync_fugle_holdings.py`，登入玉山證券在本機完成）→ 把持倉 POST 回同一個 gateway 端點。前端輪詢 `GET /api/rebalance/holdings` 的 `saved_at` 判斷是否完成，約 2 分鐘逾時。
+
+🚨 **`Stock_recommendations` 這個 repo 是 PUBLIC**，self-hosted runner 掛在 public repo 是 GitHub 官方文件明確警告的風險（陌生 fork PR 可能執行到 runner 上）。已用兩層防護把風險壓到最低：
+1. `.github/workflows/sync_fugle_holdings.yml` **只掛 `workflow_dispatch`**，不掛任何自動觸發事件（push/pull_request/schedule 都沒有）——只有握有 repo 寫入權限或有效 PAT 的呼叫端能觸發，外部 fork PR 無法自動執行到它。
+2. Runner 標籤用專屬的 `fugle-sync`（見下方 `runs-on: [self-hosted, fugle-sync]`），不用泛用的 `self-hosted`，確保 repo 裡其他任何現有/未來 workflow 都不會意外（或被惡意修改）跑到這台本機 Runner 上。
+
+**本機 Runner 安裝細節（供日後重裝/除錯參考）**：
+- 安裝目錄：`C:\actions-runner-fugle`（用 `config.cmd --labels fugle-sync --name bigsh-fugle --unattended --work _work` 註冊，token 從 `gh api -X POST repos/bigshop127/Stock_recommendations/actions/runners/registration-token` 取得）。
+- **刻意不裝成 Windows 服務**（沒用 `--runasservice`）——Windows 服務預設跑在 SYSTEM/NETWORK SERVICE 帳號下，讀不到 `bigsh` 使用者的 Windows Credential Manager（esun_trade SDK 登入快取的密碼就存在這裡），會導致腳本卡在互動式 `getpass()` 提示。改用 **Task Scheduler「登入時觸發」**（工作名稱 `FugleSyncRunner`，`New-ScheduledTaskTrigger -AtLogOn`，不指定密碼＝以目前登入使用者身分執行，非「不論登入與否都執行」模式）在 `bigsh` 登入 Windows 時自動以隱藏視窗（`run-hidden.vbs` 用 `WScript.Shell.Run ..., 0, False`）啟動 `run.cmd`，繼承正常登入 session 的憑證存取權。**代價：這台電腦要開機且 `bigsh` 已登入，手機/桌面按鈕才點得動**——PC 關機或登出時，觸發的工作會排隊等待（GitHub 對 self-hosted runner 的排隊上限約 24 小時），前端輪詢逾時後會提示使用者確認電腦狀態。
+- 檢查 Runner 是否在線：`gh api repos/bigshop127/Stock_recommendations/actions/runners --jq '.runners[] | {name,status,busy,labels:[.labels[].name]}'`。
+- VM 端 `GH_ACTIONS_PAT` 存在 `~/Stock_recommendations/.env`（gitignored），申請於 https://github.com/settings/personal-access-tokens/new（Only select repositories → `Stock_recommendations`；Repository permissions → Actions → Read and write，其餘都不用開）。
