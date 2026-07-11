@@ -50,7 +50,7 @@ for ($i = 0; $i -lt 60; $i++) {
 
 if (-not (Test-Gateway)) {
     Write-Output 'ERROR: could not reach the gateway through the SSH tunnel.'
-    Read-Host 'Press Enter to close'
+    if (-not $env:GITHUB_ACTIONS) { Read-Host 'Press Enter to close' }
     exit 1
 }
 
@@ -58,5 +58,9 @@ $ErrorActionPreference = 'Continue'
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $RepoRoot  = Split-Path -Parent (Split-Path -Parent $ScriptDir)
 py "$RepoRoot\scripts\sync_fugle_holdings.py"
+$exitCode = $LASTEXITCODE
 
-Read-Host 'Done. Press Enter to close'
+# $env:GITHUB_ACTIONS is auto-set by the Actions runner — skip the interactive
+# pause when triggered remotely (button on the website) via workflow_dispatch.
+if (-not $env:GITHUB_ACTIONS) { Read-Host 'Done. Press Enter to close' }
+exit $exitCode

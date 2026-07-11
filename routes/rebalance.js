@@ -187,11 +187,15 @@ function sanitizeHoldings(body) {
 router.get('/api/rebalance/holdings', (req, res) => {
   try {
     if (!fs.existsSync(HOLDINGS_PATH)) {
-      return res.json({ exists: false, holdings: null });
+      return res.json({ exists: false, holdings: null, saved_at: null });
     }
     const raw = fs.readFileSync(HOLDINGS_PATH, 'utf-8');
     const parsed = JSON.parse(raw);
-    return res.json({ exists: true, holdings: sanitizeHoldings(parsed) });
+    return res.json({
+      exists: true,
+      holdings: sanitizeHoldings(parsed),
+      saved_at: typeof parsed._saved_at === 'string' ? parsed._saved_at : null,
+    });
   } catch (err) {
     return sendError(res, httpError(500, 'INTERNAL', '讀取持倉檔失敗: ' + err.message));
   }
@@ -207,13 +211,50 @@ router.post('/api/rebalance/holdings', (req, res) => {
       const prev = JSON.parse(fs.readFileSync(HOLDINGS_PATH, 'utf-8'));
       if (prev && typeof prev._readme === 'string') readme = prev._readme;
     } catch (_) { /* 無舊檔或壞檔就略過 */ }
-    const toWrite = readme ? { _readme: readme, ...clean } : clean;
+    const saved_at = new Date().toISOString();
+    const toWrite = readme ? { _readme: readme, ...clean, _saved_at: saved_at } : { ...clean, _saved_at: saved_at };
     const tmp = HOLDINGS_PATH + '.tmp';
     fs.writeFileSync(tmp, JSON.stringify(toWrite, null, 2));
     fs.renameSync(tmp, HOLDINGS_PATH);
-    return res.json({ ok: true, holdings: clean, saved_at: new Date().toISOString() });
+    return res.json({ ok: true, holdings: clean, saved_at });
   } catch (err) {
     return sendError(res, httpError(400, 'BAD_REQUEST', '儲存持倉失敗: ' + err.message));
+  }
+});
+
+// 真實同步觸發：呼叫 GitHub API 對 sync_fugle_holdings.yml 送 workflow_dispatch，
+// 實際登入玉山證券的動作在使用者本機的 self-hosted runner 上執行（見該 workflow
+// 檔案開頭註解）——此端點只負責「通知」，交易憑證全程不經過這台 VM。
+// 立即回 202，前端輪詢 GET /api/rebalance/holdings 的 saved_at 判斷是否完成。
+const GITHUB_REPO = 'bigshop127/Stock_recommendations';
+const GITHUB_WORKFLOW = 'sync_fugle_holdings.yml';
+
+router.post('/api/rebalance/sync-holdings-trigger', async (req, res) => {
+  const token = process.env.GH_ACTIONS_PAT;
+  if (!token) {
+    return sendError(res, httpError(500, 'CONFIG', '伺服器尚未設定 GH_ACTIONS_PAT，無法觸發真實同步'));
+  }
+  try {
+    const r = await fetch(
+      `https://api.github.com/repos/${GITHUB_REPO}/actions/workflows/${GITHUB_WORKFLOW}/dispatches`,
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          Accept: 'application/vnd.github+json',
+          'X-GitHub-Api-Version': '2022-11-28',
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ ref: 'master' }),
+      },
+    );
+    if (r.status !== 204) {
+      const text = await r.text().catch(() => '');
+      return sendError(res, httpError(502, 'GITHUB', `觸發 GitHub Actions 失敗 (HTTP ${r.status}): ${text}`));
+    }
+    return res.status(202).json({ ok: true, triggered_at: new Date().toISOString() });
+  } catch (err) {
+    return sendError(res, httpError(502, 'GITHUB', '呼叫 GitHub API 失敗: ' + err.message));
   }
 });
 

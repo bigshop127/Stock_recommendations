@@ -572,6 +572,10 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(holdings),
     }),
+  // 真實同步（玉山證券）：觸發本機 self-hosted runner 執行，實際完成與否靠輪詢
+  // getRebalanceHoldings() 的 saved_at 判斷（見 Rebalance.tsx）
+  triggerRealSync: () =>
+    req<{ ok: boolean; triggered_at: string }>('/rebalance/sync-holdings-trigger', { method: 'POST' }),
 };
 
 // 再平衡持倉（雲端 JSON）— 與 rebalanceStore.RebalanceConfig 對齊
@@ -617,6 +621,7 @@ export interface RebalanceHoldingsPayload {
 export interface RebalanceHoldingsResp {
   exists: boolean;
   holdings: RebalanceHoldingsPayload | null;
+  saved_at: string | null;
 }
 export interface RebalanceHoldingsSaveResp {
   ok: boolean;

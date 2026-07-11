@@ -256,6 +256,12 @@ export function Rebalance() {
   // 雲端同步狀態
   const [cloud, setCloud] = useState<CloudState>({ status: 'idle', savedAt: null, msg: null });
 
+  // 真實同步（玉山證券）狀態：觸發本機 self-hosted runner 執行，輪詢 saved_at 直到更新或逾時
+  const [realSync, setRealSync] = useState<{
+    status: 'idle' | 'triggering' | 'waiting' | 'done' | 'timeout' | 'error';
+    msg: string | null;
+  }>({ status: 'idle', msg: null });
+
   useEffect(() => {
     const unsub = subscribeRebalance(() => {
       const updated = getRebalanceConfig();
@@ -340,6 +346,41 @@ export function Rebalance() {
     } catch (e) {
       setCloud({ status: 'error', savedAt: null, msg: e instanceof Error ? e.message : '同步失敗' });
     }
+  };
+
+  // 真實同步：觸發 gateway → GitHub workflow_dispatch → 本機 self-hosted runner 執行
+  // sync_fugle_holdings.py（登入玉山證券在本機完成，憑證不經過 VM）。因為實際執行
+  // 是非同步的（要等本機電腦接下這個 job），輪詢 saved_at 判斷何時真的完成。
+  const syncRealHoldings = async () => {
+    setRealSync({ status: 'triggering', msg: null });
+    let baseline: string | null = null;
+    try {
+      const cur = await api.getRebalanceHoldings();
+      baseline = cur.saved_at;
+      await api.triggerRealSync();
+    } catch (e) {
+      setRealSync({ status: 'error', msg: e instanceof Error ? e.message : '觸發失敗' });
+      return;
+    }
+    setRealSync({ status: 'waiting', msg: null });
+    const maxAttempts = 40; // 3 秒一次，約 2 分鐘逾時
+    for (let i = 0; i < maxAttempts; i++) {
+      await new Promise((r) => setTimeout(r, 3000));
+      try {
+        const resp = await api.getRebalanceHoldings();
+        if (resp.exists && resp.holdings && resp.saved_at && resp.saved_at !== baseline) {
+          saveRebalanceConfig(resp.holdings as unknown as RebalanceConfig);
+          setRealSync({ status: 'done', msg: resp.saved_at });
+          return;
+        }
+      } catch (_) {
+        // 單次輪詢失敗不中斷，繼續重試到逾時
+      }
+    }
+    setRealSync({
+      status: 'timeout',
+      msg: '逾時未收到更新，請確認家中電腦已開機並登入（背景同步服務會在登入時自動啟動）。',
+    });
   };
 
   // 掛載：先從雲端載入（雲端為主）；本機為離線快取。載入後對缺現價的資產自動抓一次即時報價。
@@ -1742,6 +1783,46 @@ export function Rebalance() {
               {cloud.status === 'syncing' ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <UploadCloud className="w-3.5 h-3.5" />}
               建倉完成，儲存並同步
             </button>
+          </div>
+
+          {/* 真實同步（玉山證券）：桌面/手機皆可點，實際執行在家中電腦（self-hosted runner） */}
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 pt-3 mt-1 border-t border-zinc-800/50">
+            <div className="text-[11px] text-zinc-500">
+              從玉山證券真實帳戶抓庫存/現金，覆蓋上面期初部位（本機電腦需開機並登入）
+            </div>
+            <div className="flex items-center gap-2">
+              <div className="text-[11px] flex items-center gap-1.5 min-h-[16px]">
+                {(realSync.status === 'triggering' || realSync.status === 'waiting') && (
+                  <span className="text-primary flex items-center gap-1">
+                    <Loader2 className="w-3 h-3 animate-spin" />
+                    {realSync.status === 'triggering' ? '觸發中…' : '本機執行中…'}
+                  </span>
+                )}
+                {realSync.status === 'done' && (
+                  <span className="text-emerald-400 flex items-center gap-1">
+                    <Cloud className="w-3.5 h-3.5" />
+                    已更新真實持倉{realSync.msg ? ` ${new Date(realSync.msg).toLocaleTimeString('zh-TW', { hour12: false })}` : ''}
+                  </span>
+                )}
+                {(realSync.status === 'timeout' || realSync.status === 'error') && (
+                  <span className="text-amber-400 flex items-center gap-1">
+                    <CloudOff className="w-3.5 h-3.5" /> {realSync.msg || '同步失敗'}
+                  </span>
+                )}
+              </div>
+              <button
+                onClick={() => void syncRealHoldings()}
+                disabled={realSync.status === 'triggering' || realSync.status === 'waiting'}
+                className="inline-flex items-center justify-center gap-1.5 px-3.5 py-1.5 rounded-lg bg-cyan-700 text-white text-xs font-semibold hover:bg-cyan-600 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              >
+                {realSync.status === 'triggering' || realSync.status === 'waiting' ? (
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                ) : (
+                  <RefreshCw className="w-3.5 h-3.5" />
+                )}
+                真實同步
+              </button>
+            </div>
           </div>
         </div>
 

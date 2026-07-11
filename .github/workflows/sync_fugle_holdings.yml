@@ -1,0 +1,26 @@
+# 真實持倉同步（玉山證券 Fugle Trade）— 由 review-web 網頁按鈕遠端觸發，
+# 實際執行在本機自架 Runner 上，交易憑證全程留在本機，絕不上傳 GitHub。
+#
+# 🚨 安全設計（此 repo 為 PUBLIC，務必維持）：
+#   - 僅 workflow_dispatch 觸發（不掛 push/pull_request/schedule），只有持有
+#     repo 寫入權限的人（或帶有效 PAT 的呼叫端）能觸發，外部 fork PR 無法自動執行。
+#   - runs-on 用專屬唯一標籤 [self-hosted, fugle-sync]，不用泛用 self-hosted，
+#     避免此 repo 其他/未來的 workflow 不小心（或被惡意 PR）跑到這台本機 Runner 上。
+#   - 不用 actions/checkout：直接執行本機既有路徑下的腳本，同時也避開
+#     .env（FUGLE_CONFIG_PATH，已 gitignore）在全新 checkout 裡不存在的問題。
+name: Sync Fugle Holdings (local runner)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  sync:
+    runs-on: [self-hosted, fugle-sync]
+    timeout-minutes: 5
+    steps:
+      - name: Run local sync script (SSH tunnel + Python, all on this PC)
+        shell: powershell
+        run: powershell -ExecutionPolicy Bypass -File "C:\CC AI Agent\review-web\tools\sync-holdings.ps1"
