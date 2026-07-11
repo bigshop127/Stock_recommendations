@@ -110,6 +110,8 @@ if (fs.existsSync(webDist)) {
 
 ### 4.4 上版後前端看到舊畫面 → PWA Service Worker 快取排除
 
+**2026-07-11 已修復根因（commit `85e55c4`）**：workbox 設定原本只有 `skipWaiting` 漏了 `clientsClaim`，新 SW activate 後不會接管「已經開著」的分頁/手機 PWA，`main.tsx` 的 `controllerchange` 自動重整監聽器因此永遠等不到事件。已補上 `clientsClaim: true`（`vite.config.ts`）＋手機 PWA 從背景切回時主動 `registration.update()`（`main.tsx` 的 `visibilitychange` 監聽）。**修復後理論上不再需要下面這套手動排除步驟**——但若哪天又踩到舊畫面，以下仍是有效的救急手段：
+
 `review-web` 的 PWA 採 `registerType: 'autoUpdate'`，Service Worker 會積極快取整個 app shell。**上版後瀏覽器很可能還在跑舊的 hashed chunk（舊 JS），看不到新功能。**
 
 🚨 **實測（2026-07-04 opt8 上版）：光按 `Ctrl+Shift+R`（強制重整）不夠**——連按兩次仍載到舊 chunk。判斷「新 JS 是否真的載入」的鐵證＝**Console 堆疊追蹤裡的 chunk hash**（如 `StockDetail-0ORDw7af.js`），與 `dist/assets/` 下建置產出的檔名比對即可確認。
