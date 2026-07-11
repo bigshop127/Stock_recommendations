@@ -23,4 +23,4 @@ jobs:
     steps:
       - name: Run local sync script (SSH tunnel + Python, all on this PC)
         shell: powershell
-        run: powershell -ExecutionPolicy Bypass -File "C:\CC AI Agent\review-web\tools\sync-holdings.ps1"
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File "C:\CC AI Agent\review-web\tools\sync-holdings.ps1"
