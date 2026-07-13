@@ -13,13 +13,12 @@ const ASSETS: { code: string; name: string }[] = [
 const assetName = (code: string) => ASSETS.find((a) => a.code === code)?.name ?? code;
 
 // 分頁（像個股頁一樣，點開才看該區塊內容，不用整頁滑）
-type RebalanceTab = 'logic' | 'beta' | 'deviation' | 'holdings' | 'trades';
+// 【2026-07-13 合併】持倉現況＋建倉&交易紀錄合成一頁；Beta儀表＋偏離分析&建議合成一頁；整體邏輯放最後
+type RebalanceTab = 'holdings' | 'beta' | 'logic';
 const REBALANCE_TABS: { id: RebalanceTab; label: string }[] = [
+  { id: 'holdings', label: '持倉現況 & 交易紀錄' },
+  { id: 'beta', label: 'Beta 儀表 & 偏離分析' },
   { id: 'logic', label: '整體邏輯' },
-  { id: 'beta', label: 'Beta 儀表' },
-  { id: 'deviation', label: '偏離分析 & 建議' },
-  { id: 'holdings', label: '持倉現況' },
-  { id: 'trades', label: '建倉 & 交易紀錄' },
 ];
 const DEFAULT_REBALANCE_TAB: RebalanceTab = 'beta';
 
@@ -868,7 +867,7 @@ export function Rebalance() {
                     </div>
                     <p className="text-zinc-300 leading-relaxed">
                       股災來臨建議防守端全數轉入 00631L，但鎖定的資產不會被自動賣出——系統只會改算「需額外注入多少現金」補足缺口。
-                      <strong className="text-red-200">如果沒有特別原因要保留這些資產不動，建議先到「持倉現況」分頁解鎖，再套用滿倉 β</strong>，才能真正照 waterfall 順序全力應對；若確定要保留鎖定，準備好對應金額的現金注入即可。
+                      <strong className="text-red-200">如果沒有特別原因要保留這些資產不動，建議先到「持倉現況 & 交易紀錄」分頁解鎖，再套用滿倉 β</strong>，才能真正照 waterfall 順序全力應對；若確定要保留鎖定，準備好對應金額的現金注入即可。
                     </p>
                   </div>
                 )}
@@ -930,7 +929,7 @@ export function Rebalance() {
               </p>
               <p>
                 投組 Beta＝00631L 市值佔投組總市值的比例 × 2。<strong className="text-zinc-100">目標 β 預設 1.3</strong>（00631L 佔 65%、防守端佔 35%），
-                容忍區間 <strong className="text-zinc-100">±0.1</strong>（正常範圍 1.2～1.4）內完全不動作；一旦突破上下限，「偏離分析 & 建議」分頁會算出精確該買賣多少錢/多少股才能拉回目標 β。
+                容忍區間 <strong className="text-zinc-100">±0.1</strong>（正常範圍 1.2～1.4）內完全不動作；一旦突破上下限，「Beta 儀表 & 偏離分析」分頁會算出精確該買賣多少錢/多少股才能拉回目標 β。
               </p>
               <p>
                 <strong className="text-zinc-100">不擇時</strong>——不是猜頭部/底部，而是紀律性再平衡：跌深了 00631L 佔比自然縮水（β 變低）就補回去，漲多了佔比膨脹（β 變高）就賣一點鎖利，維持固定曝險水位。
@@ -1023,15 +1022,17 @@ export function Rebalance() {
                 <strong className="text-zinc-100">每日 Email 告警</strong>：破上限賣出／破下限買進時自動寄信通知，跑在雲端主機、不受這台電腦開關機影響；資產鎖定狀態不影響告警判斷邏輯（告警只看原始目標 β）。
               </li>
               <li>
-                <strong className="text-zinc-100">真實同步按鈕</strong>：手機/桌面皆可觸發，但實際登入證券帳戶抓真實庫存的動作留在自己電腦執行，交易憑證不會離開這台電腦；電腦需開機並登入才能同步（詳見「建倉 & 交易紀錄」分頁）。
+                <strong className="text-zinc-100">真實同步按鈕</strong>：手機/桌面皆可觸發，但實際登入證券帳戶抓真實庫存的動作留在自己電腦執行，交易憑證不會離開這台電腦；電腦需開機並登入才能同步（按鈕在頁面最上方「TAIEX 市場狀態燈號」卡，期初部位輸入在「持倉現況 & 交易紀錄」分頁）。
               </li>
             </ul>
           </div>
         </div>
       )}
 
-      {/* 左卡：Beta 儀表 + 滑桿 + 配置條 */}
+      {/* 合併分頁：Beta 儀表（左卡）+ 偏離分析 & 再平衡建議（右卡），桌面雙欄並排、手機各自全寬堆疊 */}
       {activeTab === 'beta' && (
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 items-start">
+        {/* 左卡：Beta 儀表 + 滑桿 + 配置條 */}
         <div className="bg-card border border-border rounded-xl p-5 shadow-sm space-y-6">
           <div className="flex items-center justify-between border-b border-border/60 pb-3">
             <h2 className="text-sm font-semibold text-zinc-200 flex items-center gap-2">
@@ -1347,10 +1348,8 @@ export function Rebalance() {
             </div>
           </div>
         </div>
-      )}
 
-      {/* 右卡：偏離分析 & 再平衡建議面板 */}
-      {activeTab === 'deviation' && (
+        {/* 右卡：偏離分析 & 再平衡建議面板 */}
         <div className="bg-card border border-border rounded-xl p-5 shadow-sm space-y-6 flex flex-col justify-between">
           <div className="space-y-6">
             <div className="flex items-center justify-between border-b border-border/60 pb-3">
@@ -1646,10 +1645,12 @@ export function Rebalance() {
             </div>
           </div>
         </div>
+        </div>
       )}
 
-      {/* 下方：持倉現況面板（股數/均價為報價單累算的衍生值，唯讀） */}
+      {/* 合併分頁：持倉現況（股數/均價為報價單累算的衍生值，唯讀）+ 建倉 & 交易紀錄，堆疊呈現 */}
       {activeTab === 'holdings' && (
+      <div className="space-y-6">
       <div className="bg-card border border-border rounded-xl p-5 shadow-sm space-y-4">
         <h2 className="text-sm font-semibold text-zinc-200 flex items-center justify-between border-b border-border/60 pb-3">
           <span className="flex items-center gap-2">
@@ -1935,10 +1936,8 @@ export function Rebalance() {
           </button>
         </div>
       </div>
-      )}
 
       {/* 買賣報價單（交易紀錄，自動累算回填持倉、送出即同步雲端） */}
-      {activeTab === 'trades' && (
       <div className="bg-card border border-border rounded-xl p-5 shadow-sm space-y-5">
         <h2 className="text-sm font-semibold text-zinc-200 flex items-center justify-between border-b border-border/60 pb-3">
           <span className="flex items-center gap-2">
@@ -2177,6 +2176,7 @@ export function Rebalance() {
             </div>
           )}
         </div>
+      </div>
       </div>
       )}
 
