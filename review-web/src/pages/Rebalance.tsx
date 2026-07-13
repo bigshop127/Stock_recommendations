@@ -719,19 +719,34 @@ export function Rebalance() {
             <span className="w-2 h-2 rounded-full bg-cyan-500" />
             TAIEX 市場狀態燈號
           </h2>
-          <button
-            onClick={() => void syncToCloud(config)}
-            disabled={cloud.status === 'syncing' || cloud.status === 'loading'}
-            className="text-[11px] text-primary hover:text-primary/80 disabled:text-zinc-600 flex items-center gap-1 transition-colors font-normal"
-            title="把目前設定（目標Beta、容忍度、鎖定狀態等）同步到雲端，之後任何裝置重開都不會跑掉"
-          >
-            {cloud.status === 'syncing' ? (
-              <Loader2 className="w-3 h-3 animate-spin" />
-            ) : (
-              <UploadCloud className="w-3 h-3" />
-            )}
-            狀態同步
-          </button>
+          <div className="flex items-center gap-3">
+            <button
+              onClick={() => void syncToCloud(config)}
+              disabled={cloud.status === 'syncing' || cloud.status === 'loading'}
+              className="text-[11px] text-primary hover:text-primary/80 disabled:text-zinc-600 flex items-center gap-1 transition-colors font-normal"
+              title="把目前設定（目標Beta、容忍度、鎖定狀態等）同步到雲端，之後任何裝置重開都不會跑掉"
+            >
+              {cloud.status === 'syncing' ? (
+                <Loader2 className="w-3 h-3 animate-spin" />
+              ) : (
+                <UploadCloud className="w-3 h-3" />
+              )}
+              狀態同步
+            </button>
+            <button
+              onClick={() => void syncRealHoldings()}
+              disabled={realSync.status === 'triggering' || realSync.status === 'waiting'}
+              className="text-[11px] text-cyan-400 hover:text-cyan-300 disabled:text-zinc-600 flex items-center gap-1 transition-colors font-normal"
+              title="從玉山證券真實帳戶抓庫存/現金，覆蓋期初部位（本機電腦需開機並登入才能執行）"
+            >
+              {realSync.status === 'triggering' || realSync.status === 'waiting' ? (
+                <Loader2 className="w-3 h-3 animate-spin" />
+              ) : (
+                <RefreshCw className="w-3 h-3" />
+              )}
+              真實同步
+            </button>
+          </div>
         </div>
 
         {(cloud.status === 'saved' || cloud.status === 'error') && (
@@ -746,6 +761,28 @@ export function Rebalance() {
             )}
             {cloud.status === 'error' && (
               <span className="text-amber-400 flex items-center gap-1"><CloudOff className="w-3.5 h-3.5" /> {cloud.msg || '雲端同步失敗（已存本機）'}</span>
+            )}
+          </div>
+        )}
+
+        {realSync.status !== 'idle' && (
+          <div className="text-[11px] flex items-center gap-1.5 -mt-2">
+            {(realSync.status === 'triggering' || realSync.status === 'waiting') && (
+              <span className="text-cyan-400 flex items-center gap-1">
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                {realSync.status === 'triggering' ? '真實同步觸發中…' : '真實同步：本機執行中…'}
+              </span>
+            )}
+            {realSync.status === 'done' && (
+              <span className="text-emerald-400 flex items-center gap-1">
+                <Cloud className="w-3.5 h-3.5" />
+                已更新真實持倉{realSync.msg ? ` ${new Date(realSync.msg).toLocaleTimeString('zh-TW', { hour12: false })}` : ''}
+              </span>
+            )}
+            {(realSync.status === 'timeout' || realSync.status === 'error') && (
+              <span className="text-amber-400 flex items-center gap-1">
+                <CloudOff className="w-3.5 h-3.5" /> 真實同步：{realSync.msg || '同步失敗'}
+              </span>
             )}
           </div>
         )}
@@ -2003,44 +2040,9 @@ export function Rebalance() {
             </button>
           </div>
 
-          {/* 真實同步（玉山證券）：桌面/手機皆可點，實際執行在家中電腦（self-hosted runner） */}
-          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 pt-3 mt-1 border-t border-zinc-800/50">
-            <div className="text-[11px] text-zinc-500">
-              從玉山證券真實帳戶抓庫存/現金，覆蓋上面期初部位（本機電腦需開機並登入）
-            </div>
-            <div className="flex items-center gap-2">
-              <div className="text-[11px] flex items-center gap-1.5 min-h-[16px]">
-                {(realSync.status === 'triggering' || realSync.status === 'waiting') && (
-                  <span className="text-primary flex items-center gap-1">
-                    <Loader2 className="w-3 h-3 animate-spin" />
-                    {realSync.status === 'triggering' ? '觸發中…' : '本機執行中…'}
-                  </span>
-                )}
-                {realSync.status === 'done' && (
-                  <span className="text-emerald-400 flex items-center gap-1">
-                    <Cloud className="w-3.5 h-3.5" />
-                    已更新真實持倉{realSync.msg ? ` ${new Date(realSync.msg).toLocaleTimeString('zh-TW', { hour12: false })}` : ''}
-                  </span>
-                )}
-                {(realSync.status === 'timeout' || realSync.status === 'error') && (
-                  <span className="text-amber-400 flex items-center gap-1">
-                    <CloudOff className="w-3.5 h-3.5" /> {realSync.msg || '同步失敗'}
-                  </span>
-                )}
-              </div>
-              <button
-                onClick={() => void syncRealHoldings()}
-                disabled={realSync.status === 'triggering' || realSync.status === 'waiting'}
-                className="inline-flex items-center justify-center gap-1.5 px-3.5 py-1.5 rounded-lg bg-cyan-700 text-white text-xs font-semibold hover:bg-cyan-600 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-              >
-                {realSync.status === 'triggering' || realSync.status === 'waiting' ? (
-                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                ) : (
-                  <RefreshCw className="w-3.5 h-3.5" />
-                )}
-                真實同步
-              </button>
-            </div>
+          {/* 真實同步（玉山證券）按鈕已移到頁面最上方「TAIEX 市場狀態燈號」卡片標題旁，一進頁就看得到 */}
+          <div className="text-[11px] text-zinc-500 pt-3 mt-1 border-t border-zinc-800/50">
+            從玉山證券真實帳戶抓庫存/現金、覆蓋上面期初部位的「真實同步」按鈕已移到頁面最上方（本機電腦需開機並登入才能執行）
           </div>
         </div>
 
