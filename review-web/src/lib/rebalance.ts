@@ -376,21 +376,19 @@ export function allocateDefensiveWithLocks(
   const cashReserve = Math.max(0, safeNum(input.cash.reserve, 0));
   const bondSplit = clamp(safeNum(input.bondSplit, DEFAULT_BOND_SPLIT), 0, 1);
 
-  const lockedCashVal = input.cash.locked ? cashVal : 0;
+  // 【bugfix】鎖定現金＝只保護「現金保留額」這筆固定額度（min(現有現金, 保留額)），
+  // 不是把當下全部閒置現金都凍結——超出保留額的閒置現金仍視同未鎖定，正常參與再平衡調撥。
+  // 這是一道「下限保護」而非「原地凍結」：現金之後仍可能因為賣出00631L或債券的價金流入而變多。
+  const protectedCash = input.cash.locked ? Math.min(cashVal, cashReserve) : 0;
   const lockedBondsSum = input.bonds.reduce((s, b) => s + (b.locked ? b.value : 0), 0);
 
-  const unlocked_pool = Math.max(0, targetDef - lockedCashVal - lockedBondsSum);
+  const unlocked_pool = Math.max(0, targetDef - protectedCash - lockedBondsSum);
 
-  let cash_target = 0;
-  let bondPool = 0;
-
-  if (!input.cash.locked) {
-    cash_target = clamp(cashReserve, 0, unlocked_pool);
-    bondPool = unlocked_pool - cash_target;
-  } else {
-    cash_target = cashVal;
-    bondPool = unlocked_pool;
-  }
+  // 保留額本身一律優先保留（無論是否鎖定）；鎖定只是把保留額之外的閒置現金一併排除在
+  // headroom 計算外的下限提高到「目前現金」——這裡的 clamp 上限用 unlocked_pool 是因為
+  // protectedCash 已經先從 unlocked_pool 扣除，兩者相加即鎖定時的現金下限。
+  const cash_target = protectedCash + clamp(cashReserve - protectedCash, 0, unlocked_pool);
+  const bondPool = unlocked_pool - (cash_target - protectedCash);
 
   const unlockedBonds = input.bonds.filter((b) => !b.locked);
   const bondValuesMap = new Map<string, number>();
@@ -401,6 +399,8 @@ export function allocateDefensiveWithLocks(
       bondValuesMap.set(b.code, b.value);
     }
   }
+
+  let finalCashTarget = cash_target;
 
   if (unlockedBonds.length === 2) {
     const values = unlockedBonds.map((b) => b.value);
@@ -425,14 +425,14 @@ export function allocateDefensiveWithLocks(
   } else if (unlockedBonds.length === 1) {
     bondValuesMap.set(unlockedBonds[0].code, bondPool);
   } else if (unlockedBonds.length === 0) {
-    if (!input.cash.locked) {
-      cash_target += bondPool;
-    }
+    // 沒有任何可調撥的債券承接 bondPool（可能因為兩檔都鎖定，或本來就沒配債券）
+    // → 全部併入現金，不再區分是否鎖定：鎖定只設下限、不設上限。
+    finalCashTarget = cash_target + bondPool;
   }
 
   const bond_values = input.bonds.map((b) => bondValuesMap.get(b.code) ?? 0);
   return {
-    cash_value: cash_target,
+    cash_value: finalCashTarget,
     bond_values,
   };
 }
@@ -612,42 +612,36 @@ export function computeRebalance(input: RebalanceInput): RebalanceResult {
 
     const lockedCash = input.locked?.cash === true;
     const lockedBonds = bonds.map((b) => input.locked?.bonds?.[b.code] === true);
-    const allDefensiveLocked =
-      lockedCash && (bonds.length > 0 ? lockedBonds.every(Boolean) : true);
+    // 【bugfix】鎖定現金只保護「現金保留額」這筆固定額度（min(現有閒置現金, cash_reserve)），
+    // 超出保留額的閒置現金仍計入 headroom、可正常被拿去買 00631L 或債券——不再把整包閒置現金
+    // 都當成鎖死。因此不再需要「現金＋債券全鎖 → 00631L 完全凍結（連賣出都擋）」的特例：
+    // 賣出 00631L 的價金永遠可以流入現金（鎖定只設下限、不設上限），headroom 公式本身即可
+    // 正確處理所有情境（買進方向會被 headroom 卡住，賣出方向 naive < headroom 恆成立不受影響）。
+    const protected_cash = lockedCash ? Math.min(cash, cash_reserve) : 0;
+    const locked_defensive_sum =
+      protected_cash + bonds.reduce((s, b, i) => s + (lockedBonds[i] ? b.shares * b.price : 0), 0);
+    const headroom = total_value - locked_defensive_sum;
+    const shortfall = naive_target_etf_value - headroom;
 
     let target_etf_value_actual = 0;
     let effective_total_value = total_value; // 注入新現金時，防守端配置改以「原總資產＋注入」為分母
 
-    if (allDefensiveLocked) {
-      target_etf_value_actual = etf_value;
-      lock_capped = Math.abs(naive_target_etf_value - etf_value) >= 1;
-      lock_note = lock_capped
-        ? '現金／債券皆已鎖定，投組曝險無法調整（等同鎖死整體配置）'
-        : null;
+    // 現金未鎖定、且既有（未鎖定）資金不足以達到目標 β 時：可從外部「注入」新現金，
+    // 全額用於買進 00631L（不動用鎖定資產、不強制補現金保留額——見 opt19 增修對話定案）。
+    // 解 X：(headroom+X) = target_etf_weight×(total_value+X) ⇒ X = shortfall/(1−target_etf_weight)。
+    if (shortfall >= 1 && !lockedCash && 1 - target_etf_weight > 1e-9) {
+      const injected = shortfall / (1 - target_etf_weight);
+      target_etf_value_actual = headroom + injected;
+      effective_total_value = total_value + injected;
+      cash_injection_needed = injected;
+      lock_capped = false;
+      lock_note = `已鎖定資產現值合計 $${Math.round(locked_defensive_sum).toLocaleString()} 超過目前可用空間，需先注入新現金 $${Math.round(injected).toLocaleString()}（全額用於買進 00631L，不動用鎖定資產）才能達成目標`;
     } else {
-      const locked_defensive_sum =
-        (lockedCash ? cash : 0) +
-        bonds.reduce((s, b, i) => s + (lockedBonds[i] ? b.shares * b.price : 0), 0);
-      const headroom = total_value - locked_defensive_sum;
-      const shortfall = naive_target_etf_value - headroom;
-
-      // 現金未鎖定、且既有（未鎖定）資金不足以達到目標 β 時：可從外部「注入」新現金，
-      // 全額用於買進 00631L（不動用鎖定資產、不強制補現金保留額——見 opt19 增修對話定案）。
-      // 解 X：(headroom+X) = target_etf_weight×(total_value+X) ⇒ X = shortfall/(1−target_etf_weight)。
-      if (shortfall >= 1 && !lockedCash && 1 - target_etf_weight > 1e-9) {
-        const injected = shortfall / (1 - target_etf_weight);
-        target_etf_value_actual = headroom + injected;
-        effective_total_value = total_value + injected;
-        cash_injection_needed = injected;
-        lock_capped = false;
-        lock_note = `已鎖定資產現值合計 $${Math.round(locked_defensive_sum).toLocaleString()} 超過目前可用空間，需先注入新現金 $${Math.round(injected).toLocaleString()}（全額用於買進 00631L，不動用鎖定資產）才能達成目標`;
-      } else {
-        target_etf_value_actual = Math.min(naive_target_etf_value, headroom);
-        lock_capped = Math.abs(target_etf_value_actual - naive_target_etf_value) >= 1;
-        lock_note = lock_capped
-          ? `已鎖定資產現值合計 $${Math.round(locked_defensive_sum).toLocaleString()} 超過目標防守端可用空間，00631L 僅能達成部分調整`
-          : null;
-      }
+      target_etf_value_actual = Math.min(naive_target_etf_value, headroom);
+      lock_capped = Math.abs(target_etf_value_actual - naive_target_etf_value) >= 1;
+      lock_note = lock_capped
+        ? `已鎖定資產現值合計 $${Math.round(locked_defensive_sum).toLocaleString()} 超過目標防守端可用空間，00631L 僅能達成部分調整`
+        : null;
     }
 
     target_etf_value = target_etf_value_actual;

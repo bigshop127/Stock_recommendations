@@ -93,15 +93,16 @@ describe('Rebalance Asset Lock Tests', () => {
     expect(b2.target_value).toBe(36000);
   });
 
-  // 3a. 鎖定單一債券＋現金也鎖定 → 現金無法注入，真正卡住
-  it('3a. Lock single bond + cash also locked, no injection possible, genuinely capped', () => {
+  // 3a. 鎖定單一債券＋現金也鎖定（現金 > 保留額）→ 只有保留額被鎖死，超出保留額的閒置現金仍會被抽走
+  it('3a. Lock single bond + cash also locked (cash exceeds reserve) — only the reserve is protected', () => {
     // 00631L = 10,000 * 30 = 300,000.
-    // cash = 100,000 (locked).
+    // cash = 100,000（鎖定，但保留額只有 50,000）.
     // 00687B = 25,000 * 20 = 500,000 (locked).
     // 00953B = 10,000 * 10 = 100,000 (unlocked).
     // Total value = 1,000,000. target_beta=1.6 => target_etf_weight=0.8. naive=800,000.
-    // locked_defensive_sum = cash(100,000)+00687B(500,000) = 600,000. headroom = 400,000.
-    // cash 也鎖定 → 不允許注入，維持舊「卡住」邏輯：target_etf_value_actual=min(800,000,400,000)=400,000.
+    // 【bugfix】鎖定現金只保護 min(現金,保留額)=min(100,000,50,000)=50,000，不是整包100,000。
+    // locked_defensive_sum = protected_cash(50,000)+00687B(500,000) = 550,000. headroom = 450,000.
+    // target_etf_value_actual=min(800,000,450,000)=450,000（比舊版多買到150,000，因為50,000超額閒置現金被釋出）。
     const input: RebalanceInput = {
       shares: 10000,
       price: 30,
@@ -126,14 +127,15 @@ describe('Rebalance Asset Lock Tests', () => {
     const res = computeRebalance(input);
     expect(res.lock_capped).toBe(true);
     expect(res.cash_injection_needed).toBeNull();
-    expect(res.lock_note).toContain('已鎖定資產現值合計 $600,000 超過目標防守端可用空間');
-    expect(res.achieved_beta).toBeCloseTo(0.8);
-    // 00687B 鎖定 value_delta=0；現金也鎖定，維持 100,000 不變
+    expect(res.lock_note).toContain('已鎖定資產現值合計 $550,000 超過目標防守端可用空間');
+    expect(res.achieved_beta).toBeCloseTo(0.9);
+    expect(res.etf_value_delta).toBeCloseTo(150000);
+    // 00687B 鎖定 value_delta=0；現金只保留 50,000（超額的 50,000 被抽走去買 00631L）
     const b1 = res.bond_plans.find((p) => p.code === '00687B')!;
     expect(b1.value_delta).toBe(0);
-    expect(res.target_cash_value).toBe(100000);
-    expect(res.cash_adjust_delta).toBe(0);
-    // 00953B（唯一未鎖定資產）吸收到 0
+    expect(res.target_cash_value).toBe(50000);
+    expect(res.cash_adjust_delta).toBe(-50000);
+    // 00953B（唯一未鎖定債券）吸收到 0
     const b2 = res.bond_plans.find((p) => p.code === '00953B')!;
     expect(b2.target_value).toBe(0);
     expect(b2.value_delta).toBe(-100000);
@@ -265,18 +267,17 @@ describe('Rebalance Asset Lock Tests', () => {
     expect(res.achieved_beta).toBeCloseTo(1.5556, 3);
   });
 
-  // 4. 鎖定現金＋防守端擴大
-  it('4. Lock cash and expand defensive side', () => {
+  // 4. 鎖定現金（現金 > 保留額）＋防守端擴大 → 只有保留額被鎖住，超額閒置現金隨其餘防守端一起分配
+  it('4. Lock cash (cash exceeds reserve) and expand defensive side — only the reserve stays put', () => {
     // 00631L = 20,000 * 30 = 600,000.
-    // cash = 100,000 (locked).
+    // cash = 100,000（鎖定，但保留額只有 50,000）.
     // 00687B = 10,000 * 20 = 200,000.
     // 00953B = 10,000 * 10 = 100,000.
     // Total value = 1,000,000.
     // target_beta = 1.0 => target_etf_weight = 0.5. (Wants to reduce 00631L to 500,000, so defensive expands to 500,000)
-    // naive_target_etf_value = 500,000.
-    // locked_defensive_sum = cash(100,000) = 100,000.
-    // target_etf_value_actual = Math.min(500,000, 1,000,000 - 100,000) = 500,000.
-    // lock_capped = false.
+    // naive_target_etf_value = 500,000. headroom 很充裕（950,000）不受影響，target_etf_value_actual = 500,000。
+    // 【bugfix】鎖定現金只保護 min(100,000,50,000)=50,000；target_defensive_value=500,000 中，
+    // 50,000 留在現金，剩下 450,000（含超額的 50,000 閒置現金）依 bond_split 分給兩檔債券。
     const input: RebalanceInput = {
       shares: 20000,
       price: 30,
@@ -300,17 +301,16 @@ describe('Rebalance Asset Lock Tests', () => {
 
     const res = computeRebalance(input);
     expect(res.lock_capped).toBe(false);
-    expect(res.target_cash_value).toBe(100000); // locked cash remains 100,000
-    expect(res.cash_adjust_delta).toBe(0);
+    expect(res.target_cash_value).toBe(50000); // 只鎖住保留額 50,000，不是整包 100,000
+    expect(res.cash_adjust_delta).toBe(-50000); // 超額的 50,000 被抽走分給債券
 
-    // Remaining unlocked_pool = 500,000 - 100,000 = 400,000.
-    // The two unlocked bonds share it according to bond_split: 0.6 / 0.4
-    // 00687B target = 400,000 * 0.6 = 240,000.
-    // 00953B target = 400,000 * 0.4 = 160,000.
+    // Remaining unlocked_pool = 500,000 - 50,000(保留額) = 450,000（比舊版多 50,000）.
+    // 00687B target = 450,000 * 0.6 = 270,000.
+    // 00953B target = 450,000 * 0.4 = 180,000.
     const b1 = res.bond_plans.find((p) => p.code === '00687B')!;
     const b2 = res.bond_plans.find((p) => p.code === '00953B')!;
-    expect(b1.target_value).toBe(240000);
-    expect(b2.target_value).toBe(160000);
+    expect(b1.target_value).toBe(270000);
+    expect(b2.target_value).toBe(180000);
   });
 
   // 5. 鎖定唯一一檔未鎖債券的情境
@@ -353,18 +353,57 @@ describe('Rebalance Asset Lock Tests', () => {
     expect(b2.target_value).toBe(100000);
   });
 
-  // 6. 三項防守端全鎖定
-  it('6. All three defensive assets locked', () => {
+  // 6a. 三項防守端全鎖定，且現金恰好＝保留額（無超額可用）→ 真正卡住，00631L 買不動
+  it('6a. All three defensive assets locked, cash exactly at reserve (no excess) — genuinely capped', () => {
     // 00631L = 10,000 * 30 = 300,000.
-    // cash = 100,000 (locked).
+    // cash = 50,000（鎖定，恰好等於保留額 50,000，沒有多餘閒置現金）.
     // 00687B = 10,000 * 20 = 200,000 (locked).
     // 00953B = 10,000 * 10 = 100,000 (locked).
-    // Total = 700,000.
-    // target_beta = 1.0 => target_etf_weight = 0.5. (Wants to reduce 00631L to 350,000)
-    // Since all locked, etf_value_actual = etf_value = 300,000.
-    // lock_capped = true.
-    // achieved_beta = (300,000 / 700,000) * 2.0 = 0.857.
-    // All trade deltas should be 0.
+    // Total = 650,000. target_beta=1.0 => target_etf_weight=0.5. naive=325,000.
+    // protected_cash=min(50,000,50,000)=50,000（=全部現金，無超額）。
+    // locked_defensive_sum=50,000+200,000+100,000=350,000. headroom=300,000（＝etf_value，全數鎖死時 headroom 恰好等於現值）。
+    // naive(325,000) > headroom(300,000) → target_etf_value_actual=min(325,000,300,000)=300,000（買不動，真正卡住）。
+    const input: RebalanceInput = {
+      shares: 10000,
+      price: 30,
+      cash: 50000,
+      target_beta: 1.0,
+      tolerance_mode: 'abs',
+      threshold_pct: 10,
+      threshold_abs: 0.1,
+      etf_beta: 2.0,
+      bonds: [
+        { code: '00687B', shares: 10000, price: 20 },
+        { code: '00953B', shares: 10000, price: 10 },
+      ],
+      cash_reserve: 50000,
+      bond_split: 0.6,
+      locked: {
+        cash: true,
+        bonds: { '00687B': true, '00953B': true },
+      },
+    };
+
+    const res = computeRebalance(input);
+    expect(res.lock_capped).toBe(true);
+    expect(res.lock_note).toContain('已鎖定資產現值合計 $350,000 超過目標防守端可用空間');
+    expect(res.achieved_beta).toBeCloseTo(0.9231, 3);
+    expect(res.etf_value_delta).toBe(0);
+    expect(res.cash_adjust_delta).toBe(0);
+    res.bond_plans.forEach((p) => {
+      expect(p.value_delta).toBe(0);
+    });
+  });
+
+  // 6b.【bugfix 回歸測試／使用者實測回報情境】三項防守端全鎖定，但現金 > 保留額
+  //     → 超額閒置現金不受鎖定影響，即使兩檔債券都鎖定，目標 β 依然能靠這筆超額現金精準達成
+  it('6b. All three locked but cash exceeds reserve — excess idle cash still funds the buy (bug regression)', () => {
+    // 00631L = 10,000 * 30 = 300,000.
+    // cash = 100,000（鎖定，保留額只有 50,000，超額閒置現金 50,000）.
+    // 00687B = 10,000 * 20 = 200,000 (locked). 00953B = 10,000 * 10 = 100,000 (locked).
+    // Total = 700,000. target_beta=1.0 => target_etf_weight=0.5. naive=350,000.
+    // protected_cash=min(100,000,50,000)=50,000. locked_defensive_sum=50,000+200,000+100,000=350,000.
+    // headroom=700,000-350,000=350,000＝naive，恰好精準達標，不再像舊版「連 00953B/00687B 都鎖住就整包現金也凍結」而卡死。
     const input: RebalanceInput = {
       shares: 10000,
       price: 30,
@@ -387,23 +426,55 @@ describe('Rebalance Asset Lock Tests', () => {
     };
 
     const res = computeRebalance(input);
-    expect(res.lock_capped).toBe(true);
-    expect(res.lock_note).toBe('現金／債券皆已鎖定，投組曝險無法調整（等同鎖死整體配置）');
-    expect(res.etf_value_delta).toBe(0);
-    expect(res.cash_adjust_delta).toBe(0);
+    expect(res.lock_capped).toBe(false);
+    expect(res.lock_note).toBeNull();
+    expect(res.achieved_beta).toBeCloseTo(1.0);
+    expect(res.etf_value_delta).toBeCloseTo(50000); // 靠超額閒置現金買進，即使兩檔債券皆鎖定
+    expect(res.target_cash_value).toBe(50000); // 保留額仍守住 50,000
+    expect(res.cash_adjust_delta).toBe(-50000); // 超額的 50,000 被抽走買 00631L
     res.bond_plans.forEach((p) => {
-      expect(p.value_delta).toBe(0);
+      expect(p.value_delta).toBe(0); // 兩檔債券鎖定，本身不變
     });
   });
 
-  // 7. 邊界：bonds 為空陣列
-  it('7. Empty bonds array (pure cash model) works with cash lock', () => {
-    // 00631L = 10,000 * 30 = 300,000.
-    // cash = 100,000 (locked).
-    // Total = 400,000.
-    // target_beta = 1.0 => target_etf_weight = 0.5. (Wants to reduce 00631L to 200,000)
-    // Since cash locked, allDefensiveLocked = lockedCash = true.
-    // target_etf_value_actual = 300,000.
+  // 7a. 邊界：bonds 為空陣列，現金恰好＝保留額（無超額）→ 買進方向真正卡住
+  it('7a. Empty bonds array, cash exactly at reserve — buy direction genuinely capped', () => {
+    // 00631L = 10,000 * 30 = 300,000. cash = 50,000（鎖定，恰好＝保留額，無超額）.
+    // Total = 350,000. target_beta=2.0=etf_beta（滿槓桿）=> target_etf_weight=1.0. naive=350,000.
+    // protected_cash=50,000（=全部現金）. headroom=350,000-50,000=300,000（＝etf_value）.
+    // naive(350,000) > headroom(300,000) → target_etf_value_actual=300,000（買不動）。
+    const input: RebalanceInput = {
+      shares: 10000,
+      price: 30,
+      cash: 50000,
+      target_beta: 2.0,
+      tolerance_mode: 'abs',
+      threshold_pct: 10,
+      threshold_abs: 0.1,
+      etf_beta: 2.0,
+      bonds: [],
+      cash_reserve: 50000,
+      bond_split: 0.6,
+      locked: {
+        cash: true,
+      },
+    };
+
+    const res = computeRebalance(input);
+    expect(res.lock_capped).toBe(true);
+    expect(res.etf_value_delta).toBe(0);
+    expect(res.cash_adjust_delta).toBe(0);
+    expect(res.target_cash_value).toBe(50000);
+  });
+
+  // 7b.【bugfix 回歸測試】bonds 為空陣列，現金 > 保留額、且是賣出方向
+  //     → 鎖定現金完全不擋賣出（鎖定只設下限不設上限），賣出 00631L 的價金正常流入現金
+  it('7b. Empty bonds array, cash exceeds reserve, sell direction — lock never blocks selling', () => {
+    // 00631L = 10,000 * 30 = 300,000. cash = 100,000（鎖定，保留額只有 50,000）.
+    // Total = 400,000. target_beta=1.0, etf_beta=2.0 => target_etf_weight=0.5（目前β=1.5，要賣出）. naive=200,000.
+    // protected_cash=min(100,000,50,000)=50,000. headroom=400,000-50,000=350,000.
+    // naive(200,000) < headroom(350,000) → target_etf_value_actual=200,000（賣出全額照准，不受鎖定影響）。
+    // 賣出 00631L 的 100,000 價金 + 原本現金 100,000 → 現金升到 200,000（鎖定只保底 50,000，沒有上限）。
     const input: RebalanceInput = {
       shares: 10000,
       price: 30,
@@ -422,9 +493,10 @@ describe('Rebalance Asset Lock Tests', () => {
     };
 
     const res = computeRebalance(input);
-    expect(res.lock_capped).toBe(true);
-    expect(res.lock_note).toBe('現金／債券皆已鎖定，投組曝險無法調整（等同鎖死整體配置）');
-    expect(res.etf_value_delta).toBe(0);
-    expect(res.cash_adjust_delta).toBe(0);
+    expect(res.lock_capped).toBe(false);
+    expect(res.lock_note).toBeNull();
+    expect(res.etf_value_delta).toBeCloseTo(-100000);
+    expect(res.target_cash_value).toBeCloseTo(200000);
+    expect(res.cash_adjust_delta).toBeCloseTo(100000);
   });
 });

@@ -915,6 +915,7 @@ export function Rebalance() {
               </li>
               <li>
                 <strong className="text-zinc-100">資產鎖定</strong>：現金／{BOND_ETFS[0].code}／{BOND_ETFS[1].code} 三項可個別鎖定（00631L 不開放鎖定），鎖定後再平衡建議會自動繞過它重算其他資產怎麼調整。
+                <strong className="text-zinc-100">現金鎖定只保護「現金保留額」這筆固定額度</strong>（等於 min(目前閒置現金, 保留額)），超出保留額的閒置現金仍會照常被納入建議（可能拿去買 00631L 或債券）——不是把當下全部閒置現金都凍結。
               </li>
               <li>
                 <strong className="text-zinc-100">現金注入模式</strong>：若鎖定的防守端資產卡住目標（例如兩檔債都鎖、現金不夠買到位），工具會算出「外部要注入多少現金」才能達標，而不是死鎖不動。
@@ -1792,7 +1793,7 @@ export function Rebalance() {
                     ? 'bg-bull/15 border-bull text-bull shadow-sm shadow-bull/20'
                     : 'bg-zinc-900 border-zinc-700 text-zinc-400 hover:border-zinc-500 hover:text-zinc-200'
                 }`}
-                title={config.locked?.cash ? '解鎖現金' : '鎖定現金'}
+                title={config.locked?.cash ? '解鎖現金保留額' : '鎖定現金保留額（只保護這筆保留額，超出的閒置現金仍會正常參與再平衡）'}
               >
                 {config.locked?.cash ? (
                   <Lock className="w-4 h-4" />
@@ -1817,6 +1818,11 @@ export function Rebalance() {
             <p className="text-[10px] text-zinc-600 leading-tight">
               防守端先保留這筆現金；加碼 00631L 需要抽錢時優先賣 {BOND_ETFS[0].code}（美債），賣完才動 {BOND_ETFS[1].code}（保留月配息）。
               獲利了結回補時依 {Math.round(config.bond_split * 100)}:{Math.round((1 - config.bond_split) * 100)} 配到 {BOND_ETFS[0].code}/{BOND_ETFS[1].code}。
+              {config.locked?.cash && (
+                <span className="block mt-0.5 text-primary/80">
+                  已鎖定：只保護這筆 ${config.cash_reserve.toLocaleString()} 保留額，閒置現金超出的部分仍會照常參與再平衡（可能建議買 00631L 或債券）。
+                </span>
+              )}
             </p>
           </div>
         </div>
