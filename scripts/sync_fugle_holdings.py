@@ -6,10 +6,17 @@ E.Sun Securities (Fugle Trade / esun_trade SDK) account and pushes them to
 review-web's cloud holdings endpoint (POST /api/rebalance/holdings), which
 already derives shares/avg_cost/cash from opening+trades server-side.
 
-READ-ONLY against the brokerage — only get_inventories()/get_balance() are
-called. No order placement. Trading credentials never leave this machine;
-only the resulting position snapshot (shares/avg_cost/cash) is sent to the
-gateway, and only over the existing SSH tunnel (localhost:3000).
+Cash is adjusted for in-flight settlements (get_settlements()): available_balance
+already reflects anything settling today or earlier, so only rows with a
+settlement date (c_date) strictly after today are added/subtracted — these are
+T+2 amounts not yet credited (positive) or not yet deducted (negative).
+get_settlements() is account-wide (no per-stock code), so it also picks up
+pending settlement from any other stock traded in the same account.
+
+READ-ONLY against the brokerage — only get_inventories()/get_balance()/
+get_settlements() are called. No order placement. Trading credentials never
+leave this machine; only the resulting position snapshot (shares/avg_cost/cash)
+is sent to the gateway, and only over the existing SSH tunnel (localhost:3000).
 
 Run via review-web/tools/sync-holdings.ps1 (sets up the SSH tunnel first).
 """
@@ -18,6 +25,7 @@ import configparser
 import json
 import os
 import sys
+from datetime import datetime
 
 import requests
 
@@ -61,17 +69,44 @@ def fugle_login():
 
 
 def extract_positions(inventories):
-    """stk_no -> {shares, avg_cost, market_price}"""
+    """stk_no -> {shares, avg_cost, market_price}
+
+    Uses cost_qty — the full quantity backing the cost basis (settled lots
+    qty_l PLUS today's not-yet-settled buys qty_b, MINUS pending sells qty_s)
+    — NOT qty_l. qty_l is only the settled/available lots, so on a day you buy
+    it under-reports the position by exactly today's fills, and same-day
+    purchases silently fail to sync until T+2. price_avg is the average over
+    cost_qty (price_qty_sum / cost_qty), so it already pairs with cost_qty.
+    """
     out = {}
     for item in inventories:
         code = item.get("stk_no")
         if code not in TRACKED_CODES:
             continue
-        shares = int(float(item.get("qty_l", 0) or 0))
+        raw_qty = item.get("cost_qty")
+        if raw_qty in (None, ""):
+            raw_qty = item.get("qty_l", 0)
+        shares = int(float(raw_qty or 0))
         avg_cost = float(item.get("price_avg", 0) or 0)
         market_price = float(item.get("price_now", 0) or item.get("price_mkt", 0) or 0)
         out[code] = {"shares": shares, "avg_cost": avg_cost, "market_price": market_price}
     return out
+
+
+def pending_settlement_adjustment(settlements, today=None):
+    """Sum settlement rows whose c_date (settlement date) is strictly after
+    today — those are the only ones not yet reflected in available_balance.
+    Returns (adjustment_total, detail_rows_used)."""
+    today_str = today or datetime.now().strftime("%Y%m%d")
+    total = 0.0
+    used = []
+    for row in settlements:
+        c_date = row.get("c_date", "")
+        if c_date > today_str:
+            price = float(row.get("price", 0) or 0)
+            total += price
+            used.append(row)
+    return total, used
 
 
 def get_current_holdings():
@@ -124,8 +159,21 @@ def main():
 
     inventories = sdk.get_inventories()
     balance = sdk.get_balance()
+    settlements = sdk.get_settlements()
     positions = extract_positions(inventories)
-    cash = float(balance.get("available_balance", 0) or 0)
+    raw_cash = float(balance.get("available_balance", 0) or 0)
+    adjustment, pending_rows = pending_settlement_adjustment(settlements)
+    cash = raw_cash + adjustment
+
+    print(f"\nAvailable balance (before settlement adjustment): {raw_cash}")
+    if pending_rows:
+        print("Pending settlements not yet reflected in balance:")
+        for row in pending_rows:
+            print(f"  trade {row.get('date')} -> settles {row.get('c_date')}: {row.get('price')}")
+    else:
+        print("Pending settlements not yet reflected in balance: none")
+    print(f"Settlement adjustment: {adjustment:+.0f}")
+    print(f"Adjusted cash (used as 'cash'): {cash}")
 
     print("\nReal account snapshot (tracked codes only):")
     for code in [ETF_CODE, *BOND_CODES]:
