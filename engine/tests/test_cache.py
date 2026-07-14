@@ -77,7 +77,10 @@ def test_extend_start_fetches_only_head_gap():
 
 
 class LaggingServer:
-    """模擬 EOD 延遲來源：只有 <= available_until 的工作日拿得到資料。"""
+    """模擬 EOD 延遲來源：只有 <= available_until 的工作日拿得到資料。
+
+    工作日＝pd.bdate_range（不含台股休市日），日期僅用來驗證機制，不對應真實行事曆。
+    """
 
     def __init__(self, available_until: str):
         self.available_until = available_until
@@ -100,14 +103,18 @@ def test_settled_weekend_tail_still_cache_hits():
 
 
 def test_lagging_source_day_is_not_skipped_forever(monkeypatch):
-    """來源延遲 publish 的交易日，補上後必須被回補（TAIEX 指數停在 7/09 的 regression）。"""
+    """來源延遲 publish 的交易日，補上後必須被回補。
+
+    實例（2026-07-14）：TAIEX 指數收盤卡在 07-09 不再更新——盤中/EOD 未出時查詢，
+    來源回傳空但浮水印照推到請求 end，該交易日就此永遠命中快取、不再回補。
+    """
     srv = LaggingServer(available_until="2026-07-09")
-    # 7/11（六）深夜查：7/10（五）的 EOD 來源還沒出 → 只拿得到 7/09
+    # 來源目前只出到 07-09；此時查到 07-11 → 尾端拿不到東西
     monkeypatch.setattr(cache, "_today", lambda: pd.Timestamp("2026-07-11"))
     df1, _ = cache.get_timeseries("ohlcv", "TAIEX", "2026-07-01", "2026-07-11", srv.fetch)
     assert df1["date"].max() == "2026-07-09"
 
-    # 來源補齊後再查 → 7/10 必須回補，不可因浮水印已推到 7/11 而被永久跳過
+    # 來源補齊後再查 → 空窗期的交易日必須回補，不可因浮水印已推到 07-11 而被永久跳過
     srv.available_until = "2026-07-14"
     monkeypatch.setattr(cache, "_today", lambda: pd.Timestamp("2026-07-14"))
     df2, meta = cache.get_timeseries("ohlcv", "TAIEX", "2026-07-01", "2026-07-14", srv.fetch)
