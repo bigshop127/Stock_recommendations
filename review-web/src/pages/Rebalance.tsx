@@ -16,6 +16,17 @@ const assetName = (code: string) => ASSETS.find((a) => a.code === code)?.name ??
 const fmtMd = (s: string) => (/^\d{8}$/.test(s) ? `${+s.slice(4, 6)}/${+s.slice(6, 8)}` : s);
 const fmtSigned = (n: number) => `${n > 0 ? '+' : n < 0 ? '−' : ''}$${Math.abs(Math.round(n)).toLocaleString()}`;
 
+// 交易買賣配色：依標的取用與配置條（barSegments）同色系——00631L 紅、00687B 藍、
+// 00953B 紫；買進用較淡色、賣出用較深色。全字面靜態 class 供 Tailwind 掃描產出。
+const TRADE_COLORS: Record<string, { buy: string; sell: string; code: string }> = {
+  '00631L': { buy: 'bg-red-500/25 text-red-200', sell: 'bg-red-800/70 text-red-100', code: 'text-red-400' },
+  '00687B': { buy: 'bg-blue-500/25 text-blue-200', sell: 'bg-blue-800/70 text-blue-100', code: 'text-blue-400' },
+  '00953B': { buy: 'bg-violet-500/25 text-violet-200', sell: 'bg-violet-800/70 text-violet-100', code: 'text-violet-400' },
+};
+const tradeSideCls = (code: string, side: 'buy' | 'sell') =>
+  (TRADE_COLORS[code] ?? TRADE_COLORS['00631L'])[side];
+const tradeCodeCls = (code: string) => (TRADE_COLORS[code] ?? TRADE_COLORS['00631L']).code;
+
 // 分頁（像個股頁一樣，點開才看該區塊內容，不用整頁滑）
 // 【2026-07-13 合併】持倉現況＋建倉&交易紀錄合成一頁；Beta儀表＋偏離分析&建議合成一頁；整體邏輯放最後
 type RebalanceTab = 'holdings' | 'beta' | 'logic';
@@ -2119,13 +2130,13 @@ export function Rebalance() {
               <div className="flex rounded-md overflow-hidden border border-zinc-700 text-xs">
                 <button
                   onClick={() => setTradeSide('buy')}
-                  className={`flex-1 px-2 py-1.5 font-medium transition-colors ${tradeSide === 'buy' ? 'bg-bear text-white' : 'bg-zinc-900 text-zinc-400 hover:text-zinc-200'}`}
+                  className={`flex-1 px-2 py-1.5 font-medium transition-colors ${tradeSide === 'buy' ? tradeSideCls(tradeCode, 'buy') : 'bg-zinc-900 text-zinc-400 hover:text-zinc-200'}`}
                 >
                   買進
                 </button>
                 <button
                   onClick={() => setTradeSide('sell')}
-                  className={`flex-1 px-2 py-1.5 font-medium transition-colors ${tradeSide === 'sell' ? 'bg-bull text-white' : 'bg-zinc-900 text-zinc-400 hover:text-zinc-200'}`}
+                  className={`flex-1 px-2 py-1.5 font-medium transition-colors ${tradeSide === 'sell' ? tradeSideCls(tradeCode, 'sell') : 'bg-zinc-900 text-zinc-400 hover:text-zinc-200'}`}
                 >
                   賣出
                 </button>
@@ -2201,11 +2212,11 @@ export function Rebalance() {
               {tradesSorted.map((t) => (
                 <div key={t.id} className="flex items-center gap-3 px-3 py-2 text-xs bg-zinc-950/30">
                   <span
-                    className={`px-2 py-0.5 rounded font-semibold shrink-0 ${t.side === 'buy' ? 'bg-bear/15 text-bear' : 'bg-bull/15 text-bull'}`}
+                    className={`px-2 py-0.5 rounded font-semibold shrink-0 ${tradeSideCls(t.code ?? ETF_CODE, t.side)}`}
                   >
                     {t.side === 'buy' ? '買進' : '賣出'}
                   </span>
-                  <span className="font-mono text-zinc-300 shrink-0 w-16">{t.code ?? ETF_CODE}</span>
+                  <span className={`font-mono font-semibold shrink-0 w-16 ${tradeCodeCls(t.code ?? ETF_CODE)}`}>{t.code ?? ETF_CODE}</span>
                   <span className="font-mono text-zinc-400 shrink-0">{t.date || '—'}</span>
                   <span className="font-mono text-zinc-200 flex-1 text-right">
                     {Math.round(t.shares).toLocaleString()} 股 <span className="text-zinc-500">×</span> ${t.price.toFixed(2)}
