@@ -3,7 +3,7 @@ import { useSearchParams } from 'react-router-dom';
 import { SlidersHorizontal, AlertTriangle, CheckCircle2, Info, ArrowRightLeft, ShieldAlert, RefreshCw, Loader2, Plus, Trash2, UploadCloud, Cloud, CloudOff, Lock, Unlock, BookOpen, TrendingUp } from 'lucide-react';
 import { getRebalanceConfig, saveRebalanceConfig, subscribeRebalance, type RebalanceConfig } from '../lib/rebalanceStore';
 import { computeRebalance, aggregatePortfolio, BOND_ETFS, ETF_CODE, type RebalanceResult, type Trade, computeFundFlows, computeMarketStatus, type MarketStatus } from '../lib/rebalance';
-import { api } from '../lib/api';
+import { api, type Settlement } from '../lib/api';
 
 // 資產清單（00631L＋防守端債券 ETF）【增修I】
 const ASSETS: { code: string; name: string }[] = [
@@ -11,6 +11,10 @@ const ASSETS: { code: string; name: string }[] = [
   ...BOND_ETFS.map((b) => ({ code: b.code, name: b.name })),
 ];
 const assetName = (code: string) => ASSETS.find((a) => a.code === code)?.name ?? code;
+
+// 在途交割款顯示用：YYYYMMDD → M/D；帶正負號金額（正＝+$、負＝−$，四捨五入千分位）
+const fmtMd = (s: string) => (/^\d{8}$/.test(s) ? `${+s.slice(4, 6)}/${+s.slice(6, 8)}` : s);
+const fmtSigned = (n: number) => `${n > 0 ? '+' : n < 0 ? '−' : ''}$${Math.abs(Math.round(n)).toLocaleString()}`;
 
 // 分頁（像個股頁一樣，點開才看該區塊內容，不用整頁滑）
 // 【2026-07-13 合併】持倉現況＋建倉&交易紀錄合成一頁；Beta儀表＋偏離分析&建議合成一頁；整體邏輯放最後
@@ -285,6 +289,10 @@ export function Rebalance() {
     msg: string | null;
   }>({ status: 'idle', msg: null });
 
+  // 在途交割款（真實同步帶入；交割日晚於今天、尚未反映在可用餘額的滾動交割）。
+  // 從雲端 GET 直接讀（非 config 欄位，normalizeConfig 會濾掉，故獨立存 state）。
+  const [settlement, setSettlement] = useState<Settlement | null>(null);
+
   useEffect(() => {
     const unsub = subscribeRebalance(() => {
       const updated = getRebalanceConfig();
@@ -393,6 +401,7 @@ export function Rebalance() {
         const resp = await api.getRebalanceHoldings();
         if (resp.exists && resp.holdings && resp.saved_at && resp.saved_at !== baseline) {
           saveRebalanceConfig(resp.holdings as unknown as RebalanceConfig);
+          setSettlement(resp.settlement ?? null);
           setRealSync({ status: 'done', msg: resp.saved_at });
           return;
         }
@@ -420,6 +429,7 @@ export function Rebalance() {
         if (resp.exists && resp.holdings) {
           // 雲端為事實來源 → 寫回本機快取並重繪（normalizeConfig 會補齊/重算）
           saveRebalanceConfig(resp.holdings as unknown as RebalanceConfig);
+          setSettlement(resp.settlement ?? null);
           setCloud({ status: 'saved', savedAt: null, msg: '已從雲端載入' });
         } else {
           setCloud({ status: 'idle', savedAt: null, msg: '雲端尚無資料，將以本機為準' });
@@ -783,6 +793,43 @@ export function Rebalance() {
                 <CloudOff className="w-3.5 h-3.5" /> 真實同步：{realSync.msg || '同步失敗'}
               </span>
             )}
+          </div>
+        )}
+
+        {settlement && settlement.rows.length > 0 && (
+          <div className="text-[11px] rounded-lg border border-cyan-500/25 bg-cyan-500/5 p-3 space-y-1.5">
+            <div className="flex items-center justify-between">
+              <span className="font-semibold text-cyan-300 flex items-center gap-1">
+                <ArrowRightLeft className="w-3.5 h-3.5" /> 在途交割款（尚未入帳/扣款）
+              </span>
+              <span className="text-zinc-500">
+                {settlement.as_of ? `基準 ${fmtMd(settlement.as_of)}・` : ''}已計入下方閒置現金
+              </span>
+            </div>
+            <div className="space-y-1">
+              {settlement.rows.map((r, i) => (
+                <div key={i} className="flex items-center justify-between text-zinc-400">
+                  <span>
+                    {r.amount >= 0 ? '應收' : '應付'}・成交 {fmtMd(r.trade_date)} → 交割 {fmtMd(r.settle_date)}
+                  </span>
+                  <span className={r.amount >= 0 ? 'text-emerald-400 font-medium' : 'text-amber-400 font-medium'}>
+                    {fmtSigned(r.amount)}
+                  </span>
+                </div>
+              ))}
+            </div>
+            <div className="flex items-center justify-between border-t border-cyan-500/15 pt-1.5 text-zinc-300">
+              <span>
+                應收 <span className="text-emerald-400">{fmtSigned(settlement.receivable)}</span>
+                {'　'}應付 <span className="text-amber-400">{fmtSigned(settlement.payable)}</span>
+              </span>
+              <span>
+                淨額{' '}
+                <span className={settlement.net >= 0 ? 'text-emerald-300 font-semibold' : 'text-amber-300 font-semibold'}>
+                  {fmtSigned(settlement.net)}
+                </span>
+              </span>
+            </div>
           </div>
         )}
 

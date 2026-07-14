@@ -117,6 +117,30 @@ function sanitizeOpeningBonds(val) {
   });
 }
 
+// 在途交割款快照（由真實同步腳本 scripts/sync_fugle_holdings.py 帶入）：非使用者
+// 可編輯欄位，屬「上次真實同步」的 metadata，存成頂層 _settlement、GET 以 settlement
+// 回傳。缺欄位/型別不符一律 clamp，rows 逐筆清洗。回傳 null 代表沒有可用快照。
+function sanitizeSettlement(v) {
+  if (!v || typeof v !== 'object') return null;
+  const rowsIn = Array.isArray(v.rows) ? v.rows : [];
+  const rows = rowsIn
+    .map((r) => (r && typeof r === 'object'
+      ? {
+          trade_date: typeof r.trade_date === 'string' ? r.trade_date : '',
+          settle_date: typeof r.settle_date === 'string' ? r.settle_date : '',
+          amount: safeNum(r.amount, 0),
+        }
+      : null))
+    .filter((r) => r !== null);
+  return {
+    as_of: typeof v.as_of === 'string' ? v.as_of : '',
+    net: safeNum(v.net, 0),
+    receivable: safeNum(v.receivable, 0),
+    payable: safeNum(v.payable, 0),
+    rows,
+  };
+}
+
 // 統一清洗＋重算衍生 shares/avg_cost/cash/bonds，回傳落地用物件
 function sanitizeHoldings(body) {
   const b = body && typeof body === 'object' ? body : {};
@@ -195,6 +219,7 @@ router.get('/api/rebalance/holdings', (req, res) => {
       exists: true,
       holdings: sanitizeHoldings(parsed),
       saved_at: typeof parsed._saved_at === 'string' ? parsed._saved_at : null,
+      settlement: sanitizeSettlement(parsed._settlement),
     });
   } catch (err) {
     return sendError(res, httpError(500, 'INTERNAL', '讀取持倉檔失敗: ' + err.message));
@@ -205,14 +230,22 @@ router.post('/api/rebalance/holdings', (req, res) => {
   try {
     const clean = sanitizeHoldings(req.body);
     fs.mkdirSync(DATA_DIR, { recursive: true });
-    // 保留範本 _readme（若原檔有）以利手動編輯者理解
+    // 保留範本 _readme（若原檔有）以利手動編輯者理解；在途交割 _settlement 只有真實
+    // 同步腳本會帶入，手動存檔（不帶 settlement）時沿用上次快照，不清掉。
     let readme;
+    let settlement = sanitizeSettlement(req.body.settlement);
     try {
       const prev = JSON.parse(fs.readFileSync(HOLDINGS_PATH, 'utf-8'));
       if (prev && typeof prev._readme === 'string') readme = prev._readme;
+      if (!settlement && prev && prev._settlement) settlement = sanitizeSettlement(prev._settlement);
     } catch (_) { /* 無舊檔或壞檔就略過 */ }
     const saved_at = new Date().toISOString();
-    const toWrite = readme ? { _readme: readme, ...clean, _saved_at: saved_at } : { ...clean, _saved_at: saved_at };
+    const toWrite = {
+      ...(readme ? { _readme: readme } : {}),
+      ...clean,
+      ...(settlement ? { _settlement: settlement } : {}),
+      _saved_at: saved_at,
+    };
     const tmp = HOLDINGS_PATH + '.tmp';
     fs.writeFileSync(tmp, JSON.stringify(toWrite, null, 2));
     fs.renameSync(tmp, HOLDINGS_PATH);

@@ -116,7 +116,34 @@ def get_current_holdings():
     return data.get("holdings") if data.get("exists") else None
 
 
-def build_payload(positions, cash, prior):
+def build_settlement(adjustment, pending_rows):
+    """Structured pending-settlement snapshot for the rebalance page to show
+    the user what is still in-flight (money coming in on a sell, going out on a
+    buy) — the same rows summed into the cash adjustment, itemised.
+    receivable = sum of positive rows (incoming), payable = sum of negatives."""
+    receivable = sum(
+        float(r.get("price", 0) or 0) for r in pending_rows if float(r.get("price", 0) or 0) > 0
+    )
+    payable = sum(
+        float(r.get("price", 0) or 0) for r in pending_rows if float(r.get("price", 0) or 0) < 0
+    )
+    return {
+        "as_of": datetime.now().strftime("%Y%m%d"),
+        "net": adjustment,
+        "receivable": receivable,
+        "payable": payable,
+        "rows": [
+            {
+                "trade_date": r.get("date", ""),
+                "settle_date": r.get("c_date", ""),
+                "amount": float(r.get("price", 0) or 0),
+            }
+            for r in pending_rows
+        ],
+    }
+
+
+def build_payload(positions, cash, prior, settlement=None):
     prior = prior or {}
     etf_pos = positions.get(ETF_CODE, {"shares": 0, "avg_cost": 0, "market_price": 0})
 
@@ -148,6 +175,7 @@ def build_payload(positions, cash, prior):
             "bonds": opening_bonds,
         },
         "trades": [],
+        "settlement": settlement or {},
     }
     return payload
 
@@ -189,7 +217,8 @@ def main():
         print("Is the SSH tunnel to the VM open? Run via sync-holdings.ps1.", file=sys.stderr)
         sys.exit(1)
 
-    payload = build_payload(positions, cash, prior)
+    settlement = build_settlement(adjustment, pending_rows)
+    payload = build_payload(positions, cash, prior, settlement)
 
     print("\nPushing snapshot to review-web...")
     resp = requests.post(GATEWAY_URL, json=payload, timeout=10)

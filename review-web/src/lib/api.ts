@@ -618,10 +618,26 @@ export interface RebalanceHoldingsPayload {
   };
   trades: RebalanceTrade[];
 }
+// 在途交割款（由「真實同步」帶入，玉山證券 get_settlements()）：交割日晚於今天、
+// 尚未反映在可用餘額的滾動交割淨額。receivable＝賣出應收(正)、payable＝買進應付(負)、
+// net＝已計入閒置現金的淨調整。屬同步 metadata，非使用者可編輯的持倉欄位。
+export interface SettlementRow {
+  trade_date: string;   // 成交日 YYYYMMDD
+  settle_date: string;  // 交割日 YYYYMMDD（T+2）
+  amount: number;       // 淨額，正＝應收、負＝應付
+}
+export interface Settlement {
+  as_of: string;        // 快照基準日 YYYYMMDD
+  net: number;          // 淨額（已計入 cash）
+  receivable: number;   // 應收合計（正）
+  payable: number;      // 應付合計（負）
+  rows: SettlementRow[];
+}
 export interface RebalanceHoldingsResp {
   exists: boolean;
   holdings: RebalanceHoldingsPayload | null;
   saved_at: string | null;
+  settlement?: Settlement | null;
 }
 export interface RebalanceHoldingsSaveResp {
   ok: boolean;
