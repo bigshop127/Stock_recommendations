@@ -6,6 +6,10 @@
     1) 抓歷史區間：`get_timeseries(..., start, end)`。
     2) 更新到最新：`end=今天`，只補快取尾端缺口。
 - **gap-based 補抓**：只對「快取沒涵蓋到的日期區間」打 API；要求區間已被快取完整涵蓋時 → 0 次 API 呼叫（純命中）。
+- **未結算窗**：來源 EOD 有延遲（實例：FinMind 的 TAIEX 指數當日深夜仍未出），此時補抓會回傳空。
+  空回傳在「已結算」的日期＝假日，可安心把浮水印往前推；但在未結算窗（今天往前
+  `_SETTLE_GRACE_DAYS` 天）內若照推，該交易日會被永久標記為已涵蓋、之後永遠命中快取而
+  不再回補 → 資料停在舊日期。故未結算窗內的浮水印上限＝實際抓到的最後資料日。
 
 不快取的資料：富果即時五檔 / 當日盤中（live-only，每次都要最新）→ 不走本模組。
 """
@@ -25,6 +29,9 @@ from app.core.config import settings
 FetchFn = Callable[[str, str, str], pd.DataFrame]
 
 _SAFE = re.compile(r"[^0-9A-Za-z_.\-]")
+
+# 未結算窗長度：今天往前這麼多天內，來源的空回傳一律不當成「假日」（可能只是還沒出 EOD）
+_SETTLE_GRACE_DAYS = 3
 
 
 def _safe(name: str) -> str:
@@ -56,6 +63,27 @@ def _write_covered(dataset: str, key: str, start: str, end: str) -> None:
     p = _meta_path(dataset, key)
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(json.dumps({"covered_start": start, "covered_end": end}), encoding="utf-8")
+
+
+def _today() -> pd.Timestamp:
+    """抽成函式，測試可注入固定日期。"""
+    return pd.Timestamp.today().normalize()
+
+
+def _settled_end(desired_end: str, last_data: str | None) -> str:
+    """算浮水印終點：未結算窗內不可宣稱涵蓋到「沒真的抓到資料」的日期。
+
+    desired_end 整段都已結算 → 直接採用（空回傳＝假日，往前推才不會每次重打 API）。
+    否則上限收斂到「已結算邊界」與「實際資料最後一日」的較大者，讓來源延遲 publish 的
+    交易日下次仍被視為缺口而回補。
+    """
+    settle_floor = (_today() - timedelta(days=_SETTLE_GRACE_DAYS)).strftime("%Y-%m-%d")
+    if desired_end <= settle_floor:
+        return desired_end
+    floor = settle_floor
+    if last_data and last_data > floor:
+        floor = last_data
+    return min(floor, desired_end)
 
 
 def read_cache(dataset: str, key: str) -> pd.DataFrame | None:
@@ -141,11 +169,13 @@ def get_timeseries(
     else:
         merged = pd.DataFrame()
 
-    # 更新涵蓋浮水印 = 舊涵蓋 ∪ 本次請求（即使某缺口無資料/假日，也標記已抓過，下次命中）
+    # 更新涵蓋浮水印 = 舊涵蓋 ∪ 本次請求（已結算的缺口即使無資料/假日，也標記已抓過，下次命中）；
+    # 未結算窗內則收斂到實際資料日，避免來源延遲出的交易日被永久跳過（見模組 docstring）
     if ranges_to_fetch:
         new_start = min(start, covered[0]) if covered else start
-        new_end = max(end, covered[1]) if covered else end
-        _write_covered(dataset, code, new_start, new_end)
+        desired_end = max(end, covered[1]) if covered else end
+        last_data = str(merged[date_col].max())[:10] if not merged.empty else None
+        _write_covered(dataset, code, new_start, _settled_end(desired_end, last_data))
 
     # 切到請求區間
     if not merged.empty:
