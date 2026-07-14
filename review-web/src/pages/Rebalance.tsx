@@ -807,7 +807,9 @@ export function Rebalance() {
               </span>
             </div>
             <div className="space-y-1">
-              {settlement.rows.map((r, i) => (
+              {[...settlement.rows]
+                .sort((a, b) => a.settle_date.localeCompare(b.settle_date))
+                .map((r, i) => (
                 <div key={i} className="flex items-center justify-between text-zinc-400">
                   <span>
                     {r.amount >= 0 ? '應收' : '應付'}・成交 {fmtMd(r.trade_date)} → 交割 {fmtMd(r.settle_date)}
