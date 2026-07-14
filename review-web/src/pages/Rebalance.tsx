@@ -216,7 +216,7 @@ export function Rebalance() {
   }));
   const [openCashStr, setOpenCashStr] = useState<string>(() => String(config.opening.cash || ''));
   const [cashReserveStr, setCashReserveStr] = useState<string>(() => String(config.cash_reserve || ''));
-  const [cashStr, setCashStr] = useState<string>(() => String(config.cash || ''));
+
   const [showAdvanced, setShowAdvanced] = useState(false);
 
   const [marketStatus, setMarketStatus] = useState<MarketStatus | null>(null);
@@ -330,7 +330,7 @@ export function Rebalance() {
     });
     setOpenCashStr(config.opening.cash ? String(config.opening.cash) : '');
     setCashReserveStr(config.cash_reserve ? String(config.cash_reserve) : '');
-    setCashStr(config.cash ? String(config.cash) : '0');
+
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [config.price, bondPricesKey, config.opening.shares, config.opening.avg_cost, config.opening.cash, openBondsKey, config.cash_reserve, config.cash]);
 
@@ -581,15 +581,7 @@ export function Rebalance() {
     applyConfig({ opening: { ...config.opening, cash: Number.isFinite(parsed) && parsed >= 0 ? parsed : 0 } });
   };
 
-  // 閒置現金＝期初現金＋報價單現金流（衍生）。直接編輯時反解回期初現金，
-  // 讓「買扣賣加」的累算邏輯（增修H）不變，只是把可調整的入口搬到這裡。
-  const handleCashChange = (val: string) => {
-    setCashStr(val);
-    const parsed = parseFloat(val);
-    const desired = Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;
-    const tradesCashDelta = agg.cash - config.opening.cash;
-    applyConfig({ opening: { ...config.opening, cash: Math.max(0, desired - tradesCashDelta) } });
-  };
+
 
   const handleCashReserveChange = (val: string) => {
     setCashReserveStr(val);
@@ -1710,536 +1702,522 @@ export function Rebalance() {
 
       {/* 合併分頁：持倉現況（股數/均價為報價單累算的衍生值，唯讀）+ 建倉 & 交易紀錄，堆疊呈現 */}
       {activeTab === 'holdings' && (
-      <div className="space-y-6">
-      <div className="bg-card border border-border rounded-xl p-5 shadow-sm space-y-4">
-        <h2 className="text-sm font-semibold text-zinc-200 flex items-center justify-between border-b border-border/60 pb-3">
-          <span className="flex items-center gap-2">
-            <span className="w-2 h-2 rounded-full bg-blue-500" />
-            持倉現況（00631L ＋ 防守端：現金 + {BOND_ETFS[0].code} + {BOND_ETFS[1].code}）
-          </span>
-          <button
-            onClick={fetchAllPrices}
-            disabled={ASSETS.some((a) => priceFetch[a.code]?.loading)}
-            className="text-[11px] text-primary hover:text-primary/80 disabled:text-zinc-600 flex items-center gap-1 transition-colors font-normal"
-            title="抓取全部標的現在最新價（即時報價）"
-          >
-            {ASSETS.some((a) => priceFetch[a.code]?.loading) ? (
-              <Loader2 className="w-3 h-3 animate-spin" />
-            ) : (
-              <RefreshCw className="w-3 h-3" />
-            )}
-            全部抓最新價
-          </button>
-        </h2>
+        <div className="space-y-6">
+          <div className="bg-card border border-border rounded-xl p-5 shadow-sm space-y-6">
+            <h2 className="text-sm font-semibold text-zinc-200 flex items-center justify-between border-b border-border/60 pb-3">
+              <span className="flex items-center gap-2">
+                <span className="w-2.5 h-2.5 rounded-full bg-blue-500 animate-pulse" />
+                持倉總覽（期初 → 交易 → 現況）
+              </span>
+              <button
+                onClick={fetchAllPrices}
+                disabled={ASSETS.some((a) => priceFetch[a.code]?.loading)}
+                className="text-[11px] text-primary hover:text-primary/80 disabled:text-zinc-600 flex items-center gap-1 transition-colors font-normal"
+                title="抓取全部標的現在最新價（即時報價）"
+              >
+                {ASSETS.some((a) => priceFetch[a.code]?.loading) ? (
+                  <Loader2 className="w-3 h-3 animate-spin" />
+                ) : (
+                  <RefreshCw className="w-3 h-3" />
+                )}
+                全部抓最新價
+              </button>
+            </h2>
 
-        {/* 各標的持倉列 */}
-        <div className="space-y-3">
-          {ASSETS.map((a) => {
-            const isEtf = a.code === ETF_CODE;
-            const shares = isEtf ? config.shares : config.bonds.find((b) => b.code === a.code)?.shares ?? 0;
-            const avgCost = isEtf ? config.avg_cost : config.bonds.find((b) => b.code === a.code)?.avg_cost ?? 0;
-            const price = assetPrice(config, a.code);
-            const fetchSt = priceFetch[a.code] ?? { loading: false, error: null, date: null };
-            return (
-              <div key={a.code} className="rounded-lg border border-zinc-800/70 bg-zinc-950/30 p-3">
-                <div className="flex items-center justify-between mb-2">
-                  <span className="text-xs font-semibold text-zinc-200 font-mono">
-                    {a.code} <span className="text-zinc-400 font-sans font-normal">{a.name}</span>
-                    {!isEtf && <span className="ml-2 text-[10px] px-1.5 py-0.5 rounded bg-zinc-800 text-zinc-400 font-sans">防守端 β≈0</span>}
-                  </span>
-                  <div className="flex items-center gap-2">
-                    {!isEtf && (
-                      <button
-                        onClick={() => {
-                          const isLocked = config.locked?.bonds?.[a.code] === true;
-                          applyConfig({
-                            locked: {
-                              ...config.locked,
-                              bonds: {
-                                ...config.locked?.bonds,
-                                [a.code]: !isLocked,
-                              },
-                            },
-                          });
-                        }}
-                        className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold border-2 transition-colors ${
-                          config.locked?.bonds?.[a.code]
-                            ? 'bg-bull/15 border-bull text-bull shadow-sm shadow-bull/20'
-                            : 'bg-zinc-900 border-zinc-700 text-zinc-400 hover:border-zinc-500 hover:text-zinc-200'
-                        }`}
-                        title={config.locked?.bonds?.[a.code] ? '解鎖資產' : '鎖定資產'}
-                      >
-                        {config.locked?.bonds?.[a.code] ? (
-                          <Lock className="w-4 h-4" />
-                        ) : (
-                          <Unlock className="w-4 h-4" />
+            {/* 各標的持倉合併卡 */}
+            <div className="space-y-4">
+              {ASSETS.map((a) => {
+                const isEtf = a.code === ETF_CODE;
+                const initialShares = isEtf ? config.opening.shares : (config.opening.bonds.find((b) => b.code === a.code)?.shares ?? 0);
+                
+                const currentShares = isEtf ? config.shares : (config.bonds.find((b) => b.code === a.code)?.shares ?? 0);
+                const currentAvgCost = isEtf ? config.avg_cost : (config.bonds.find((b) => b.code === a.code)?.avg_cost ?? 0);
+                const tradeSharesDelta = currentShares - initialShares;
+                const tradeCount = config.trades.filter((t) => (t.code ?? ETF_CODE) === a.code).length;
+                const price = assetPrice(config, a.code);
+                const fetchSt = priceFetch[a.code] ?? { loading: false, error: null, date: null };
+
+                return (
+                  <div key={a.code} className="rounded-xl border border-zinc-800 bg-zinc-950/30 p-4 sm:p-5 space-y-4">
+                    {/* 卡片標題列 */}
+                    <div className="flex items-center justify-between border-b border-zinc-800 pb-3 flex-wrap gap-2">
+                      <span className="text-sm font-semibold text-zinc-100 font-mono flex items-center gap-2">
+                        {a.code} <span className="text-zinc-400 font-sans font-normal text-xs">{a.name}</span>
+                        {!isEtf && <span className="text-[10px] px-1.5 py-0.5 rounded bg-zinc-800/80 text-zinc-400 font-sans">防守端 β≈0</span>}
+                      </span>
+                      <div className="flex items-center gap-2">
+                        {!isEtf && (
+                          <button
+                            onClick={() => {
+                              const isLocked = config.locked?.bonds?.[a.code] === true;
+                              applyConfig({
+                                locked: {
+                                  ...config.locked,
+                                  bonds: {
+                                    ...config.locked?.bonds,
+                                    [a.code]: !isLocked,
+                                  },
+                                },
+                              });
+                            }}
+                            className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold border-2 transition-colors ${
+                              config.locked?.bonds?.[a.code]
+                                ? 'bg-bull/15 border-bull text-bull shadow-sm shadow-bull/20'
+                                : 'bg-zinc-900 border-zinc-700 text-zinc-400 hover:border-zinc-500 hover:text-zinc-200'
+                            }`}
+                            title={config.locked?.bonds?.[a.code] ? '解鎖資產' : '鎖定資產'}
+                          >
+                            {config.locked?.bonds?.[a.code] ? (
+                              <Lock className="w-4 h-4" />
+                            ) : (
+                              <Unlock className="w-4 h-4" />
+                            )}
+                            <span>{config.locked?.bonds?.[a.code] ? '已鎖定' : '未鎖'}</span>
+                          </button>
                         )}
-                        <span>{config.locked?.bonds?.[a.code] ? '已鎖定' : '未鎖'}</span>
-                      </button>
-                    )}
+                        <button
+                          onClick={() => void fetchLatestPrice(a.code)}
+                          disabled={fetchSt.loading}
+                          className="text-[11px] text-primary hover:text-primary/80 disabled:text-zinc-600 flex items-center gap-1 transition-colors font-medium"
+                          title="抓取現在最新價（即時報價）"
+                        >
+                          {fetchSt.loading ? <Loader2 className="w-3 h-3 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5" />}
+                          {fetchSt.loading ? '抓取中' : '抓最新價'}
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* 卡片內容：桌機三區橫向、手機三區縱向 */}
+                    <div className="grid grid-cols-1 sm:grid-cols-[1.1fr_0.6fr_1.3fr] gap-4 sm:gap-6 items-stretch">
+                      {/* 期初部位區（可編輯） */}
+                      <div className="rounded-lg border border-zinc-800 bg-zinc-950/20 p-3 space-y-2.5 flex flex-col justify-between">
+                        <div className="text-[10px] text-zinc-500 font-semibold tracking-wider uppercase">期初部位（可編輯）</div>
+                        <div className="space-y-2">
+                          <div className="space-y-1">
+                            <label className="text-[10px] text-zinc-500">期初股數</label>
+                            <div className="relative">
+                              <input
+                                type="number"
+                                min="0"
+                                step="1"
+                                placeholder={a.code === ETF_CODE ? '例如: 19000' : '0'}
+                                value={openStrs[a.code]?.shares ?? ''}
+                                onChange={(e) => handleOpenChange(a.code, 'shares', e.target.value)}
+                                className="w-full px-3 py-1.5 bg-zinc-950 border border-zinc-800 rounded-lg font-mono text-sm text-zinc-100 focus:outline-none focus:border-primary pr-12"
+                              />
+                              <span className="absolute right-3 top-2 text-xs text-zinc-500 font-mono">股</span>
+                            </div>
+                          </div>
+                          <div className="space-y-1">
+                            <label className="text-[10px] text-zinc-500">期初平均成本</label>
+                            <div className="relative">
+                              <input
+                                type="number"
+                                min="0"
+                                step="0.01"
+                                placeholder={a.code === ETF_CODE ? '例如: 35.37' : '0'}
+                                value={openStrs[a.code]?.avg ?? ''}
+                                onChange={(e) => handleOpenChange(a.code, 'avg', e.target.value)}
+                                className="w-full px-3 py-1.5 bg-zinc-950 border border-zinc-800 rounded-lg font-mono text-sm text-zinc-100 focus:outline-none focus:border-primary pr-10"
+                              />
+                              <span className="absolute right-3 top-2 text-xs text-zinc-500 font-mono">元</span>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* 交易累算區（衍生，唯讀） */}
+                      <div className="rounded-lg border border-zinc-800 bg-zinc-950/20 p-3 flex flex-col justify-center items-center text-center space-y-1.5 min-h-[100px]">
+                        <div className="text-[10px] text-zinc-500 font-semibold tracking-wider uppercase">交易累算</div>
+                        {tradeCount > 0 ? (
+                          <div className="space-y-1">
+                            <div className="text-sm font-bold font-mono text-zinc-300">
+                              {tradeSharesDelta > 0 ? `+${tradeSharesDelta.toLocaleString()}` : tradeSharesDelta < 0 ? `−${Math.abs(tradeSharesDelta).toLocaleString()}` : '0'} 股
+                            </div>
+                            <div className="text-[10px] text-zinc-400">
+                              （共 {tradeCount} 筆）
+                            </div>
+                          </div>
+                        ) : (
+                          <div className="space-y-1">
+                            <div className="text-zinc-500 text-sm font-mono">—</div>
+                            <div className="text-[10px] text-zinc-500 italic">無交易</div>
+                          </div>
+                        )}
+                      </div>
+
+                      {/* 現況區（衍生 ＋ 現價） */}
+                      <div className="rounded-lg border border-zinc-800 bg-zinc-950/20 p-3 space-y-2.5 flex flex-col justify-between">
+                        <div className="text-[10px] text-zinc-500 font-semibold tracking-wider uppercase">現況（衍生，唯讀 ＋ 現價）</div>
+                        <div className="grid grid-cols-2 gap-3">
+                          <div className="space-y-1">
+                            <label className="text-[10px] text-zinc-500">現況股數（衍生）</label>
+                            <div className="px-3 py-1.5 bg-zinc-900/60 border border-zinc-800 rounded-lg font-mono text-sm text-zinc-300 h-9 flex items-center justify-between">
+                              <span>{currentShares ? Math.round(currentShares).toLocaleString() : '0'}</span>
+                              <span className="text-[10px] text-zinc-500 font-mono">股</span>
+                            </div>
+                          </div>
+                          <div className="space-y-1">
+                            <label className="text-[10px] text-zinc-500">平均成本（衍生）</label>
+                            <div className="px-3 py-1.5 bg-zinc-900/60 border border-zinc-800 rounded-lg font-mono text-sm text-zinc-300 h-9 flex items-center justify-between">
+                              <span>{currentAvgCost ? currentAvgCost.toFixed(2) : '—'}</span>
+                              <span className="text-[10px] text-zinc-500 font-mono">元</span>
+                            </div>
+                          </div>
+                          <div className="space-y-1">
+                            <label className="text-[10px] text-zinc-500">現價（可編輯/抓取）</label>
+                            <div className="relative">
+                              <input
+                                type="number"
+                                min="0"
+                                step="0.01"
+                                placeholder={isEtf ? '例如: 38.8' : '例如: 28.0'}
+                                value={priceStrs[a.code] ?? ''}
+                                onChange={(e) => handlePriceChange(a.code, e.target.value)}
+                                className="w-full px-3 py-1.5 bg-zinc-950 border border-zinc-800 rounded-lg font-mono text-sm text-zinc-100 focus:outline-none focus:border-primary pr-8 h-9"
+                              />
+                              <span className="absolute right-2.5 top-2 text-xs text-zinc-500 font-mono">元</span>
+                            </div>
+                          </div>
+                          <div className="space-y-1">
+                            <label className="text-[10px] text-zinc-500">市值</label>
+                            <div className="px-3 py-1.5 rounded-lg bg-zinc-900/40 border border-zinc-800/60 font-mono text-sm text-right h-9 flex items-center justify-end">
+                              <span className={isEtf ? 'text-blue-400 font-bold' : 'text-cyan-400 font-bold'}>
+                                ${Math.round(currentShares * price).toLocaleString()}
+                              </span>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* 抓價狀態列 */}
+                    <div className="h-3 text-right">
+                      {fetchSt.error ? (
+                        <span className="text-[10px] text-amber-400 font-sans">抓取失敗：{fetchSt.error}（可手動輸入）</span>
+                      ) : fetchSt.date ? (
+                        <span className="text-[10px] text-zinc-600 font-sans">已帶入即時報價（{fetchSt.date}）</span>
+                      ) : null}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* 現金列 */}
+            <div className="rounded-xl border border-zinc-800 bg-zinc-950/20 p-4 sm:p-5 space-y-4">
+              <div className="text-xs font-semibold text-zinc-300 border-b border-border/60 pb-2 flex items-center gap-2">
+                <span className="w-2 h-2 rounded-full bg-emerald-500" />
+                現金流與保留額（期初 → 交易 → 閒置現況）
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-4 gap-4 sm:gap-6 items-end">
+                {/* 期初現金 */}
+                <div className="space-y-1.5">
+                  <label className="text-[10px] text-zinc-500 font-semibold uppercase">期初現金（可編輯）</label>
+                  <div className="relative">
+                    <input
+                      type="number"
+                      min="0"
+                      step="1000"
+                      value={openCashStr}
+                      onChange={(e) => handleOpenCashChange(e.target.value)}
+                      className="w-full px-3 py-2 bg-zinc-950 border border-zinc-800 rounded-lg font-mono text-sm text-zinc-100 focus:outline-none focus:border-primary pr-10"
+                    />
+                    <span className="absolute right-3 top-2.5 text-xs text-zinc-500 font-mono">元</span>
+                  </div>
+                </div>
+
+                {/* 交易現金流 */}
+                <div className="rounded-lg border border-zinc-800 bg-zinc-950/20 p-2.5 flex flex-col justify-center items-center text-center space-y-1 h-[68px]">
+                  <div className="text-[10px] text-zinc-500 font-semibold uppercase">交易現金流（衍生）</div>
+                  {(() => {
+                    const tradesCashDelta = agg.cash - config.opening.cash;
+                    return (
+                      <div className={`text-sm font-bold font-mono ${tradesCashDelta > 0 ? 'text-emerald-400' : tradesCashDelta < 0 ? 'text-amber-400' : 'text-zinc-300'}`}>
+                        {tradesCashDelta > 0 ? `+$${Math.round(tradesCashDelta).toLocaleString()}` : tradesCashDelta < 0 ? `−$${Math.abs(Math.round(tradesCashDelta)).toLocaleString()}` : '—'}
+                      </div>
+                    );
+                  })()}
+                </div>
+
+                {/* 閒置現金 */}
+                <div className="space-y-1.5">
+                  <label className="text-[10px] text-zinc-500 font-semibold uppercase">閒置現金（現況衍生，唯讀）</label>
+                  <div className="px-3 py-2 bg-zinc-900/60 border border-zinc-800 rounded-lg font-mono text-sm text-zinc-300 h-[38px] flex items-center justify-between">
+                    <span>${Math.round(config.cash).toLocaleString()}</span>
+                    <span className="text-[10px] text-zinc-500 font-mono">元</span>
+                  </div>
+                </div>
+
+                {/* 現金保留額 */}
+                <div className="space-y-1.5">
+                  <div className="flex items-center justify-between gap-2">
+                    <label className="text-[10px] text-zinc-500 font-semibold uppercase">現金保留額</label>
                     <button
-                      onClick={() => void fetchLatestPrice(a.code)}
-                      disabled={fetchSt.loading}
-                      className="text-[11px] text-primary hover:text-primary/80 disabled:text-zinc-600 flex items-center gap-1 transition-colors"
-                      title="抓取現在最新價（即時報價）"
+                      onClick={() => {
+                        applyConfig({
+                          locked: {
+                            ...config.locked,
+                            cash: !config.locked?.cash,
+                          },
+                        });
+                      }}
+                      className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold border-2 transition-colors ${
+                        config.locked?.cash
+                          ? 'bg-bull/15 border-bull text-bull shadow-sm shadow-bull/20'
+                          : 'bg-zinc-900 border-zinc-700 text-zinc-400 hover:border-zinc-500 hover:text-zinc-200'
+                      }`}
+                      title={config.locked?.cash ? '解鎖現金保留額' : '鎖定現金保留額'}
                     >
-                      {fetchSt.loading ? <Loader2 className="w-3 h-3 animate-spin" /> : <RefreshCw className="w-3 h-3" />}
-                      {fetchSt.loading ? '抓取中' : '抓最新價'}
+                      {config.locked?.cash ? <Lock className="w-4 h-4" /> : <Unlock className="w-4 h-4" />}
+                      <span>{config.locked?.cash ? '已鎖定' : '未鎖'}</span>
                     </button>
                   </div>
-                </div>
-                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-                  <div className="space-y-1">
-                    <label className="text-[10px] text-zinc-500">持有股數（衍生）</label>
-                    <div className="relative">
-                      <input
-                        type="text"
-                        readOnly
-                        value={shares ? Math.round(shares).toLocaleString() : '0'}
-                        className="w-full px-3 py-2 bg-zinc-900/60 border border-zinc-800 rounded-lg font-mono text-sm text-zinc-300 cursor-not-allowed pr-8"
-                      />
-                      <span className="absolute right-2.5 top-2.5 text-xs text-zinc-500 font-mono">股</span>
-                    </div>
-                  </div>
-                  <div className="space-y-1">
-                    <label className="text-[10px] text-zinc-500">平均成本（衍生）</label>
-                    <div className="relative">
-                      <input
-                        type="text"
-                        readOnly
-                        value={avgCost ? avgCost.toFixed(2) : '—'}
-                        className="w-full px-3 py-2 bg-zinc-900/60 border border-zinc-800 rounded-lg font-mono text-sm text-zinc-300 cursor-not-allowed pr-8"
-                      />
-                      <span className="absolute right-2.5 top-2.5 text-xs text-zinc-500 font-mono">元</span>
-                    </div>
-                  </div>
-                  <div className="space-y-1">
-                    <label className="text-[10px] text-zinc-500">現價（可抓取/手動）</label>
-                    <div className="relative">
-                      <input
-                        type="number"
-                        min="0"
-                        step="0.01"
-                        placeholder={isEtf ? '例如: 38.8' : '例如: 28.0'}
-                        value={priceStrs[a.code] ?? ''}
-                        onChange={(e) => handlePriceChange(a.code, e.target.value)}
-                        className="w-full px-3 py-2 bg-zinc-950 border border-zinc-800 rounded-lg font-mono text-sm text-zinc-100 focus:outline-none focus:border-primary pr-8"
-                      />
-                      <span className="absolute right-2.5 top-2.5 text-xs text-zinc-500 font-mono">元</span>
-                    </div>
-                  </div>
-                  <div className="space-y-1">
-                    <label className="text-[10px] text-zinc-500">市值</label>
-                    <div className="px-3 py-2 rounded-lg bg-zinc-900/40 border border-zinc-800/60 font-mono text-sm text-right">
-                      <span className={isEtf ? 'text-blue-400 font-bold' : 'text-cyan-400 font-bold'}>
-                        ${Math.round(shares * price).toLocaleString()}
-                      </span>
-                    </div>
-                  </div>
-                </div>
-                <p className="text-[10px] leading-tight mt-1.5 h-3">
-                  {fetchSt.error ? (
-                    <span className="text-amber-400">抓取失敗：{fetchSt.error}（可手動輸入）</span>
-                  ) : fetchSt.date ? (
-                    <span className="text-zinc-600">已帶入即時報價（{fetchSt.date}）</span>
-                  ) : (
-                    <span className="text-zinc-600">&nbsp;</span>
-                  )}
-                </p>
-              </div>
-            );
-          })}
-        </div>
-
-        {/* 現金列：閒置現金（可手動覆寫，底層仍反解回期初現金）＋現金保留額（可調） */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-          <div className="space-y-1.5">
-            <label className="text-xs font-medium text-zinc-300">閒置現金 (TWD)</label>
-            <div className="relative">
-              <input
-                type="number"
-                min="0"
-                step="1000"
-                value={cashStr}
-                onChange={(e) => handleCashChange(e.target.value)}
-                className="w-full px-3 py-2 bg-zinc-950 border border-zinc-800 rounded-lg font-mono text-sm text-zinc-100 focus:outline-none focus:border-primary pr-10"
-              />
-              <span className="absolute right-3 top-2.5 text-xs text-zinc-500 font-mono">元</span>
-            </div>
-            <p className="text-[10px] leading-tight">
-              {agg.cash < 0 ? (
-                <span className="text-amber-400">⚠ 買進金額已超過期初現金 ${Math.abs(Math.round(agg.cash)).toLocaleString()}，以 0 計算——可直接在此改回正確金額</span>
-              ) : (
-                <span className="text-zinc-600">預設由期初現金＋報價單累算（買進扣、賣出加），可直接在此手動覆寫</span>
-              )}
-            </p>
-          </div>
-          <div className="space-y-1.5">
-            <div className="flex items-center justify-between flex-wrap gap-2">
-              <label className="text-xs font-medium text-zinc-300">現金保留額（固定保留、不投入債券）</label>
-              <button
-                onClick={() => {
-                  applyConfig({
-                    locked: {
-                      ...config.locked,
-                      cash: !config.locked?.cash,
-                    },
-                  });
-                }}
-                className={`shrink-0 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold border-2 transition-colors ${
-                  config.locked?.cash
-                    ? 'bg-bull/15 border-bull text-bull shadow-sm shadow-bull/20'
-                    : 'bg-zinc-900 border-zinc-700 text-zinc-400 hover:border-zinc-500 hover:text-zinc-200'
-                }`}
-                title={config.locked?.cash ? '解鎖現金保留額' : '鎖定現金保留額（只保護這筆保留額，超出的閒置現金仍會正常參與再平衡）'}
-              >
-                {config.locked?.cash ? (
-                  <Lock className="w-4 h-4" />
-                ) : (
-                  <Unlock className="w-4 h-4" />
-                )}
-                <span>{config.locked?.cash ? '已鎖定' : '未鎖'}</span>
-              </button>
-            </div>
-            <div className="relative">
-              <input
-                type="number"
-                min="0"
-                step="10000"
-                placeholder="例如: 100000"
-                value={cashReserveStr}
-                onChange={(e) => handleCashReserveChange(e.target.value)}
-                className="w-full px-3 py-2 bg-zinc-950 border border-zinc-800 rounded-lg font-mono text-sm text-zinc-100 focus:outline-none focus:border-primary pr-10"
-              />
-              <span className="absolute right-3 top-2.5 text-xs text-zinc-500 font-mono">元</span>
-            </div>
-            <p className="text-[10px] text-zinc-600 leading-tight">
-              防守端先保留這筆現金；加碼 00631L 需要抽錢時優先賣 {BOND_ETFS[0].code}（美債），賣完才動 {BOND_ETFS[1].code}（保留月配息）。
-              獲利了結回補時依 {Math.round(config.bond_split * 100)}:{Math.round((1 - config.bond_split) * 100)} 配到 {BOND_ETFS[0].code}/{BOND_ETFS[1].code}。
-              {config.locked?.cash && (
-                <span className="block mt-0.5 text-primary/80">
-                  已鎖定：只保護這筆 ${config.cash_reserve.toLocaleString()} 保留額，閒置現金超出的部分仍會照常參與再平衡（可能建議買 00631L 或債券）。
-                </span>
-              )}
-            </p>
-          </div>
-        </div>
-
-        {/* 資產試算小結 */}
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 pt-3 border-t border-zinc-800/80">
-          <div className="flex flex-col justify-between px-4 py-2.5 bg-zinc-950/60 rounded-lg border border-zinc-800/60 gap-1">
-            <span className="text-xs text-zinc-400">00631L 市值</span>
-            <span className="font-mono font-bold text-blue-400 text-base">
-              ${Math.round(result.etf_value).toLocaleString()}
-            </span>
-          </div>
-          <div className="flex flex-col justify-between px-4 py-2.5 bg-zinc-950/60 rounded-lg border border-zinc-800/60 gap-1">
-            <span className="text-xs text-zinc-400">防守端（現金＋債券）</span>
-            <span className="font-mono font-bold text-emerald-400 text-base">
-              ${Math.round(result.defensive_value).toLocaleString()}
-            </span>
-          </div>
-          <div className="flex flex-col justify-between px-4 py-2.5 bg-zinc-950/60 rounded-lg border border-zinc-800/60 gap-1">
-            <span className="text-xs text-zinc-400">未實現損益（含債券）</span>
-            {hasPnl ? (
-              <span className={`font-mono font-bold text-base ${totalPnl >= 0 ? 'text-bull' : 'text-bear'}`}>
-                {totalPnl >= 0 ? '+' : '−'}${Math.abs(Math.round(totalPnl)).toLocaleString()}
-                {totalPnlPct !== null && (
-                  <span className="text-xs font-normal ml-1">
-                    ({totalPnlPct >= 0 ? '+' : '−'}{Math.abs(totalPnlPct * 100).toFixed(1)}%)
-                  </span>
-                )}
-              </span>
-            ) : (
-              <span className="font-mono text-zinc-600 text-sm">填期初成本或買進</span>
-            )}
-          </div>
-          <div className="flex flex-col justify-between px-4 py-2.5 bg-zinc-950/60 rounded-lg border border-zinc-800/60 gap-1">
-            <span className="text-xs text-zinc-400">投組總資產現值</span>
-            <span className="font-mono font-extrabold text-zinc-100 text-lg">
-              ${Math.round(result.total_value).toLocaleString()}
-            </span>
-          </div>
-        </div>
-
-        {/* 送出並同步雲端 */}
-        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 pt-3 border-t border-zinc-800/80">
-          <div className="text-[11px] flex items-center gap-1.5 min-h-[18px]">
-            {cloud.status === 'loading' && (
-              <span className="text-zinc-500 flex items-center gap-1"><Loader2 className="w-3 h-3 animate-spin" /> 雲端載入中…</span>
-            )}
-            {cloud.status === 'syncing' && (
-              <span className="text-primary flex items-center gap-1"><Loader2 className="w-3 h-3 animate-spin" /> 同步中…</span>
-            )}
-            {cloud.status === 'saved' && (
-              <span className="text-emerald-400 flex items-center gap-1">
-                <Cloud className="w-3.5 h-3.5" />
-                {cloud.savedAt
-                  ? `已同步雲端 ${new Date(cloud.savedAt).toLocaleTimeString('zh-TW', { hour12: false })}`
-                  : cloud.msg || '已同步雲端'}
-              </span>
-            )}
-            {cloud.status === 'error' && (
-              <span className="text-amber-400 flex items-center gap-1"><CloudOff className="w-3.5 h-3.5" /> {cloud.msg || '雲端同步失敗（已存本機）'}</span>
-            )}
-            {cloud.status === 'idle' && cloud.msg && (
-              <span className="text-zinc-500 flex items-center gap-1"><Cloud className="w-3.5 h-3.5" /> {cloud.msg}</span>
-            )}
-          </div>
-          <button
-            onClick={() => void syncToCloud(config)}
-            disabled={cloud.status === 'syncing' || cloud.status === 'loading'}
-            className="inline-flex items-center justify-center gap-2 px-4 py-2 rounded-lg bg-primary text-white text-sm font-semibold hover:bg-primary/90 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-          >
-            {cloud.status === 'syncing' ? <Loader2 className="w-4 h-4 animate-spin" /> : <UploadCloud className="w-4 h-4" />}
-            送出並同步雲端
-          </button>
-        </div>
-      </div>
-
-      {/* 買賣報價單（交易紀錄，自動累算回填持倉、送出即同步雲端） */}
-      <div className="bg-card border border-border rounded-xl p-5 shadow-sm space-y-5">
-        <h2 className="text-sm font-semibold text-zinc-200 flex items-center justify-between border-b border-border/60 pb-3">
-          <span className="flex items-center gap-2">
-            <span className="w-2 h-2 rounded-full bg-amber-500" />
-            買賣報價單
-          </span>
-          <span className="text-xs text-zinc-500 font-normal">每筆買/賣自動累算各標的股數與加權平均成本，新增即同步雲端</span>
-        </h2>
-
-        {/* 期初部位（多資產） */}
-        <div className="space-y-2">
-          <div className="text-xs font-medium text-zinc-300 flex items-center gap-1.5">
-            期初／建倉部位
-            <span className="text-[10px] text-zinc-600 font-normal">（開始記帳前已持有的部位與現金，之後的買賣疊在其上）</span>
-          </div>
-          <div className="space-y-2">
-            {ASSETS.map((a) => (
-              <div key={a.code} className="grid grid-cols-1 sm:grid-cols-3 gap-3 items-end">
-                <div className="text-xs font-mono text-zinc-300 sm:pb-2">
-                  {a.code} <span className="text-zinc-500 font-sans">{a.name}</span>
-                </div>
-                <div className="space-y-1">
-                  <label className="text-[10px] text-zinc-500">期初股數</label>
                   <div className="relative">
                     <input
                       type="number"
                       min="0"
-                      step="1"
-                      placeholder={a.code === ETF_CODE ? '例如: 19000' : '0'}
-                      value={openStrs[a.code]?.shares ?? ''}
-                      onChange={(e) => handleOpenChange(a.code, 'shares', e.target.value)}
-                      className="w-full px-3 py-2 bg-zinc-950 border border-zinc-800 rounded-lg font-mono text-sm text-zinc-100 focus:outline-none focus:border-primary pr-12"
-                    />
-                    <span className="absolute right-3 top-2.5 text-xs text-zinc-500 font-mono">股</span>
-                  </div>
-                </div>
-                <div className="space-y-1">
-                  <label className="text-[10px] text-zinc-500">期初平均成本</label>
-                  <div className="relative">
-                    <input
-                      type="number"
-                      min="0"
-                      step="0.01"
-                      placeholder={a.code === ETF_CODE ? '例如: 35.37' : '0'}
-                      value={openStrs[a.code]?.avg ?? ''}
-                      onChange={(e) => handleOpenChange(a.code, 'avg', e.target.value)}
+                      step="10000"
+                      placeholder="example: 100000"
+                      value={cashReserveStr}
+                      onChange={(e) => handleCashReserveChange(e.target.value)}
                       className="w-full px-3 py-2 bg-zinc-950 border border-zinc-800 rounded-lg font-mono text-sm text-zinc-100 focus:outline-none focus:border-primary pr-10"
                     />
                     <span className="absolute right-3 top-2.5 text-xs text-zinc-500 font-mono">元</span>
                   </div>
                 </div>
               </div>
-            ))}
-            {/* 期初現金【增修H】：閒置現金改由此累算（任一標的買進扣、賣出加） */}
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 items-end pt-1 border-t border-zinc-800/50">
-              <div className="text-xs text-zinc-300 sm:pb-2">期初現金 <span className="text-zinc-500">（記帳起點的閒置資金）</span></div>
-              <div className="space-y-1 sm:col-span-2">
-                <div className="relative">
-                  <input
-                    type="number"
-                    min="0"
-                    step="1000"
-                    placeholder="例如: 1000000"
-                    value={openCashStr}
-                    onChange={(e) => handleOpenCashChange(e.target.value)}
-                    className="w-full px-3 py-2 bg-zinc-950 border border-zinc-800 rounded-lg font-mono text-sm text-zinc-100 focus:outline-none focus:border-primary pr-10"
-                  />
-                  <span className="absolute right-3 top-2.5 text-xs text-zinc-500 font-mono">元</span>
-                </div>
+
+              {/* 現金列說明與警語 */}
+              <div className="text-[10px] space-y-1 pt-2 border-t border-zinc-800/40">
+                {agg.cash < 0 ? (
+                  <p className="text-amber-400">
+                    ⚠ 買進金額已超過期初現金 ${Math.abs(Math.round(agg.cash)).toLocaleString()}，以 0 計算
+                  </p>
+                ) : null}
+                <p className="text-zinc-500 leading-tight font-sans">
+                  防守端先保留這筆現金；加碼 00631L 需要抽錢時優先賣 {BOND_ETFS[0].code}（美債），賣完才動 {BOND_ETFS[1].code}（保留月配息）。
+                  獲利了結回補時依 {Math.round(config.bond_split * 100)}:{Math.round((1 - config.bond_split) * 100)} 配到 {BOND_ETFS[0].code}/{BOND_ETFS[1].code}。
+                  {config.locked?.cash && (
+                    <span className="block mt-0.5 text-primary/80">
+                      已鎖定：只保護這筆 ${config.cash_reserve.toLocaleString()} 保留額，閒置現金超出的部分仍會照常參與再平衡。
+                    </span>
+                  )}
+                </p>
               </div>
             </div>
-          </div>
 
-          {/* 建倉完成後一鍵儲存並同步雲端（期初部位輸入時已即時存本機，此鈕用來確保雲端拿到最新版） */}
-          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-end gap-2 pt-2">
-            <div className="text-[11px] flex items-center gap-1.5 min-h-[16px] order-2 sm:order-1">
-              {cloud.status === 'syncing' && (
-                <span className="text-primary flex items-center gap-1"><Loader2 className="w-3 h-3 animate-spin" /> 同步中…</span>
-              )}
-              {cloud.status === 'saved' && (
-                <span className="text-emerald-400 flex items-center gap-1">
-                  <Cloud className="w-3.5 h-3.5" />
-                  {cloud.savedAt
-                    ? `已同步雲端 ${new Date(cloud.savedAt).toLocaleTimeString('zh-TW', { hour12: false })}`
-                    : cloud.msg || '已同步雲端'}
+            {/* 資產試算小結 */}
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 pt-3 border-t border-zinc-800/80">
+              <div className="flex flex-col justify-between px-4 py-2.5 bg-zinc-950/60 rounded-lg border border-zinc-800/60 gap-1">
+                <span className="text-xs text-zinc-400">00631L 市值</span>
+                <span className="font-mono font-bold text-blue-400 text-base">
+                  ${Math.round(result.etf_value).toLocaleString()}
                 </span>
-              )}
-              {cloud.status === 'error' && (
-                <span className="text-amber-400 flex items-center gap-1"><CloudOff className="w-3.5 h-3.5" /> {cloud.msg || '雲端同步失敗（已存本機）'}</span>
-              )}
-            </div>
-            <button
-              onClick={() => void syncToCloud(config)}
-              disabled={cloud.status === 'syncing' || cloud.status === 'loading'}
-              className="order-1 sm:order-2 inline-flex items-center justify-center gap-1.5 px-3.5 py-1.5 rounded-lg bg-primary text-white text-xs font-semibold hover:bg-primary/90 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-            >
-              {cloud.status === 'syncing' ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <UploadCloud className="w-3.5 h-3.5" />}
-              建倉完成，儲存並同步
-            </button>
-          </div>
-
-          {/* 真實同步（玉山證券）按鈕已移到頁面最上方「TAIEX 市場狀態燈號」卡片標題旁，一進頁就看得到 */}
-          <div className="text-[11px] text-zinc-500 pt-3 mt-1 border-t border-zinc-800/50">
-            從玉山證券真實帳戶抓庫存/現金、覆蓋上面期初部位的「真實同步」按鈕已移到頁面最上方（本機電腦需開機並登入才能執行）
-          </div>
-        </div>
-
-        {/* 新增交易表單 */}
-        <div className="p-3 bg-zinc-950/40 rounded-lg border border-zinc-800 space-y-3">
-          <div className="text-xs font-medium text-zinc-300">新增一筆交易</div>
-          <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 items-end">
-            {/* 標的【增修I】 */}
-            <div className="space-y-1">
-              <label className="text-[10px] text-zinc-500">標的</label>
-              <select
-                value={tradeCode}
-                onChange={(e) => setTradeCode(e.target.value)}
-                className="w-full px-2 py-1.5 bg-zinc-950 border border-zinc-800 rounded font-mono text-xs text-zinc-100 focus:outline-none focus:border-primary"
-              >
-                {ASSETS.map((a) => (
-                  <option key={a.code} value={a.code}>
-                    {a.code} {a.name}
-                  </option>
-                ))}
-              </select>
-            </div>
-            {/* 方向 */}
-            <div className="space-y-1">
-              <label className="text-[10px] text-zinc-500">方向</label>
-              <div className="flex rounded-md overflow-hidden border border-zinc-700 text-xs">
-                <button
-                  onClick={() => setTradeSide('buy')}
-                  className={`flex-1 px-2 py-1.5 font-medium transition-colors ${tradeSide === 'buy' ? tradeSideCls(tradeCode, 'buy') : 'bg-zinc-900 text-zinc-400 hover:text-zinc-200'}`}
-                >
-                  買進
-                </button>
-                <button
-                  onClick={() => setTradeSide('sell')}
-                  className={`flex-1 px-2 py-1.5 font-medium transition-colors ${tradeSide === 'sell' ? tradeSideCls(tradeCode, 'sell') : 'bg-zinc-900 text-zinc-400 hover:text-zinc-200'}`}
-                >
-                  賣出
-                </button>
+              </div>
+              <div className="flex flex-col justify-between px-4 py-2.5 bg-zinc-950/60 rounded-lg border border-zinc-800/60 gap-1">
+                <span className="text-xs text-zinc-400">防守端（現金＋債券）</span>
+                <span className="font-mono font-bold text-emerald-400 text-base">
+                  ${Math.round(result.defensive_value).toLocaleString()}
+                </span>
+              </div>
+              <div className="flex flex-col justify-between px-4 py-2.5 bg-zinc-950/60 rounded-lg border border-zinc-800/60 gap-1">
+                <span className="text-xs text-zinc-400">未實現損益（含債券）</span>
+                {hasPnl ? (
+                  <span className={`font-mono font-bold text-base ${totalPnl >= 0 ? 'text-bull' : 'text-bear'}`}>
+                    {totalPnl >= 0 ? '+' : '−'}${Math.abs(Math.round(totalPnl)).toLocaleString()}
+                    {totalPnlPct !== null && (
+                      <span className="text-xs font-normal ml-1">
+                        ({totalPnlPct >= 0 ? '+' : '−'}{Math.abs(totalPnlPct * 100).toFixed(1)}%)
+                      </span>
+                    )}
+                  </span>
+                ) : (
+                  <span className="font-mono text-zinc-600 text-sm">填期初成本或買進</span>
+                )}
+              </div>
+              <div className="flex flex-col justify-between px-4 py-2.5 bg-zinc-950/60 rounded-lg border border-zinc-800/60 gap-1">
+                <span className="text-xs text-zinc-400">投組總資產現值</span>
+                <span className="font-mono font-extrabold text-zinc-100 text-lg">
+                  ${Math.round(result.total_value).toLocaleString()}
+                </span>
               </div>
             </div>
-            {/* 日期 */}
-            <div className="space-y-1">
-              <label className="text-[10px] text-zinc-500">日期</label>
-              <input
-                type="date"
-                value={tradeDateStr}
-                onChange={(e) => setTradeDateStr(e.target.value)}
-                className="w-full px-2 py-1.5 bg-zinc-950 border border-zinc-800 rounded font-mono text-xs text-zinc-100 focus:outline-none focus:border-primary"
-              />
-            </div>
-            {/* 股數 */}
-            <div className="space-y-1">
-              <label className="text-[10px] text-zinc-500">股數</label>
-              <input
-                type="number"
-                min="0"
-                step="1"
-                placeholder="1000"
-                value={tradeSharesStr}
-                onChange={(e) => setTradeSharesStr(e.target.value)}
-                className="w-full px-2 py-1.5 bg-zinc-950 border border-zinc-800 rounded font-mono text-xs text-zinc-100 focus:outline-none focus:border-primary"
-              />
-            </div>
-            {/* 價格 */}
-            <div className="space-y-1">
-              <label className="text-[10px] text-zinc-500">成交價</label>
-              <input
-                type="number"
-                min="0"
-                step="0.01"
-                placeholder="38.8"
-                value={tradePriceStr}
-                onChange={(e) => setTradePriceStr(e.target.value)}
-                className="w-full px-2 py-1.5 bg-zinc-950 border border-zinc-800 rounded font-mono text-xs text-zinc-100 focus:outline-none focus:border-primary"
-              />
-            </div>
-          </div>
-          <button
-            onClick={addTrade}
-            disabled={!(parseFloat(tradeSharesStr) > 0) || !(parseFloat(tradePriceStr) >= 0)}
-            className="w-full sm:w-auto inline-flex items-center justify-center gap-1.5 px-4 py-2 rounded-lg bg-zinc-800 text-zinc-100 text-sm font-medium hover:bg-zinc-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-          >
-            <Plus className="w-4 h-4" />
-            新增一筆並同步
-          </button>
-        </div>
 
-        {/* 交易紀錄列表 */}
-        <div className="space-y-2">
-          <div className="flex items-center justify-between text-xs">
-            <span className="font-medium text-zinc-300">交易紀錄（{config.trades.length} 筆）</span>
-            {agg.realized_pnl !== 0 && (
-              <span className="text-zinc-400">
-                已實現損益：
-                <strong className={`font-mono ml-1 ${agg.realized_pnl >= 0 ? 'text-bull' : 'text-bear'}`}>
-                  {agg.realized_pnl >= 0 ? '+' : '−'}${Math.abs(Math.round(agg.realized_pnl)).toLocaleString()}
-                </strong>
-              </span>
-            )}
-          </div>
-          {agg.invalid_sells > 0 && (
-            <p className="text-[11px] text-amber-400">⚠ 有 {agg.invalid_sells} 筆賣出超過當時持有股數，已自動 clamp 到可賣上限。</p>
-          )}
-          {tradesSorted.length === 0 ? (
-            <p className="text-xs text-zinc-600 italic py-3 text-center">尚無交易紀錄。上方新增買/賣，會自動累算回持倉並同步雲端。</p>
-          ) : (
-            <div className="divide-y divide-zinc-800/70 rounded-lg border border-zinc-800/70 overflow-hidden">
-              {tradesSorted.map((t) => (
-                <div key={t.id} className="flex items-center gap-3 px-3 py-2 text-xs bg-zinc-950/30">
-                  <span
-                    className={`px-2 py-0.5 rounded font-semibold shrink-0 ${tradeSideCls(t.code ?? ETF_CODE, t.side)}`}
-                  >
-                    {t.side === 'buy' ? '買進' : '賣出'}
-                  </span>
-                  <span className={`font-mono font-semibold shrink-0 w-16 ${tradeCodeCls(t.code ?? ETF_CODE)}`}>{t.code ?? ETF_CODE}</span>
-                  <span className="font-mono text-zinc-400 shrink-0">{t.date || '—'}</span>
-                  <span className="font-mono text-zinc-200 flex-1 text-right">
-                    {Math.round(t.shares).toLocaleString()} 股 <span className="text-zinc-500">×</span> ${t.price.toFixed(2)}
-                  </span>
-                  <span className="font-mono text-zinc-400 shrink-0 w-24 text-right">
-                    ${Math.round(t.shares * t.price).toLocaleString()}
-                  </span>
-                  <button
-                    onClick={() => deleteTrade(t.id)}
-                    className="text-zinc-600 hover:text-bull transition-colors shrink-0"
-                    title="刪除此筆"
-                  >
-                    <Trash2 className="w-3.5 h-3.5" />
-                  </button>
+            {/* 新增交易與交易紀錄區塊 */}
+            <div className="border-t border-zinc-800/80 pt-5 space-y-4">
+              <div className="text-[11px] text-zinc-500 leading-relaxed font-sans">
+                交易紀錄僅記錄此處手動新增的買賣；『真實同步』從玉山帶回的是持倉快照（覆蓋上方各標的期初部位），不會逐筆列進交易紀錄。
+              </div>
+
+              {/* 新增交易表單 */}
+              <div className="p-4 bg-zinc-950/40 rounded-xl border border-zinc-800 space-y-3">
+                <div className="text-xs font-semibold text-zinc-300">新增一筆交易</div>
+                <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 items-end">
+                  {/* 標的 */}
+                  <div className="space-y-1">
+                    <label className="text-[10px] text-zinc-500">標的</label>
+                    <select
+                      value={tradeCode}
+                      onChange={(e) => setTradeCode(e.target.value)}
+                      className="w-full px-2 py-1.5 bg-zinc-950 border border-zinc-800 rounded font-mono text-xs text-zinc-100 focus:outline-none focus:border-primary"
+                    >
+                      {ASSETS.map((a) => (
+                        <option key={a.code} value={a.code}>
+                          {a.code} {a.name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  {/* 方向 */}
+                  <div className="space-y-1">
+                    <label className="text-[10px] text-zinc-500">方向</label>
+                    <div className="flex rounded-md overflow-hidden border border-zinc-700 text-xs">
+                      <button
+                        onClick={() => setTradeSide('buy')}
+                        className={`flex-1 px-2 py-1.5 font-medium transition-colors ${tradeSide === 'buy' ? tradeSideCls(tradeCode, 'buy') : 'bg-zinc-900 text-zinc-400 hover:text-zinc-200'}`}
+                      >
+                        買進
+                      </button>
+                      <button
+                        onClick={() => setTradeSide('sell')}
+                        className={`flex-1 px-2 py-1.5 font-medium transition-colors ${tradeSide === 'sell' ? tradeSideCls(tradeCode, 'sell') : 'bg-zinc-900 text-zinc-400 hover:text-zinc-200'}`}
+                      >
+                        賣出
+                      </button>
+                    </div>
+                  </div>
+                  {/* 日期 */}
+                  <div className="space-y-1">
+                    <label className="text-[10px] text-zinc-500">日期</label>
+                    <input
+                      type="date"
+                      value={tradeDateStr}
+                      onChange={(e) => setTradeDateStr(e.target.value)}
+                      className="w-full px-2 py-1.5 bg-zinc-950 border border-zinc-800 rounded font-mono text-xs text-zinc-100 focus:outline-none focus:border-primary"
+                    />
+                  </div>
+                  {/* 股數 */}
+                  <div className="space-y-1">
+                    <label className="text-[10px] text-zinc-500">股數</label>
+                    <input
+                      type="number"
+                      min="0"
+                      step="1"
+                      placeholder="1000"
+                      value={tradeSharesStr}
+                      onChange={(e) => setTradeSharesStr(e.target.value)}
+                      className="w-full px-2 py-1.5 bg-zinc-950 border border-zinc-800 rounded font-mono text-xs text-zinc-100 focus:outline-none focus:border-primary"
+                    />
+                  </div>
+                  {/* 價格 */}
+                  <div className="space-y-1">
+                    <label className="text-[10px] text-zinc-500">成交價</label>
+                    <input
+                      type="number"
+                      min="0"
+                      step="0.01"
+                      placeholder="38.8"
+                      value={tradePriceStr}
+                      onChange={(e) => setTradePriceStr(e.target.value)}
+                      className="w-full px-2 py-1.5 bg-zinc-950 border border-zinc-800 rounded font-mono text-xs text-zinc-100 focus:outline-none focus:border-primary"
+                    />
+                  </div>
                 </div>
-              ))}
-            </div>
-          )}
-        </div>
-      </div>
-      </div>
-      )}
+                <button
+                  onClick={addTrade}
+                  disabled={!(parseFloat(tradeSharesStr) > 0) || !(parseFloat(tradePriceStr) >= 0)}
+                  className="w-full sm:w-auto inline-flex items-center justify-center gap-1.5 px-4 py-2 rounded-lg bg-zinc-800 text-zinc-100 text-sm font-medium hover:bg-zinc-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                >
+                  <Plus className="w-4 h-4" />
+                  新增一筆並同步
+                </button>
+              </div>
 
+              {/* 交易紀錄列表 */}
+              <div className="space-y-2">
+                <div className="flex items-center justify-between text-xs">
+                  <span className="font-semibold text-zinc-300">交易紀錄（{config.trades.length} 筆）</span>
+                  {agg.realized_pnl !== 0 && (
+                    <span className="text-zinc-400">
+                      已實現損益：
+                      <strong className={`font-mono ml-1 ${agg.realized_pnl >= 0 ? 'text-bull' : 'text-bear'}`}>
+                        {agg.realized_pnl >= 0 ? '+' : '−'}${Math.abs(Math.round(agg.realized_pnl)).toLocaleString()}
+                      </strong>
+                    </span>
+                  )}
+                </div>
+                {agg.invalid_sells > 0 && (
+                  <p className="text-[11px] text-amber-400 font-medium font-sans">⚠ 有 {agg.invalid_sells} 筆賣出超過當時持有股數，已自動 clamp 到可賣上限。</p>
+                )}
+                {tradesSorted.length === 0 ? (
+                  <p className="text-xs text-zinc-600 italic py-4 text-center bg-zinc-950/10 rounded-xl border border-zinc-900 font-sans">尚無交易紀錄。上方新增買/賣，會自動累算回持倉並同步雲端。</p>
+                ) : (
+                  <div className="divide-y divide-zinc-800/70 rounded-xl border border-zinc-800/70 overflow-hidden bg-zinc-950/20">
+                    {tradesSorted.map((t) => (
+                      <div key={t.id} className="flex items-center gap-3 px-3.5 py-2.5 text-xs">
+                        <span className={`px-2 py-0.5 rounded font-semibold shrink-0 ${tradeSideCls(t.code ?? ETF_CODE, t.side)}`}>
+                          {t.side === 'buy' ? '買進' : '賣出'}
+                        </span>
+                        <span className={`font-mono font-semibold shrink-0 w-16 ${tradeCodeCls(t.code ?? ETF_CODE)}`}>{t.code ?? ETF_CODE}</span>
+                        <span className="font-mono text-zinc-500 shrink-0">{t.date || '—'}</span>
+                        <span className="font-mono text-zinc-300 flex-1 text-right">
+                          {Math.round(t.shares).toLocaleString()} 股 <span className="text-zinc-600">×</span> ${t.price.toFixed(2)}
+                        </span>
+                        <span className="font-mono text-zinc-300 shrink-0 w-24 text-right">
+                          ${Math.round(t.shares * t.price).toLocaleString()}
+                        </span>
+                        <button
+                          onClick={() => deleteTrade(t.id)}
+                          className="text-zinc-600 hover:text-bear transition-colors shrink-0 p-1"
+                          title="刪除此筆"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* 送出並同步雲端 */}
+            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 pt-3 border-t border-zinc-800/80">
+              <div className="text-[11px] flex items-center gap-1.5 min-h-[18px]">
+                {cloud.status === 'loading' && (
+                  <span className="text-zinc-500 flex items-center gap-1"><Loader2 className="w-3 h-3 animate-spin" /> 雲端載入中…</span>
+                )}
+                {cloud.status === 'syncing' && (
+                  <span className="text-primary flex items-center gap-1"><Loader2 className="w-3 h-3 animate-spin" /> 同步中…</span>
+                )}
+                {cloud.status === 'saved' && (
+                  <span className="text-emerald-400 flex items-center gap-1">
+                    <Cloud className="w-3.5 h-3.5" />
+                    {cloud.savedAt
+                      ? `已同步雲端 ${new Date(cloud.savedAt).toLocaleTimeString('zh-TW', { hour12: false })}`
+                      : cloud.msg || '已同步雲端'}
+                  </span>
+                )}
+                {cloud.status === 'error' && (
+                  <span className="text-amber-400 flex items-center gap-1"><CloudOff className="w-3.5 h-3.5" /> {cloud.msg || '雲端同步失敗（已存本機）'}</span>
+                )}
+                {cloud.status === 'idle' && cloud.msg && (
+                  <span className="text-zinc-500 flex items-center gap-1"><Cloud className="w-3.5 h-3.5" /> {cloud.msg}</span>
+                )}
+              </div>
+              <button
+                onClick={() => void syncToCloud(config)}
+                disabled={cloud.status === 'syncing' || cloud.status === 'loading'}
+                className="inline-flex items-center justify-center gap-2 px-4 py-2 rounded-lg bg-primary text-white text-sm font-semibold hover:bg-primary/90 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              >
+                {cloud.status === 'syncing' ? <Loader2 className="w-4 h-4 animate-spin" /> : <UploadCloud className="w-4 h-4" />}
+                送出並同步雲端
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       {/* 免責聲明卡 */}
       <div className="p-4 rounded-xl border border-zinc-800/60 bg-zinc-950/40 text-xs text-zinc-500 space-y-1 flex items-start gap-3">
         <ShieldAlert className="w-4 h-4 text-zinc-400 shrink-0 mt-0.5" />
