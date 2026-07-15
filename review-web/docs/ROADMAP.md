@@ -223,6 +223,8 @@ Python engine  FastAPI :8000         ← 既有，本案會新增 /data 或 /mar
   - **瀏覽器實測**（Playwright headless，借用全域 `@playwright/mcp` 的 playwright 與快取 Chromium；`ssh -L 3000` 通道 + vite dev proxy 打真實 API）：`/heatmap` 預設落族群檢視、treemap 正好 **30 格**；hover tooltip 顯示「封測／半導體／-5.35%／489.57 億／佔大盤 4.51%／12 檔」與聚合輸出一致；點族群 → `/heatmap/group/封測?period=day`（成分股檔數卡 12 檔與 tooltip 一致＝§7 #9）；點個股 → `/stock/6789`；`/heatmap/group/陸運` 顯示「本期間內成分股皆無漲跌幅資料」＋`--`（Bug 2 修復確認）；`/heatmap/group/constructor` 與 `/heatmap/group/不存在的族群` 皆顯示「查無此族群」（Bug 1 修復確認）；回歸 `?view=stock` 仍 1063 格、`?view=sector` 仍 36 產業；`?period=week` 下切檢視 period 正確保留。
   - `tsc -b && vite build` 乾淨 exit 0、vitest **128/128 全綠**（121 → 128，新增 7 案）。
 
+  **VM 部署＋驗收通過（2026-07-15，commit `748cd4e`）**：Claude 直接 SSH（[[vm-direct-ops-authorized]]）→ `git pull --rebase`（零衝突）→ `npm run build`（VM `tsc -b` 乾淨；**`GroupDetail-yx4gevoI.js`／`SectorHeatmap-CKaooiYq.js`／`groupHeatmap-BVJBb3Hh.js`／`index-BxW9PhZB.js` 四個 chunk hash 與本機建置逐位元一致**＝部署內容與實測內容相同）→ **純前端免重啟 engine/gateway**（§7 #15）。驗收：`/review/` 200、`/api/health` gateway ok／engine up、新 chunk 皆 200、`index.html` 已指向 `index-BxW9PhZB.js`。手機 PWA 記得 §4.4 清快取（已有 `clientsClaim`，理論上會自動接管）。
+
 ---
 
 ## 9. 維修紀錄
