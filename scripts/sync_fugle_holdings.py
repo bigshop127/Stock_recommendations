@@ -31,7 +31,10 @@ import requests
 
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 GATEWAY_URL = "http://localhost:3000/api/rebalance/holdings"
-KEYS_URL = "https://fugletradingapi.esunsec.com.tw/keys/"
+# Key/IP-allowlist console for this account. Must match the Core Entry host in
+# config.ini (esuntradingapi = E.Sun); fugletradingapi is the parallel Fugle-
+# branded console and does not hold this account's keys.
+KEYS_URL = "https://esuntradingapi.esunsec.com.tw/keys/"
 
 ETF_CODE = "00631L"
 BOND_CODES = ["00687B", "00953B"]
