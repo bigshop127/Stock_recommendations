@@ -31,6 +31,7 @@ import requests
 
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 GATEWAY_URL = "http://localhost:3000/api/rebalance/holdings"
+KEYS_URL = "https://fugletradingapi.esunsec.com.tw/keys/"
 
 ETF_CODE = "00631L"
 BOND_CODES = ["00687B", "00953B"]
@@ -109,6 +110,43 @@ def pending_settlement_adjustment(settlements, today=None):
     return total, used
 
 
+def current_public_ip():
+    """Best-effort egress IP, purely to make the AGA0002 hint actionable.
+    Returns None instead of raising — this only runs on a path that is already
+    failing, and must not turn a clear error into a confusing one."""
+    try:
+        return requests.get("https://checkip.amazonaws.com", timeout=5).text.strip()
+    except requests.exceptions.RequestException:
+        return None
+
+
+def fetch_account(sdk):
+    """inventories + balance + settlements, with a readable failure for AGA0002.
+
+    The trading API key is pinned to an IP allowlist (see KEYS_URL). login()
+    succeeds from any IP — only the API-key-signed calls below are checked — so
+    running from an unlisted IP raises a bare ValueError several lines after
+    "Login OK", which reads like a bug in this script but is not one. Mobile
+    hotspots / tethering get a floating CGNAT address, so this recurs whenever
+    the machine is not on its usual network.
+    """
+    try:
+        return sdk.get_inventories(), sdk.get_balance(), sdk.get_settlements()
+    except ValueError as e:
+        if "AGA0002" not in str(e):
+            raise
+        ip = current_public_ip()
+        print(f"\nERROR: the E.Sun trading API rejected this machine's IP ({e})", file=sys.stderr)
+        print("The trading API key is pinned to an IP allowlist and this", file=sys.stderr)
+        print("machine's current public IP is not on it. Nothing is broken.", file=sys.stderr)
+        print(f"  current public IP : {ip or '(could not determine - no internet?)'}", file=sys.stderr)
+        print(f"  fix               : add that IP at {KEYS_URL}", file=sys.stderr)
+        print("  note              : tethering/mobile networks get a floating IP, so this", file=sys.stderr)
+        print("                      recurs; reconnecting to the usual wired/Wi-Fi network", file=sys.stderr)
+        print("                      is normally enough on its own.", file=sys.stderr)
+        sys.exit(1)
+
+
 def get_current_holdings():
     resp = requests.get(GATEWAY_URL, timeout=10)
     resp.raise_for_status()
@@ -185,9 +223,7 @@ def main():
     sdk = fugle_login()
     print("Login OK. Fetching inventories + balance...")
 
-    inventories = sdk.get_inventories()
-    balance = sdk.get_balance()
-    settlements = sdk.get_settlements()
+    inventories, balance, settlements = fetch_account(sdk)
     positions = extract_positions(inventories)
     raw_cash = float(balance.get("available_balance", 0) or 0)
     adjustment, pending_rows = pending_settlement_adjustment(settlements)
