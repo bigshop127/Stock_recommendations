@@ -431,6 +431,8 @@ export const Layout: React.FC<LayoutProps> = ({ children }) => {
               ? '崩盤策略回測實驗室'
               : location.pathname.startsWith('/heatmap/sector/')
               ? `產業熱力圖 · ${(() => { try { return decodeURIComponent(location.pathname.replace('/heatmap/sector/', '')); } catch { return location.pathname.replace('/heatmap/sector/', ''); } })()}`
+              : location.pathname.startsWith('/heatmap/group/')
+              ? `族群熱力圖 · ${(() => { try { return decodeURIComponent(location.pathname.replace('/heatmap/group/', '')); } catch { return location.pathname.replace('/heatmap/group/', ''); } })()}`
               : location.pathname.startsWith('/stock/')
               ? '個股審查中心'
               : 'RWD 規範驗證'}
