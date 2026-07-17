@@ -835,6 +835,14 @@ export function Rebalance() {
                 </span>
               </span>
             </div>
+            <div className="border-t border-cyan-500/15 pt-1.5 text-[10px] leading-relaxed text-zinc-500">
+              券商 App／銀行看到的可動用餘額會比上方閒置現金多，差額正是這些待交割款——
+              買進款已下單、要等交割日（{settlement.rows
+                .filter((r) => r.amount < 0)
+                .map((r) => fmtMd(r.settle_date))
+                .filter((v, i, a) => a.indexOf(v) === i)
+                .join('、') || '交割日'}）才會實際扣款。此處先扣掉，再平衡才不會重複配置已花掉的錢。
+            </div>
           </div>
         )}
 
