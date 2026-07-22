@@ -496,9 +496,48 @@ export function Rebalance() {
     }
   };
 
-  // 一鍵抓取全部資產的最新收盤價
-  const fetchAllPrices = () => {
-    for (const a of ASSETS) void fetchLatestPrice(a.code);
+  // 一鍵抓取全部資產的最新即時價。
+  // 【修正】不可對每個標的各自呼叫 fetchLatestPrice——那會並發觸發多個 applyConfig，
+  // 而每個 applyConfig 都讀同一份「render 當下」的過期 config，彼此的 setConfig 互相
+  // 覆蓋（最後一個 resolve 的贏），導致部分標的的新價被舊值蓋回，看起來像「沒反應」。
+  // 改為：並發抓報價 → 全部回來後，用單一 applyConfig 一次原子套用所有新價。
+  const fetchAllPrices = async () => {
+    setPriceFetch((s) => {
+      const next = { ...s };
+      for (const a of ASSETS) next[a.code] = { ...next[a.code], loading: true, error: null };
+      return next;
+    });
+    const results = await Promise.all(
+      ASSETS.map(async (a) => {
+        try {
+          const res = await api.book(a.code);
+          const book = res?.book as { last_price?: number | null; time?: unknown } | undefined;
+          const last = book?.last_price;
+          if (!Number.isFinite(last) || (last as number) <= 0) throw new Error('查無即時報價');
+          return { code: a.code, price: last as number, time: book?.time ?? null, error: null as string | null };
+        } catch (e) {
+          return { code: a.code, price: null as number | null, time: null as unknown, error: e instanceof Error ? e.message : '抓取失敗' };
+        }
+      }),
+    );
+    const ok = results.filter((r) => r.price != null);
+    if (ok.length) {
+      const priceByCode = new Map(ok.map((r) => [r.code, r.price as number]));
+      applyConfig({
+        price: priceByCode.has(ETF_CODE) ? priceByCode.get(ETF_CODE)! : config.price,
+        bonds: config.bonds.map((b) => (priceByCode.has(b.code) ? { ...b, price: priceByCode.get(b.code)! } : b)),
+      });
+      setPriceStrs((s) => {
+        const next = { ...s };
+        for (const r of ok) next[r.code] = String(r.price);
+        return next;
+      });
+    }
+    setPriceFetch((s) => {
+      const next = { ...s };
+      for (const r of results) next[r.code] = { loading: false, error: r.error, date: r.error ? null : formatQuoteTime(r.time) };
+      return next;
+    });
   };
 
   // 即時計算結果（config.bonds 形狀即 BondInput[]，cash_reserve / bond_split 一併傳入）
@@ -1718,7 +1757,7 @@ export function Rebalance() {
                 持倉總覽（期初 → 交易 → 現況）
               </span>
               <button
-                onClick={fetchAllPrices}
+                onClick={() => void fetchAllPrices()}
                 disabled={ASSETS.some((a) => priceFetch[a.code]?.loading)}
                 className="text-[11px] text-primary hover:text-primary/80 disabled:text-zinc-600 flex items-center gap-1 transition-colors font-normal"
                 title="抓取全部標的現在最新價（即時報價）"
