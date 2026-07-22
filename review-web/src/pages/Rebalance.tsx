@@ -1775,14 +1775,16 @@ export function Rebalance() {
             <div className="space-y-4">
               {ASSETS.map((a) => {
                 const isEtf = a.code === ETF_CODE;
-                const initialShares = isEtf ? config.opening.shares : (config.opening.bonds.find((b) => b.code === a.code)?.shares ?? 0);
-                
                 const currentShares = isEtf ? config.shares : (config.bonds.find((b) => b.code === a.code)?.shares ?? 0);
                 const currentAvgCost = isEtf ? config.avg_cost : (config.bonds.find((b) => b.code === a.code)?.avg_cost ?? 0);
-                const tradeSharesDelta = currentShares - initialShares;
-                const tradeCount = config.trades.filter((t) => (t.code ?? ETF_CODE) === a.code).length;
                 const price = assetPrice(config, a.code);
                 const fetchSt = priceFetch[a.code] ?? { loading: false, error: null, date: null };
+                // 現況損益（未實現）：需有持股、成本、現價才算得出
+                const canPnl = currentShares > 0 && currentAvgCost > 0 && price > 0;
+                const unrealizedPnl = canPnl ? currentShares * (price - currentAvgCost) : 0;
+                const returnPct = canPnl ? ((price - currentAvgCost) / currentAvgCost) * 100 : 0;
+                // 台股慣例：賺／漲＝紅(bull)、賠／跌＝綠(bear)
+                const pnlCls = !canPnl ? 'text-zinc-500' : unrealizedPnl > 0 ? 'text-bull' : unrealizedPnl < 0 ? 'text-bear' : 'text-zinc-300';
 
                 return (
                   <div key={a.code} className="rounded-xl border border-zinc-800 bg-zinc-950/30 p-4 sm:p-5 space-y-4">
@@ -1873,22 +1875,22 @@ export function Rebalance() {
                         </div>
                       </div>
 
-                      {/* 交易累算區（衍生，唯讀） */}
+                      {/* 損益區（未實現，衍生：現價 vs 平均成本，唯讀） */}
                       <div className="rounded-lg border border-zinc-800 bg-zinc-950/20 p-3 flex flex-col justify-center items-center text-center space-y-1.5 min-h-[100px]">
-                        <div className="text-[10px] text-zinc-500 font-semibold tracking-wider uppercase">交易累算</div>
-                        {tradeCount > 0 ? (
+                        <div className="text-[10px] text-zinc-500 font-semibold tracking-wider uppercase">報酬率 ／ 現在損益</div>
+                        {canPnl ? (
                           <div className="space-y-1">
-                            <div className="text-sm font-bold font-mono text-zinc-300">
-                              {tradeSharesDelta > 0 ? `+${tradeSharesDelta.toLocaleString()}` : tradeSharesDelta < 0 ? `−${Math.abs(tradeSharesDelta).toLocaleString()}` : '0'} 股
+                            <div className={`text-xl font-bold font-mono ${pnlCls}`}>
+                              {returnPct > 0 ? '+' : returnPct < 0 ? '−' : ''}{Math.abs(returnPct).toFixed(2)}%
                             </div>
-                            <div className="text-[10px] text-zinc-400">
-                              （共 {tradeCount} 筆）
+                            <div className={`text-sm font-mono ${pnlCls}`}>
+                              {unrealizedPnl > 0 ? '+' : unrealizedPnl < 0 ? '−' : ''}${Math.abs(Math.round(unrealizedPnl)).toLocaleString()}
                             </div>
                           </div>
                         ) : (
                           <div className="space-y-1">
                             <div className="text-zinc-500 text-sm font-mono">—</div>
-                            <div className="text-[10px] text-zinc-500 italic">無交易</div>
+                            <div className="text-[10px] text-zinc-500 italic">尚無成本或現價</div>
                           </div>
                         )}
                       </div>
