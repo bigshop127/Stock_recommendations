@@ -1,8 +1,8 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { SlidersHorizontal, AlertTriangle, CheckCircle2, Info, ArrowRightLeft, ShieldAlert, RefreshCw, Loader2, Plus, Trash2, UploadCloud, Cloud, CloudOff, Lock, Unlock, BookOpen, TrendingUp } from 'lucide-react';
+import { SlidersHorizontal, AlertTriangle, CheckCircle2, Info, ArrowRightLeft, ShieldAlert, RefreshCw, Loader2, Plus, Trash2, UploadCloud, Cloud, CloudOff, Lock, Unlock, BookOpen, TrendingUp, Activity } from 'lucide-react';
 import { getRebalanceConfig, saveRebalanceConfig, subscribeRebalance, type RebalanceConfig } from '../lib/rebalanceStore';
-import { computeRebalance, aggregatePortfolio, BOND_ETFS, ETF_CODE, type RebalanceResult, type Trade, computeFundFlows, computeMarketStatus, type MarketStatus } from '../lib/rebalance';
+import { computeRebalance, aggregatePortfolio, BOND_ETFS, ETF_CODE, DEFAULT_MACRO_THRESHOLDS, type RebalanceResult, type Trade, computeFundFlows, computeMarketStatus, type MarketStatus, type BondPriority, type MacroState, type MacroCombination, type MacroThresholds, type MacroKey } from '../lib/rebalance';
 import { api, type Settlement } from '../lib/api';
 
 // 資產清單（00631L＋防守端債券 ETF）【增修I】
@@ -11,6 +11,17 @@ const ASSETS: { code: string; name: string }[] = [
   ...BOND_ETFS.map((b) => ({ code: b.code, name: b.name })),
 ];
 const assetName = (code: string) => ASSETS.find((a) => a.code === code)?.name ?? code;
+
+// 宏觀 regime 三指標的顯示定義【regime-aware】：value＝殖利率%或匯率；delta＝fed/yield 為百分點(pp)、fx 為 %
+const MACRO_META: {
+  key: MacroKey; label: string; symbol: string; thrKey: keyof MacroThresholds; deltaUnit: string;
+  fmtVal: (n: number) => string;
+}[] = [
+  { key: 'fed_rate', label: '聯準會利率', symbol: '^IRX', thrKey: 'fed_rate_rise', deltaUnit: 'pp', fmtVal: (n) => `${n.toFixed(2)}%` },
+  { key: 'treasury_yield', label: '長天期美債殖利率', symbol: '^TYX 30年', thrKey: 'treasury_yield_rise', deltaUnit: 'pp', fmtVal: (n) => `${n.toFixed(2)}%` },
+  { key: 'fx', label: '美元／台幣匯率', symbol: 'TWD=X', thrKey: 'fx_rise_pct', deltaUnit: '%', fmtVal: (n) => n.toFixed(3) },
+];
+const fmtDelta = (d: number | null, unit: string) => (d === null ? '—' : `${d >= 0 ? '+' : '−'}${Math.abs(d).toFixed(2)}${unit}`);
 
 // 在途交割款顯示用：YYYYMMDD → M/D；帶正負號金額（正＝+$、負＝−$，四捨五入千分位）
 const fmtMd = (s: string) => (/^\d{8}$/.test(s) ? `${+s.slice(4, 6)}/${+s.slice(6, 8)}` : s);
@@ -300,6 +311,18 @@ export function Rebalance() {
     msg: string | null;
   }>({ status: 'idle', msg: null });
 
+  // 宏觀 regime 指標同步狀態【regime-aware】
+  const [macroSync, setMacroSync] = useState<{ status: 'idle' | 'loading' | 'done' | 'error'; msg: string | null }>({
+    status: 'idle',
+    msg: null,
+  });
+  // 門檻的本地字串暫存（允許打字未完，如 "0."）
+  const [thrStrs, setThrStrs] = useState<Record<string, string>>(() => ({
+    fed_rate_rise: String(config.macro.thresholds?.fed_rate_rise ?? DEFAULT_MACRO_THRESHOLDS.fed_rate_rise),
+    treasury_yield_rise: String(config.macro.thresholds?.treasury_yield_rise ?? DEFAULT_MACRO_THRESHOLDS.treasury_yield_rise),
+    fx_rise_pct: String(config.macro.thresholds?.fx_rise_pct ?? DEFAULT_MACRO_THRESHOLDS.fx_rise_pct),
+  }));
+
   // 在途交割款（真實同步帶入；交割日晚於今天、尚未反映在可用餘額的滾動交割）。
   // 從雲端 GET 直接讀（非 config 欄位，normalizeConfig 會濾掉，故獨立存 state）。
   const [settlement, setSettlement] = useState<Settlement | null>(null);
@@ -315,6 +338,7 @@ export function Rebalance() {
   // 同步 input 欄位，若外部 store 改變
   const bondPricesKey = config.bonds.map((b) => `${b.code}:${b.price}`).join(',');
   const openBondsKey = config.opening.bonds.map((b) => `${b.code}:${b.shares}:${b.avg_cost}`).join(',');
+  const macroThrKey = `${config.macro.thresholds?.fed_rate_rise}:${config.macro.thresholds?.treasury_yield_rise}:${config.macro.thresholds?.fx_rise_pct}`;
   useEffect(() => {
     setPriceStrs(
       Object.fromEntries(ASSETS.map((a) => [a.code, assetPrice(config, a.code) ? String(assetPrice(config, a.code)) : ''])),
@@ -330,9 +354,14 @@ export function Rebalance() {
     });
     setOpenCashStr(config.opening.cash ? String(config.opening.cash) : '');
     setCashReserveStr(config.cash_reserve ? String(config.cash_reserve) : '');
+    setThrStrs({
+      fed_rate_rise: String(config.macro.thresholds?.fed_rate_rise ?? DEFAULT_MACRO_THRESHOLDS.fed_rate_rise),
+      treasury_yield_rise: String(config.macro.thresholds?.treasury_yield_rise ?? DEFAULT_MACRO_THRESHOLDS.treasury_yield_rise),
+      fx_rise_pct: String(config.macro.thresholds?.fx_rise_pct ?? DEFAULT_MACRO_THRESHOLDS.fx_rise_pct),
+    });
 
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [config.price, bondPricesKey, config.opening.shares, config.opening.avg_cost, config.opening.cash, openBondsKey, config.cash_reserve, config.cash]);
+  }, [config.price, bondPricesKey, config.opening.shares, config.opening.avg_cost, config.opening.cash, openBondsKey, config.cash_reserve, config.cash, macroThrKey]);
 
   // 套用設定：合併 partial → 重算衍生 shares/avg_cost/cash（＝aggregatePortfolio）→ 存 localStorage
   const applyConfig = (partial: Partial<RebalanceConfig>): RebalanceConfig => {
@@ -375,6 +404,8 @@ export function Rebalance() {
         bonds: cfg.bonds,
         cash_reserve: cfg.cash_reserve,
         bond_split: cfg.bond_split,
+        bond_priority: cfg.bond_priority,
+        macro: cfg.macro,
         locked: cfg.locked,
         target_beta: cfg.target_beta,
         tolerance_mode: cfg.tolerance_mode,
@@ -651,6 +682,41 @@ export function Rebalance() {
   const updateConfig = (partial: Partial<RebalanceConfig>) => {
     applyConfig(partial);
   };
+
+  // ── 宏觀 regime 指標【regime-aware】──────────────────────────────────────────
+  // 同步：抓 Yahoo（^IRX/^TYX/TWD=X）最新值＋回看基準 → 合併進 config.macro → 存本機＋雲端。
+  const syncMacroIndicators = async () => {
+    setMacroSync({ status: 'loading', msg: null });
+    try {
+      const r = await api.getMacroIndicators();
+      const toInd = (x: { ok: boolean; current: number | null; reference: number | null; as_of: string | null; ref_date: string | null }) =>
+        x && x.ok && x.current != null && x.reference != null
+          ? { current: x.current, reference: x.reference, as_of: x.as_of ?? undefined, ref_date: x.ref_date ?? undefined }
+          : undefined;
+      const nextMacro: MacroState = {
+        ...config.macro,
+        fed_rate: toInd(r.fed_rate),
+        treasury_yield: toInd(r.treasury_yield),
+        fx: toInd(r.fx),
+        fetched_at: r.fetched_at,
+      };
+      const next = applyConfig({ macro: nextMacro });
+      void syncToCloud(next);
+      setMacroSync({ status: 'done', msg: r.fetched_at });
+    } catch (e) {
+      setMacroSync({ status: 'error', msg: e instanceof Error ? e.message : '抓取失敗' });
+    }
+  };
+
+  const handleThrChange = (thrKey: keyof MacroThresholds, val: string) => {
+    setThrStrs((s) => ({ ...s, [thrKey]: val }));
+    const p = parseFloat(val);
+    const cur = config.macro.thresholds ?? DEFAULT_MACRO_THRESHOLDS;
+    updateConfig({ macro: { ...config.macro, thresholds: { ...cur, [thrKey]: Number.isFinite(p) && p >= 0 ? p : 0 } } });
+  };
+
+  const updateMacroCombination = (c: MacroCombination) => updateConfig({ macro: { ...config.macro, combination: c } });
+  const updateBondPriority = (p: BondPriority) => updateConfig({ bond_priority: p });
 
   // 新增一筆交易 → 累算回填 → 自動同步雲端
   const addTrade = () => {
@@ -978,7 +1044,7 @@ export function Rebalance() {
                   </div>
                   <ol className="list-decimal list-inside space-y-1 text-zinc-300 text-[11px] pl-1">
                     <li>防守端立即全數轉進 00631L（已按上方按鈕套用滿倉 β 即完成）</li>
-                    <li>交易順序沿用增修K美債優先變現 waterfall（自動）</li>
+                    <li>交易順序依「宏觀 regime 指標」卡自動判定：平時先賣 {BOND_ETFS[1].code}、升息型崩盤（指標達標）改先賣美債（自動）</li>
                     <li>尊重 opt19 資產鎖定設定，不會自動覆蓋——若有鎖定，上方會提示你考慮解鎖</li>
                     <li>維持鎖定不解的話，可用「現金注入模式」補足（cash_injection_needed 照常顯示）</li>
                     <li>停止手動再平衡，抱到 TAIEX 創新高再回到平常的目標 β</li>
@@ -989,6 +1055,133 @@ export function Rebalance() {
             )}
           </div>
         )}
+      </div>
+
+      {/* 宏觀 regime 指標（決定股災變現先賣哪一檔）【regime-aware 2026-07-25】 */}
+      <div className="bg-card border border-border rounded-xl p-5 shadow-sm space-y-4">
+        <div className="flex items-center justify-between border-b border-border/60 pb-3">
+          <h2 className="text-sm font-semibold text-zinc-200 flex items-center gap-2">
+            <Activity className="w-4 h-4 text-primary" />
+            宏觀 regime 指標
+          </h2>
+          <button
+            onClick={() => void syncMacroIndicators()}
+            disabled={macroSync.status === 'loading'}
+            className="text-[11px] text-primary hover:text-primary/80 disabled:text-zinc-600 flex items-center gap-1 transition-colors"
+            title="抓取 Fed 利率(^IRX)、長天期美債殖利率(^TYX)、美元台幣匯率(TWD=X) 最新值——公開市場資料，不碰任何交易帳戶"
+          >
+            {macroSync.status === 'loading' ? <Loader2 className="w-3 h-3 animate-spin" /> : <RefreshCw className="w-3 h-3" />}
+            同步指標
+          </button>
+        </div>
+
+        {macroSync.status !== 'idle' && (
+          <div className="text-[11px] flex items-center gap-1.5 -mt-2">
+            {macroSync.status === 'loading' && (
+              <span className="text-primary flex items-center gap-1"><Loader2 className="w-3.5 h-3.5 animate-spin" /> 抓取宏觀指標中…</span>
+            )}
+            {macroSync.status === 'done' && (
+              <span className="text-emerald-400 flex items-center gap-1"><Cloud className="w-3.5 h-3.5" /> 已更新{macroSync.msg ? ` ${new Date(macroSync.msg).toLocaleString('zh-TW', { hour12: false })}` : ''}</span>
+            )}
+            {macroSync.status === 'error' && (
+              <span className="text-amber-400 flex items-center gap-1"><CloudOff className="w-3.5 h-3.5" /> {macroSync.msg || '抓取失敗'}</span>
+            )}
+          </div>
+        )}
+
+        {/* 結果摘要：目前 regime + 股災會先賣哪一檔 */}
+        {(() => {
+          const rc = result.bond_regime.regime === 'rate_crash';
+          const first = result.bond_sell_first ? assetName(result.bond_sell_first) : BOND_ETFS[1].name;
+          return (
+            <div className={`rounded-lg border p-3 text-xs leading-relaxed ${rc ? 'border-[#e34948]/40 bg-[#e34948]/10 text-red-300' : 'border-emerald-500/25 bg-emerald-500/5 text-emerald-300'}`}>
+              {config.bond_priority === 'regime_aware' ? (
+                rc ? (
+                  <><strong>升息型崩盤徵兆（{result.bond_regime.tripped_count} 項指標達標）</strong>：股災需要變現時改為<strong>優先賣 {first}</strong>——此時美債自己也會跌，不宜留。</>
+                ) : (
+                  <><strong>平時模式</strong>：三項指標都在門檻內。股災需要變現時<strong>優先賣 {first}</strong>、保留 {BOND_ETFS[0].name} 當火藥（避險上漲、留到谷底才賣）。</>
+                )
+              ) : (
+                <>目前為<strong>手動指定</strong>順序（{config.bond_priority === 'bond1_first' ? '先賣美債' : `先賣 ${BOND_ETFS[1].code}`}）：股災變現時優先賣 {first}。改回「自動（依指標）」可讓宏觀指標接管。</>
+              )}
+            </div>
+          );
+        })()}
+
+        {/* 三個指標 */}
+        <div className="space-y-2">
+          {MACRO_META.map((m) => {
+            const sig = result.bond_regime.signals.find((s) => s.key === m.key);
+            const hasData = !!sig && sig.available;
+            return (
+              <div key={m.key} className={`flex flex-wrap items-center gap-x-3 gap-y-1.5 rounded-lg border p-2.5 ${sig?.tripped ? 'border-[#e34948]/40 bg-[#e34948]/5' : 'border-border/60 bg-zinc-800/20'}`}>
+                <div className="flex-1 min-w-[128px]">
+                  <div className="text-xs text-zinc-200 font-medium">{m.label}</div>
+                  <div className="text-[10px] text-zinc-500 font-mono">{m.symbol}</div>
+                </div>
+                <div className="text-right min-w-[86px]">
+                  <div className="text-sm font-mono text-zinc-100">{hasData && sig ? m.fmtVal(sig.current as number) : '—'}</div>
+                  <div className={`text-[10px] font-mono ${sig && sig.delta !== null && sig.delta >= sig.threshold ? 'text-[#e34948]' : 'text-zinc-500'}`}>
+                    近{m.key === 'fed_rate' ? '6' : '3'}月 {sig ? fmtDelta(sig.delta, m.deltaUnit) : '—'}
+                  </div>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <span className="text-[10px] text-zinc-500">門檻 ≥</span>
+                  <input
+                    type="number"
+                    inputMode="decimal"
+                    step="0.05"
+                    value={thrStrs[m.thrKey] ?? ''}
+                    onChange={(e) => handleThrChange(m.thrKey, e.target.value)}
+                    className="w-14 bg-zinc-900 border border-border rounded px-1.5 py-1 text-xs text-right text-zinc-200 font-mono focus:outline-none focus:border-primary"
+                  />
+                  <span className="text-[10px] text-zinc-500 w-4">{m.deltaUnit}</span>
+                </div>
+                <div className="w-12 text-right">
+                  {sig?.tripped ? (
+                    <span className="text-[10px] font-semibold text-[#e34948]">達標</span>
+                  ) : hasData ? (
+                    <span className="text-[10px] text-zinc-500">觀察</span>
+                  ) : (
+                    <span className="text-[10px] text-zinc-600">無資料</span>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+
+        {/* 判定邏輯 + 手動覆寫 */}
+        <div className="flex flex-wrap items-center justify-between gap-3 pt-1 border-t border-border/40 text-[11px]">
+          <div className="flex items-center gap-2">
+            <span className="text-zinc-500">觸發條件</span>
+            <select
+              value={config.macro.combination ?? 'any'}
+              onChange={(e) => updateMacroCombination(e.target.value as MacroCombination)}
+              className="bg-zinc-900 border border-border rounded px-2 py-1 text-xs text-zinc-200 focus:outline-none focus:border-primary"
+            >
+              <option value="any">任一達標即切</option>
+              <option value="majority">過半達標</option>
+              <option value="all">全部達標</option>
+            </select>
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="text-zinc-500">變現順序</span>
+            <select
+              value={config.bond_priority}
+              onChange={(e) => updateBondPriority(e.target.value as BondPriority)}
+              className="bg-zinc-900 border border-border rounded px-2 py-1 text-xs text-zinc-200 focus:outline-none focus:border-primary"
+            >
+              <option value="regime_aware">自動（依指標）</option>
+              <option value="bond2_first">固定先賣 {BOND_ETFS[1].code}</option>
+              <option value="bond1_first">固定先賣美債</option>
+            </select>
+          </div>
+        </div>
+
+        <p className="text-[10px] text-zinc-500 leading-relaxed">
+          回測（2000–2026）：股災往下探時 {BOND_ETFS[0].name} 避險上漲、{BOND_ETFS[1].name} 跟跌，故平時「先賣 {BOND_ETFS[1].name}、留美債當火藥」較優（6 次股災贏 5 次）；唯一反例是升息型崩盤（如 2022），此時上面三項指標任一達標就自動改回先賣美債。指標為公開市場資料，按「同步指標」抓取，平時只顯示參考、達門檻才接管變現順序。
+        </p>
       </div>
 
       {/* 分頁導覽（像個股頁：今天想看什麼再點開什麼） */}
@@ -1045,8 +1238,10 @@ export function Rebalance() {
               <li>固定保留現金 <strong className="text-zinc-100">$100,000</strong>（不投入市場的緩衝，隨時可動用）。</li>
               <li>扣掉保留現金後的防守端資金，依 <strong className="text-zinc-100">6:4</strong> 分配到 {BOND_ETFS[0].code}／{BOND_ETFS[1].code}。</li>
               <li>
-                <strong className="text-zinc-100">美債優先變現</strong>：需要縮減防守端補錢買 00631L 時，優先賣 {BOND_ETFS[0].code}、留著 {BOND_ETFS[1].code}
-                （用兩檔獨立歷史代理標的全窗口回測驗證過，優於「非投等優先」與「等比例縮減」，報酬/回撤約多贏 1～2 個百分點）。
+                <strong className="text-zinc-100">變現順序＝regime-aware（2026-07 改版）</strong>：需要縮減防守端補錢買 00631L 時，
+                <strong className="text-zinc-100">平時優先賣 {BOND_ETFS[1].code}</strong>（非投等債股災跟跌，先出掉；留 {BOND_ETFS[0].code} 美債當火藥、避險上漲留到谷底才變現）；
+                但當「宏觀 regime 指標」卡偵測到升息型崩盤（Fed 利率／長天期美債殖利率／匯率任一達門檻）時，自動改回<strong className="text-zinc-100">先賣美債</strong>（此時美債同步下跌不宜留）。
+                依 2000–2026 代理數據回測，「部分變現、留倉到谷底」情境下平時先賣 {BOND_ETFS[1].code} 於 6 次股災贏 5 次、平均多留約 9 個百分點火藥，唯一反例 2022 升息崩盤由指標防呆擋掉。
               </li>
               <li>
                 <strong className="text-zinc-100">資產鎖定</strong>：現金／{BOND_ETFS[0].code}／{BOND_ETFS[1].code} 三項可個別鎖定（00631L 不開放鎖定），鎖定後再平衡建議會自動繞過它重算其他資產怎麼調整。
@@ -1075,7 +1270,7 @@ export function Rebalance() {
               <div className="flex gap-3">
                 <span className="shrink-0 px-2 py-0.5 rounded-md bg-[#e34948] text-white text-[11px] font-semibold h-fit whitespace-nowrap">股災來臨 −20%</span>
                 <span>
-                  防守端<strong className="text-zinc-100">全數轉入 00631L 拉滿 β＝2.0</strong>：沿用美債優先 waterfall 順序、尊重資產鎖定（不會自動覆蓋——若有鎖定，市場狀態卡會提示你考慮解鎖，維持鎖定則改用現金注入模式補足）。
+                  防守端<strong className="text-zinc-100">全數轉入 00631L 拉滿 β＝2.0</strong>：沿用 regime-aware waterfall 順序（平時先賣 {BOND_ETFS[1].code}、升息型崩盤先賣美債，見「宏觀 regime 指標」卡）、尊重資產鎖定（不會自動覆蓋——若有鎖定，市場狀態卡會提示你考慮解鎖，維持鎖定則改用現金注入模式補足）。
                   <strong className="text-zinc-100">一次到位、不分批</strong>——用 1999/2000/2020/2022/2025 五次真實股災事件測過分批進場，V 型急跌急彈事件（如 2020、2025）分批全部打平或小輸，只有緩跌型的 2022 股災分批略勝，但事件當下無法預先判斷屬於哪一種，故維持一次到位。
                 </span>
               </div>
@@ -2046,7 +2241,7 @@ export function Rebalance() {
                   </p>
                 ) : null}
                 <p className="text-zinc-500 leading-tight font-sans">
-                  防守端先保留這筆現金；加碼 00631L 需要抽錢時優先賣 {BOND_ETFS[0].code}（美債），賣完才動 {BOND_ETFS[1].code}（保留月配息）。
+                  防守端先保留這筆現金；加碼 00631L 需要抽錢時依 regime-aware 順序變現（平時先賣 {BOND_ETFS[1].code}、升息型崩盤先賣美債，見「宏觀 regime 指標」卡）。
                   獲利了結回補時依 {Math.round(config.bond_split * 100)}:{Math.round((1 - config.bond_split) * 100)} 配到 {BOND_ETFS[0].code}/{BOND_ETFS[1].code}。
                   {config.locked?.cash && (
                     <span className="block mt-0.5 text-primary/80">

@@ -576,7 +576,28 @@ export const api = {
   // getRebalanceHoldings() 的 saved_at 判斷（見 Rebalance.tsx）
   triggerRealSync: () =>
     req<{ ok: boolean; triggered_at: string }>('/rebalance/sync-holdings-trigger', { method: 'POST' }),
+  // 宏觀 regime 指標同步（Yahoo：^IRX / ^TYX / TWD=X）——公開市場資料、不碰交易帳戶【regime-aware】
+  getMacroIndicators: () => req<MacroIndicatorsResp>('/rebalance/macro-indicators'),
 };
+
+// 宏觀 regime 指標（gateway 直抓 Yahoo）：每個指標的最新值 + 回看基準值
+export interface MacroIndicatorResp {
+  symbol: string;
+  label: string;
+  lookback_days: number;
+  current: number | null;
+  reference: number | null;
+  as_of: string | null;
+  ref_date: string | null;
+  ok: boolean;
+  error?: string;
+}
+export interface MacroIndicatorsResp {
+  fetched_at: string;
+  fed_rate: MacroIndicatorResp;
+  treasury_yield: MacroIndicatorResp;
+  fx: MacroIndicatorResp;
+}
 
 // 再平衡持倉（雲端 JSON）— 與 rebalanceStore.RebalanceConfig 對齊
 export interface RebalanceTrade {
@@ -601,6 +622,15 @@ export interface RebalanceHoldingsPayload {
   bonds: RebalanceBondHolding[]; // 防守端債券 ETF（00687B / 00953B）【增修I】
   cash_reserve: number; // 固定保留現金【增修I】
   bond_split: number;   // 債券池 00687B 佔比【增修I】
+  bond_priority?: 'bond1_first' | 'bond2_first' | 'regime_aware'; // 變現優先順序【regime-aware】
+  macro?: {             // 宏觀 regime 指標與門檻【regime-aware】
+    fed_rate?: { current: number | null; reference: number | null; as_of?: string; ref_date?: string };
+    treasury_yield?: { current: number | null; reference: number | null; as_of?: string; ref_date?: string };
+    fx?: { current: number | null; reference: number | null; as_of?: string; ref_date?: string };
+    thresholds?: { fed_rate_rise: number; treasury_yield_rise: number; fx_rise_pct: number };
+    combination?: 'any' | 'majority' | 'all';
+    fetched_at?: string;
+  };
   locked: {
     cash: boolean;
     bonds: Record<string, boolean>;

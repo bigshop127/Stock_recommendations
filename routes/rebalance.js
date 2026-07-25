@@ -32,6 +32,8 @@ const BOND_ETFS = [
 ];
 const DEFAULT_CASH_RESERVE = 100000;
 const DEFAULT_BOND_SPLIT = 0.6;
+// 【regime-aware 2026-07-25】宏觀 regime 門檻預設（與 review-web/src/lib/rebalance.ts 對齊）
+const DEFAULT_MACRO_THRESHOLDS = { fed_rate_rise: 1.0, treasury_yield_rise: 0.75, fx_rise_pct: 5 };
 
 function safeNum(v, fb) {
   if (typeof v === 'number' && Number.isFinite(v)) return v;
@@ -141,6 +143,44 @@ function sanitizeSettlement(v) {
   };
 }
 
+// 【regime-aware】變現優先順序 / 宏觀 regime 設定的清洗（與 store 對齊；告警腳本忽略這些欄位）
+function safeBondPriority(v) {
+  return v === 'bond1_first' || v === 'bond2_first' ? v : 'regime_aware';
+}
+function safeCombination(v) {
+  return v === 'majority' || v === 'all' ? v : 'any';
+}
+function sanitizeMacroIndicator(v) {
+  if (!v || typeof v !== 'object') return undefined;
+  const cur = typeof v.current === 'number' && Number.isFinite(v.current) ? v.current : null;
+  const ref = typeof v.reference === 'number' && Number.isFinite(v.reference) ? v.reference : null;
+  if (cur === null && ref === null) return undefined;
+  const out = { current: cur, reference: ref };
+  if (typeof v.as_of === 'string') out.as_of = v.as_of;
+  if (typeof v.ref_date === 'string') out.ref_date = v.ref_date;
+  return out;
+}
+function sanitizeMacro(v) {
+  const o = v && typeof v === 'object' ? v : {};
+  const t = o.thresholds && typeof o.thresholds === 'object' ? o.thresholds : {};
+  const macro = {
+    thresholds: {
+      fed_rate_rise: Math.max(0, safeNum(t.fed_rate_rise, DEFAULT_MACRO_THRESHOLDS.fed_rate_rise)),
+      treasury_yield_rise: Math.max(0, safeNum(t.treasury_yield_rise, DEFAULT_MACRO_THRESHOLDS.treasury_yield_rise)),
+      fx_rise_pct: Math.max(0, safeNum(t.fx_rise_pct, DEFAULT_MACRO_THRESHOLDS.fx_rise_pct)),
+    },
+    combination: safeCombination(o.combination),
+  };
+  const fed = sanitizeMacroIndicator(o.fed_rate);
+  const ty = sanitizeMacroIndicator(o.treasury_yield);
+  const fx = sanitizeMacroIndicator(o.fx);
+  if (fed) macro.fed_rate = fed;
+  if (ty) macro.treasury_yield = ty;
+  if (fx) macro.fx = fx;
+  if (typeof o.fetched_at === 'string') macro.fetched_at = o.fetched_at;
+  return macro;
+}
+
 // 統一清洗＋重算衍生 shares/avg_cost/cash/bonds，回傳落地用物件
 function sanitizeHoldings(body) {
   const b = body && typeof body === 'object' ? body : {};
@@ -191,6 +231,8 @@ function sanitizeHoldings(body) {
     bonds,                       // 【增修I】告警腳本也讀（β 分母含債券市值）
     cash_reserve: Math.max(0, safeNum(b.cash_reserve, DEFAULT_CASH_RESERVE)),
     bond_split: Math.min(1, Math.max(0, safeNum(b.bond_split, DEFAULT_BOND_SPLIT))),
+    bond_priority: safeBondPriority(b.bond_priority),
+    macro: sanitizeMacro(b.macro),
     locked: {
       cash: !!(b.locked && b.locked.cash === true),
       bonds: BOND_ETFS.reduce((acc, bd) => {
@@ -288,6 +330,75 @@ router.post('/api/rebalance/sync-holdings-trigger', async (req, res) => {
     return res.status(202).json({ ok: true, triggered_at: new Date().toISOString() });
   } catch (err) {
     return sendError(res, httpError(502, 'GITHUB', '呼叫 GitHub API 失敗: ' + err.message));
+  }
+});
+
+// ── 宏觀 regime 指標同步【regime-aware 2026-07-25】────────────────────────────
+// GET /api/rebalance/macro-indicators —— 直接抓 Yahoo Finance（公開市場資料、無憑證需求，
+// 與「真實同步」不同：不觸發本機 runner、不碰任何交易帳戶），回傳三個指標的 current + reference
+// （回看 lookback 交易日前的值）。前端據此算變動、與門檻比較，決定股災變現先賣哪一檔。
+const YF_HOSTS = ['query1', 'query2'];
+const MACRO_DEFS = [
+  { key: 'fed_rate', symbol: '^IRX', lookback: 126, label: '聯準會利率（13週國庫券殖利率）' },
+  { key: 'treasury_yield', symbol: '^TYX', lookback: 60, label: '長天期美債殖利率（30年）' },
+  { key: 'fx', symbol: 'TWD=X', lookback: 60, label: '美元兌台幣匯率' },
+];
+
+async function fetchYahooSeries(symbol) {
+  const enc = encodeURIComponent(symbol);
+  let lastErr;
+  for (const host of YF_HOSTS) {
+    try {
+      const url = `https://${host}.finance.yahoo.com/v8/finance/chart/${enc}?range=1y&interval=1d`;
+      const r = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0' } });
+      if (!r.ok) { lastErr = new Error(`HTTP ${r.status}`); continue; }
+      const j = await r.json();
+      const res = j && j.chart && j.chart.result && j.chart.result[0];
+      if (!res) { lastErr = new Error('no result'); continue; }
+      const ts = res.timestamp || [];
+      const q = res.indicators && res.indicators.quote && res.indicators.quote[0];
+      const closes = (q && q.close) || [];
+      const out = [];
+      for (let i = 0; i < ts.length; i++) {
+        const v = closes[i];
+        if (typeof v === 'number' && Number.isFinite(v) && v > 0) {
+          out.push({ date: new Date(ts[i] * 1000).toISOString().slice(0, 10), value: v });
+        }
+      }
+      if (out.length) return out;
+      lastErr = new Error('empty series');
+    } catch (e) { lastErr = e; }
+  }
+  throw lastErr || new Error('fetch failed');
+}
+
+router.get('/api/rebalance/macro-indicators', async (req, res) => {
+  try {
+    const entries = await Promise.all(
+      MACRO_DEFS.map(async (d) => {
+        try {
+          const series = await fetchYahooSeries(d.symbol);
+          const last = series[series.length - 1];
+          const ref = series[Math.max(0, series.length - 1 - d.lookback)];
+          return [d.key, {
+            symbol: d.symbol, label: d.label, lookback_days: d.lookback,
+            current: last.value, reference: ref.value,
+            as_of: last.date, ref_date: ref.date, ok: true,
+          }];
+        } catch (e) {
+          return [d.key, {
+            symbol: d.symbol, label: d.label, lookback_days: d.lookback,
+            current: null, reference: null, as_of: null, ref_date: null,
+            ok: false, error: String((e && e.message) || e),
+          }];
+        }
+      }),
+    );
+    const out = { fetched_at: new Date().toISOString() };
+    for (const [k, v] of entries) out[k] = v;
+    return res.json(out);
+  } catch (err) {
+    return sendError(res, httpError(502, 'YAHOO', '抓取宏觀指標失敗: ' + err.message));
   }
 });
 

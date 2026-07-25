@@ -8,6 +8,102 @@ export const BOND_ETFS = [
 export const DEFAULT_CASH_RESERVE = 100_000; // 固定保留現金（TWD）
 export const DEFAULT_BOND_SPLIT = 0.6;       // 債券池中 00687B 佔比（00953B＝1−split）
 
+// ── 賣債優先順序 ＋ 宏觀 regime 偵測【regime-aware 2026-07-25】────────────────
+// 回測（2000–2026 代理數據）結論：股災往下探時 20年美債避險上漲、00953B（非投等債）跟跌，
+// 故「部分變現、留倉到谷底」時應**先賣 00953B、留美債當火藥**（6/6 股災 5 次勝、平均多留 +9.4pp）。
+// 唯一反例＝升息型崩盤（2022 美債同步大跌）→ 由三個宏觀指標任一達標偵測，改回「先賣美債」。
+export type BondPriority = 'bond1_first' | 'bond2_first' | 'regime_aware';
+export const DEFAULT_BOND_PRIORITY: BondPriority = 'regime_aware';
+
+export interface MacroIndicator {
+  current: number | null;    // 最新值（殖利率 % 或匯率）
+  reference: number | null;  // 回看基準值（lookback 前）
+  as_of?: string;            // 最新值日期
+  ref_date?: string;         // 基準值日期
+}
+
+export interface MacroThresholds {
+  fed_rate_rise: number;       // ^IRX 相對回看基準上升 ≥ 此值(百分點)→示警，預設 1.0
+  treasury_yield_rise: number; // ^TYX 上升 ≥ 此值(百分點)→示警，預設 0.75
+  fx_rise_pct: number;         // USDTWD 相對回看基準上漲 ≥ 此% →示警，預設 5
+}
+
+export const DEFAULT_MACRO_THRESHOLDS: MacroThresholds = {
+  fed_rate_rise: 1.0,
+  treasury_yield_rise: 0.75,
+  fx_rise_pct: 5,
+};
+
+export type MacroCombination = 'any' | 'majority' | 'all';
+
+export interface MacroState {
+  fed_rate?: MacroIndicator;       // ^IRX（13週國庫券殖利率，貼近 Fed 基準利率）
+  treasury_yield?: MacroIndicator; // ^TYX（30年美債殖利率，代理 00687B 的 20年天期）
+  fx?: MacroIndicator;             // TWD=X（USD/TWD）
+  thresholds?: MacroThresholds;
+  combination?: MacroCombination;  // 預設 'any'（任一達標即切）
+  fetched_at?: string;
+}
+
+export type MacroKey = 'fed_rate' | 'treasury_yield' | 'fx';
+
+export interface MacroSignal {
+  key: MacroKey;
+  current: number | null;
+  reference: number | null;
+  delta: number | null;   // fed/yield：百分點差；fx：百分比(%)
+  threshold: number;
+  tripped: boolean;
+  available: boolean;     // 有無有效資料可判斷（缺資料＝不觸發、不計入 combination 分母）
+}
+
+export interface BondRegime {
+  regime: 'normal' | 'rate_crash'; // normal＝先賣 00953B；rate_crash＝先賣美債
+  combination: MacroCombination;
+  tripped_count: number;
+  available_count: number;
+  signals: MacroSignal[];
+}
+
+function macroDelta(key: MacroKey, cur: number | null, ref: number | null): number | null {
+  if (cur === null || ref === null || !Number.isFinite(cur) || !Number.isFinite(ref)) return null;
+  if (key === 'fx') return ref !== 0 ? (cur / ref - 1) * 100 : null; // 匯率變動 %
+  return cur - ref; // 利率/殖利率：百分點
+}
+
+/**
+ * 由三個宏觀指標（Fed 利率 / 長天期美債殖利率 / 匯率）判定目前是否為「升息型崩盤 regime」。
+ * 缺資料的指標不觸發、也不計入 combination 分母（available_count）。任一達標（'any'，預設）即回
+ * rate_crash；'majority'＝過半可用指標達標；'all'＝全部可用指標達標。無任何可用資料＝normal。
+ * 純函式、全路徑防 NaN。
+ */
+export function computeBondRegime(macro?: MacroState | null): BondRegime {
+  const thr = { ...DEFAULT_MACRO_THRESHOLDS, ...(macro?.thresholds ?? {}) };
+  const combination: MacroCombination = macro?.combination ?? 'any';
+  const defs: { key: MacroKey; ind?: MacroIndicator; threshold: number }[] = [
+    { key: 'fed_rate', ind: macro?.fed_rate, threshold: thr.fed_rate_rise },
+    { key: 'treasury_yield', ind: macro?.treasury_yield, threshold: thr.treasury_yield_rise },
+    { key: 'fx', ind: macro?.fx, threshold: thr.fx_rise_pct },
+  ];
+  const signals: MacroSignal[] = defs.map((d) => {
+    const cur = d.ind?.current ?? null;
+    const ref = d.ind?.reference ?? null;
+    const delta = macroDelta(d.key, cur, ref);
+    const available = delta !== null;
+    const tripped = available && (delta as number) >= d.threshold;
+    return { key: d.key, current: cur, reference: ref, delta, threshold: d.threshold, tripped, available };
+  });
+  const available_count = signals.filter((s) => s.available).length;
+  const tripped_count = signals.filter((s) => s.tripped).length;
+  let isRateCrash = false;
+  if (available_count > 0) {
+    if (combination === 'all') isRateCrash = tripped_count === available_count;
+    else if (combination === 'majority') isRateCrash = tripped_count * 2 > available_count;
+    else isRateCrash = tripped_count >= 1; // 'any'
+  }
+  return { regime: isRateCrash ? 'rate_crash' : 'normal', combination, tripped_count, available_count, signals };
+}
+
 // ── 買賣報價單（交易紀錄）與部位累算 ──────────────────────────────
 export interface Trade {
   id: string;            // 唯一鍵（前端產生；lib 不生成以保持純淨）
@@ -218,6 +314,8 @@ export interface RebalanceInput {
   bonds?: BondInput[];      // 債券 ETF 持倉（缺省＝無債券，退回純現金模型）
   cash_reserve?: number;    // 固定保留現金（預設 100,000）
   bond_split?: number;      // 債券池中第一檔（00687B）佔比（預設 0.6）
+  bond_priority?: BondPriority; // 變現優先順序（預設 'regime_aware'）【regime-aware】
+  macro?: MacroState;       // 宏觀指標（regime_aware 用；缺＝視為 normal 先賣 00953B）【regime-aware】
   locked?: {
     cash?: boolean;
     bonds?: Record<string, boolean>; // key＝債券 code；缺的 code 視為 false
@@ -252,6 +350,10 @@ export interface RebalanceResult {
   deviation_pct: number | null; // (current_beta − target)/target；target=0 → null
   status: 'empty' | 'sell' | 'buy' | 'normal';
   action_label: string;         // §2.3
+  // 【regime-aware】變現優先順序解析結果（供 UI 顯示「現在會先賣哪一檔、為什麼」）
+  bond_priority: BondPriority;      // echo 輸入（預設 'regime_aware'）
+  bond_regime: BondRegime;          // 宏觀 regime 偵測結果（含各指標明細）
+  bond_sell_first: string | null;   // 縮水時優先變現的債券 code（防守端只有一檔債券則恆為該檔；無債券→null）
   // 精確達標（保持總資產不變，在 00631L↔現金 間搬錢使 β=target）
   target_etf_value: number | null;
   etf_value_delta: number | null; // target_etf_value − etf_value（+買 −賣）；不可解→null
@@ -359,8 +461,9 @@ export function allocateDefensive(
 export interface DefensiveAllocationLockedInput {
   targetDefensiveValue: number;
   cash: { value: number; reserve: number; locked: boolean };
-  bonds: { code: string; value: number; locked: boolean }[]; // 順序＝優先變現順序，同 allocateDefensive
+  bonds: { code: string; value: number; locked: boolean }[]; // 固定為 [00687B, 00953B]，bondSplit 綁 index0
   bondSplit: number;
+  liquidationFirstCode?: string; // 【regime-aware】縮水時優先賣到 0 的債券 code；缺＝沿用 bonds 輸入順序(index0 先)
 }
 
 export interface DefensiveAllocationLockedResult {
@@ -403,25 +506,26 @@ export function allocateDefensiveWithLocks(
   let finalCashTarget = cash_target;
 
   if (unlockedBonds.length === 2) {
-    const values = unlockedBonds.map((b) => b.value);
-    const currentTotal = values.reduce((s, v) => s + v, 0);
+    const currentTotal = unlockedBonds[0].value + unlockedBonds[1].value;
     const delta = bondPool - currentTotal;
-    let allocated: number[];
 
     if (delta < 0) {
+      // 縮水（優先變現瀑布）：liquidationFirstCode 指定的那檔先賣到 0，賣不夠才動另一檔；
+      // 缺省沿用輸入順序(index0 先)。此為 regime-aware 唯一改變賣債結果的方向。
+      const swap = !!input.liquidationFirstCode && unlockedBonds[1].code === input.liquidationFirstCode;
+      const ordered = swap ? [unlockedBonds[1], unlockedBonds[0]] : [unlockedBonds[0], unlockedBonds[1]];
       let remaining = -delta;
-      allocated = values.map((v) => {
-        const sell = Math.min(v, remaining);
+      for (const b of ordered) {
+        const sell = Math.min(b.value, remaining);
         remaining -= sell;
-        return v - sell;
-      });
+        bondValuesMap.set(b.code, b.value - sell);
+      }
     } else {
-      allocated = [bondPool * bondSplit, bondPool * (1 - bondSplit)];
+      // 擴張（回補）：一律依 bondSplit 綁定 input.bonds 順序(index0=00687B=bondSplit)，與變現順序無關。
+      unlockedBonds.forEach((b, i) => {
+        bondValuesMap.set(b.code, i === 0 ? bondPool * bondSplit : bondPool * (1 - bondSplit));
+      });
     }
-
-    unlockedBonds.forEach((b, i) => {
-      bondValuesMap.set(b.code, allocated[i]);
-    });
   } else if (unlockedBonds.length === 1) {
     bondValuesMap.set(unlockedBonds[0].code, bondPool);
   } else if (unlockedBonds.length === 0) {
@@ -469,6 +573,23 @@ export function computeRebalance(input: RebalanceInput): RebalanceResult {
       price: Math.max(0, safeNum(b.price, 0)),
       avg_cost: Math.max(0, safeNum(b.avg_cost, 0)),
     }));
+
+  // 【regime-aware】變現優先順序解析：normal→先賣 00953B(BOND_ETFS[1])、rate_crash→先賣美債(BOND_ETFS[0])。
+  const bond_priority: BondPriority =
+    input?.bond_priority === 'bond1_first' || input?.bond_priority === 'bond2_first'
+      ? input.bond_priority
+      : DEFAULT_BOND_PRIORITY;
+  const bond_regime = computeBondRegime(input?.macro);
+  const bond_sell_first: string | null =
+    bonds.length === 0
+      ? null
+      : bond_priority === 'bond1_first'
+        ? BOND_ETFS[0].code
+        : bond_priority === 'bond2_first'
+          ? BOND_ETFS[1].code
+          : bond_regime.regime === 'rate_crash'
+            ? BOND_ETFS[0].code
+            : BOND_ETFS[1].code;
 
   const etf_value = shares * price;
   const bond_value = bonds.reduce((sum, b) => sum + b.shares * b.price, 0);
@@ -555,6 +676,9 @@ export function computeRebalance(input: RebalanceInput): RebalanceResult {
       deviation_pct: null,
       status: 'empty',
       action_label: '尚未輸入持倉',
+      bond_priority,
+      bond_regime,
+      bond_sell_first,
       target_etf_value: null,
       etf_value_delta: null,
       cash_delta: null,
@@ -659,6 +783,7 @@ export function computeRebalance(input: RebalanceInput): RebalanceResult {
         locked: input.locked?.bonds?.[b.code] === true,
       })),
       bondSplit: bond_split,
+      liquidationFirstCode: bond_sell_first ?? undefined,
     };
 
     const allocation = allocateDefensiveWithLocks(defensiveInput);
@@ -762,6 +887,9 @@ export function computeRebalance(input: RebalanceInput): RebalanceResult {
     deviation_pct,
     status,
     action_label,
+    bond_priority,
+    bond_regime,
+    bond_sell_first,
     target_etf_value,
     etf_value_delta,
     cash_delta,

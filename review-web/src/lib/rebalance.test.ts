@@ -6,6 +6,7 @@ import {
   triggerPriceForBeta,
   allocateDefensive,
   computeMarketStatus,
+  computeBondRegime,
   ETF_CODE,
   DEFAULT_CASH_RESERVE,
   type Trade,
@@ -677,8 +678,8 @@ describe('computeRebalance with bonds (增修I)', () => {
     expect(b953.unrealized_pnl).toBeCloseTo(6000 * (10 - 9.5), 6);
   });
 
-  // 【增修K】加碼抽錢時優先變現 00687B（美債），00953B（月配息）保留到 00687B 榨乾才動
-  it('drawdown financing drains bond1 (00687B) before touching bond2 (增修K waterfall)', () => {
+  // 【增修K】加碼抽錢時優先變現 00687B（美債）＝bond1_first（現為非預設選項，需明確指定）
+  it('drawdown financing drains bond1 (00687B) before touching bond2 (bond1_first waterfall)', () => {
     const res = computeRebalance({
       shares: 4000,
       price: 100,
@@ -694,6 +695,7 @@ describe('computeRebalance with bonds (增修I)', () => {
       ],
       cash_reserve: 100_000,
       bond_split: 0.6,
+      bond_priority: 'bond1_first',
     });
     expect(res.total_value).toBeCloseTo(1_000_000, 6);
     expect(res.status).toBe('buy');
@@ -703,6 +705,120 @@ describe('computeRebalance with bonds (增修I)', () => {
     expect(b687.value_delta).toBeCloseTo(-70_000, 6);
     expect(b953.target_value).toBeCloseTo(90_000, 6); // 完全不動
     expect(b953.value_delta).toBeCloseTo(0, 6);
+  });
+
+  // 【regime-aware】新預設（regime_aware 且無宏觀資料＝normal）：反過來優先變現 00953B、留美債
+  it('drawdown financing drains bond2 (00953B) first under the new regime_aware default (normal regime)', () => {
+    const res = computeRebalance({
+      shares: 4000,
+      price: 100,
+      cash: 430_000,
+      target_beta: 1.6,
+      tolerance_mode: 'abs',
+      threshold_pct: 10,
+      threshold_abs: 0.1,
+      etf_beta: 2.0,
+      bonds: [
+        { code: '00687B', shares: 2000, price: 40 }, // 80,000
+        { code: '00953B', shares: 9000, price: 10 }, // 90,000
+      ],
+      cash_reserve: 100_000,
+      bond_split: 0.6,
+      // 不指定 bond_priority → 預設 regime_aware；無 macro → normal → 先賣 00953B
+    });
+    expect(res.status).toBe('buy');
+    expect(res.bond_priority).toBe('regime_aware');
+    expect(res.bond_regime.regime).toBe('normal');
+    expect(res.bond_sell_first).toBe('00953B');
+    const [b687, b953] = res.bond_plans;
+    expect(b953.target_value).toBeCloseTo(20_000, 6); // 90,000 − 70,000，優先賣
+    expect(b953.value_delta).toBeCloseTo(-70_000, 6);
+    expect(b687.target_value).toBeCloseTo(80_000, 6); // 美債完全不動
+    expect(b687.value_delta).toBeCloseTo(0, 6);
+  });
+
+  // 【regime-aware】升息型崩盤（宏觀指標達標）：regime_aware 自動翻回先賣美債，結果同 bond1_first
+  it('regime_aware flips to selling treasury first when a macro indicator trips (rate_crash)', () => {
+    const res = computeRebalance({
+      shares: 4000,
+      price: 100,
+      cash: 430_000,
+      target_beta: 1.6,
+      tolerance_mode: 'abs',
+      threshold_pct: 10,
+      threshold_abs: 0.1,
+      etf_beta: 2.0,
+      bonds: [
+        { code: '00687B', shares: 2000, price: 40 },
+        { code: '00953B', shares: 9000, price: 10 },
+      ],
+      cash_reserve: 100_000,
+      bond_split: 0.6,
+      macro: {
+        // 長天期美債殖利率半年來大漲 2 個百分點 → 超過預設門檻 0.75 → 達標
+        treasury_yield: { current: 5.0, reference: 3.0 },
+      },
+    });
+    expect(res.bond_regime.regime).toBe('rate_crash');
+    expect(res.bond_regime.tripped_count).toBe(1);
+    expect(res.bond_sell_first).toBe('00687B');
+    const [b687, b953] = res.bond_plans;
+    expect(b687.target_value).toBeCloseTo(10_000, 6); // 美債先變現
+    expect(b953.target_value).toBeCloseTo(90_000, 6);
+  });
+});
+
+// ===== 【regime-aware】computeBondRegime：三宏觀指標 regime 偵測 =====
+
+describe('computeBondRegime (regime-aware)', () => {
+  it('no macro data → normal (default to selling 00953B first)', () => {
+    const r = computeBondRegime(undefined);
+    expect(r.regime).toBe('normal');
+    expect(r.available_count).toBe(0);
+    expect(r.tripped_count).toBe(0);
+  });
+
+  it("'any': a single tripped indicator flips to rate_crash", () => {
+    const r = computeBondRegime({ fx: { current: 34, reference: 32 } }); // +6.25% ≥ 5
+    expect(r.regime).toBe('rate_crash');
+    expect(r.tripped_count).toBe(1);
+    expect(r.available_count).toBe(1);
+  });
+
+  it('below threshold stays normal', () => {
+    const r = computeBondRegime({ fed_rate: { current: 3.8, reference: 3.6 } }); // +0.2 < 1.0
+    expect(r.regime).toBe('normal');
+    expect(r.signals.find((s) => s.key === 'fed_rate')?.tripped).toBe(false);
+  });
+
+  it("'all' requires every available indicator to trip", () => {
+    const macro = {
+      combination: 'all' as const,
+      fed_rate: { current: 5, reference: 3 }, // +2 ≥ 1 trip
+      treasury_yield: { current: 5, reference: 4.9 }, // +0.1 < 0.75 no
+    };
+    expect(computeBondRegime(macro).regime).toBe('normal'); // 只有 1/2 達標
+  });
+
+  it("'majority' trips on more than half of available indicators", () => {
+    const macro = {
+      combination: 'majority' as const,
+      fed_rate: { current: 5, reference: 3 }, // trip
+      treasury_yield: { current: 5, reference: 4 }, // +1 ≥ 0.75 trip
+      fx: { current: 32, reference: 32 }, // 0 no
+    };
+    const r = computeBondRegime(macro);
+    expect(r.tripped_count).toBe(2);
+    expect(r.available_count).toBe(3);
+    expect(r.regime).toBe('rate_crash'); // 2/3 過半
+  });
+
+  it('custom thresholds are respected', () => {
+    const macro = {
+      thresholds: { fed_rate_rise: 3.0, treasury_yield_rise: 0.75, fx_rise_pct: 5 },
+      fed_rate: { current: 5, reference: 3 }, // +2 < 3.0 客製門檻 → 不達標
+    };
+    expect(computeBondRegime(macro).regime).toBe('normal');
   });
 });
 
