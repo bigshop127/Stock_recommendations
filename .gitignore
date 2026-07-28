@@ -91,3 +91,9 @@ engine/data_cache/
 # 個人持倉設定與告警狀態（含財務數字，不進 repo；範本 scripts/rebalance_holdings.example.json 才進版控）
 data/rebalance_holdings.json
 data/rebalance_alert_state.json
+
+# === Added 2026-07-29 (期貨損益總覽 / 真實同步改 VM 執行) ===
+# 期貨部位（含進場價與保證金餘額，同樣是個人財務數字，不進 repo）
+data/futures_positions.json
+# 真實同步的最近一次執行結果（含錯誤訊息與 log 尾巴，屬執行期狀態）
+data/sync_holdings_status.json

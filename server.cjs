@@ -27,6 +27,7 @@ app.use(express.static('public'));
 app.use(require('./routes/gateway'));
 app.use(require('./routes/market'));
 app.use(require('./routes/rebalance'));
+app.use(require('./routes/futures'));
 
 // 階段 8：serve review-web 前端 build（review-web/dist）在子路徑 /review
 const reviewDist = path.join(__dirname, 'review-web', 'dist');

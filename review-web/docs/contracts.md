@@ -21,6 +21,10 @@
 | **個股** | `/api/stocks/:code/fundamentals`| GET | **新增** | FinMind / 富果 | 否 |
 | **個股** | `/api/stocks/:code/news` | GET | **新增** | 鉅亨網 / 經濟日報 | 否 |
 | **再平衡** | `/api/rebalance/holdings` | GET/POST | **新增** | Gateway 檔案（`data/rebalance_holdings.json`） | 否 |
+| **再平衡** | `/api/rebalance/sync-holdings-trigger` | POST | **新增** | VM 本機執行同步腳本（玉山證券） | 否 |
+| **再平衡** | `/api/rebalance/sync-holdings-status` | GET | **新增** | Gateway 檔案（`data/sync_holdings_status.json`） | 否 |
+| **期貨** | `/api/futures/positions` | GET/POST | **新增** | Gateway 檔案（`data/futures_positions.json`） | 否 |
+| **期貨** | `/api/futures/quote` | GET | **新增** | 期交所 OpenAPI（`DailyMarketReportFut`） | 否 |
 
 ---
 
@@ -552,3 +556,80 @@
 | `weekly[].{retail,mid,large}.shares_pct` | number | ✓ | 該組持股佔集保庫存比例（%） |
 | `source` | string | ✓ | `"TDCC 集保戶股權分散表 (id=1-5)"` |
 | `as_of` | string | ✓ | 最新一週資料日期（空態時為今日） |
+
+---
+
+### 2.16 期貨部位雲端同步 `/api/futures/positions`
+
+* **Description**: 期貨損益總覽（opt23）的雲端持久化。gateway 純檔案讀寫 `data/futures_positions.json`（不經 engine），POST 一律伺服端 sanitize：月份正規化成 `YYYYMM`（`'2026-08'` 這類輸入也接受）、缺月份的部位直接丟棄（沒有到期月份就算不出轉倉）、`lots`/`entry_price` clamp ≥ 0、`stop_loss` 只保留仍存在的部位 id（避免刪了部位留下孤兒設定）。`cash`（保證金專戶現金餘額）**刻意不 clamp ≥ 0**——穿價時權益數可以是負的。原子寫入（`.tmp`→rename）。持倉檔已 gitignore（含財務數字不進版控）。
+* **Method**: `GET` / `POST`
+
+```jsonc
+// GET 回應
+{
+  "exists": true,
+  "futures": {
+    "contract": "SRF",
+    "price": 102.05,               // 現在價格
+    "price_month": "202608",       // price 對應的到期月份
+    "price_as_of": "2026-07-27",   // 報價日期
+    "cash": 60000,                 // 保證金專戶現金餘額（入金 ± 已實現損益）
+    "spec": {                      // 契約規格與費用（期交所 2026-06-18 公告值為預設）
+      "contract_size": 1000, "tick_size": 0.05,
+      "initial_margin": 7900, "maintenance_margin": 6100,
+      "fee_per_lot": 30, "tax_rate": 0.00002,
+      "rollover_days": 7, "liquidation_ratio": 0.25
+    },
+    "positions": [
+      { "id": "f_…", "month": "202608", "side": "long", "lots": 2,
+        "entry_price": 100, "entry_date": "2026-07-01" }
+    ],
+    "closed": [
+      { "id": "c_…", "month": "202607", "side": "long", "lots": 1,
+        "entry_price": 100, "exit_price": 105, "exit_date": "2026-07-10" }
+    ],
+    "stop_loss": { "f_…": 98 }
+  },
+  "saved_at": "2026-07-29T01:32:44.793Z"
+}
+```
+
+### 2.17 期貨每日行情 `/api/futures/quote?contract=SRF`
+
+* **Description**: 代抓臺灣期貨交易所 OpenAPI `DailyMarketReportFut`（公開資料、免金鑰），回傳該商品**所有到期月份**的每日行情。gateway 端 10 分鐘快取（每日行情一天只變一次，快取是為了擋連點）。
+* **兩個解析規則**（改動時別拆掉）：①同一月份有「一般交易時段」與「盤後（夜盤）」兩列，**只有日盤有結算價**（夜盤那列 `SettlementPrice` 是字串 `'NULL'`），以此判定並優先取日盤，無日盤資料時才用夜盤墊底；②**價差契約**的月份欄位長成 `'202608/202609'`，用 `/^\d{6}$/` 濾掉，否則會被當成一個到期月份。
+* **限制**：這是**每日行情（收盤/結算價）不是即時報價**。盤中即時價要看期貨商軟體，或在頁面手動改「現在價格」。
+* **Method**: `GET`
+
+```jsonc
+{
+  "contract": "SRF",
+  "date": "2026-07-27",
+  "months": [
+    { "month": "202608", "date": "20260727",
+      "last": 102, "settlement": 102.05,
+      "open": 101.7, "high": 102.3, "low": 100.3, "change": 0.2,
+      "volume": 6344, "open_interest": 17585,
+      "best_bid": 102, "best_ask": 102.1 }
+  ],
+  "fetched_at": "2026-07-29T01:32:00.000Z",
+  "cached": false   // 命中 gateway 快取時為 true
+}
+```
+
+### 2.18 真實持倉同步觸發／狀態 `/api/rebalance/sync-holdings-{trigger,status}`
+
+* **Description**: 玉山證券真實持倉同步。**2026-07-29 起**由 gateway 直接在 VM 上 spawn `deploy/sync_holdings_vm.sh`（amd64 容器 + qemu；玉山 SDK 沒有 linux-aarch64 版），不再經 GitHub `workflow_dispatch` → 本機 self-hosted runner，因此**電腦關機也能同步**。詳見 `docs/deploy.md` §4.6。
+* **POST `/sync-holdings-trigger`**: 立刻回 `202 {ok, triggered_at}`；同時只允許一個同步在跑（重複觸發回 `409 BUSY`）。
+* **GET `/sync-holdings-status`**: 最近一次執行結果。`message` 已把玉山錯誤碼翻成人話（`AGA0002`＝VM IP 不在金鑰白名單、`AWA0005`＝時鐘偏移、憑證檔不見、docker 沒跑），前端直接顯示，不再只能顯示一句「逾時」。
+
+```jsonc
+{
+  "state": "ok",            // idle | running | ok | error
+  "started_at": "2026-07-28T17:23:59.303Z",
+  "finished_at": "2026-07-28T17:24:23.280Z",
+  "exit_code": 0,
+  "message": null,          // 失敗時為人話說明
+  "log_tail": "…"           // 腳本輸出末段（除錯用）
+}
+```

@@ -579,7 +579,52 @@ export const api = {
   getRealSyncStatus: () => req<RealSyncStatus>('/rebalance/sync-holdings-status'),
   // 宏觀 regime 指標同步（Yahoo：^IRX / ^TYX / TWD=X）——公開市場資料、不碰交易帳戶【regime-aware】
   getMacroIndicators: () => req<MacroIndicatorsResp>('/rebalance/macro-indicators'),
+
+  // 期貨損益總覽（gateway 讀寫 data/futures_positions.json；報價代抓期交所 OpenAPI）
+  getFuturesPositions: () => req<FuturesPositionsResp>('/futures/positions'),
+  saveFuturesPositions: (payload: unknown) =>
+    req<FuturesPositionsSaveResp>('/futures/positions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    }),
+  getFuturesQuote: (contract = 'SRF') =>
+    req<FuturesQuoteResp>(`/futures/quote${qs({ contract })}`),
 };
+
+// ── 期貨損益總覽 ────────────────────────────────────────────────────────────
+export interface FuturesPositionsResp {
+  exists: boolean;
+  futures: Record<string, unknown> | null;
+  saved_at: string | null;
+}
+export interface FuturesPositionsSaveResp {
+  ok: boolean;
+  futures: Record<string, unknown>;
+  saved_at: string;
+}
+/** 期交所每日行情：一個到期月份一筆（價差契約已濾除，夜盤只在無日盤資料時墊底） */
+export interface FuturesMonthQuote {
+  month: string;             // 'YYYYMM'
+  date: string;              // 期交所原始 'YYYYMMDD'
+  last: number | null;
+  settlement: number | null; // 結算價（只有一般交易時段有）
+  open: number | null;
+  high: number | null;
+  low: number | null;
+  change: number | null;
+  volume: number | null;
+  open_interest: number | null;
+  best_bid: number | null;
+  best_ask: number | null;
+}
+export interface FuturesQuoteResp {
+  contract: string;
+  date: string;              // 'YYYY-MM-DD'
+  months: FuturesMonthQuote[];
+  fetched_at: string;
+  cached?: boolean;
+}
 
 // 真實同步的最近一次執行結果（gateway 寫 data/sync_holdings_status.json）。
 // message 已經是「人看得懂的失敗原因」（AGA0002 白名單、AWA0005 時鐘…），可直接顯示。
