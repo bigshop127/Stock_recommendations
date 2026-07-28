@@ -110,6 +110,28 @@ export function FuturesPnl() {
     }
   };
 
+  /**
+   * 「真實同步」——把這頁能自動化的部分一次做完：抓期交所最新行情 → 更新現價 →
+   * 存回雲端 → 從雲端回讀確認（另一台裝置改過的內容也會一起吃進來）。
+   *
+   * ⚠️ 與再平衡頁那顆「真實同步」不一樣，這裡**不會登入券商抓部位**：玉山的交易 API
+   * 只涵蓋證券帳戶（庫存/餘額/交割都是股票的），期貨是獨立的期貨商帳戶，SDK 沒有
+   * 任何期貨帳務方法，官方文件的期貨章節也只有行情不含帳務。因此**口數、進場價、
+   * 保證金專戶餘額仍需手動維護**——按鈕旁的說明有寫清楚，別讓人以為按了就對帳完成。
+   */
+  const realSync = async () => {
+    await fetchQuote(true);
+    try {
+      const resp = await api.getFuturesPositions();
+      if (resp.exists && resp.futures) {
+        saveFuturesConfig(resp.futures as unknown as FuturesConfig);
+        setConfig(getFuturesConfig());
+      }
+    } catch {
+      /* 回讀失敗不影響前面已完成的抓價與存檔，狀態列已顯示 */
+    }
+  };
+
   // 抓期交所每日行情：填現價（優先結算價，沒有就用最後成交價），並記下報價日
   const fetchQuote = async (persist = true) => {
     setQuote((q) => ({ ...q, status: 'loading', msg: null }));
@@ -161,18 +183,19 @@ export function FuturesPnl() {
         </div>
         <div className="flex items-center gap-3">
           <button
-            onClick={() => void fetchQuote()}
-            disabled={quote.status === 'loading'}
+            onClick={() => void realSync()}
+            disabled={quote.status === 'loading' || cloud.status === 'loading'}
             className="text-[11px] text-cyan-400 hover:text-cyan-300 disabled:text-zinc-600 flex items-center gap-1 transition-colors"
-            title="抓期交所每日行情（公開資料、免金鑰）"
+            title="抓期交所最新行情更新現價，並與雲端對存回讀。注意：券商沒有期貨帳戶 API，口數/進場價/保證金餘額仍需手動維護。"
           >
             {quote.status === 'loading' ? <Loader2 className="w-3 h-3 animate-spin" /> : <RefreshCw className="w-3 h-3" />}
-            抓最新行情
+            真實同步
           </button>
           <button
             onClick={() => void saveToCloud()}
             disabled={cloud.status === 'loading'}
             className="text-[11px] text-emerald-400 hover:text-emerald-300 disabled:text-zinc-600 flex items-center gap-1 transition-colors"
+            title="只把目前設定存回雲端，不抓行情"
           >
             {cloud.status === 'loading' ? <Loader2 className="w-3 h-3 animate-spin" /> : <Cloud className="w-3 h-3" />}
             存到雲端
@@ -197,6 +220,16 @@ export function FuturesPnl() {
           {quote.status === 'error' && <span className="text-amber-400">行情抓取失敗：{quote.msg}</span>}
         </div>
       )}
+
+      {/* 「真實同步」的涵蓋範圍——講在最前面，免得誤以為按了就等於跟券商對帳完成 */}
+      <div className="text-[11px] text-zinc-500 -mt-3 flex items-start gap-1.5">
+        <RefreshCw className="w-3 h-3 mt-0.5 shrink-0 text-zinc-600" />
+        <span>
+          <strong className="text-zinc-400">「真實同步」＝抓期交所最新行情更新現價＋與雲端對存回讀</strong>。
+          口數／進場價／保證金專戶餘額<strong className="text-zinc-400">仍需手動維護</strong>——券商沒有期貨帳戶 API
+          （玉山交易 API 只涵蓋證券帳戶，期貨是獨立的期貨商帳戶），詳見「整體邏輯」分頁。
+        </span>
+      </div>
 
       {/* 轉倉提醒橫幅：任何分頁都看得到，因為忘了轉倉的代價比看錯損益大 */}
       {dueAlerts.length > 0 && (
@@ -1075,7 +1108,9 @@ const LogicTab: React.FC<{ spec: FuturesSpec }> = ({ spec }) => (
           <strong className="text-zinc-100">部位</strong>：手動輸入。玉山證券的交易 API（esun_trade）只涵蓋
           <strong className="text-zinc-100">證券帳戶</strong>，庫存／餘額／交割都是股票的；期貨是獨立的期貨商帳戶，
           該 SDK 沒有任何期貨帳務方法，官方文件的「期貨」章節也只有<strong className="text-zinc-100">行情</strong>不含帳務。
-          所以再平衡頁那顆「真實同步」在這裡沒有對應功能。
+          因此這頁的「真實同步」<strong className="text-zinc-100">只做行情＋雲端對存</strong>，
+          不像再平衡頁那顆會登入券商抓庫存——口數、進場價、保證金專戶餘額都要自己維護。
+          真要自動化，得等期貨商開放帳務 API，或改用有期貨 API 的期貨商（如永豐 Shioaji、富邦 Neo）。
         </li>
         <li>
           <strong className="text-zinc-100">最後交易日</strong>：按第三個星期三的規則推算，不含台股國定假日曆。
