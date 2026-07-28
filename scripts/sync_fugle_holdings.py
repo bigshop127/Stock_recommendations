@@ -14,11 +14,15 @@ get_settlements() is account-wide (no per-stock code), so it also picks up
 pending settlement from any other stock traded in the same account.
 
 READ-ONLY against the brokerage — only get_inventories()/get_balance()/
-get_settlements() are called. No order placement. Trading credentials never
-leave this machine; only the resulting position snapshot (shares/avg_cost/cash)
-is sent to the gateway, and only over the existing SSH tunnel (localhost:3000).
+get_settlements() are called. No order placement.
 
-Run via review-web/tools/sync-holdings.ps1 (sets up the SSH tunnel first).
+Two ways to run (same script, same behaviour):
+  - Oracle VM (2026-07-29 起的正式路徑，電腦關機也能同步)：
+    deploy/sync_holdings_vm.sh，在 amd64 容器裡跑（玉山只出 x86_64 wheel，VM 是
+    ARM，靠 qemu-user-static 模擬），憑證掛載自 VM 上的 ~/.fugle，gateway 走
+    --network host 的 localhost:3000。
+  - 本機 Windows（備援）：review-web/tools/sync-holdings.ps1，先開 SSH 隧道再跑，
+    憑證留在本機。
 """
 
 import configparser
@@ -30,7 +34,10 @@ from datetime import datetime
 import requests
 
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-GATEWAY_URL = "http://localhost:3000/api/rebalance/holdings"
+# VM 上跑（deploy/sync_holdings_vm.sh，--network host）時 localhost 就是 gateway 本人；
+# 本機跑時 localhost:3000 是 ssh -L 隧道的這一端。兩邊預設值相同，故只在特殊情況才需覆寫。
+GATEWAY_BASE = os.environ.get("REBALANCE_GATEWAY_URL", "http://localhost:3000").rstrip("/")
+GATEWAY_URL = GATEWAY_BASE + "/api/rebalance/holdings"
 # Key/IP-allowlist console for this account. Must match the Core Entry host in
 # config.ini (esuntradingapi = E.Sun); fugletradingapi is the parallel Fugle-
 # branded console and does not hold this account's keys.
@@ -144,9 +151,10 @@ def fetch_account(sdk):
         print("machine's current public IP is not on it. Nothing is broken.", file=sys.stderr)
         print(f"  current public IP : {ip or '(could not determine - no internet?)'}", file=sys.stderr)
         print(f"  fix               : add that IP at {KEYS_URL}", file=sys.stderr)
-        print("  note              : tethering/mobile networks get a floating IP, so this", file=sys.stderr)
-        print("                      recurs; reconnecting to the usual wired/Wi-Fi network", file=sys.stderr)
-        print("                      is normally enough on its own.", file=sys.stderr)
+        print("  note              : 正式路徑跑在 Oracle VM 上，公網 IP 固定為", file=sys.stderr)
+        print("                      140.238.48.197，白名單加一次就不會再飄。若這裡看到", file=sys.stderr)
+        print("                      的是別的 IP，代表你是從本機備援路徑跑的（家用/手機", file=sys.stderr)
+        print("                      網路 IP 會變動），改回 VM 同步即可。", file=sys.stderr)
         sys.exit(1)
 
 
@@ -253,7 +261,8 @@ def main():
         prior = get_current_holdings()
     except requests.exceptions.RequestException as e:
         print(f"ERROR: could not reach {GATEWAY_URL} ({e})", file=sys.stderr)
-        print("Is the SSH tunnel to the VM open? Run via sync-holdings.ps1.", file=sys.stderr)
+        print("VM 上跑：確認 puhui-gateway.service 還活著（systemctl status puhui-gateway）。", file=sys.stderr)
+        print("本機跑：確認 SSH 隧道有開（用 sync-holdings.ps1 會自動開）。", file=sys.stderr)
         sys.exit(1)
 
     settlement = build_settlement(adjustment, pending_rows)

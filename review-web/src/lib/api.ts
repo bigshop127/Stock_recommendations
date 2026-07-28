@@ -572,13 +572,25 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(holdings),
     }),
-  // 真實同步（玉山證券）：觸發本機 self-hosted runner 執行，實際完成與否靠輪詢
-  // getRebalanceHoldings() 的 saved_at 判斷（見 Rebalance.tsx）
+  // 真實同步（玉山證券）：gateway 直接在 VM 上跑同步腳本（2026-07-29 起不再靠本機
+  // runner，電腦關機也能同步）。立即回 202，完成與否輪詢 getRealSyncStatus()。
   triggerRealSync: () =>
     req<{ ok: boolean; triggered_at: string }>('/rebalance/sync-holdings-trigger', { method: 'POST' }),
+  getRealSyncStatus: () => req<RealSyncStatus>('/rebalance/sync-holdings-status'),
   // 宏觀 regime 指標同步（Yahoo：^IRX / ^TYX / TWD=X）——公開市場資料、不碰交易帳戶【regime-aware】
   getMacroIndicators: () => req<MacroIndicatorsResp>('/rebalance/macro-indicators'),
 };
+
+// 真實同步的最近一次執行結果（gateway 寫 data/sync_holdings_status.json）。
+// message 已經是「人看得懂的失敗原因」（AGA0002 白名單、AWA0005 時鐘…），可直接顯示。
+export interface RealSyncStatus {
+  state: 'idle' | 'running' | 'ok' | 'error';
+  started_at?: string | null;
+  finished_at?: string | null;
+  exit_code?: number | null;
+  message?: string | null;
+  log_tail?: string;
+}
 
 // 宏觀 regime 指標（gateway 直抓 Yahoo）：每個指標的最新值 + 回看基準值
 export interface MacroIndicatorResp {

@@ -421,9 +421,10 @@ export function Rebalance() {
     }
   };
 
-  // 真實同步：觸發 gateway → GitHub workflow_dispatch → 本機 self-hosted runner 執行
-  // sync_fugle_holdings.py（登入玉山證券在本機完成，憑證不經過 VM）。因為實際執行
-  // 是非同步的（要等本機電腦接下這個 job），輪詢 saved_at 判斷何時真的完成。
+  // 真實同步【2026-07-29 改版】：gateway 直接在 Oracle VM 上跑 sync_fugle_holdings.py
+  // （amd64 容器 + qemu，因為玉山 SDK 沒有 ARM 版 wheel），憑證放 VM 的 ~/.fugle。
+  // 不再需要家裡電腦開機。執行仍是非同步的，故輪詢 sync-holdings-status：
+  // 失敗時能拿到真正的原因（AGA0002 白名單、AWA0005 時鐘…），不再只顯示「逾時」。
   const syncRealHoldings = async () => {
     setRealSync({ status: 'triggering', msg: null });
     let baseline: string | null = null;
@@ -436,10 +437,16 @@ export function Rebalance() {
       return;
     }
     setRealSync({ status: 'waiting', msg: null });
-    const maxAttempts = 40; // 3 秒一次，約 2 分鐘逾時
+    const maxAttempts = 60; // 3 秒一次，約 3 分鐘逾時（容器在模擬下啟動較慢）
     for (let i = 0; i < maxAttempts; i++) {
       await new Promise((r) => setTimeout(r, 3000));
       try {
+        // 先看執行結果：失敗要立刻顯示原因，不必空等到逾時
+        const st = await api.getRealSyncStatus();
+        if (st.state === 'error') {
+          setRealSync({ status: 'error', msg: st.message || '同步失敗' });
+          return;
+        }
         const resp = await api.getRebalanceHoldings();
         if (resp.exists && resp.holdings && resp.saved_at && resp.saved_at !== baseline) {
           saveRebalanceConfig(resp.holdings as unknown as RebalanceConfig);
@@ -453,7 +460,7 @@ export function Rebalance() {
     }
     setRealSync({
       status: 'timeout',
-      msg: '逾時未收到更新，請確認家中電腦已開機並登入（背景同步服務會在登入時自動啟動）。',
+      msg: '逾時未收到更新。同步跑在 VM 上（與電腦是否開機無關），請看 VM 的 data/sync_holdings_status.json。',
     });
   };
 
@@ -854,7 +861,7 @@ export function Rebalance() {
               onClick={() => void syncRealHoldings()}
               disabled={realSync.status === 'triggering' || realSync.status === 'waiting'}
               className="text-[11px] text-cyan-400 hover:text-cyan-300 disabled:text-zinc-600 flex items-center gap-1 transition-colors font-normal"
-              title="從玉山證券真實帳戶抓庫存/現金，覆蓋期初部位（本機電腦需開機並登入才能執行）"
+              title="從玉山證券真實帳戶抓庫存/現金，覆蓋期初部位（跑在雲端 VM 上，隨時可用、不必開電腦）"
             >
               {realSync.status === 'triggering' || realSync.status === 'waiting' ? (
                 <Loader2 className="w-3 h-3 animate-spin" />
@@ -887,7 +894,7 @@ export function Rebalance() {
             {(realSync.status === 'triggering' || realSync.status === 'waiting') && (
               <span className="text-cyan-400 flex items-center gap-1">
                 <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                {realSync.status === 'triggering' ? '真實同步觸發中…' : '真實同步：本機執行中…'}
+                {realSync.status === 'triggering' ? '真實同步觸發中…' : '真實同步：雲端執行中…'}
               </span>
             )}
             {realSync.status === 'done' && (
@@ -1316,7 +1323,7 @@ export function Rebalance() {
                 <strong className="text-zinc-100">每日 Email 告警</strong>：破上限賣出／破下限買進時自動寄信通知，跑在雲端主機、不受這台電腦開關機影響；資產鎖定狀態不影響告警判斷邏輯（告警只看原始目標 β）。
               </li>
               <li>
-                <strong className="text-zinc-100">真實同步按鈕</strong>：手機/桌面皆可觸發，但實際登入證券帳戶抓真實庫存的動作留在自己電腦執行，交易憑證不會離開這台電腦；電腦需開機並登入才能同步（按鈕在頁面最上方「TAIEX 市場狀態燈號」卡，期初部位輸入在「持倉現況 & 交易紀錄」分頁）。
+                <strong className="text-zinc-100">真實同步按鈕</strong>：手機/桌面皆可觸發，登入證券帳戶抓真實庫存的動作跑在雲端 VM 上（2026-07-29 改版），<strong className="text-zinc-100">電腦關機也能同步</strong>；VM 公網 IP 固定，玉山金鑰白名單設一次就不會再飄掉。按鈕在頁面最上方「TAIEX 市場狀態燈號」卡，期初部位輸入在「持倉現況 &amp; 交易紀錄」分頁。
               </li>
             </ul>
           </div>

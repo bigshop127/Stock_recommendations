@@ -1,5 +1,9 @@
-# 真實持倉同步（玉山證券 Fugle Trade）— 由 review-web 網頁按鈕遠端觸發，
-# 實際執行在本機自架 Runner 上，交易憑證全程留在本機，絕不上傳 GitHub。
+# 真實持倉同步（玉山證券 Fugle Trade）— 本機自架 Runner 執行，憑證留在本機。
+#
+# ⚠️ 2026-07-29 起這條**已不是網頁按鈕會走的路徑**：同步改由 Oracle VM 上的
+#    deploy/sync_holdings_vm.sh 直接執行（amd64 容器 + qemu），電腦關機也能同步。
+#    這個 workflow 保留為「VM 出事時的本機備援」，需手動 workflow_dispatch 觸發，
+#    且本機那台 self-hosted runner 要在線（Task Scheduler 登入時啟動）。
 #
 # 🚨 安全設計（此 repo 為 PUBLIC，務必維持）：
 #   - 僅 workflow_dispatch 觸發（不掛 push/pull_request/schedule），只有持有

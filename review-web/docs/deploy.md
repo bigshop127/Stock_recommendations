@@ -138,18 +138,40 @@ if (fs.existsSync(webDist)) {
 
 **安全性**：僅限已登入同一 Tailscale 帳號的裝置能解析/連線該網域，未對 Oracle Cloud 安全清單開任何新 inbound port，與桌面 `ssh -L` 管道並存不衝突。若要新增裝置（如平板）：安裝 Tailscale App 登入同帳號即可，VM 端不需任何改動。
 
-### 4.6 真實持倉同步（手機/桌面皆可觸發，2026-07-11 新增）
+### 4.6 真實持倉同步（手機/桌面皆可觸發，2026-07-11 新增；2026-07-29 改為 VM 執行）
 
-再平衡頁「期初部位」區塊有一顆「真實同步」按鈕，桌面或手機（Tailscale）點擊皆可，會從玉山證券（Fugle Trade）真實帳戶抓庫存/現金覆蓋期初部位。**交易憑證全程只留在使用者本機 PC，絕不上傳 VM 或 GitHub。**
+再平衡頁最上方「TAIEX 市場狀態燈號」卡有一顆「真實同步」按鈕，桌面或手機（Tailscale）點擊皆可，會從玉山證券（Fugle Trade）真實帳戶抓庫存/現金覆蓋期初部位。**READ-ONLY：只呼叫 `get_inventories`/`get_balance`/`get_settlements`，不具下單能力。**
 
-**架構**：網頁按鈕 → `POST /api/rebalance/sync-holdings-trigger`（`routes/rebalance.js`）→ VM 用 `GH_ACTIONS_PAT`（fine-grained PAT，僅 `Stock_recommendations` repo 的 Actions:read+write 權限）呼叫 GitHub `workflow_dispatch` API → **本機 PC 上的 self-hosted runner**（label `fugle-sync`）接下工作 → 執行既有 `review-web/tools/sync-holdings.ps1`（開 SSH 通道＋跑 `scripts/sync_fugle_holdings.py`，登入玉山證券在本機完成）→ 把持倉 POST 回同一個 gateway 端點。前端輪詢 `GET /api/rebalance/holdings` 的 `saved_at` 判斷是否完成，約 2 分鐘逾時。
+#### 現行架構（2026-07-29 起）
 
-🚨 **`Stock_recommendations` 這個 repo 是 PUBLIC**，self-hosted runner 掛在 public repo 是 GitHub 官方文件明確警告的風險（陌生 fork PR 可能執行到 runner 上）。已用兩層防護把風險壓到最低：
-1. `.github/workflows/sync_fugle_holdings.yml` **只掛 `workflow_dispatch`**，不掛任何自動觸發事件（push/pull_request/schedule 都沒有）——只有握有 repo 寫入權限或有效 PAT 的呼叫端能觸發，外部 fork PR 無法自動執行到它。
-2. Runner 標籤用專屬的 `fugle-sync`（見下方 `runs-on: [self-hosted, fugle-sync]`），不用泛用的 `self-hosted`，確保 repo 裡其他任何現有/未來 workflow 都不會意外（或被惡意修改）跑到這台本機 Runner 上。
+網頁按鈕 → `POST /api/rebalance/sync-holdings-trigger`（`routes/rebalance.js`）→ gateway 直接在 VM 上 spawn `deploy/sync_holdings_vm.sh` → 該腳本用 **amd64 容器**跑 `scripts/sync_fugle_holdings.py` → 持倉 POST 回同一個 gateway 端點（`--network host`，走 `localhost:3000`）。端點立刻回 202，結果寫進 `data/sync_holdings_status.json`，前端輪詢 `GET /api/rebalance/sync-holdings-status`（失敗時直接顯示真正原因）與 `GET /api/rebalance/holdings` 的 `saved_at`，約 3 分鐘逾時。
 
-**本機 Runner 安裝細節（供日後重裝/除錯參考）**：
-- 安裝目錄：`C:\actions-runner-fugle`（用 `config.cmd --labels fugle-sync --name bigsh-fugle --unattended --work _work` 註冊，token 從 `gh api -X POST repos/bigshop127/Stock_recommendations/actions/runners/registration-token` 取得）。
-- **刻意不裝成 Windows 服務**（沒用 `--runasservice`）——Windows 服務預設跑在 SYSTEM/NETWORK SERVICE 帳號下，讀不到 `bigsh` 使用者的 Windows Credential Manager（esun_trade SDK 登入快取的密碼就存在這裡），會導致腳本卡在互動式 `getpass()` 提示。改用 **Task Scheduler「登入時觸發」**（工作名稱 `FugleSyncRunner`，`New-ScheduledTaskTrigger -AtLogOn`，不指定密碼＝以目前登入使用者身分執行，非「不論登入與否都執行」模式）在 `bigsh` 登入 Windows 時自動以隱藏視窗（`run-hidden.vbs` 用 `WScript.Shell.Run ..., 0, False`）啟動 `run.cmd`，繼承正常登入 session 的憑證存取權。**代價：這台電腦要開機且 `bigsh` 已登入，手機/桌面按鈕才點得動**——PC 關機或登出時，觸發的工作會排隊等待（GitHub 對 self-hosted runner 的排隊上限約 24 小時），前端輪詢逾時後會提示使用者確認電腦狀態。
-- 檢查 Runner 是否在線：`gh api repos/bigshop127/Stock_recommendations/actions/runners --jq '.runners[] | {name,status,busy,labels:[.labels[].name]}'`。
-- VM 端 `GH_ACTIONS_PAT` 存在 `~/Stock_recommendations/.env`（gitignored），申請於 https://github.com/settings/personal-access-tokens/new（Only select repositories → `Stock_recommendations`；Repository permissions → Actions → Read and write，其餘都不用開）。
+**為什麼要包 docker + qemu**：玉山的 `esun_trade` SDK 只出 `win_amd64` / macOS / **manylinux x86_64** 的 wheel，官方 Node.js SDK 的原生模組同樣只有 `darwin-arm64`/`darwin-x64`/`linux-x64-gnu`/`win32-x64-msvc` — **兩邊都沒有 linux-aarch64**，而這台 VM 是 ARM（Ampere）。因此裝 `qemu-user-static` 註冊 binfmt，用 `--platform linux/amd64` 跑 x86_64 容器執行 SDK。一天叫幾次的 REST 查詢，模擬的速度損失無感（實測登入＋查詢數秒內完成）。
+
+**VM 上的一次性設定（供重建參考）**：
+```bash
+sudo apt-get install -y docker.io qemu-user-static binfmt-support
+sudo usermod -aG docker ubuntu
+# 官方 Linux wheel（下載頁：/trading-platforms/api-trading/docs/download/download-sdk/）
+curl -sL -o ~/fugle-sync/esun_trade-2.2.0-...-manylinux_2_17_x86_64...whl \
+  https://www.esunsec.com.tw/trading-platforms/api-trading/binary-packages/esun_trade-2.2.0-cp37-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl
+# 在 amd64 容器裡 pip install 該 wheel + requests，再 docker commit 成 fugle-sync:2.2.0
+# （docker 20.10 的 legacy builder 跨平台 build 會 NotFound，故用 run + commit）
+```
+
+**憑證位置（2026-07-29 起放 VM，使用者已授權）**：`/home/ubuntu/.fugle/`（`chmod 600`，只有 `ubuntu` 讀得到）
+- `config.ini`：Core Entry、API Key/Secret、帳號；`Cert.Path` 指向**容器內**路徑 `/creds/H125655312_20270126.p12`
+- `H125655312_20270126.p12`：憑證
+- `keyring.env`：cryptfile keyring 的隨機加密密碼
+- `/home/ubuntu/.fugle-keyring/`：帳號密碼與憑證密碼（cryptfile 加密後端；headless 環境無法用預設的 SecretService，故 image 內設 `PYTHON_KEYRING_BACKEND=keyrings.cryptfile.cryptfile.CryptFileKeyring`）
+
+**這次改版順手解掉的三個老故障**：
+| 錯誤碼 | 舊病因 | 現況 |
+|---|---|---|
+| `AGA0002 Invalid IP` | 家用/手機網路是浮動 IP，白名單一直飄掉 | VM 公網 IP 固定 `140.238.48.197`，白名單設一次就好 |
+| `AWA0005 Invalid Timestamp` | 本機 `w32time` 停掉導致時鐘慢十幾秒 | VM 由 chrony 持續校時 |
+| `FUGLE_CONFIG_PATH file missing` | `config.ini` 放 Downloads 被清理程式刪掉 | 憑證在 VM 的 `~/.fugle`，本機清理碰不到 |
+
+#### 本機備援路徑（保留）
+
+`review-web/tools/sync-holdings.ps1` + `.github/workflows/sync_fugle_holdings.yml`（self-hosted runner，label `fugle-sync`）維持可用，但**已不是網頁按鈕會走的路徑**——gateway 不再呼叫 `workflow_dispatch`，VM 的 `GH_ACTIONS_PAT` 也不再被讀取。當 VM 出事時可在本機手動雙擊執行。此 repo 為 PUBLIC，該 workflow 仍**只掛 `workflow_dispatch`** 且用專屬 runner 標籤，維持原本的兩層防護。

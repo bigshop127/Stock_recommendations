@@ -17,6 +17,7 @@
 const express = require('express');
 const fs = require('fs');
 const path = require('path');
+const { spawn } = require('child_process');
 const { sendError, httpError } = require('../lib/errors');
 
 const router = express.Router();
@@ -297,39 +298,100 @@ router.post('/api/rebalance/holdings', (req, res) => {
   }
 });
 
-// 真實同步觸發：呼叫 GitHub API 對 sync_fugle_holdings.yml 送 workflow_dispatch，
-// 實際登入玉山證券的動作在使用者本機的 self-hosted runner 上執行（見該 workflow
-// 檔案開頭註解）——此端點只負責「通知」，交易憑證全程不經過這台 VM。
-// 立即回 202，前端輪詢 GET /api/rebalance/holdings 的 saved_at 判斷是否完成。
-const GITHUB_REPO = 'bigshop127/Stock_recommendations';
-const GITHUB_WORKFLOW = 'sync_fugle_holdings.yml';
+// ── 真實同步（玉山證券）────────────────────────────────────────────────────
+// 【2026-07-29 改版】原本是 gateway → GitHub workflow_dispatch → 使用者本機的
+// self-hosted runner，好處是憑證留在本機，代價是「電腦沒開機就同步不了」。
+// 現在改成直接在這台 VM 上跑 deploy/sync_holdings_vm.sh（amd64 容器 + qemu，因為
+// 玉山 SDK 沒有 linux-aarch64 wheel），憑證改放 VM 的 ~/.fugle（chmod 600）。
+// 附帶好處：VM 公網 IP 固定，玉山金鑰 IP 白名單設一次就不會再飄（AGA0002 絕跡），
+// 且 VM 時間由 chrony 校時，不會再有本機時鐘飄移造成的 AWA0005。
+//
+// 立即回 202；實際結果寫進 data/sync_holdings_status.json，前端輪詢 status 端點，
+// 失敗時能顯示真正的錯誤（例如 AGA0002），不再只是一句「逾時」。
+const SYNC_SCRIPT = path.join(__dirname, '..', 'deploy', 'sync_holdings_vm.sh');
+const SYNC_STATUS_PATH = path.join(DATA_DIR, 'sync_holdings_status.json');
+const SYNC_TIMEOUT_MS = 180000; // 容器在 qemu 模擬下啟動較慢，抓 3 分鐘
 
-router.post('/api/rebalance/sync-holdings-trigger', async (req, res) => {
-  const token = process.env.GH_ACTIONS_PAT;
-  if (!token) {
-    return sendError(res, httpError(500, 'CONFIG', '伺服器尚未設定 GH_ACTIONS_PAT，無法觸發真實同步'));
+let syncRunning = false;
+
+function writeSyncStatus(obj) {
+  try {
+    fs.mkdirSync(DATA_DIR, { recursive: true });
+    const tmp = SYNC_STATUS_PATH + '.tmp';
+    fs.writeFileSync(tmp, JSON.stringify(obj, null, 2));
+    fs.renameSync(tmp, SYNC_STATUS_PATH);
+  } catch (_) { /* 狀態檔寫不進去不該影響同步本身 */ }
+}
+
+// 從腳本輸出擷取「人看得懂的失敗原因」。玉山的錯誤碼是判斷故障類型的關鍵：
+//   AGA0002 = IP 不在白名單、AWA0005 = 機器時鐘偏移、FUGLE_CONFIG_PATH = 憑證檔不見。
+function summarizeFailure(output) {
+  const text = String(output || '');
+  if (text.includes('AGA0002')) {
+    return 'AGA0002：VM 的 IP 不在玉山金鑰白名單。到 esuntradingapi.esunsec.com.tw/keys/ 把 140.238.48.197 加進去。';
+  }
+  if (text.includes('AWA0005')) {
+    return 'AWA0005：VM 時鐘偏移，交易 API 拒收。檢查 chrony（timedatectl）。';
+  }
+  if (text.includes('FUGLE_CONFIG_PATH') || text.includes('缺少憑證檔')) {
+    return '憑證檔不見了（VM ~/.fugle）。重跑憑證上傳腳本即可。';
+  }
+  if (text.includes('Cannot connect to the Docker daemon') || text.includes('docker: not found')) {
+    return 'VM 上的 docker 沒跑起來（同步是在 amd64 容器裡執行的）。';
+  }
+  const lines = text.trim().split('\n').filter((l) => l.trim());
+  return lines.length ? lines[lines.length - 1].slice(0, 300) : '同步失敗，原因不明';
+}
+
+router.post('/api/rebalance/sync-holdings-trigger', (req, res) => {
+  if (syncRunning) {
+    return sendError(res, httpError(409, 'BUSY', '同步已在進行中，請等它跑完'));
+  }
+  if (!fs.existsSync(SYNC_SCRIPT)) {
+    return sendError(res, httpError(500, 'CONFIG',
+      `找不到同步腳本 ${SYNC_SCRIPT}（真實同步只能在 Oracle VM 上執行）`));
+  }
+
+  const started_at = new Date().toISOString();
+  syncRunning = true;
+  writeSyncStatus({ state: 'running', started_at, finished_at: null, message: null });
+  res.status(202).json({ ok: true, triggered_at: started_at });
+
+  const child = spawn('/bin/bash', [SYNC_SCRIPT], {
+    cwd: path.join(__dirname, '..'),
+    timeout: SYNC_TIMEOUT_MS,
+  });
+  let output = '';
+  const collect = (buf) => { output = (output + buf.toString()).slice(-8000); };
+  child.stdout.on('data', collect);
+  child.stderr.on('data', collect);
+
+  const finish = (code, err) => {
+    if (!syncRunning) return; // close 與 error 都會觸發，只認第一個
+    syncRunning = false;
+    const ok = !err && code === 0;
+    writeSyncStatus({
+      state: ok ? 'ok' : 'error',
+      started_at,
+      finished_at: new Date().toISOString(),
+      exit_code: typeof code === 'number' ? code : null,
+      message: ok ? null : summarizeFailure(err ? String(err.message) : output),
+      log_tail: output.slice(-2000),
+    });
+  };
+  child.on('close', (code) => finish(code, null));
+  child.on('error', (err) => finish(null, err));
+});
+
+// 真實同步的最近一次結果（前端輪詢用；沒跑過就回 idle）
+router.get('/api/rebalance/sync-holdings-status', (req, res) => {
+  if (!fs.existsSync(SYNC_STATUS_PATH)) {
+    return res.json({ state: 'idle' });
   }
   try {
-    const r = await fetch(
-      `https://api.github.com/repos/${GITHUB_REPO}/actions/workflows/${GITHUB_WORKFLOW}/dispatches`,
-      {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${token}`,
-          Accept: 'application/vnd.github+json',
-          'X-GitHub-Api-Version': '2022-11-28',
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ ref: 'master' }),
-      },
-    );
-    if (r.status !== 204) {
-      const text = await r.text().catch(() => '');
-      return sendError(res, httpError(502, 'GITHUB', `觸發 GitHub Actions 失敗 (HTTP ${r.status}): ${text}`));
-    }
-    return res.status(202).json({ ok: true, triggered_at: new Date().toISOString() });
+    return res.json(JSON.parse(fs.readFileSync(SYNC_STATUS_PATH, 'utf-8')));
   } catch (err) {
-    return sendError(res, httpError(502, 'GITHUB', '呼叫 GitHub API 失敗: ' + err.message));
+    return sendError(res, httpError(500, 'INTERNAL', '讀取同步狀態失敗: ' + err.message));
   }
 });
 
