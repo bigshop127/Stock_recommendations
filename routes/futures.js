@@ -325,6 +325,127 @@ router.get('/api/futures/quote', async (req, res) => {
   }
 });
 
+// ── 期交所保證金自動同步 ──────────────────────────────────────────────────
+const MARGINS_CACHE_PATH = path.join(DATA_DIR, 'taifex_margins.json');
+const MARGINS_TTL_MS = 6 * 60 * 60 * 1000;
+let marginsCache = { at: 0, data: null };
+
+const MARGIN_NAME_TO_CODE = {
+  '臺股期貨': 'TX',
+  '小型臺指': 'MTX',
+  '微型臺指期貨': 'TMF',
+};
+
+function parseTaifexDate(v) {
+  const s = str(v).trim().replace(/[^0-9]/g, '');
+  if (s.length === 8) {
+    return `${s.slice(0, 4)}-${s.slice(4, 6)}-${s.slice(6, 8)}`;
+  }
+  if (s.length === 7) {
+    return rocToIso(s) || '';
+  }
+  return '';
+}
+
+// GET /api/futures/margins —— 期交所保證金
+router.get('/api/futures/margins', async (req, res) => {
+  const now = Date.now();
+  if (marginsCache.data && now - marginsCache.at < MARGINS_TTL_MS) {
+    return res.json({ ...marginsCache.data, cached: true });
+  }
+
+  const serveDisk = (reason) => {
+    try {
+      if (fs.existsSync(MARGINS_CACHE_PATH)) {
+        const disk = JSON.parse(fs.readFileSync(MARGINS_CACHE_PATH, 'utf-8'));
+        marginsCache = { at: now, data: disk };
+        return res.json({ ...disk, cached: false, stale: true, stale_reason: reason });
+      }
+    } catch { /* ignored */ }
+    return sendError(res, httpError(502, 'TAIFEX', '抓取期交所保證金失敗: ' + reason));
+  };
+
+  try {
+    const r = await fetch('https://openapi.taifex.com.tw/v1/IndexFuturesAndOptionsMargining', {
+      headers: { Accept: 'application/json', 'User-Agent': 'puhui-review-web/1.0' },
+      signal: AbortSignal.timeout(20000),
+    });
+    if (!r.ok) {
+      return serveDisk(`HTTP ${r.status}`);
+    }
+    const rows = await r.json();
+    if (!Array.isArray(rows) || rows.length === 0) {
+      return serveDisk('回應沒有可用的保證金資料');
+    }
+
+    const margins = {};
+    const unmappedSet = new Set();
+    const dates = [];
+
+    for (const r of rows) {
+      const name = str(r.Contract).trim();
+      if (!name) continue;
+
+      const code = MARGIN_NAME_TO_CODE[name];
+      const initial = parseFloat(r.InitialMargin);
+      const maintenance = parseFloat(r.MaintenanceMargin);
+      const clearing = parseFloat(r.ClearingMargin);
+      const dateStr = parseTaifexDate(r.Date);
+
+      if (code) {
+        if (!Number.isFinite(initial) || !Number.isFinite(maintenance) || !Number.isFinite(clearing)) {
+          continue;
+        }
+        if (initial < maintenance) {
+          unmappedSet.add(name);
+          continue;
+        }
+        margins[code] = {
+          initial,
+          maintenance,
+          clearing,
+          contract_name: name,
+        };
+        if (dateStr) {
+          dates.push(dateStr);
+        }
+      } else {
+        unmappedSet.add(name);
+      }
+    }
+
+    if (Object.keys(margins).length === 0) {
+      return serveDisk('無有效的指數類保證金資料');
+    }
+
+    const date = dates[0] || parseTaifexDate(rows[0].Date) || '';
+
+    const data = {
+      date,
+      source: 'taifex-openapi',
+      fetched_at: new Date().toISOString(),
+      margins,
+      unmapped: [...unmappedSet],
+      cached: false,
+      stale: false,
+    };
+
+    try {
+      fs.mkdirSync(DATA_DIR, { recursive: true });
+      const tmp = MARGINS_CACHE_PATH + '.tmp';
+      fs.writeFileSync(tmp, JSON.stringify(data, null, 2));
+      fs.renameSync(tmp, MARGINS_CACHE_PATH);
+    } catch (e) {
+      // 落地失敗不影響這次回應
+    }
+
+    marginsCache = { at: now, data };
+    return res.json(data);
+  } catch (err) {
+    return serveDisk(err.message);
+  }
+});
+
 // ── 權益數歷史（scripts/futures_alert.cjs 每日寫入）──────────────────────────
 //
 // 只讀不寫：寫入端是排程腳本，網頁改設定不該動到歷史紀錄。檔案不存在（還沒跑過

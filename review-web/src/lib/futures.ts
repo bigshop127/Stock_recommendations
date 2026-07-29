@@ -13,6 +13,8 @@
  * 依風險調整，故全部做成可設定值，預設值只是「現在的公告值」。
  */
 
+import type { FuturesEquityRow } from './api';
+
 /** 商品規格與費用設定（可在頁面上調整；預設＝期交所 2026-06-18 公告值） */
 export interface FuturesSpec {
   contract_size: number;       // 契約單位（股/口）：SRF＝1,000 股（大型 NYF 是 10,000）
@@ -1103,4 +1105,93 @@ export function buildRiskReport(input: RiskReportInput): string {
   L.push(`產生時間：${new Date().toLocaleString('zh-TW', { hour12: false })}`);
   L.push('※ 試算僅供風險檢視，實際保證金與結算以期交所／期貨商公告為準。');
   return L.join('\n');
+}
+
+export interface EquityPoint {
+  date: string;
+  equity: number;
+  peak: number;          // 到當日為止的權益數高點
+  drawdown: number;      // (equity − peak) / peak，≤ 0；peak ≤ 0 時為 0
+  risk_indicator: number | null;
+}
+
+export interface EquityStats {
+  points: EquityPoint[];
+  first: EquityPoint | null;
+  last: EquityPoint | null;
+  total_return: number | null;   // (last.equity − first.equity) / first.equity；first ≤ 0 → null
+  max_drawdown: number;          // 最深的 drawdown（負值；無資料 → 0）
+  max_drawdown_date: string;     // 最深那天
+  days: number;                  // 資料筆數
+}
+
+/** 從快照列算出權益曲線與回撤。rows 需已依日期升冪；函式內仍要自己排一次防呆。 */
+export function equityStats(rows: FuturesEquityRow[], range?: { from?: string; to?: string }): EquityStats {
+  // Sort rows in ascending order by date
+  const sorted = [...rows].sort((a, b) => a.date.localeCompare(b.date));
+
+  // Apply date range filter
+  const filtered = sorted.filter((row) => {
+    if (range?.from && row.date < range.from) return false;
+    if (range?.to && row.date > range.to) return false;
+    return true;
+  });
+
+  if (filtered.length === 0) {
+    return {
+      points: [],
+      first: null,
+      last: null,
+      total_return: null,
+      max_drawdown: 0,
+      max_drawdown_date: '',
+      days: 0,
+    };
+  }
+
+  let runningPeak = -Infinity;
+  const points: EquityPoint[] = [];
+  let maxDrawdown = 0; // Negative or 0
+  let maxDrawdownDate = filtered[0].date;
+
+  for (const row of filtered) {
+    const equity = row.equity;
+    if (equity > runningPeak) {
+      runningPeak = equity;
+    }
+    let drawdown = 0;
+    if (runningPeak > 0) {
+      drawdown = (equity - runningPeak) / runningPeak;
+    }
+
+    points.push({
+      date: row.date,
+      equity,
+      peak: runningPeak,
+      drawdown,
+      risk_indicator: row.risk_indicator,
+    });
+
+    if (drawdown < maxDrawdown) {
+      maxDrawdown = drawdown;
+      maxDrawdownDate = row.date;
+    }
+  }
+
+  const firstPoint = points[0];
+  const lastPoint = points[points.length - 1];
+  let totalReturn: number | null = null;
+  if (firstPoint.equity > 0) {
+    totalReturn = (lastPoint.equity - firstPoint.equity) / firstPoint.equity;
+  }
+
+  return {
+    points,
+    first: firstPoint,
+    last: lastPoint,
+    total_return: totalReturn,
+    max_drawdown: maxDrawdown,
+    max_drawdown_date: maxDrawdownDate,
+    days: points.length,
+  };
 }

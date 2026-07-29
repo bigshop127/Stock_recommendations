@@ -590,9 +590,30 @@ export const api = {
     }),
   getFuturesQuote: (contract = 'SRF') =>
     req<FuturesQuoteResp>(`/futures/quote${qs({ contract })}`),
+  getFuturesMargins: () => req<FuturesMarginsResp>('/futures/margins'),
   // 台股休市日曆（證交所 OpenAPI，只涵蓋當年度）——期貨最後交易日遇假日要順延
   getMarketHolidays: () => req<MarketHolidaysResp>('/market/holidays'),
+  getFuturesEquityHistory: () => req<FuturesEquityHistoryResp>('/futures/equity-history'),
 };
+
+export interface FuturesEquityRow {
+  date: string;
+  equity: number;
+  cash: number;
+  unrealized: number;
+  contract_value: number;
+  net_lots: number;
+  total_lots: number;
+  risk_indicator: number | null;
+  price: number;
+  status: string;
+}
+
+export interface FuturesEquityHistoryResp {
+  exists: boolean;
+  rows: FuturesEquityRow[];
+  updated_at: string | null;
+}
 
 /** 台股休市日曆。stale＝證交所抓不到、回的是磁碟快取（假日曆一年才變，仍可用）。 */
 export interface MarketHolidaysResp {
@@ -637,6 +658,24 @@ export interface FuturesQuoteResp {
   months: FuturesMonthQuote[];
   fetched_at: string;
   cached?: boolean;
+}
+
+export interface FuturesMarginInfo {
+  initial: number;
+  maintenance: number;
+  clearing: number;
+  contract_name: string;
+}
+
+export interface FuturesMarginsResp {
+  date: string;
+  source: string;
+  fetched_at: string;
+  margins: Record<string, FuturesMarginInfo>;
+  unmapped: string[];
+  cached?: boolean;
+  stale?: boolean;
+  stale_reason?: string;
 }
 
 // 真實同步的最近一次執行結果（gateway 寫 data/sync_holdings_status.json）。

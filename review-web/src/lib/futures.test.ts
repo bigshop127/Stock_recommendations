@@ -29,6 +29,7 @@ import {
   compareSpotVsFutures,
   buildRiskReport,
   SYMBOL_PRESETS,
+  equityStats,
   type FuturesPosition,
   type FuturesSpec,
 } from './futures';
@@ -864,5 +865,97 @@ describe('buildRiskReport：文字報告', () => {
       price: 0, cash: 0, index: 0, beta: 1, stress: [],
     });
     expect(text).not.toContain('NaN');
+  });
+});
+
+describe('equityStats', () => {
+  const dummyRow = (date: string, equity: number, risk: number | null = 1.0) => ({
+    date,
+    equity,
+    cash: 100000,
+    unrealized: 0,
+    contract_value: 1000000,
+    net_lots: 1,
+    total_lots: 1,
+    risk_indicator: risk,
+    price: 100,
+    status: 'ok',
+  });
+
+  it('空陣列 -> first/last 為 null、max_drawdown 為 0、不噴錯', () => {
+    const res = equityStats([]);
+    expect(res.points).toEqual([]);
+    expect(res.first).toBeNull();
+    expect(res.last).toBeNull();
+    expect(res.total_return).toBeNull();
+    expect(res.max_drawdown).toBe(0);
+    expect(res.max_drawdown_date).toBe('');
+    expect(res.days).toBe(0);
+  });
+
+  it('單筆 -> total_return 為 0、max_drawdown 為 0', () => {
+    const res = equityStats([dummyRow('2026-07-01', 1000)]);
+    expect(res.days).toBe(1);
+    expect(res.first?.equity).toBe(1000);
+    expect(res.last?.equity).toBe(1000);
+    expect(res.total_return).toBe(0);
+    expect(res.max_drawdown).toBe(0);
+    expect(res.max_drawdown_date).toBe('2026-07-01');
+  });
+
+  it('單調上升 -> max_drawdown 為 0', () => {
+    const res = equityStats([
+      dummyRow('2026-07-01', 1000),
+      dummyRow('2026-07-02', 1200),
+      dummyRow('2026-07-03', 1500),
+    ]);
+    expect(res.days).toBe(3);
+    expect(res.total_return).toBe(0.5);
+    expect(res.max_drawdown).toBe(0);
+  });
+
+  it('先漲後跌再漲 -> max_drawdown 抓到的是中間那段而不是最後一天', () => {
+    const res = equityStats([
+      dummyRow('2026-07-01', 1000),
+      dummyRow('2026-07-02', 1200),
+      dummyRow('2026-07-03', 900),
+      dummyRow('2026-07-04', 1500),
+      dummyRow('2026-07-05', 1350),
+    ]);
+    expect(res.max_drawdown).toBe(-0.25);
+    expect(res.max_drawdown_date).toBe('2026-07-03');
+  });
+
+  it('權益數變負 -> 不出現 NaN / Infinity', () => {
+    const res = equityStats([
+      dummyRow('2026-07-01', 1000),
+      dummyRow('2026-07-02', -200),
+      dummyRow('2026-07-03', -500),
+    ]);
+    expect(res.max_drawdown).toBe(-1.5);
+    expect(res.max_drawdown_date).toBe('2026-07-03');
+    expect(Number.isFinite(res.max_drawdown)).toBe(true);
+    expect(res.total_return).toBe(-1.5);
+  });
+
+  it('first.equity <= 0 -> total_return 為 null', () => {
+    const res = equityStats([
+      dummyRow('2026-07-01', -100),
+      dummyRow('2026-07-02', 200),
+    ]);
+    expect(res.total_return).toBeNull();
+  });
+
+  it('日期亂序輸入 -> 函式內部會排好', () => {
+    const res = equityStats([
+      dummyRow('2026-07-03', 1500),
+      dummyRow('2026-07-01', 1000),
+      dummyRow('2026-07-02', 900),
+    ]);
+    expect(res.points.map(p => p.date)).toEqual(['2026-07-01', '2026-07-02', '2026-07-03']);
+    expect(res.first?.date).toBe('2026-07-01');
+    expect(res.last?.date).toBe('2026-07-03');
+    expect(res.max_drawdown).toBe(-0.1);
+    expect(res.max_drawdown_date).toBe('2026-07-02');
   });
 });

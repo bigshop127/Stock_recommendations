@@ -6,7 +6,7 @@ import {
   ClipboardCopy, Check, Zap, Target, PiggyBank, Layers,
 } from 'lucide-react';
 import { api } from '../lib/api';
-import type { FuturesMonthQuote } from '../lib/api';
+import type { FuturesMonthQuote, FuturesEquityHistoryResp } from '../lib/api';
 import {
   CONTRACT_CODE, CONTRACT_NAME, UNDERLYING_CODE,
   DEFAULT_SPEC, SYMBOL_PRESETS, findPreset,
@@ -14,8 +14,9 @@ import {
   positionPnl, closedPnl, summarizeAccount, rolloverAlerts, rolloverCost, stopLossRisk,
   indexAtPrice, stressTest, suggestLots, weightedEntry, targetPlan, trailingStopPlan,
   compareSpotVsFutures, buildRiskReport, priceOf, referenceMonthOf,
+  equityStats,
   type FuturesPosition, type ClosedTrade, type Side, type FuturesSpec, type StressRow,
-  type PriceInput,
+  type PriceInput, type EquityPoint,
 } from '../lib/futures';
 import {
   getFuturesConfig, saveFuturesConfig, subscribeFutures,
@@ -79,6 +80,25 @@ export function FuturesPnl() {
     api.getMarketHolidays()
       .then((r) => { if (!cancelled) setHolidays(new Set(r.dates)); })
       .catch(() => { /* 抓不到就退回純第三個星期三，UI 會標示未經假日校正 */ });
+    return () => { cancelled = true; };
+  }, []);
+
+  const [historyState, setHistoryState] = useState<{
+    loading: boolean;
+    error: string | null;
+    data: FuturesEquityHistoryResp | null;
+  }>({ loading: true, error: null, data: null });
+
+  useEffect(() => {
+    let cancelled = false;
+    setHistoryState({ loading: true, error: null, data: null });
+    api.getFuturesEquityHistory()
+      .then((res) => {
+        if (!cancelled) setHistoryState({ loading: false, error: null, data: res });
+      })
+      .catch((err) => {
+        if (!cancelled) setHistoryState({ loading: false, error: err instanceof Error ? err.message : '載入歷史資料失敗', data: null });
+      });
     return () => { cancelled = true; };
   }, []);
 
@@ -372,7 +392,7 @@ export function FuturesPnl() {
       </div>
 
       {activeTab === 'overview' && (
-        <OverviewTab config={config} summary={summary} statusMeta={statusMeta} spec={spec} beta={beta} plan={plan} priceInput={priceInput} />
+        <OverviewTab config={config} summary={summary} statusMeta={statusMeta} spec={spec} beta={beta} plan={plan} priceInput={priceInput} historyState={historyState} />
       )}
       {activeTab === 'positions' && (
         <PositionsTab config={config} spec={spec} summary={summary} priceInput={priceInput} quoteMonths={quote.months} holidays={holidays} patch={patch} saveToCloud={saveToCloud} />
@@ -453,6 +473,409 @@ const idxText = (price: number | null, cfgPrice: number, index: number, beta: nu
   return v === null ? '' : `≈ ${Math.round(v).toLocaleString()} 點`;
 };
 
+const getStartDateForRange = (rangeType: '1m' | '3m' | '1y' | 'all', lastDateStr?: string): string | undefined => {
+  if (rangeType === 'all') return undefined;
+  const baseDate = lastDateStr ? new Date(lastDateStr) : new Date();
+  if (isNaN(baseDate.getTime())) return undefined;
+
+  const d = new Date(baseDate);
+  if (rangeType === '1m') {
+    d.setMonth(d.getMonth() - 1);
+  } else if (rangeType === '3m') {
+    d.setMonth(d.getMonth() - 3);
+  } else if (rangeType === '1y') {
+    d.setFullYear(d.getFullYear() - 1);
+  }
+
+  const yyyy = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
+  const dd = String(d.getDate()).padStart(2, '0');
+  return `${yyyy}-${mm}-${dd}`;
+};
+
+const RangeSelector: React.FC<{
+  active: '1m' | '3m' | '1y' | 'all';
+  onChange: (v: '1m' | '3m' | '1y' | 'all') => void;
+}> = ({ active, onChange }) => {
+  const options: { id: '1m' | '3m' | '1y' | 'all'; label: string }[] = [
+    { id: '1m', label: '近 1 個月' },
+    { id: '3m', label: '近 3 個月' },
+    { id: '1y', label: '近 1 年' },
+    { id: 'all', label: '全部' },
+  ];
+  return (
+    <div className="inline-flex rounded-lg border border-border p-0.5 bg-zinc-900/50">
+      {options.map((opt) => (
+        <button
+          key={opt.id}
+          onClick={() => onChange(opt.id)}
+          className={`px-2.5 py-1 text-[10px] font-semibold rounded-md transition-colors ${
+            active === opt.id
+              ? 'bg-primary text-white shadow-sm'
+              : 'text-zinc-400 hover:text-zinc-200'
+          }`}
+        >
+          {opt.label}
+        </button>
+      ))}
+    </div>
+  );
+};
+
+const EquityCurveCard: React.FC<{
+  historyState: {
+    loading: boolean;
+    error: string | null;
+    data: FuturesEquityHistoryResp | null;
+  };
+}> = ({ historyState }) => {
+  const [rangeType, setRangeType] = useState<'1m' | '3m' | '1y' | 'all'>('all');
+  const [hoveredPoint, setHoveredPoint] = useState<EquityPoint | null>(null);
+  const [hoverX, setHoverX] = useState<number | null>(null);
+
+  const { loading, error, data } = historyState;
+
+  if (loading) {
+    return (
+      <div className="bg-card border border-border rounded-xl p-5 shadow-sm flex items-center justify-center h-48">
+        <Loader2 className="w-6 h-6 animate-spin text-zinc-500 mr-2" />
+        <span className="text-xs text-zinc-400">載入歷史資料中...</span>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="bg-card border border-border rounded-xl p-5 shadow-sm text-center py-8">
+        <AlertTriangle className="w-8 h-8 text-rose-500 mx-auto mb-2" />
+        <p className="text-xs text-rose-400 font-semibold">載入歷史資料失敗</p>
+        <p className="text-[11px] text-zinc-500 mt-1">{error}</p>
+      </div>
+    );
+  }
+
+  const rows = data?.rows ?? [];
+
+  if (!data?.exists || rows.length === 0) {
+    return (
+      <div className="bg-card border border-border rounded-xl p-5 shadow-sm text-center py-8">
+        <p className="text-xs text-zinc-400 font-semibold">還沒有歷史資料。</p>
+        <p className="text-[11px] text-zinc-500 mt-1">快照由 VM 每日收盤後自動寫入，明天收盤後就會出現第一筆。</p>
+      </div>
+    );
+  }
+
+  if (rows.length === 1) {
+    const singlePoint = rows[0];
+    return (
+      <div className="bg-card border border-border rounded-xl p-5 shadow-sm space-y-4">
+        <div className="flex items-center justify-between">
+          <h2 className="text-sm font-semibold text-zinc-100">權益數走勢</h2>
+        </div>
+        <div className="border border-border/50 rounded-lg p-4 bg-zinc-900/30">
+          <p className="text-xs text-zinc-400">日期：{singlePoint.date}</p>
+          <p className="text-xs text-zinc-400 mt-1">
+            權益數：<span className="font-mono text-zinc-100 font-semibold">{money(singlePoint.equity)}</span>
+          </p>
+          <p className="text-xs text-zinc-400 mt-1">
+            風險指標：<span className="font-mono text-zinc-100 font-semibold">{singlePoint.risk_indicator !== null ? pct(singlePoint.risk_indicator, 0) : '—'}</span>
+          </p>
+          <p className="text-[11px] text-amber-500 mt-3 font-semibold">累積中，需要至少兩天</p>
+        </div>
+        <p className="text-[11px] text-zinc-500">
+          權益數會因入出金而跳動，這條線不是報酬率曲線。快照取自期交所每日行情（收盤／結算價），盤中不更新。
+        </p>
+      </div>
+    );
+  }
+
+  const lastDateStr = rows[rows.length - 1]?.date;
+  const startDate = getStartDateForRange(rangeType, lastDateStr);
+  const stats = equityStats(rows, { from: startDate });
+  const points = stats.points;
+
+  if (points.length === 0) {
+    return (
+      <div className="bg-card border border-border rounded-xl p-5 shadow-sm space-y-4">
+        <div className="flex items-center justify-between">
+          <h2 className="text-sm font-semibold text-zinc-100">權益數走勢</h2>
+          <RangeSelector active={rangeType} onChange={setRangeType} />
+        </div>
+        <div className="text-center py-8">
+          <p className="text-xs text-zinc-500">此期間尚無資料。</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (points.length === 1) {
+    const singlePoint = points[0];
+    return (
+      <div className="bg-card border border-border rounded-xl p-5 shadow-sm space-y-4">
+        <div className="flex items-center justify-between">
+          <h2 className="text-sm font-semibold text-zinc-100">權益數走勢</h2>
+          <RangeSelector active={rangeType} onChange={setRangeType} />
+        </div>
+        <div className="border border-border/50 rounded-lg p-4 bg-zinc-900/30">
+          <p className="text-xs text-zinc-400">日期：{singlePoint.date}</p>
+          <p className="text-xs text-zinc-400 mt-1">
+            權益數：<span className="font-mono text-zinc-100 font-semibold">{money(singlePoint.equity)}</span>
+          </p>
+          <p className="text-[11px] text-amber-500 mt-2 font-semibold">該期間累積中，需要至少兩天</p>
+        </div>
+      </div>
+    );
+  }
+
+  const equities = points.map((p) => p.equity);
+  let minEq = Math.min(...equities);
+  let maxEq = Math.max(...equities);
+  if (minEq === maxEq) {
+    minEq -= 10000;
+    maxEq += 10000;
+  } else {
+    const pad = (maxEq - minEq) * 0.1;
+    minEq -= pad;
+    maxEq += pad;
+  }
+
+  let minDrawdown = Math.min(...points.map((p) => p.drawdown));
+  if (minDrawdown >= 0) {
+    minDrawdown = -0.1;
+  }
+
+  const bandWidth = (740 - 60) / (points.length - 1);
+
+  const linePath = points
+    .map((p, i) => {
+      const x = 60 + i * bandWidth;
+      const y = 170 - ((p.equity - minEq) / (maxEq - minEq)) * 150;
+      return `${i === 0 ? 'M' : 'L'} ${x} ${y}`;
+    })
+    .join(' ');
+
+  const areaPath = `${linePath} L ${60 + (points.length - 1) * bandWidth} 170 L 60 170 Z`;
+
+  const ddLinePath = points
+    .map((p, i) => {
+      const x = 60 + i * bandWidth;
+      const y = 190 + (p.drawdown / minDrawdown) * 80;
+      return `${i === 0 ? 'M' : 'L'} ${x} ${y}`;
+    })
+    .join(' ');
+
+  const ddAreaPath = `${ddLinePath} L ${60 + (points.length - 1) * bandWidth} 190 L 60 190 Z`;
+
+  const lastPoint = stats.last ?? { date: '', equity: 0, peak: 0, drawdown: 0, risk_indicator: null };
+  const maxDrawdown = stats.max_drawdown;
+  const maxDrawdownDate = stats.max_drawdown_date;
+
+  const totalReturn = stats.total_return;
+  const returnCls = totalReturn !== null ? pnlCls(totalReturn) : 'text-zinc-400';
+  const returnText = totalReturn !== null ? `${totalReturn > 0 ? '+' : ''}${pct(totalReturn)}` : '—';
+
+  const tooltipStyle: React.CSSProperties = {
+    position: 'absolute',
+    top: '110px',
+    pointerEvents: 'none',
+    zIndex: 30,
+    backgroundColor: '#18181b',
+    border: '1px solid #27272a',
+    borderRadius: '0.375rem',
+    padding: '0.5rem',
+    fontSize: '0.75rem',
+    fontFamily: 'monospace',
+    boxShadow: '0 10px 15px -3px rgba(0, 0, 0, 0.3)',
+  };
+
+  if (hoverX !== null) {
+    if (hoverX < 400) {
+      tooltipStyle.left = `calc(${(hoverX / 800) * 100}% + 12px)`;
+      tooltipStyle.transform = 'translateY(-50%)';
+    } else {
+      tooltipStyle.left = `calc(${(hoverX / 800) * 100}% - 12px)`;
+      tooltipStyle.transform = 'translate(-100%, -50%)';
+    }
+  }
+
+  const lastX = 740;
+  const lastY = 170 - ((lastPoint.equity - minEq) / (maxEq - minEq)) * 150;
+
+  const maxDdIdx = points.findIndex((p) => p.date === maxDrawdownDate);
+  const maxDdX = maxDdIdx !== -1 ? 60 + maxDdIdx * bandWidth : null;
+  const maxDdY = maxDdIdx !== -1 ? 190 + (maxDrawdown / minDrawdown) * 80 : null;
+
+  return (
+    <div className="bg-card border border-border rounded-xl p-5 shadow-sm space-y-4">
+      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-border/50 pb-4">
+        <div className="grid grid-cols-3 gap-6">
+          <div>
+            <div className="text-[10px] text-zinc-500 font-medium">最新權益數</div>
+            <div className="text-base font-bold font-mono mt-0.5 text-zinc-100">{money(lastPoint.equity)}</div>
+          </div>
+          <div>
+            <div className="text-[10px] text-zinc-500 font-medium">期間報酬</div>
+            <div className={`text-base font-bold font-mono mt-0.5 ${returnCls}`}>{returnText}</div>
+          </div>
+          <div>
+            <div className="text-[10px] text-zinc-500 font-medium">最大回撤</div>
+            <div className="text-base font-bold font-mono mt-0.5 text-amber-500">
+              {maxDrawdown !== 0 ? `${pct(maxDrawdown)}` : '0.0%'}
+              {maxDrawdown !== 0 && (
+                <span className="text-[9px] text-zinc-500 font-normal ml-1 block md:inline">
+                  ({maxDrawdownDate})
+                </span>
+              )}
+            </div>
+          </div>
+        </div>
+        <div className="flex justify-end">
+          <RangeSelector active={rangeType} onChange={setRangeType} />
+        </div>
+      </div>
+
+      <div className="relative">
+        <svg viewBox="0 0 800 320" width="100%" className="overflow-visible select-none">
+          <defs>
+            <linearGradient id="equityGradient" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stopColor="#3b82f6" stopOpacity="0.15" />
+              <stop offset="100%" stopColor="#3b82f6" stopOpacity="0.0" />
+            </linearGradient>
+            <linearGradient id="drawdownGradient" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stopColor="#f59e0b" stopOpacity="0.6" />
+              <stop offset="100%" stopColor="#f43f5e" stopOpacity="0.7" />
+            </linearGradient>
+          </defs>
+
+          {/* Equity Chart Grid & Labels */}
+          <line x1={60} y1={20} x2={740} y2={20} stroke="#27272a" strokeWidth={1} />
+          <line x1={60} y1={95} x2={740} y2={95} stroke="#27272a" strokeWidth={1} strokeDasharray="2 2" />
+          <line x1={60} y1={170} x2={740} y2={170} stroke="#27272a" strokeWidth={1} />
+
+          <text x={50} y={24} textAnchor="end" fill="#71717a" className="text-[10px] font-mono">
+            {money(maxEq)}
+          </text>
+          <text x={50} y={99} textAnchor="end" fill="#71717a" className="text-[10px] font-mono">
+            {money((minEq + maxEq) / 2)}
+          </text>
+          <text x={50} y={174} textAnchor="end" fill="#71717a" className="text-[10px] font-mono">
+            {money(minEq)}
+          </text>
+
+          {/* Drawdown Chart Grid & Labels */}
+          <line x1={60} y1={190} x2={740} y2={190} stroke="#27272a" strokeWidth={1} />
+          <line x1={60} y1={230} x2={740} y2={230} stroke="#27272a" strokeWidth={1} strokeDasharray="2 2" />
+          <line x1={60} y1={270} x2={740} y2={270} stroke="#27272a" strokeWidth={1} />
+
+          <text x={50} y={194} textAnchor="end" fill="#71717a" className="text-[10px] font-mono">
+            0%
+          </text>
+          <text x={50} y={234} textAnchor="end" fill="#71717a" className="text-[10px] font-mono">
+            {pct(minDrawdown / 2)}
+          </text>
+          <text x={50} y={274} textAnchor="end" fill="#71717a" className="text-[10px] font-mono">
+            {pct(minDrawdown)}
+          </text>
+
+          {/* Time axis labels */}
+          <text x={60} y={295} textAnchor="start" fill="#71717a" className="text-[10px] font-mono">
+            {points[0].date}
+          </text>
+          <text
+            x={60 + Math.floor((points.length - 1) / 2) * bandWidth}
+            y={295}
+            textAnchor="middle"
+            fill="#71717a"
+            className="text-[10px] font-mono"
+          >
+            {points[Math.floor((points.length - 1) / 2)].date}
+          </text>
+          <text x={740} y={295} textAnchor="end" fill="#71717a" className="text-[10px] font-mono">
+            {points[points.length - 1].date}
+          </text>
+
+          {/* Area and Line for Equity */}
+          <path d={areaPath} fill="url(#equityGradient)" />
+          <path d={linePath} fill="none" stroke="#3b82f6" strokeWidth={2} />
+
+          {/* Area and Line for Drawdown */}
+          <path d={ddAreaPath} fill="url(#drawdownGradient)" />
+          <path d={ddLinePath} fill="none" stroke="#f59e0b" strokeWidth={1.5} />
+
+          {/* Label Latest Point */}
+          <circle cx={lastX} cy={lastY} r={4} fill="#3b82f6" stroke="#18181b" strokeWidth={1.5} />
+          <text x={lastX - 8} y={lastY - 8} textAnchor="end" fill="#3b82f6" className="text-[10px] font-bold font-mono">
+            {money(lastPoint.equity)}
+          </text>
+
+          {/* Label Max Drawdown Point */}
+          {maxDrawdown < 0 && maxDdX !== null && maxDdY !== null && (
+            <>
+              <circle cx={maxDdX} cy={maxDdY} r={4} fill="#f43f5e" stroke="#18181b" strokeWidth={1.5} />
+              <text x={maxDdX} y={maxDdY + 16} textAnchor="middle" fill="#f43f5e" className="text-[10px] font-bold font-mono">
+                {pct(maxDrawdown)}
+              </text>
+            </>
+          )}
+
+          {/* Vertical Hover Line */}
+          {hoverX !== null && (
+            <line x1={hoverX} y1={20} x2={hoverX} y2={270} stroke="#71717a" strokeWidth={1} strokeDasharray="4 4" />
+          )}
+
+          {/* Hover hit-zones (vertical bands) */}
+          {points.map((p, i) => {
+            const x = 60 + i * bandWidth;
+            return (
+              <rect
+                key={i}
+                x={x - bandWidth / 2}
+                y={20}
+                width={bandWidth}
+                height={260}
+                fill="transparent"
+                className="cursor-pointer"
+                onMouseEnter={() => {
+                  setHoveredPoint(p);
+                  setHoverX(x);
+                }}
+                onMouseLeave={() => {
+                  setHoveredPoint(null);
+                  setHoverX(null);
+                }}
+              />
+            );
+          })}
+        </svg>
+
+        {/* Hover Tooltip */}
+        {hoveredPoint && hoverX !== null && (
+          <div style={tooltipStyle}>
+            <div className="text-[10px] text-zinc-400">{hoveredPoint.date}</div>
+            <div className="mt-1">
+              權益數: <span className="font-semibold text-zinc-100">{money(hoveredPoint.equity)}</span>
+            </div>
+            <div>
+              回撤: <span className={`font-semibold ${hoveredPoint.drawdown === 0 ? 'text-zinc-300' : 'text-orange-400'}`}>
+                {pct(hoveredPoint.drawdown)}
+              </span>
+            </div>
+            <div>
+              風險指標: <span className="font-semibold text-zinc-100">
+                {hoveredPoint.risk_indicator !== null ? pct(hoveredPoint.risk_indicator, 0) : '—'}
+              </span>
+            </div>
+          </div>
+        )}
+      </div>
+
+      <p className="text-[11px] text-zinc-500">
+        權益數會因入出金而跳動，這條線<strong className="text-zinc-400">不是報酬率曲線</strong>。快照取自期交所每日行情（收盤／結算價），盤中不更新。
+      </p>
+    </div>
+  );
+};
+
 const OverviewTab: React.FC<{
   config: FuturesConfig;
   summary: Summary;
@@ -461,11 +884,14 @@ const OverviewTab: React.FC<{
   beta: number;
   plan: ReturnType<typeof targetPlan>;
   priceInput: PriceInput;
-}> = ({ config, summary, statusMeta, spec, beta, plan, priceInput }) => {
+  historyState: {
+    loading: boolean;
+    error: string | null;
+    data: FuturesEquityHistoryResp | null;
+  };
+}> = ({ config, summary, statusMeta, spec, beta, plan, priceInput, historyState }) => {
   const ri = summary.risk_indicator;
-  // 風險指標的視覺化：0%～300% 對應半圓，25%（斷頭）與 100%（追繳）標成刻度
   const riPctText = ri === null ? '—' : `${(ri * 100).toFixed(0)}%`;
-  // 價格相關的基準一律用「參考月份」（口數最多的那個月）
   const refPrice = summary.reference_price;
   const idx = (p: number | null) => idxText(p, refPrice, config.index_ref, beta);
 
@@ -500,6 +926,8 @@ const OverviewTab: React.FC<{
           hint="契約總值＝價格 × 契約單位 × 口數。這才是你實際承受的市場曝險，不是保證金那點錢。"
         />
       </div>
+
+      <EquityCurveCard historyState={historyState} />
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         {/* 保證金水位 */}
@@ -2049,6 +2477,110 @@ const SettingsTab: React.FC<{
   patch: (u: (c: FuturesConfig) => FuturesConfig) => FuturesConfig;
   saveToCloud: (cfg?: FuturesConfig) => Promise<void>;
 }> = ({ config, preset, patch, saveToCloud }) => {
+  const [apiMargins, setApiMargins] = useState<FuturesMarginsResp | null>(null);
+  const [syncState, setSyncState] = useState<{
+    status: 'idle' | 'loading' | 'success' | 'error';
+    message: string | null;
+  }>({ status: 'idle', message: null });
+  const [syncModal, setSyncModal] = useState<{
+    isOpen: boolean;
+    date: string;
+    oldInitial: number;
+    newInitial: number;
+    oldMaintenance: number;
+    newMaintenance: number;
+    lots: number;
+    oldMarginUsed: number;
+    newMarginUsed: number;
+    oldMarginCallPrice: number | null;
+    newMarginCallPrice: number | null;
+    pendingSpec: FuturesSpec;
+  } | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    api.getFuturesMargins()
+      .then((res) => { if (!cancelled) setApiMargins(res); })
+      .catch(() => { /* ignore */ });
+    return () => { cancelled = true; };
+  }, []);
+
+  const handleSyncMargins = async () => {
+    setSyncState({ status: 'loading', message: null });
+    try {
+      const resp = await api.getFuturesMargins();
+      setApiMargins(resp);
+      const contractKey = config.contract;
+      const marginInfo = resp.margins[contractKey];
+      if (!marginInfo) {
+        setSyncState({
+          status: 'success',
+          message: `這個商品期交所沒有提供 API，保證金請依期貨商通知手動維護`
+        });
+        return;
+      }
+
+      const isIdentical =
+        config.spec.initial_margin === marginInfo.initial &&
+        config.spec.maintenance_margin === marginInfo.maintenance;
+
+      if (isIdentical) {
+        setSyncState({
+          status: 'success',
+          message: `已是最新（期交所 ${resp.date} 公告）`
+        });
+        return;
+      }
+
+      const newSpec: FuturesSpec = {
+        ...config.spec,
+        initial_margin: marginInfo.initial,
+        maintenance_margin: marginInfo.maintenance,
+      };
+
+      const priceInput = { byMonth: config.prices, fallback: config.price };
+      const oldSummary = summarizeAccount(config.positions, priceInput, config.spec, config.cash, config.closed);
+      const newSummary = summarizeAccount(config.positions, priceInput, newSpec, config.cash, config.closed);
+
+      const totalLots = config.positions.reduce((acc, p) => acc + p.lots, 0);
+
+      setSyncModal({
+        isOpen: true,
+        date: resp.date,
+        oldInitial: config.spec.initial_margin,
+        newInitial: marginInfo.initial,
+        oldMaintenance: config.spec.maintenance_margin,
+        newMaintenance: marginInfo.maintenance,
+        lots: totalLots,
+        oldMarginUsed: totalLots * config.spec.initial_margin,
+        newMarginUsed: totalLots * marginInfo.initial,
+        oldMarginCallPrice: oldSummary.margin_call_price,
+        newMarginCallPrice: newSummary.margin_call_price,
+        pendingSpec: newSpec,
+      });
+      setSyncState({ status: 'idle', message: null });
+    } catch (e) {
+      setSyncState({
+        status: 'error',
+        message: e instanceof Error ? e.message : '同步保證金失敗'
+      });
+    }
+  };
+
+  const getMarginDescription = () => {
+    if (apiMargins) {
+      const marginInfo = apiMargins.margins[config.contract];
+      if (marginInfo) {
+        if (config.spec.initial_margin === marginInfo.initial && config.spec.maintenance_margin === marginInfo.maintenance) {
+          return `保證金＝期交所 ${apiMargins.date} 公告（OpenAPI 自動同步）`;
+        }
+      } else {
+        return `保證金＝期交所 2026-06-18 公告，這個商品沒有 API，需手動維護`;
+      }
+    }
+    return `預設值＝期交所 2026-06-18 起適用的保證金公告。保證金會依市場風險調整，期貨商通知調整時回來這裡改，追繳價與斷頭價會跟著更新。`;
+  };
+
   // 非受控＋key：按「還原預設值」時 key 跟著變，輸入框重掛載吃到新值
   const commit = (key: keyof FuturesSpec, raw: string) => {
     const v = parseFloat(raw);
@@ -2143,8 +2675,7 @@ const SettingsTab: React.FC<{
         <div>
           <h2 className="text-sm font-semibold text-zinc-100">契約規格與費用</h2>
           <p className="text-[11px] text-zinc-500 mt-1">
-            預設值＝期交所 2026-06-18 起適用的保證金公告。保證金會依市場風險調整，
-            期貨商通知調整時回來這裡改，追繳價與斷頭價會跟著更新。
+            {getMarginDescription()}
           </p>
         </div>
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
@@ -2170,6 +2701,23 @@ const SettingsTab: React.FC<{
             還原成 {preset?.code ?? CONTRACT_CODE} 的公告預設值
           </button>
           <button
+            onClick={handleSyncMargins}
+            disabled={syncState.status === 'loading'}
+            className="text-[11px] text-zinc-400 hover:text-zinc-200 flex items-center gap-1"
+          >
+            {syncState.status === 'loading' ? (
+              <Loader2 className="w-3 h-3 animate-spin" />
+            ) : (
+              <RefreshCw className="w-3 h-3" />
+            )}
+            同步保證金
+          </button>
+          {syncState.message && (
+            <span className={`text-[11px] ${syncState.status === 'error' ? 'text-rose-400' : 'text-emerald-400'}`}>
+              {syncState.message}
+            </span>
+          )}
+          <button
             onClick={() => void saveToCloud(patch((c) => ({
               ...c,
               planner: { ...DEFAULT_PLANNER, batches: DEFAULT_PLANNER.batches.map((b) => ({ ...b })), stress_drops: [...DEFAULT_PLANNER.stress_drops] },
@@ -2185,6 +2733,90 @@ const SettingsTab: React.FC<{
           </span>
         </div>
       </div>
+
+      {syncModal && syncModal.isOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-in fade-in duration-200">
+          <div className="bg-zinc-900 border border-zinc-800 rounded-2xl w-full max-w-md p-6 shadow-2xl space-y-5 animate-in zoom-in-95 duration-200 text-left">
+            <div>
+              <h3 className="text-base font-semibold text-zinc-100 flex items-center gap-2">
+                <RefreshCw className="w-5 h-5 text-primary animate-spin" style={{ animationDuration: '3s' }} />
+                確認同步保證金規格
+              </h3>
+              <p className="text-[11px] text-zinc-400 mt-1">
+                期交所 {syncModal.date} 公告值已與目前設定不同，請確認變更後的影響：
+              </p>
+            </div>
+
+            <div className="space-y-3 bg-zinc-950/50 border border-zinc-800/60 rounded-xl p-4 text-xs">
+              <div className="flex justify-between items-center pb-2 border-b border-zinc-800/50">
+                <span className="text-zinc-400">商品合約</span>
+                <span className="font-semibold text-zinc-200">{config.contract}</span>
+              </div>
+
+              <div className="space-y-1.5 pt-1">
+                <div className="flex justify-between">
+                  <span className="text-zinc-400">原始保證金</span>
+                  <span className="font-mono text-zinc-300">
+                    {money(syncModal.oldInitial)} → <strong className="text-primary">{money(syncModal.newInitial)}</strong>
+                  </span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-zinc-400">維持保證金</span>
+                  <span className="font-mono text-zinc-300">
+                    {money(syncModal.oldMaintenance)} → <strong className="text-primary">{money(syncModal.newMaintenance)}</strong>
+                  </span>
+                </div>
+              </div>
+
+              {syncModal.lots > 0 && (
+                <div className="space-y-1.5 pt-2 border-t border-zinc-800/50">
+                  <div className="flex justify-between">
+                    <span className="text-zinc-400">目前部位</span>
+                    <span className="text-zinc-300 font-semibold">{syncModal.lots} 口</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-zinc-400">總所需原始保證金</span>
+                    <span className="font-mono text-zinc-300">
+                      {money(syncModal.oldMarginUsed)} → <strong className="text-amber-400">{money(syncModal.newMarginUsed)}</strong>
+                    </span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-zinc-400">追繳價</span>
+                    <span className="font-mono text-zinc-300">
+                      {syncModal.oldMarginCallPrice !== null ? px(syncModal.oldMarginCallPrice) : '—'} →{' '}
+                      <strong className="text-rose-400">
+                        {syncModal.newMarginCallPrice !== null ? px(syncModal.newMarginCallPrice) : '—'}
+                      </strong>
+                    </span>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <div className="text-[11px] text-zinc-500 bg-zinc-950/30 rounded-lg p-2.5 leading-relaxed border border-zinc-800/40">
+              ⚠️ <strong>警告：</strong> 變更保證金設定會立即重新計算目前的風險指標、追繳價與斷頭價。如果您的部位正處於追繳邊緣，調高保證金可能會導致風險指標瞬間降低。
+            </div>
+
+            <div className="flex gap-3 pt-2">
+              <button
+                onClick={() => setSyncModal(null)}
+                className="flex-1 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 py-2 rounded-lg text-xs font-semibold transition"
+              >
+                取消
+              </button>
+              <button
+                onClick={() => {
+                  void saveToCloud(patch((c) => ({ ...c, spec: syncModal.pendingSpec })));
+                  setSyncModal(null);
+                }}
+                className="flex-1 bg-primary hover:bg-primary/90 text-primary-foreground py-2 rounded-lg text-xs font-semibold transition shadow-md shadow-primary/20"
+              >
+                確認套用
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
