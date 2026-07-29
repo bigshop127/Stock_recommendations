@@ -10,11 +10,12 @@ import type { FuturesMonthQuote } from '../lib/api';
 import {
   CONTRACT_CODE, CONTRACT_NAME, UNDERLYING_CODE,
   DEFAULT_SPEC, SYMBOL_PRESETS, findPreset,
-  tickValue, lastTradingDay, daysBetween,
+  tickValue, lastTradingDay, tradingDaysBetween,
   positionPnl, closedPnl, summarizeAccount, rolloverAlerts, rolloverCost, stopLossRisk,
   indexAtPrice, stressTest, suggestLots, weightedEntry, targetPlan, trailingStopPlan,
-  compareSpotVsFutures, buildRiskReport,
+  compareSpotVsFutures, buildRiskReport, priceOf, referenceMonthOf,
   type FuturesPosition, type ClosedTrade, type Side, type FuturesSpec, type StressRow,
+  type PriceInput,
 } from '../lib/futures';
 import {
   getFuturesConfig, saveFuturesConfig, subscribeFutures,
@@ -71,6 +72,15 @@ export function FuturesPnl() {
   const [quote, setQuote] = useState<{ status: 'idle' | 'loading' | 'done' | 'error'; msg: string | null; months: FuturesMonthQuote[] }>({
     status: 'idle', msg: null, months: [],
   });
+  // 台股休市日曆：最後交易日遇假日要順延，沒有它算出來的日期只是「規則上的第三個星期三」
+  const [holidays, setHolidays] = useState<Set<string> | undefined>(undefined);
+  useEffect(() => {
+    let cancelled = false;
+    api.getMarketHolidays()
+      .then((r) => { if (!cancelled) setHolidays(new Set(r.dates)); })
+      .catch(() => { /* 抓不到就退回純第三個星期三，UI 會標示未經假日校正 */ });
+    return () => { cancelled = true; };
+  }, []);
 
   useEffect(() => subscribeFutures(() => setConfig(getFuturesConfig())), []);
 
@@ -140,24 +150,39 @@ export function FuturesPnl() {
     }
   };
 
-  // 抓期交所每日行情：填現價（優先結算價，沒有就用最後成交價），並記下報價日
+  /**
+   * 抓期交所每日行情。**每個月份的價格都存下來**（`prices`）——不同到期月份是不同
+   * 合約、不同價格，同時持有兩個月份時全部套同一個數字會讓損益與追繳價一起偏掉。
+   * 另外挑一個「參考月份」填進 `price`，作為沒有行情的月份的退路與各處的顯示基準。
+   */
   const fetchQuote = async (persist = true) => {
     setQuote((q) => ({ ...q, status: 'loading', msg: null }));
     try {
       const resp = await api.getFuturesQuote(getFuturesConfig().contract || CONTRACT_CODE);
       setQuote({ status: 'done', msg: resp.date, months: resp.months });
-      const cur = getFuturesConfig();
-      // 有部位就用「最近月的持倉月份」報價，沒有就用成交量最大的那個月（＝主力月）
-      const held = cur.positions.find((p) => p.lots > 0)?.month;
-      const target = resp.months.find((m) => m.month === held)
-        ?? resp.months.slice().sort((a, b) => (b.volume ?? 0) - (a.volume ?? 0))[0];
-      if (target) {
-        const price = target.settlement ?? target.last ?? 0;
-        if (price > 0) {
-          const next = patch((c) => ({ ...c, price, price_month: target.month, price_as_of: resp.date }));
-          if (persist) void saveToCloud(next);
-        }
+
+      // 結算價優先（只有日盤有），沒有才退回最後成交價
+      const prices: Record<string, number> = {};
+      for (const m of resp.months) {
+        const p = m.settlement ?? m.last ?? 0;
+        if (p > 0) prices[m.month] = p;
       }
+      if (Object.keys(prices).length === 0) return;
+
+      const cur = getFuturesConfig();
+      // 參考月份：有部位就用口數最多的持倉月份，沒有就用成交量最大的（＝主力月）
+      const refMonth = referenceMonthOf(cur.positions);
+      const target = resp.months.find((m) => m.month === refMonth)
+        ?? resp.months.slice().sort((a, b) => (b.volume ?? 0) - (a.volume ?? 0))[0];
+      const price = target ? (prices[target.month] ?? 0) : 0;
+
+      const next = patch((c) => ({
+        ...c,
+        prices: { ...c.prices, ...prices },
+        ...(price > 0 ? { price, price_month: target!.month } : {}),
+        price_as_of: resp.date,
+      }));
+      if (persist) void saveToCloud(next);
     } catch (e) {
       setQuote((q) => ({ ...q, status: 'error', msg: e instanceof Error ? e.message : '抓取失敗' }));
     }
@@ -167,13 +192,19 @@ export function FuturesPnl() {
   const preset = useMemo(() => findPreset(config.contract), [config.contract]);
   const symbolName = preset ? `${preset.name}（${preset.code}）` : `${CONTRACT_NAME}（${config.contract}）`;
 
+  // 各月份分別報價；某月份沒抓到行情時退回使用者手填的參考價
+  const priceInput = useMemo<PriceInput>(
+    () => ({ byMonth: config.prices, fallback: config.price }),
+    [config.prices, config.price],
+  );
+
   const summary = useMemo(
-    () => summarizeAccount(config.positions, config.price, spec, config.cash, config.closed),
-    [config.positions, config.price, spec, config.cash, config.closed],
+    () => summarizeAccount(config.positions, priceInput, spec, config.cash, config.closed),
+    [config.positions, priceInput, spec, config.cash, config.closed],
   );
   const alerts = useMemo(
-    () => rolloverAlerts(config.positions, spec, todayStr()),
-    [config.positions, spec],
+    () => rolloverAlerts(config.positions, spec, todayStr(), holidays),
+    [config.positions, spec, holidays],
   );
   const dueAlerts = alerts.filter((a) => a.due || a.expired);
   const statusMeta = STATUS_META[summary.status] ?? STATUS_META.flat;
@@ -181,23 +212,23 @@ export function FuturesPnl() {
   // 台指期本身就是大盤，beta 恆為 1；ETF 期貨才需要換算係數
   const beta = preset?.index_linked ? 1 : config.beta;
   const stress = useMemo(
-    () => stressTest(config.positions, spec, config.cash, config.price, {
-      drops: config.planner.stress_drops, index: config.index_ref, beta,
+    () => stressTest(config.positions, spec, config.cash, priceInput, {
+      drops: config.planner.stress_drops, index: config.index_ref, beta, stopLoss: config.stop_loss,
     }),
-    [config.positions, spec, config.cash, config.price, config.planner.stress_drops, config.index_ref, beta],
+    [config.positions, spec, config.cash, priceInput, config.planner.stress_drops, config.index_ref, beta, config.stop_loss],
   );
   const plan = useMemo(
-    () => targetPlan(config.positions, spec, config.cash, config.price, config.planner.gain_pct, config.planner.reserve_multiple),
-    [config.positions, spec, config.cash, config.price, config.planner.gain_pct, config.planner.reserve_multiple],
+    () => targetPlan(config.positions, spec, config.cash, priceInput, config.planner.gain_pct, config.planner.reserve_multiple),
+    [config.positions, spec, config.cash, priceInput, config.planner.gain_pct, config.planner.reserve_multiple],
   );
   const report = useMemo(
     () => buildRiskReport({
-      symbol_name: symbolName, spec, summary, price: config.price, cash: config.cash,
+      symbol_name: symbolName, spec, summary, price: summary.reference_price, cash: config.cash,
       index: config.index_ref, beta, stress,
       plan: summary.total_lots > 0 ? plan : null,
       alerts,
     }),
-    [symbolName, spec, summary, config.price, config.cash, config.index_ref, beta, stress, plan, alerts],
+    [symbolName, spec, summary, config.cash, config.index_ref, beta, stress, plan, alerts],
   );
 
   return (
@@ -288,24 +319,44 @@ export function FuturesPnl() {
                   ) : (
                     <>
                       <strong className={a.level === 'urgent' ? 'text-rose-400' : 'text-amber-400'}>
-                        {monthLabel(a.month)} 還有 {a.days_left} 天到期
+                        {monthLabel(a.month)} 還剩 {a.trading_days_left ?? a.days_left} 個交易日到期
                       </strong>
-                      （最後交易日 {a.last_trading_day}）——持有 {a.lots} 口，要續抱就得轉倉到次月。
+                      （最後交易日 {a.last_trading_day}
+                      {a.holiday_adjusted && <span className="text-zinc-400">，已因休市順延</span>}）——
+                      持有 {a.lots} 口，要續抱就到「到期 &amp; 轉倉」按一鍵轉倉。
                     </>
                   )}
                 </div>
               ))}
               <div className="text-[11px] text-zinc-500 pt-1">
-                提醒門檻：到期前 {spec.rollover_days} 天（可在「契約規格 &amp; 設定」分頁調整）
+                提醒門檻：到期前 {spec.rollover_days} 個交易日（可在「契約規格 &amp; 設定」分頁調整）
+                {!holidays && <span className="text-amber-400">．目前抓不到休市日曆，日期未經假日校正</span>}
               </div>
             </div>
           </div>
         </div>
       )}
 
-      {/* 分頁導覽 */}
+      {/*
+        分頁導覽。八個分頁在手機上橫向捲動很容易讓人以為只有前兩個，
+        所以小螢幕改用下拉選單（一眼看得到全部），sm 以上才用原本的 tab 列。
+      */}
       <div className="border-b border-border/80">
-        <div className="flex items-center gap-2 overflow-x-auto pb-2 scrollbar-none">
+        <div className="sm:hidden pb-2">
+          <select
+            value={activeTab}
+            onChange={(e) => handleTabChange(e.target.value as FuturesTab)}
+            aria-label="切換分頁"
+            className="w-full bg-primary text-white text-sm font-semibold rounded-lg px-3 py-2.5 border-0"
+          >
+            {FUTURES_TABS.map((t, i) => (
+              <option key={t.id} value={t.id} className="bg-zinc-900 text-zinc-100 font-normal">
+                {i + 1}. {t.label}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div className="hidden sm:flex items-center gap-2 overflow-x-auto pb-2 scrollbar-none">
           {FUTURES_TABS.map((t) => (
             <button
               key={t.id}
@@ -321,19 +372,19 @@ export function FuturesPnl() {
       </div>
 
       {activeTab === 'overview' && (
-        <OverviewTab config={config} summary={summary} statusMeta={statusMeta} spec={spec} beta={beta} plan={plan} />
+        <OverviewTab config={config} summary={summary} statusMeta={statusMeta} spec={spec} beta={beta} plan={plan} priceInput={priceInput} />
       )}
       {activeTab === 'positions' && (
-        <PositionsTab config={config} spec={spec} summary={summary} quoteMonths={quote.months} patch={patch} saveToCloud={saveToCloud} />
+        <PositionsTab config={config} spec={spec} summary={summary} priceInput={priceInput} quoteMonths={quote.months} holidays={holidays} patch={patch} saveToCloud={saveToCloud} />
       )}
       {activeTab === 'stress' && (
         <StressTab config={config} summary={summary} stress={stress} beta={beta} patch={patch} saveToCloud={saveToCloud} />
       )}
       {activeTab === 'planner' && (
-        <PlannerTab config={config} spec={spec} summary={summary} plan={plan} patch={patch} saveToCloud={saveToCloud} />
+        <PlannerTab config={config} spec={spec} summary={summary} plan={plan} priceInput={priceInput} patch={patch} saveToCloud={saveToCloud} />
       )}
       {activeTab === 'rollover' && (
-        <RolloverTab config={config} spec={spec} alerts={alerts} quoteMonths={quote.months} />
+        <RolloverTab config={config} spec={spec} summary={summary} alerts={alerts} quoteMonths={quote.months} holidays={holidays} patch={patch} saveToCloud={saveToCloud} />
       )}
       {activeTab === 'spot' && (
         <SpotCompareTab config={config} spec={spec} summary={summary} patch={patch} saveToCloud={saveToCloud} />
@@ -409,11 +460,14 @@ const OverviewTab: React.FC<{
   spec: FuturesSpec;
   beta: number;
   plan: ReturnType<typeof targetPlan>;
-}> = ({ config, summary, statusMeta, spec, beta, plan }) => {
+  priceInput: PriceInput;
+}> = ({ config, summary, statusMeta, spec, beta, plan, priceInput }) => {
   const ri = summary.risk_indicator;
   // 風險指標的視覺化：0%～300% 對應半圓，25%（斷頭）與 100%（追繳）標成刻度
   const riPctText = ri === null ? '—' : `${(ri * 100).toFixed(0)}%`;
-  const idx = (p: number | null) => idxText(p, config.price, config.index_ref, beta);
+  // 價格相關的基準一律用「參考月份」（口數最多的那個月）
+  const refPrice = summary.reference_price;
+  const idx = (p: number | null) => idxText(p, refPrice, config.index_ref, beta);
 
   return (
     <div className="space-y-5">
@@ -486,7 +540,12 @@ const OverviewTab: React.FC<{
           ) : (
             <>
               <dl className="space-y-2 text-xs">
-                <Row label="現在價格" value={px(config.price)} cls="text-zinc-100" sub={config.index_ref > 0 ? `${Math.round(config.index_ref).toLocaleString()} 點` : ''} />
+                <Row
+                  label={`現在價格${summary.months.length > 1 ? `（${monthLabel(summary.reference_month)} 參考月）` : ''}`}
+                  value={px(refPrice)}
+                  cls="text-zinc-100"
+                  sub={config.index_ref > 0 ? `${Math.round(config.index_ref).toLocaleString()} 點` : ''}
+                />
                 <Row
                   label="追繳價（權益數＝維持保證金）"
                   value={summary.margin_call_price !== null ? px(summary.margin_call_price) : '—'}
@@ -501,11 +560,11 @@ const OverviewTab: React.FC<{
                   sub={idx(summary.liquidation_price)}
                   hint="盤中觸及這個價位，期貨商會直接代為沖銷，不會等你補錢。"
                 />
-                {summary.margin_call_price !== null && config.price > 0 && (
+                {summary.margin_call_shift !== null && refPrice > 0 && (
                   <Row
                     label="距追繳還有"
-                    value={`${pct(Math.abs(summary.margin_call_price - config.price) / config.price)}（${Math.abs(
-                      Math.round((summary.margin_call_price - config.price) / spec.tick_size),
+                    value={`${pct(Math.abs(summary.margin_call_shift) / refPrice)}（${Math.abs(
+                      Math.round(summary.margin_call_shift / spec.tick_size),
                     )} 檔）`}
                     cls="text-zinc-300"
                   />
@@ -513,9 +572,15 @@ const OverviewTab: React.FC<{
               </dl>
               <p className="text-[11px] text-zinc-500 pt-1">
                 以目前部位與權益數計算，含來回手續費與期交稅。加碼、平倉或入金都會改變這兩個價位。
+                {summary.months.length > 1 && (
+                  <> 你同時持有 {summary.months.map(monthLabel).join('、')}，
+                  各月份分別報價；追繳／斷頭價是<strong className="text-zinc-400">各月份一起移動</strong>
+                  {summary.margin_call_shift !== null && <> {summary.margin_call_shift >= 0 ? '+' : ''}{summary.margin_call_shift.toFixed(2)} 元</>}
+                  的意思，用 {monthLabel(summary.reference_month)} 的價格表示。</>
+                )}
                 {config.index_ref > 0
-                  ? `大盤點數以 beta ${beta.toFixed(2)} 換算，僅供對照。`
-                  : '在「契約規格 & 設定」填入目前的加權指數，這裡就會一併顯示對應點位。'}
+                  ? ` 大盤點數以 beta ${beta.toFixed(2)} 換算，僅供對照。`
+                  : ' 在「契約規格 & 設定」填入目前的加權指數，這裡就會一併顯示對應點位。'}
               </p>
             </>
           )}
@@ -530,10 +595,10 @@ const OverviewTab: React.FC<{
             <span className="text-[11px] text-zinc-600">斷頭價 → 追繳價 → 現價 → 目標價</span>
           </div>
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-            <LevelCard tone="rose" label="斷頭價" value={summary.liquidation_price} sub={idx(summary.liquidation_price)} base={config.price} />
-            <LevelCard tone="amber" label="追繳價" value={summary.margin_call_price} sub={idx(summary.margin_call_price)} base={config.price} />
-            <LevelCard tone="sky" label="現在價格" value={config.price} sub={config.index_ref > 0 ? `${Math.round(config.index_ref).toLocaleString()} 點` : ''} base={config.price} />
-            <LevelCard tone="emerald" label={`目標價（+${(config.planner.gain_pct * 100).toFixed(0)}%）`} value={plan.target_price} sub={idx(plan.target_price)} base={config.price} />
+            <LevelCard tone="rose" label="斷頭價" value={summary.liquidation_price} sub={idx(summary.liquidation_price)} base={refPrice} />
+            <LevelCard tone="amber" label="追繳價" value={summary.margin_call_price} sub={idx(summary.margin_call_price)} base={refPrice} />
+            <LevelCard tone="sky" label="現在價格" value={refPrice} sub={config.index_ref > 0 ? `${Math.round(config.index_ref).toLocaleString()} 點` : ''} base={refPrice} />
+            <LevelCard tone="emerald" label={`目標價（+${(config.planner.gain_pct * 100).toFixed(0)}%）`} value={plan.target_price} sub={idx(plan.target_price)} base={refPrice} />
           </div>
           <p className="text-[11px] text-zinc-500">
             目標價的幅度可在「建倉 &amp; 出場試算」分頁調整。空單的追繳／斷頭價在現價之上，卡片會顯示為上漲幅度。
@@ -555,6 +620,7 @@ const OverviewTab: React.FC<{
                   <th className="text-left font-medium py-2 pr-3">方向</th>
                   <th className="text-right font-medium py-2 pr-3">口數</th>
                   <th className="text-right font-medium py-2 pr-3">進場價</th>
+                  <th className="text-right font-medium py-2 pr-3">該月現價</th>
                   <th className="text-right font-medium py-2 pr-3">損益平衡</th>
                   <th className="text-right font-medium py-2 pr-3">未實現損益</th>
                   <th className="text-right font-medium py-2">保證金報酬率</th>
@@ -562,7 +628,8 @@ const OverviewTab: React.FC<{
               </thead>
               <tbody>
                 {config.positions.map((p) => {
-                  const r = positionPnl(p, config.price, spec);
+                  const mp = priceOf(priceInput, p.month);
+                  const r = positionPnl(p, mp, spec);
                   return (
                     <tr key={p.id} className="border-b border-border/50 last:border-0">
                       <td className="py-2 pr-3 font-mono text-zinc-300">{monthLabel(p.month)}</td>
@@ -574,6 +641,10 @@ const OverviewTab: React.FC<{
                       </td>
                       <td className="py-2 pr-3 text-right font-mono text-zinc-300">{p.lots}</td>
                       <td className="py-2 pr-3 text-right font-mono text-zinc-300">{px(p.entry_price)}</td>
+                      <td className={`py-2 pr-3 text-right font-mono ${config.prices[p.month] ? 'text-zinc-300' : 'text-amber-400'}`}
+                        title={config.prices[p.month] ? '期交所該月份行情' : '該月份沒有行情，用參考價代替'}>
+                        {px(mp)}{config.prices[p.month] ? '' : '*'}
+                      </td>
                       <td className="py-2 pr-3 text-right font-mono text-zinc-500">{px(r.break_even)}</td>
                       <td className={`py-2 pr-3 text-right font-mono font-semibold ${pnlCls(r.net_pnl)}`}>{money(r.net_pnl)}</td>
                       <td className={`py-2 text-right font-mono ${pnlCls(r.return_on_margin)}`}>{pct(r.return_on_margin)}</td>
@@ -644,10 +715,12 @@ const PositionsTab: React.FC<{
   config: FuturesConfig;
   spec: FuturesSpec;
   summary: Summary;
+  priceInput: PriceInput;
   quoteMonths: FuturesMonthQuote[];
+  holidays: Set<string> | undefined;
   patch: (u: (c: FuturesConfig) => FuturesConfig) => FuturesConfig;
   saveToCloud: (cfg?: FuturesConfig) => Promise<void>;
-}> = ({ config, spec, summary, quoteMonths, patch, saveToCloud }) => {
+}> = ({ config, spec, summary, priceInput, quoteMonths, holidays, patch, saveToCloud }) => {
   const [form, setForm] = useState({ month: '', side: 'long' as Side, lots: '', entry_price: '', entry_date: todayStr() });
   const [closeForm, setCloseForm] = useState<{ id: string; exit_price: string; exit_date: string } | null>(null);
 
@@ -735,7 +808,7 @@ const PositionsTab: React.FC<{
               placeholder="例：60000"
             />
           </Field>
-          <Field label="現在價格" hint="按上方「抓最新行情」會自動填入期交所結算價；盤中想用即時價可手動改。">
+          <Field label="參考價（沒有行情的月份用這個）" hint="按上方「真實同步」會自動填入期交所結算價；盤中想用即時價可手動改。有抓到行情的月份會各自用自己的價格，不吃這一格。">
             <input
               key={`price-${config.price}`}
               type="number"
@@ -750,6 +823,41 @@ const PositionsTab: React.FC<{
             />
           </Field>
         </div>
+
+        <CashReconcile config={config} summary={summary} patch={patch} saveToCloud={saveToCloud} />
+
+        {/* 各月份現價：抓到行情的月份一覽，也可以手動覆寫某個月 */}
+        {config.positions.length > 0 && (
+          <div className="pt-3 border-t border-border/50 space-y-2">
+            <div className="text-[11px] text-zinc-500">持倉月份的現價（各月份分別計價）</div>
+            <div className="flex flex-wrap gap-2">
+              {[...new Set(config.positions.map((p) => p.month))].sort().map((m) => (
+                <div key={m} className="flex items-center gap-1.5 bg-zinc-900/50 border border-border rounded-lg px-2.5 py-1.5">
+                  <span className="text-[11px] font-mono text-zinc-400">{monthLabel(m)}</span>
+                  <input
+                    key={`mp-${m}-${config.prices[m] ?? 0}`}
+                    type="number"
+                    step="0.05"
+                    defaultValue={config.prices[m] ?? ''}
+                    placeholder={px(config.price)}
+                    onBlur={(e) => {
+                      const raw = e.target.value.trim();
+                      void saveToCloud(patch((c) => {
+                        const next = { ...c.prices };
+                        const v = parseFloat(raw);
+                        if (raw === '' || !Number.isFinite(v) || v <= 0) delete next[m];
+                        else next[m] = v;
+                        return { ...c, prices: next };
+                      }));
+                    }}
+                    className="w-20 bg-zinc-950 border border-border rounded px-2 py-0.5 text-xs font-mono text-zinc-100"
+                  />
+                  {!config.prices[m] && <span className="text-[10px] text-amber-400" title="沒有這個月份的行情，正在用參考價">參考價</span>}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
 
       {/* 新增部位 */}
@@ -800,7 +908,7 @@ const PositionsTab: React.FC<{
         </button>
         {form.month && (
           <p className="text-[11px] text-zinc-500">
-            {monthLabel(form.month)} 最後交易日 {lastTradingDay(form.month) ?? '—'}；
+            {monthLabel(form.month)} 最後交易日 {lastTradingDay(form.month, holidays) ?? '—'}；
             {form.lots && Number(form.lots) > 0 && (
               <> 這筆需要原始保證金 {money(spec.initial_margin * Number(form.lots))}。</>
             )}
@@ -814,7 +922,8 @@ const PositionsTab: React.FC<{
         {config.positions.length === 0 ? (
           <p className="text-xs text-zinc-500">還沒有部位。</p>
         ) : config.positions.map((p) => {
-          const r = positionPnl(p, config.price, spec);
+          const mp = priceOf(priceInput, p.month);
+          const r = positionPnl(p, mp, spec);
           const stop = config.stop_loss[p.id];
           const risk = stop ? stopLossRisk(p, stop, spec, summary.equity) : null;
           return (
@@ -826,7 +935,7 @@ const PositionsTab: React.FC<{
                 <span className={`font-mono font-semibold ${pnlCls(r.net_pnl)}`}>{money(r.net_pnl)}</span>
                 <div className="ml-auto flex items-center gap-2">
                   <button
-                    onClick={() => setCloseForm({ id: p.id, exit_price: String(config.price || ''), exit_date: todayStr() })}
+                    onClick={() => setCloseForm({ id: p.id, exit_price: String(mp || ''), exit_date: todayStr() })}
                     className="text-[11px] text-cyan-400 hover:text-cyan-300"
                   >
                     平倉
@@ -944,6 +1053,90 @@ const PositionsTab: React.FC<{
   );
 };
 
+/**
+ * 保證金專戶餘額對帳。
+ *
+ * `cash` 全靠手動維護，久了一定會跟期貨商對不起來（手續費尾差、利息、忘了記的入出金）。
+ * 期貨商 App 上看得到「權益數」，這裡讓你把它填進來反推 cash 應該是多少：
+ *   cash = 期貨商權益數 − 本頁算出來的未實現損益
+ * 差額就是漂掉的量，按一下就校正。
+ */
+const CashReconcile: React.FC<{
+  config: FuturesConfig;
+  summary: Summary;
+  patch: (u: (c: FuturesConfig) => FuturesConfig) => FuturesConfig;
+  saveToCloud: (cfg?: FuturesConfig) => Promise<void>;
+}> = ({ config, summary, patch, saveToCloud }) => {
+  const [open, setOpen] = useState(false);
+  const [raw, setRaw] = useState('');
+  const actual = parseFloat(raw);
+  const valid = Number.isFinite(actual);
+  const impliedCash = valid ? actual - summary.unrealized : 0;
+  const diff = valid ? impliedCash - config.cash : 0;
+
+  if (!open) {
+    return (
+      <button onClick={() => setOpen(true)} className="text-[11px] text-zinc-500 hover:text-zinc-300 transition-colors">
+        跟期貨商對帳…
+      </button>
+    );
+  }
+
+  return (
+    <div className="bg-zinc-900/40 border border-border rounded-lg p-4 space-y-3">
+      <div className="flex items-center justify-between">
+        <h3 className="text-xs font-semibold text-zinc-200">跟期貨商對帳</h3>
+        <button onClick={() => { setOpen(false); setRaw(''); }} className="text-[11px] text-zinc-500 hover:text-zinc-300">收起</button>
+      </div>
+      <p className="text-[11px] text-zinc-500">
+        打開期貨商 App 看「權益數」（不是「保證金餘額」），填進來反推本頁的現金餘額該是多少。
+        手續費尾差、利息、忘了記的入出金都會在這裡現形。
+      </p>
+      <div className="flex flex-wrap items-end gap-3">
+        <Field label="期貨商顯示的權益數">
+          <input
+            type="number"
+            value={raw}
+            onChange={(e) => setRaw(e.target.value)}
+            placeholder={String(Math.round(summary.equity))}
+            className="w-36 bg-zinc-900 border border-border rounded-lg px-3 py-2 text-sm font-mono text-zinc-100"
+          />
+        </Field>
+        {valid && (
+          <>
+            <dl className="text-xs space-y-1 min-w-[220px]">
+              <Row label="本頁未實現損益" value={money(summary.unrealized)} cls={pnlCls(summary.unrealized)} />
+              <Row label="反推現金餘額應為" value={money(impliedCash)} cls="text-zinc-100" />
+              <Row label="與目前設定的差額" value={money(diff)}
+                cls={Math.abs(diff) < 1 ? 'text-emerald-400' : 'text-amber-400'} />
+            </dl>
+            {Math.abs(diff) < 1 ? (
+              <span className="text-[11px] text-emerald-400 flex items-center gap-1"><Check className="w-3 h-3" /> 完全對得上</span>
+            ) : (
+              <button
+                onClick={() => {
+                  void saveToCloud(patch((c) => ({ ...c, cash: impliedCash })));
+                  setOpen(false);
+                  setRaw('');
+                }}
+                className="px-3 py-2 bg-primary text-white text-[11px] font-semibold rounded-lg hover:bg-primary/90 transition"
+              >
+                校正現金餘額為 {money(impliedCash)}
+              </button>
+            )}
+          </>
+        )}
+      </div>
+      {valid && Math.abs(diff) >= 1 && (
+        <p className="text-[11px] text-zinc-500">
+          差額若很大（超過幾百元），先確認是不是漏記了入出金或平倉——直接校正會把那筆歷史吞掉，
+          之後就查不出來了。
+        </p>
+      )}
+    </div>
+  );
+};
+
 const Field: React.FC<{ label: string; hint?: string; children: React.ReactNode }> = ({ label, hint, children }) => (
   <div>
     <div className="text-[11px] text-zinc-500 mb-1" title={hint}>{label}</div>
@@ -956,29 +1149,141 @@ const Field: React.FC<{ label: string; hint?: string; children: React.ReactNode 
 const RolloverTab: React.FC<{
   config: FuturesConfig;
   spec: FuturesSpec;
+  summary: Summary;
   alerts: ReturnType<typeof rolloverAlerts>;
   quoteMonths: FuturesMonthQuote[];
-}> = ({ config, spec, alerts, quoteMonths }) => {
-  const [near, setNear] = useState('');
+  holidays: Set<string> | undefined;
+  patch: (u: (c: FuturesConfig) => FuturesConfig) => FuturesConfig;
+  saveToCloud: (cfg?: FuturesConfig) => Promise<void>;
+}> = ({ config, spec, summary, alerts, quoteMonths, holidays, patch, saveToCloud }) => {
+  // 預設把「最快到期的持倉月份」填進近月，省得每次自己選
+  const dueMonth = alerts.find((a) => a.due || a.expired)?.month ?? alerts[0]?.month ?? '';
+  const [near, setNear] = useState(dueMonth);
   const [far, setFar] = useState('');
   const [lots, setLots] = useState('');
 
-  const priceOf = (m: string) => {
+  const marketPrice = (m: string) => {
     const q = quoteMonths.find((x) => x.month === m);
-    return q?.settlement ?? q?.last ?? 0;
+    return q?.settlement ?? q?.last ?? config.prices[m] ?? 0;
   };
   const cost = useMemo(() => {
     const n = parseFloat(lots);
     if (!near || !far || !(n > 0)) return null;
-    const np = priceOf(near);
-    const fp = priceOf(far);
+    const np = marketPrice(near);
+    const fp = marketPrice(far);
     if (!(np > 0) || !(fp > 0)) return null;
     return { ...rolloverCost(n, np, fp, spec), np, fp };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [near, far, lots, quoteMonths, spec]);
+  }, [near, far, lots, quoteMonths, spec, config.prices]);
+
+  // 一鍵轉倉可以處理的部位＝近月所有未平倉部位
+  const nearPositions = useMemo(
+    () => config.positions.filter((p) => p.month === near && p.lots > 0),
+    [config.positions, near],
+  );
+  const nearLots = nearPositions.reduce((s, p) => s + p.lots, 0);
+  const canRoll = Boolean(near && far && near !== far && nearPositions.length > 0
+    && marketPrice(near) > 0 && marketPrice(far) > 0);
+
+  /**
+   * 一鍵轉倉＝把近月部位全部平掉、在遠月用同方向同口數重建。
+   *
+   * 手動做要「平倉」＋「新增部位」兩步，漏一步帳就歪了（而且轉倉常常在到期前
+   * 最忙的那天做）。這裡一次做完並把平倉損益結算進保證金專戶現金，跟手動平倉
+   * 走的是同一條路徑。進場價用遠月的市價——實際成交價之後可以再改。
+   */
+  const doRollover = () => {
+    const np = marketPrice(near);
+    const fp = marketPrice(far);
+    if (!canRoll) return;
+    if (!window.confirm(
+      `把 ${monthLabel(near)} 的 ${nearLots} 口全部轉到 ${monthLabel(far)}？\n\n`
+      + `平倉價 ${px(np)}（${monthLabel(near)}）→ 進場價 ${px(fp)}（${monthLabel(far)}）\n`
+      + `會產生 ${nearPositions.length} 筆平倉紀錄，損益結算進保證金專戶現金。\n`
+      + `實際成交價不同的話，之後可以在部位頁改。`,
+    )) return;
+
+    const stamp = Date.now();
+    const today = todayStr();
+    const next = patch((c) => {
+      const rolling = c.positions.filter((p) => p.month === near && p.lots > 0);
+      const closedNew: ClosedTrade[] = rolling.map((p, i) => ({
+        id: `c_${stamp}_${i}`,
+        month: p.month, side: p.side, lots: p.lots,
+        entry_price: p.entry_price, exit_price: np, exit_date: today,
+        note: `轉倉至 ${monthLabel(far)}`,
+      }));
+      const opened: FuturesPosition[] = rolling.map((p, i) => ({
+        id: `f_${stamp}_${i}`,
+        month: far, side: p.side, lots: p.lots,
+        entry_price: fp, entry_date: today,
+        note: `由 ${monthLabel(near)} 轉倉`,
+      }));
+      const rolledIds = new Set(rolling.map((p) => p.id));
+      return {
+        ...c,
+        positions: [...c.positions.filter((p) => !rolledIds.has(p.id)), ...opened],
+        closed: [...c.closed, ...closedNew],
+        cash: c.cash + closedNew.reduce((s, t) => s + closedPnl(t, spec), 0),
+        // 停損價是掛在舊部位 id 上的，轉倉後那些 id 不存在了；normalizeFutures
+        // 會自動清掉孤兒，這裡不用特別處理
+      };
+    });
+    setNear(far);
+    setFar('');
+    void saveToCloud(next);
+  };
 
   return (
     <div className="space-y-5">
+      {/* 一鍵轉倉 */}
+      <div className="bg-card border border-border rounded-xl p-5 shadow-sm space-y-4">
+        <div className="flex items-center gap-2">
+          <RefreshCw className="w-4 h-4 text-primary" />
+          <h2 className="text-sm font-semibold text-zinc-100">一鍵轉倉</h2>
+        </div>
+        {config.positions.length === 0 ? (
+          <p className="text-xs text-zinc-500">目前沒有未平倉部位。</p>
+        ) : (
+          <>
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              <Field label="平掉的月份（近月）">
+                <select value={near} onChange={(e) => setNear(e.target.value)}
+                  className="w-full bg-zinc-900 border border-border rounded-lg px-3 py-2 text-sm font-mono text-zinc-100">
+                  <option value="">選擇…</option>
+                  {summary.months.map((m) => (
+                    <option key={m} value={m}>{monthLabel(m)}（{marketPrice(m) > 0 ? px(marketPrice(m)) : '無報價'}）</option>
+                  ))}
+                </select>
+              </Field>
+              <Field label="轉入的月份（遠月）">
+                <select value={far} onChange={(e) => setFar(e.target.value)}
+                  className="w-full bg-zinc-900 border border-border rounded-lg px-3 py-2 text-sm font-mono text-zinc-100">
+                  <option value="">選擇…</option>
+                  {quoteMonths.filter((m) => m.month !== near).map((m) => (
+                    <option key={m.month} value={m.month}>{monthLabel(m.month)}（{px(marketPrice(m.month))}）</option>
+                  ))}
+                </select>
+              </Field>
+              <div className="flex items-end">
+                <button
+                  onClick={doRollover}
+                  disabled={!canRoll}
+                  className="w-full px-4 py-2 bg-primary text-white text-xs font-semibold rounded-lg hover:bg-primary/90 disabled:bg-zinc-800 disabled:text-zinc-600 transition"
+                >
+                  {nearPositions.length > 0 ? `轉倉 ${nearLots} 口` : '轉倉'}
+                </button>
+              </div>
+            </div>
+            <p className="text-[11px] text-zinc-500">
+              會把近月所有部位平掉（產生平倉紀錄、損益結算進現金），並在遠月用<strong className="text-zinc-400">同方向同口數</strong>重建。
+              進場價先用遠月市價，實際成交價不同的話到「部位 &amp; 平倉紀錄」改。
+              {quoteMonths.length === 0 && <strong className="text-amber-400"> 還沒抓行情，先按頁面上方的「真實同步」。</strong>}
+            </p>
+          </>
+        )}
+      </div>
+
       <div className="bg-card border border-border rounded-xl p-5 shadow-sm space-y-3">
         <h2 className="text-sm font-semibold text-zinc-100">持倉月份到期狀態</h2>
         {alerts.length === 0 ? (
@@ -991,8 +1296,8 @@ const RolloverTab: React.FC<{
                   <th className="text-left font-medium py-2 pr-3">月份</th>
                   <th className="text-right font-medium py-2 pr-3">口數</th>
                   <th className="text-left font-medium py-2 pr-3">最後交易日</th>
-                  <th className="text-left font-medium py-2 pr-3">最後結算日</th>
-                  <th className="text-right font-medium py-2 pr-3">剩餘天數</th>
+                  <th className="text-right font-medium py-2 pr-3">剩餘交易日</th>
+                  <th className="text-right font-medium py-2 pr-3">日曆天</th>
                   <th className="text-left font-medium py-2">狀態</th>
                 </tr>
               </thead>
@@ -1001,16 +1306,20 @@ const RolloverTab: React.FC<{
                   <tr key={a.month} className="border-b border-border/50 last:border-0">
                     <td className="py-2 pr-3 font-mono text-zinc-300">{monthLabel(a.month)}</td>
                     <td className="py-2 pr-3 text-right font-mono text-zinc-300">{a.lots}</td>
-                    <td className="py-2 pr-3 font-mono text-zinc-400">{a.last_trading_day ?? '—'}</td>
-                    <td className="py-2 pr-3 font-mono text-zinc-500">{a.final_settlement_day ?? '—'}</td>
+                    <td className="py-2 pr-3 font-mono text-zinc-400">
+                      {a.last_trading_day ?? '—'}
+                      {a.holiday_adjusted && <span className="text-amber-400 ml-1" title="第三個星期三休市，已順延至次一營業日">順延</span>}
+                      {!a.calendar_known && <span className="text-zinc-600 ml-1" title="沒有這一年的休市日曆，日期未經假日校正">*</span>}
+                    </td>
                     <td className={`py-2 pr-3 text-right font-mono ${
                       a.level === 'expired' || a.level === 'urgent' ? 'text-rose-400' : a.level === 'soon' ? 'text-amber-400' : 'text-zinc-300'
                     }`}>
-                      {a.days_left ?? '—'}
+                      {a.trading_days_left ?? '—'}
                     </td>
+                    <td className="py-2 pr-3 text-right font-mono text-zinc-500">{a.days_left ?? '—'}</td>
                     <td className="py-2 text-[11px]">
                       {a.level === 'expired' ? <span className="text-rose-400">已到期</span>
-                        : a.level === 'urgent' ? <span className="text-rose-400">今明兩天要處理</span>
+                        : a.level === 'urgent' ? <span className="text-rose-400">剩兩個交易日內</span>
                         : a.level === 'soon' ? <span className="text-amber-400">該轉倉了</span>
                         : <span className="text-zinc-500">還早</span>}
                     </td>
@@ -1021,8 +1330,10 @@ const RolloverTab: React.FC<{
           </div>
         )}
         <p className="text-[11px] text-zinc-500">
-          最後交易日＝到期月份的第三個星期三（期交所規則），次一營業日為最後結算日。
-          遇國定假日會順延，本頁不含台股假日曆，撞到連假時請以期交所公告為準。
+          最後交易日＝到期月份的第三個星期三；該日休市時<strong className="text-zinc-400">順延至次一營業日</strong>（期交所明文規定）。
+          休市日曆抓自證交所 OpenAPI，<strong className="text-zinc-400">只涵蓋當年度</strong>——標 <span className="font-mono">*</span> 的月份查不到日曆，是未經校正的第三個星期三。
+          國內股票／ETF／指數期貨的<strong className="text-zinc-400">最後結算日就是最後交易日</strong>（結算價取到期日當天收盤前的平均價），
+          沒有「次一營業日結算」那回事，那是國外指數期貨的規則。
         </p>
       </div>
 
@@ -1034,14 +1345,14 @@ const RolloverTab: React.FC<{
             <select value={near} onChange={(e) => setNear(e.target.value)}
               className="w-full bg-zinc-900 border border-border rounded-lg px-3 py-2 text-sm font-mono text-zinc-100">
               <option value="">選擇…</option>
-              {quoteMonths.map((m) => <option key={m.month} value={m.month}>{monthLabel(m.month)}（{px(priceOf(m.month))}）</option>)}
+              {quoteMonths.map((m) => <option key={m.month} value={m.month}>{monthLabel(m.month)}（{px(marketPrice(m.month))}）</option>)}
             </select>
           </Field>
           <Field label="建立的月份（遠月）">
             <select value={far} onChange={(e) => setFar(e.target.value)}
               className="w-full bg-zinc-900 border border-border rounded-lg px-3 py-2 text-sm font-mono text-zinc-100">
               <option value="">選擇…</option>
-              {quoteMonths.map((m) => <option key={m.month} value={m.month}>{monthLabel(m.month)}（{px(priceOf(m.month))}）</option>)}
+              {quoteMonths.map((m) => <option key={m.month} value={m.month}>{monthLabel(m.month)}（{px(marketPrice(m.month))}）</option>)}
             </select>
           </Field>
           <Field label="口數">
@@ -1094,11 +1405,15 @@ const RolloverTab: React.FC<{
                     <td className="py-2 pr-3 text-right font-mono text-zinc-400">{m.volume?.toLocaleString() ?? '—'}</td>
                     <td className="py-2 pr-3 text-right font-mono text-zinc-400">{m.open_interest?.toLocaleString() ?? '—'}</td>
                     <td className="py-2 font-mono text-zinc-500">
-                      {lastTradingDay(m.month) ?? '—'}
                       {(() => {
-                        const d = lastTradingDay(m.month);
-                        const left = d ? daysBetween(todayStr(), d) : null;
-                        return left !== null ? <span className="text-zinc-600">（{left} 天）</span> : null;
+                        const d = lastTradingDay(m.month, holidays);
+                        const left = d ? tradingDaysBetween(todayStr(), d, holidays) : null;
+                        return (
+                          <>
+                            {d ?? '—'}
+                            {left !== null && <span className="text-zinc-600">（{left} 個交易日）</span>}
+                          </>
+                        );
                       })()}
                     </td>
                   </tr>
@@ -1149,7 +1464,7 @@ const NumInput: React.FC<{
 // ── 壓力測試 ────────────────────────────────────────────────────────────────
 
 const STRESS_TONE: Record<string, { cls: string; label: string }> = {
-  flat: { cls: 'text-zinc-500', label: '無部位' },
+  flat: { cls: 'text-zinc-500', label: '⬜ 已全數出場' },
   ok: { cls: 'text-emerald-400', label: '✅ 正常持倉' },
   warn: { cls: 'text-amber-400', label: '⚠️ 低於原始保證金' },
   call: { cls: 'text-orange-400', label: '🟨 黃牌追繳' },
@@ -1157,10 +1472,14 @@ const STRESS_TONE: Record<string, { cls: string; label: string }> = {
 };
 
 const STRESS_PRESETS: { label: string; drops: number[] }[] = [
-  { label: '一般回檔', drops: [0.02, 0.03, 0.05, 0.08, 0.1, 0.12] },
-  { label: '預設（回檔→崩盤）', drops: [...DEFAULT_PLANNER.stress_drops] },
+  { label: '一般回檔', drops: [-0.05, -0.03, 0.02, 0.03, 0.05, 0.08, 0.1, 0.12] },
+  { label: '預設（漲跌兩側）', drops: [...DEFAULT_PLANNER.stress_drops] },
   { label: '歷史級崩盤', drops: [0.1, 0.2, 0.3, 0.4, 0.5, 0.6] },
+  { label: '軋空（只看上漲）', drops: [-0.03, -0.05, -0.1, -0.15, -0.2, -0.3] },
 ];
+
+/** 大盤變動的顯示：正值＝跌（紅），負值＝漲（綠） */
+const moveText = (d: number) => (d >= 0 ? `-${(d * 100).toFixed(0)}%` : `+${(-d * 100).toFixed(0)}%`);
 
 const StressTab: React.FC<{
   config: FuturesConfig;
@@ -1174,17 +1493,20 @@ const StressTab: React.FC<{
     void saveToCloud(patch((c) => ({ ...c, planner: { ...c.planner, stress_drops: drops } })));
   };
 
-  // 「撐得住幾 %」＝最後一個還沒進入追繳區的情境；全掛就是 0
+  // 摘要只看下跌側（drop > 0）——上漲情境對淨多單本來就沒有風險可言
+  const downside = useMemo(() => stress.filter((r) => r.drop > 0), [stress]);
+  // 「撐得住幾 %」＝下跌側最後一個還沒進入追繳區的情境
   const survivable = useMemo(() => {
     let last: StressRow | null = null;
-    for (const r of stress) {
+    for (const r of downside) {
       if (r.status === 'call' || r.status === 'danger') break;
       last = r;
     }
     return last;
-  }, [stress]);
-  const firstCall = stress.find((r) => r.status === 'call' || r.status === 'danger') ?? null;
-  const firstDanger = stress.find((r) => r.status === 'danger') ?? null;
+  }, [downside]);
+  const firstCall = downside.find((r) => r.status === 'call' || r.status === 'danger') ?? null;
+  const firstDanger = downside.find((r) => r.status === 'danger') ?? null;
+  const anyStops = stress.some((r) => r.stopped_lots > 0);
 
   if (summary.total_lots === 0) {
     return (
@@ -1248,6 +1570,7 @@ const StressTab: React.FC<{
                 <th className="text-right font-medium py-2 pr-3">權益數</th>
                 <th className="text-right font-medium py-2 pr-3">超額保證金</th>
                 <th className="text-right font-medium py-2 pr-3">風險指標</th>
+                {anyStops && <th className="text-right font-medium py-2 pr-3">停損出場</th>}
                 <th className="text-left font-medium py-2">狀態</th>
               </tr>
             </thead>
@@ -1255,8 +1578,10 @@ const StressTab: React.FC<{
               {stress.map((r) => {
                 const tone = STRESS_TONE[r.status] ?? STRESS_TONE.flat;
                 return (
-                  <tr key={r.drop} className="border-b border-border/50 last:border-0">
-                    <td className="py-2 pr-3 font-mono text-rose-400 font-semibold">-{(r.drop * 100).toFixed(0)}%</td>
+                  <tr key={r.drop} className={`border-b border-border/50 last:border-0 ${r.drop < 0 ? 'bg-emerald-500/5' : ''}`}>
+                    <td className={`py-2 pr-3 font-mono font-semibold ${r.drop >= 0 ? 'text-rose-400' : 'text-emerald-400'}`}>
+                      {moveText(r.drop)}
+                    </td>
                     {config.index_ref > 0 && (
                       <td className="py-2 pr-3 text-right font-mono text-zinc-400">
                         {r.index_after !== null ? Math.round(r.index_after).toLocaleString() : '—'}
@@ -1269,6 +1594,13 @@ const StressTab: React.FC<{
                     <td className={`py-2 pr-3 text-right font-mono ${tone.cls}`}>
                       {r.risk_indicator !== null ? `${(r.risk_indicator * 100).toFixed(0)}%` : '—'}
                     </td>
+                    {anyStops && (
+                      <td className="py-2 pr-3 text-right font-mono text-[11px]">
+                        {r.stopped_lots > 0
+                          ? <span className="text-cyan-400">{r.stopped_lots} 口 <span className={pnlCls(r.stop_realized)}>{money(r.stop_realized)}</span></span>
+                          : <span className="text-zinc-600">—</span>}
+                      </td>
+                    )}
                     <td className={`py-2 text-[11px] ${tone.cls}`}>{tone.label}</td>
                   </tr>
                 );
@@ -1278,11 +1610,14 @@ const StressTab: React.FC<{
         </div>
 
         <p className="text-[11px] text-zinc-500">
-          每一列都是把「現在價格」換成修正後的價格、重跑一次總覽頁那組算式，所以費用、期交稅、多空對沖的處理完全一致。
-          標的跌幅 ＝ 大盤跌幅 × beta（目前 {beta.toFixed(2)}）。
-          <strong className="text-zinc-400"> 這是靜態測試</strong>：假設你不加碼、不減碼、不補錢，
-          而且保證金維持現在的水準——實際崩盤時期交所通常會<strong className="text-zinc-400">調高</strong>保證金，
-          斷頭會比表上更早發生。
+          每一列都是把各月份報價按比例換掉、重跑一次總覽頁那組算式，所以費用、期交稅、多空對沖的處理完全一致。
+          標的變動 ＝ 大盤變動 × beta（目前 {beta.toFixed(2)}）。綠底列是<strong className="text-zinc-400">上漲</strong>情境（空單看的是那一側）。
+          {anyStops
+            ? <> 已設停損的部位<strong className="text-zinc-400">會在觸價時出場</strong>——損益實現進專戶、佔用的保證金一併釋放，剩下的部位才繼續承受行情。</>
+            : <> 目前沒有部位設停損，所以表格假設你一路抱到斷頭；到「部位 &amp; 平倉紀錄」設停損價後這裡會改成模擬觸價出場。</>}
+          <strong className="text-zinc-400"> 這仍是靜態測試</strong>：假設你不加碼、不減碼、不補錢，
+          而且保證金維持現在的水準——實際崩盤時期交所通常會<strong className="text-zinc-400">調高</strong>保證金、
+          停損也常因跳空而滑價，斷頭會比表上更早發生。
         </p>
       </div>
     </div>
@@ -1296,10 +1631,13 @@ const PlannerTab: React.FC<{
   spec: FuturesSpec;
   summary: Summary;
   plan: ReturnType<typeof targetPlan>;
+  priceInput: PriceInput;
   patch: (u: (c: FuturesConfig) => FuturesConfig) => FuturesConfig;
   saveToCloud: (cfg?: FuturesConfig) => Promise<void>;
-}> = ({ config, spec, summary, plan, patch, saveToCloud }) => {
+}> = ({ config, spec, summary, plan, priceInput, patch, saveToCloud }) => {
   const p = config.planner;
+  // 有部位時以參考月份的價格為基準，沒部位時用手填的參考價（建倉試算的情境）
+  const refPrice = summary.total_lots > 0 ? summary.reference_price : config.price;
   // 滑桿拖曳中要即時更新「建議口數／目標價」，但不能每動一格就打雲端，所以本地先 state、
   // 放開才存。store 被別處改掉時（雲端載入、還原預設值）用 React 官方的「render 期間
   // 校正 state」寫法同步回來——比 useEffect 少一次串聯重繪，也不會被 lint 擋。
@@ -1320,8 +1658,8 @@ const PlannerTab: React.FC<{
 
   const capital = p.capital > 0 ? p.capital : config.cash;
   const suggestion = useMemo(
-    () => suggestLots(capital, config.price, lev, spec),
-    [capital, config.price, lev, spec],
+    () => suggestLots(capital, refPrice, lev, spec),
+    [capital, refPrice, lev, spec],
   );
 
   // 分批進場：用假想部位跑一次總覽的算式，直接看到這個組合的風險長相
@@ -1332,13 +1670,13 @@ const PlannerTab: React.FC<{
       id: '_batch', month: '', side: 'long', lots: batch.lots,
       entry_price: batch.avg_price, entry_date: '',
     }];
-    return summarizeAccount(virtual, config.price > 0 ? config.price : batch.avg_price, spec, capital);
-  }, [batch, config.price, spec, capital]);
+    return summarizeAccount(virtual, refPrice > 0 ? refPrice : batch.avg_price, spec, capital);
+  }, [batch, refPrice, spec, capital]);
 
   const peak = p.trailing_peak > 0 ? p.trailing_peak : plan.target_price;
   const trailing = useMemo(
-    () => trailingStopPlan(config.positions, spec, peak, p.trailing_dist),
-    [config.positions, spec, peak, p.trailing_dist],
+    () => trailingStopPlan(config.positions, spec, priceInput, peak, p.trailing_dist),
+    [config.positions, spec, priceInput, peak, p.trailing_dist],
   );
 
   return (
@@ -1355,9 +1693,12 @@ const PlannerTab: React.FC<{
             <NumInput value={p.capital} step="10000" min="0" placeholder={`未填＝沿用 ${money(config.cash)}`}
               onCommit={(v) => setPlanner((x) => ({ ...x, capital: Math.max(0, v) }))} />
           </Field>
-          <Field label="現在價格（唯讀）" hint="到「部位 & 平倉紀錄」或按上方「真實同步」更新。">
+          <Field label="現在價格（唯讀）" hint="到「部位 & 平倉紀錄」或按上方「真實同步」更新。有部位時用參考月份的價格。">
             <div className="w-full bg-zinc-900/50 border border-border rounded-lg px-3 py-2 text-sm font-mono text-zinc-400">
-              {config.price > 0 ? px(config.price) : '尚未取得'}
+              {refPrice > 0 ? px(refPrice) : '尚未取得'}
+              {summary.total_lots > 0 && summary.months.length > 1 && (
+                <span className="text-zinc-600 ml-2 text-xs">{monthLabel(summary.reference_month)}</span>
+              )}
             </div>
           </Field>
         </div>
@@ -1474,7 +1815,7 @@ const PlannerTab: React.FC<{
               <div className="flex flex-wrap items-baseline justify-between gap-2 text-xs">
                 <span className="text-zinc-400">價格目標</span>
                 <span className="font-mono text-emerald-400 font-bold text-sm">
-                  {gain >= 0 ? '+' : ''}{(gain * 100).toFixed(0)}% → {px(config.price * (1 + gain))}
+                  {gain >= 0 ? '+' : ''}{(gain * 100).toFixed(0)}% → {px(refPrice * (1 + gain))}
                 </span>
               </div>
               <input

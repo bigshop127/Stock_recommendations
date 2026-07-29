@@ -1092,3 +1092,95 @@ export function computeMarketStatus(input: MarketStatusInput): MarketStatus | nu
     tier_label,
   };
 }
+
+// ── 期貨曝險合併（2026-07-29）─────────────────────────────────────────────────
+//
+// 這頁算的 β 只看現股（00631L × 2 ＋ 防守端 β=0）。但期貨頁的 SRF 多單本質上就是
+// 0050 的市場曝險（β≈1），用保證金撐起來 —— 兩頁各算各的，會**系統性低估**真實槓桿：
+// 押 8 萬保證金換到 100 萬曝險，在現股模型裡完全看不見。
+//
+// 刻意**不**改 computeRebalance()：那條路徑同時餵給 rebalance_alert.cjs 的每日告警，
+// 動它等於動交易建議與寄信內容。這裡改成獨立的純函式，把合併後的真實 β 算出來給
+// 使用者看，要不要據此調整目標 β 由他自己決定（頁面上提供一鍵套用建議值）。
+
+export interface FuturesExposureInput {
+  notional: number;  // 名目曝險（多單為正、空單為負）＝價格 × 契約單位 × 淨口數
+  equity: number;    // 保證金專戶權益數（＝現金餘額＋未實現損益），這是你真正擁有的資產
+  beta: number;      // 期貨標的相對大盤的 β（0050 期貨 ≈ 1.0；台指期 ＝ 1.0）
+}
+
+export interface CombinedBetaResult {
+  stock_value: number;          // 現股組合總值（＝computeRebalance 的 total_value）
+  stock_exposure: number;       // 現股的市場曝險＝etf_value × etf_beta
+  futures_notional: number;
+  futures_equity: number;
+  futures_exposure: number;     // notional × 期貨標的 β
+  total_value: number;          // stock_value + futures_equity（總資產）
+  total_exposure: number;       // stock_exposure + futures_exposure
+  stock_only_beta: number | null;  // 只看現股時算出來的 β（＝這頁原本顯示的數字）
+  combined_beta: number | null;    // 含期貨的真實 β
+  understated_by: number | null;   // combined − stock_only：現股模型低估了多少
+  has_futures: boolean;
+}
+
+/**
+ * 把期貨曝險併進投組 β。
+ *
+ * 分子＝市場曝險總額（現股 ETF 市值 × 其 β ＋ 期貨名目 × 其 β），
+ * 分母＝總資產（現股組合總值 ＋ 期貨保證金專戶權益數）。
+ *
+ * 為什麼分母加的是**權益數**而不是名目：權益數才是你在期貨帳戶裡真正擁有的錢；
+ * 名目是靠槓桿撐出來的曝險，加進分母會把槓桿洗掉，那正是要避免的低估。
+ */
+export function combineFuturesBeta(
+  result: Pick<RebalanceResult, 'etf_value' | 'total_value'>,
+  etfBeta: number,
+  futures?: FuturesExposureInput | null,
+): CombinedBetaResult {
+  const stock_value = Math.max(0, safeNum(result?.total_value, 0));
+  const stock_exposure = Math.max(0, safeNum(result?.etf_value, 0)) * safeNum(etfBeta, 2);
+
+  const futures_notional = safeNum(futures?.notional, 0);
+  const futures_equity = safeNum(futures?.equity, 0);
+  const futures_exposure = futures_notional * safeNum(futures?.beta, 1);
+  const has_futures = futures_notional !== 0;
+
+  const total_value = stock_value + futures_equity;
+  const total_exposure = stock_exposure + futures_exposure;
+
+  const stock_only_beta = stock_value > 0 ? stock_exposure / stock_value : null;
+  const combined_beta = total_value > 0 ? total_exposure / total_value : null;
+
+  return {
+    stock_value, stock_exposure,
+    futures_notional, futures_equity, futures_exposure,
+    total_value, total_exposure,
+    stock_only_beta, combined_beta,
+    understated_by: combined_beta !== null && stock_only_beta !== null
+      ? combined_beta - stock_only_beta
+      : null,
+    has_futures,
+  };
+}
+
+/**
+ * 反解：整體（含期貨）想達到 overallTarget 的話，**這頁的目標 β 該設多少**？
+ *
+ *   overall = (stock_value × stockBeta + futures_exposure) / total_value
+ * ⇒ stockBeta = (overall × total_value − futures_exposure) / stock_value
+ *
+ * 期貨已經吃掉一部分曝險，所以現股這邊要調低；期貨曝險大到超過整體目標時會算出
+ * 負數（意思是「光期貨就超標了，現股得反向做空才壓得下來」），此時 clamp 到 0
+ * 並讓呼叫端顯示「期貨曝險已超過整體目標」。
+ */
+export function stockTargetForOverallBeta(
+  overallTarget: number,
+  combined: CombinedBetaResult,
+): { stock_target: number | null; over_exposed: boolean } {
+  const target = safeNum(overallTarget, 0);
+  if (!(combined.stock_value > 0) || !(combined.total_value > 0)) {
+    return { stock_target: null, over_exposed: false };
+  }
+  const raw = (target * combined.total_value - combined.futures_exposure) / combined.stock_value;
+  return { stock_target: Math.max(0, raw), over_exposed: raw < 0 };
+}

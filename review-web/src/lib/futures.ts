@@ -81,16 +81,45 @@ function safe(n: unknown, fb = 0): number {
 
 const sign = (side: Side) => (side === 'short' ? -1 : 1);
 
-// ── 到期日 ───────────────────────────────────────────────────────────────────
+// ── 到期日與營業日 ───────────────────────────────────────────────────────────
+
+/** 台股休市日集合（'YYYY-MM-DD'）。由 /api/market/holidays 抓證交所公告後餵進來。 */
+export type Holidays = ReadonlySet<string> | undefined;
+
+const isoOf = (d: Date) => d.toISOString().slice(0, 10);
+
+/** 是不是台股營業日：非週末、且不在休市日清單裡 */
+export function isBusinessDay(date: string, holidays?: Holidays): boolean {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return false;
+  const d = new Date(date + 'T00:00:00Z');
+  const dow = d.getUTCDay();
+  if (dow === 0 || dow === 6) return false;
+  return !holidays?.has(date);
+}
+
+/** 從 date 起（含當日）往後找第一個營業日；最多找 30 天，避免壞資料無限迴圈 */
+export function nextBusinessDay(date: string, holidays?: Holidays, includeSelf = true): string | null {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return null;
+  const d = new Date(date + 'T00:00:00Z');
+  if (!includeSelf) d.setUTCDate(d.getUTCDate() + 1);
+  for (let i = 0; i < 30; i += 1) {
+    const iso = isoOf(d);
+    if (isBusinessDay(iso, holidays)) return iso;
+    d.setUTCDate(d.getUTCDate() + 1);
+  }
+  return null;
+}
 
 /**
- * 最後交易日＝到期月份的**第三個星期三**（期交所規則）。
+ * 最後交易日＝到期月份的**第三個星期三**；該日休市時**順延**至次一營業日。
  *
- * 注意：遇到國定假日會順延至次一營業日，本函式**不含台股假日曆**，所以算出來的是
- * 「規則上的第三個星期三」。實務上只有極少數年份會撞到假日（例：228、清明連假），
- * 頁面提供每個部位的「最後交易日覆寫」欄位處理這種例外。
+ * 順延（不是提前）是期交所明文規定：「最後交易日若為假日或因不可抗力因素未能進行
+ * 交易時，以其最近之次一營業日為最後交易日。」
+ *
+ * `holidays` 沒傳時退回純第三個星期三——證交所的休市日曆只涵蓋當年度，跨年的
+ * 月份本來就查不到，此時 UI 會標示「未經假日校正」。
  */
-export function lastTradingDay(month: string): string | null {
+export function lastTradingDay(month: string, holidays?: Holidays): string | null {
   const m = /^(\d{4})(\d{2})$/.exec(String(month || '').trim());
   if (!m) return null;
   const y = Number(m[1]);
@@ -98,20 +127,24 @@ export function lastTradingDay(month: string): string | null {
   if (mo < 1 || mo > 12) return null;
   const firstDow = new Date(Date.UTC(y, mo - 1, 1)).getUTCDay(); // 0=日 … 3=三
   const offset = (3 - firstDow + 7) % 7;
-  const day = 1 + offset + 14;
-  const d = new Date(Date.UTC(y, mo - 1, day));
-  return d.toISOString().slice(0, 10);
+  const d = new Date(Date.UTC(y, mo - 1, 1 + offset + 14));
+  const base = isoOf(d);
+  if (!holidays) return base;
+  return nextBusinessDay(base, holidays) ?? base;
 }
 
-/** 最後結算日＝最後交易日的次一營業日（週末順延；同樣不含國定假日） */
-export function finalSettlementDay(month: string): string | null {
-  const ltd = lastTradingDay(month);
-  if (!ltd) return null;
-  const d = new Date(ltd + 'T00:00:00Z');
-  do {
-    d.setUTCDate(d.getUTCDate() + 1);
-  } while (d.getUTCDay() === 0 || d.getUTCDay() === 6);
-  return d.toISOString().slice(0, 10);
+/**
+ * 最後結算日 ＝ 最後交易日（同一天）。
+ *
+ * ⚠️ 這裡曾經寫成「次一營業日」，是**錯的**。國內股價指數類與股票／ETF 期貨的
+ * 最後結算價都是用**到期日當天**的價格算的（指數類取收盤前 30 分鐘標的指數算術
+ * 平均、股票/ETF 類取收盤前 60 分鐘標的證券成交價算術平均），所以最後結算日就是
+ * 最後交易日。會採「次一營業日」的是**國外**指數期貨（日經 225、S&P 500 那些）。
+ *
+ * 函式保留是為了讓呼叫端語意清楚，不是因為它算的是不同的日子。
+ */
+export function finalSettlementDay(month: string, holidays?: Holidays): string | null {
+  return lastTradingDay(month, holidays);
 }
 
 /** 兩個 'YYYY-MM-DD' 之間差幾個日曆天（to − from）；格式不對回 null */
@@ -121,6 +154,24 @@ export function daysBetween(from: string, to: string): number | null {
   const b = Date.parse(to + 'T00:00:00Z');
   if (!Number.isFinite(a) || !Number.isFinite(b)) return null;
   return Math.round((b - a) / 86400000);
+}
+
+/**
+ * from（不含）到 to（含）之間還有幾個**營業日**——轉倉真正在乎的是「還能下幾次單」，
+ * 不是日曆天。沒有假日曆時只扣週末。to 早於 from 回負數。
+ */
+export function tradingDaysBetween(from: string, to: string, holidays?: Holidays): number | null {
+  const span = daysBetween(from, to);
+  if (span === null) return null;
+  if (span === 0) return 0;
+  const step = span > 0 ? 1 : -1;
+  const d = new Date(from + 'T00:00:00Z');
+  let count = 0;
+  for (let i = 0; i < Math.abs(span); i += 1) {
+    d.setUTCDate(d.getUTCDate() + step);
+    if (isBusinessDay(isoOf(d), holidays)) count += step;
+  }
+  return count;
 }
 
 // ── 單筆部位損益 ─────────────────────────────────────────────────────────────
@@ -185,6 +236,44 @@ export function closedPnl(t: ClosedTrade, spec: FuturesSpec): number {
   return gross - fees - tax;
 }
 
+// ── 報價：逐月份 ────────────────────────────────────────────────────────────
+
+/**
+ * 報價來源。不同到期月份是**不同的合約、不同的價格**（正價差時遠月更貴），
+ * 所以帳戶彙總必須逐月份取價，不能全部套同一個數字——同時持有兩個月份時
+ * 用單一價格評價，損益、追繳價、壓力測試會一起偏掉。
+ *
+ * 傳 number 時代表「所有月份都用這個價」，是單一月份持倉下的簡寫，
+ * 也讓舊呼叫端與測試不用改寫。
+ */
+export type PriceInput = number | { byMonth: Record<string, number>; fallback?: number };
+
+/** 取某月份的價格；該月沒報價時退回 fallback（通常是使用者手填的參考價） */
+export function priceOf(input: PriceInput, month: string): number {
+  if (typeof input === 'number') return Math.max(0, safe(input));
+  const v = input?.byMonth?.[month];
+  if (typeof v === 'number' && Number.isFinite(v) && v > 0) return v;
+  return Math.max(0, safe(input?.fallback, 0));
+}
+
+/** 把整份報價平移 delta（壓力測試與情境試算用：各月份一起動，價差維持不變） */
+export function shiftPrices(input: PriceInput, delta: number): PriceInput {
+  const d = safe(delta);
+  if (typeof input === 'number') return Math.max(0, input + d);
+  const byMonth: Record<string, number> = {};
+  for (const [m, v] of Object.entries(input?.byMonth ?? {})) byMonth[m] = Math.max(0, safe(v) + d);
+  return { byMonth, fallback: Math.max(0, safe(input?.fallback, 0) + d) };
+}
+
+/** 把整份報價按比例縮放（跌 10% ＝ scalePrices(prices, 0.9)） */
+export function scalePrices(input: PriceInput, ratio: number): PriceInput {
+  const r = Math.max(0, safe(ratio, 1));
+  if (typeof input === 'number') return Math.max(0, input * r);
+  const byMonth: Record<string, number> = {};
+  for (const [m, v] of Object.entries(input?.byMonth ?? {})) byMonth[m] = Math.max(0, safe(v) * r);
+  return { byMonth, fallback: Math.max(0, safe(input?.fallback, 0) * r) };
+}
+
 // ── 帳戶層級彙總（保證金 / 風險指標 / 追繳斷頭價）────────────────────────────
 
 export interface AccountSummary {
@@ -201,8 +290,13 @@ export interface AccountSummary {
   excess: number;                // 超額保證金＝權益數 − 所需原始保證金（負值代表已低於原始）
   risk_indicator: number | null; // 風險指標＝權益數 / 所需維持保證金（無部位時 null）
   leverage: number | null;       // 槓桿＝名目曝險 / 權益數
-  margin_call_price: number | null;  // 權益數跌到「維持保證金」時的標的價格（會收到追繳通知）
-  liquidation_price: number | null;  // 風險指標跌到 25% 時的標的價格（盤中會被強制平倉）
+  months: string[];              // 有未平倉口數的月份（排序後）
+  reference_month: string;       // 口數最多的月份——追繳價／斷頭價以它的價格表示
+  reference_price: number;       // 參考月份的現價
+  margin_call_shift: number | null;  // 各月份一起移動多少會觸發追繳（負值＝下跌）
+  liquidation_shift: number | null;  // 各月份一起移動多少會被強制平倉
+  margin_call_price: number | null;  // 參考月份的追繳價（＝reference_price + margin_call_shift）
+  liquidation_price: number | null;  // 參考月份的斷頭價
   status: 'flat' | 'ok' | 'warn' | 'call' | 'danger';
 }
 
@@ -214,7 +308,7 @@ export interface AccountSummary {
  */
 export function summarizeAccount(
   positions: FuturesPosition[],
-  price: number,
+  price: PriceInput,
   spec: FuturesSpec,
   cash: number,
   closed: ClosedTrade[] = [],
@@ -228,9 +322,7 @@ export function summarizeAccount(
   let short_lots = 0;
   let contract_value = 0;
   let unrealized = 0;
-  let signedEntryNotional = 0;  // Σ sign·lots·entry（價格風險方向）
-  let grossEntryNotional = 0;   // Σ lots·entry（期交稅按成交金額算，不分方向）
-  let totalFees = 0;
+  const lotsByMonth = new Map<string, number>();
 
   for (const pos of list) {
     const lots = Math.max(0, safe(pos.lots));
@@ -239,13 +331,21 @@ export function summarizeAccount(
     total_lots += lots;
     net_lots += s * lots;
     if (s > 0) long_lots += lots; else short_lots += lots;
-    const pnl = positionPnl(pos, price, spec);
+    const pnl = positionPnl(pos, priceOf(price, pos.month), spec);
     contract_value += pnl.contract_value;
     unrealized += pnl.net_pnl;
-    totalFees += pnl.fees;
-    signedEntryNotional += s * lots * Math.max(0, safe(pos.entry_price));
-    grossEntryNotional += lots * Math.max(0, safe(pos.entry_price));
+    lotsByMonth.set(pos.month, (lotsByMonth.get(pos.month) ?? 0) + lots);
   }
+
+  const months = [...lotsByMonth.keys()].sort();
+  // 參考月份＝口數最多的那個（平手取近月），追繳價／斷頭價用它的價格來表達
+  let reference_month = '';
+  let refLots = -1;
+  for (const m of months) {
+    const l = lotsByMonth.get(m) ?? 0;
+    if (l > refLots) { refLots = l; reference_month = m; }
+  }
+  const reference_price = total_lots > 0 ? priceOf(price, reference_month) : priceOf(price, '');
 
   const realized = (Array.isArray(closed) ? closed : []).reduce((sum, t) => sum + closedPnl(t, spec), 0);
   const cashBal = safe(cash);
@@ -256,23 +356,23 @@ export function summarizeAccount(
   const risk_indicator = required_maintenance > 0 ? equity / required_maintenance : null;
   const leverage = equity > 0 && contract_value > 0 ? contract_value / equity : null;
 
-  // 追繳價／斷頭價：解 equity(P) = 門檻。權益數對 P 是一次函數（期交稅那項也含 P，
-  // 一併放進來解，得到的是精確值而非近似）：
-  //   equity(P) = cash + unit·(net_lots·P − signedEntryNotional)
-  //               − fees − taxRate·unit·(grossEntryNotional + P·total_lots)
-  // ⇒ P·unit·(net_lots − taxRate·total_lots) = 門檻 − cash + unit·signedEntryNotional
-  //                                            + fees + taxRate·unit·grossEntryNotional
+  // 追繳價／斷頭價：解「所有月份一起移動 δ 時，權益數 ＝ 門檻」。
+  // 月份之間的價差是市場結構（正/逆價差），崩盤時整條曲線一起下移而不是收斂到同一點，
+  // 所以用平移建模比「全部設成同一個價」誠實得多。
+  //   equity(δ) = equity(0) + unit·net_lots·δ − taxRate·unit·total_lots·δ
+  // ⇒ δ* = (門檻 − equity(0)) / (unit·(net_lots − taxRate·total_lots))
+  // 只有一個月份時，reference_price + δ* 與舊版的解析解完全相同。
   // net_lots = 0（完全對沖）時價格不再影響權益數，無解 → null。
   const taxRate = Math.max(0, safe(spec.tax_rate));
-  const priceAtEquity = (target: number): number | null => {
-    const denom = unit * (net_lots - taxRate * total_lots);
+  const denom = unit * (net_lots - taxRate * total_lots);
+  const shiftToEquity = (target: number): number | null => {
     if (net_lots === 0 || denom === 0) return null;
-    const numer = target - cashBal + unit * signedEntryNotional + totalFees + taxRate * unit * grossEntryNotional;
-    return numer / denom;
+    return (target - equity) / denom;
   };
 
-  const margin_call_price = priceAtEquity(required_maintenance);
-  const liquidation_price = priceAtEquity(required_maintenance * Math.max(0, safe(spec.liquidation_ratio, 0.25)));
+  const margin_call_shift = shiftToEquity(required_maintenance);
+  const liquidation_shift = shiftToEquity(required_maintenance * Math.max(0, safe(spec.liquidation_ratio, 0.25)));
+  const priceAt = (shift: number | null) => (shift === null ? null : Math.max(0, reference_price + shift));
 
   let status: AccountSummary['status'] = 'flat';
   if (total_lots > 0 && risk_indicator !== null) {
@@ -287,8 +387,10 @@ export function summarizeAccount(
     contract_value, unrealized, realized, equity,
     required_initial, required_maintenance, excess,
     risk_indicator, leverage,
-    margin_call_price: margin_call_price === null ? null : Math.max(0, margin_call_price),
-    liquidation_price: liquidation_price === null ? null : Math.max(0, liquidation_price),
+    months, reference_month, reference_price,
+    margin_call_shift, liquidation_shift,
+    margin_call_price: priceAt(margin_call_shift),
+    liquidation_price: priceAt(liquidation_shift),
     status,
   };
 }
@@ -299,21 +401,28 @@ export interface RolloverAlert {
   month: string;
   lots: number;
   last_trading_day: string | null;
-  final_settlement_day: string | null;
-  days_left: number | null;     // 距最後交易日還有幾個日曆天（負數＝已過期）
-  due: boolean;                 // 已進入提醒區間
-  expired: boolean;             // 最後交易日已過
+  days_left: number | null;          // 距最後交易日還有幾個日曆天（負數＝已過期）
+  trading_days_left: number | null;  // 還剩幾個營業日＝還能下幾次單（負數＝已過期）
+  holiday_adjusted: boolean;         // true＝第三個星期三休市，已順延到次一營業日
+  calendar_known: boolean;           // false＝沒有這個月份的假日曆，日期未經校正
+  due: boolean;                      // 已進入提醒區間
+  expired: boolean;                  // 最後交易日已過
   level: 'none' | 'soon' | 'urgent' | 'expired';
 }
 
 /**
  * 每個有未平倉口數的月份各給一則轉倉狀態。
- * level：urgent＝剩 2 天內、soon＝已進提醒區間（預設前 7 天）、expired＝已過最後交易日。
+ *
+ * 提醒區間用**營業日**判斷而不是日曆天：到期前一週如果卡到連假，日曆天還有 7 天
+ * 但實際只剩 2 個交易日能處理，用日曆天算會晚兩天才亮燈。沒有假日曆時退回日曆天。
+ *
+ * level：urgent＝剩 2 個營業日內、soon＝已進提醒區間（預設前 7 天）、expired＝已過期。
  */
 export function rolloverAlerts(
   positions: FuturesPosition[],
   spec: FuturesSpec,
   today: string,
+  holidays?: Holidays,
 ): RolloverAlert[] {
   const byMonth = new Map<string, number>();
   for (const pos of Array.isArray(positions) ? positions : []) {
@@ -325,20 +434,29 @@ export function rolloverAlerts(
   const window = Math.max(0, safe(spec.rollover_days, 7));
   const out: RolloverAlert[] = [];
   for (const [month, lots] of byMonth) {
-    const ltd = lastTradingDay(month);
+    const raw = lastTradingDay(month);                 // 未經假日校正的第三個星期三
+    const ltd = lastTradingDay(month, holidays);       // 校正後
+    // 假日曆只涵蓋當年度：月份不在涵蓋範圍內時，這個日期沒被真正驗證過
+    const calendar_known = Boolean(holidays) && raw !== null
+      && [...(holidays ?? [])].some((h) => h.slice(0, 4) === raw.slice(0, 4));
     const days_left = ltd ? daysBetween(today, ltd) : null;
+    const trading_days_left = ltd ? tradingDaysBetween(today, ltd, holidays) : null;
     const expired = days_left !== null && days_left < 0;
-    const due = days_left !== null && days_left >= 0 && days_left <= window;
+    // 提醒區間優先用營業日；沒有假日曆時 tradingDaysBetween 只扣週末，仍比日曆天準
+    const left = trading_days_left ?? days_left;
+    const due = !expired && left !== null && left >= 0 && left <= window;
     let level: RolloverAlert['level'] = 'none';
     if (expired) level = 'expired';
-    else if (days_left !== null && days_left <= 2) level = 'urgent';
+    else if (left !== null && left <= 2) level = 'urgent';
     else if (due) level = 'soon';
     out.push({
       month,
       lots,
       last_trading_day: ltd,
-      final_settlement_day: finalSettlementDay(month),
       days_left,
+      trading_days_left,
+      holiday_adjusted: Boolean(holidays) && raw !== null && ltd !== null && raw !== ltd,
+      calendar_known,
       due,
       expired,
       level,
@@ -493,52 +611,109 @@ export function indexAtPrice(
 // ── 壓力測試 ────────────────────────────────────────────────────────────────
 
 export interface StressRow {
-  drop: number;                  // 大盤修正比例（0.05＝跌 5%）
-  index_after: number | null;    // 修正後的加權指數（沒填參考指數時 null）
-  price_after: number;           // 修正後的標的價格
-  unrealized: number;            // 該價位的未實現損益（含來回費用）
-  equity: number;                // 該價位的權益數
+  drop: number;                  // 大盤變動比例（0.05＝跌 5%；負值＝上漲）
+  index_after: number | null;    // 變動後的加權指數（沒填參考指數時 null）
+  price_after: number;           // 變動後的參考月份價格
+  unrealized: number;            // 該情境的未實現損益（含來回費用）
+  equity: number;                // 該情境的權益數
   excess: number;                // 超額保證金
   risk_indicator: number | null;
   status: AccountSummary['status'];
+  stopped_lots: number;          // 該情境下被停損出場的口數
+  stop_realized: number;         // 停損實現的損益（已計入權益數）
 }
 
-/** 預設的壓力情境：從一般回檔到 2008 級崩盤 */
-export const DEFAULT_STRESS_DROPS = [0.03, 0.05, 0.08, 0.1, 0.15, 0.2, 0.25, 0.3];
+/** 預設的壓力情境：小幅上漲到 2008 級崩盤（負值＝上漲，空單看的是這一側） */
+export const DEFAULT_STRESS_DROPS = [-0.05, 0.03, 0.05, 0.08, 0.1, 0.15, 0.2, 0.25, 0.3];
 
 /**
- * 大盤跌 X% 時帳戶會變成什麼樣子。
+ * 停損模擬：把在該情境下已經觸價的部位當成**真的出場**。
+ *
+ * 這比「假設你抱到斷頭」誠實：停損觸發後損益實現進保證金專戶、佔用的保證金也
+ * 一併釋放，剩下的部位才繼續承受行情。沒設停損的部位維持原樣。
+ */
+function applyStops(
+  positions: FuturesPosition[],
+  price: PriceInput,
+  spec: FuturesSpec,
+  stopLoss?: Record<string, number>,
+): { remaining: FuturesPosition[]; realized: number; stoppedLots: number } {
+  if (!stopLoss || Object.keys(stopLoss).length === 0) {
+    return { remaining: Array.isArray(positions) ? positions : [], realized: 0, stoppedLots: 0 };
+  }
+  const remaining: FuturesPosition[] = [];
+  let realized = 0;
+  let stoppedLots = 0;
+  for (const p of Array.isArray(positions) ? positions : []) {
+    const stop = safe(stopLoss[p.id], 0);
+    const px = priceOf(price, p.month);
+    // 多單跌破停損、空單漲破停損 → 出場
+    const hit = stop > 0 && (p.side === 'long' ? px <= stop : px >= stop);
+    if (hit) {
+      realized += positionPnl(p, stop, spec).net_pnl;
+      stoppedLots += Math.max(0, safe(p.lots));
+    } else {
+      remaining.push(p);
+    }
+  }
+  return { remaining, realized, stoppedLots };
+}
+
+/**
+ * 大盤變動 X% 時帳戶會變成什麼樣子。
  *
  * 直接重跑 summarizeAccount()，所以費用、期交稅、多空對沖的處理跟總覽頁完全一致，
- * 不會出現「總覽算的跟壓力測試算的對不起來」。
+ * 不會出現「總覽算的跟壓力測試算的對不起來」。各月份**按比例一起變動**，
+ * 月份價差維持結構不變。
  */
 export function stressTest(
   positions: FuturesPosition[],
   spec: FuturesSpec,
   cash: number,
-  price: number,
-  opts: { drops?: number[]; index?: number; beta?: number } = {},
+  price: PriceInput,
+  opts: { drops?: number[]; index?: number; beta?: number; stopLoss?: Record<string, number> } = {},
 ): StressRow[] {
   const drops = (opts.drops ?? DEFAULT_STRESS_DROPS).slice().sort((a, b) => a - b);
   const beta = Math.max(0, safe(opts.beta, 1));
   const refIndex = safe(opts.index, 0);
-  const p0 = Math.max(0, safe(price));
 
   return drops.map((d) => {
-    const drop = Math.max(0, safe(d));
-    const price_after = Math.max(0, p0 * (1 - beta * drop));
-    const s = summarizeAccount(positions, price_after, spec, cash, []);
+    const drop = safe(d);
+    const after = scalePrices(price, Math.max(0, 1 - beta * drop));
+    const { remaining, realized, stoppedLots } = applyStops(positions, after, spec, opts.stopLoss);
+    const s = summarizeAccount(remaining, after, spec, safe(cash) + realized, []);
     return {
       drop,
       index_after: refIndex > 0 ? refIndex * (1 - drop) : null,
-      price_after,
+      price_after: s.total_lots > 0
+        ? s.reference_price
+        : priceOf(after, referenceMonthOf(positions)),
       unrealized: s.unrealized,
       equity: s.equity,
       excess: s.excess,
       risk_indicator: s.risk_indicator,
       status: s.status,
+      stopped_lots: stoppedLots,
+      stop_realized: realized,
     };
   });
+}
+
+/** 口數最多的月份（平手取近月）；沒有部位時回空字串 */
+export function referenceMonthOf(positions: FuturesPosition[]): string {
+  const byMonth = new Map<string, number>();
+  for (const p of Array.isArray(positions) ? positions : []) {
+    const lots = Math.max(0, safe(p.lots));
+    if (lots <= 0) continue;
+    byMonth.set(p.month, (byMonth.get(p.month) ?? 0) + lots);
+  }
+  let best = '';
+  let bestLots = -1;
+  for (const m of [...byMonth.keys()].sort()) {
+    const l = byMonth.get(m) ?? 0;
+    if (l > bestLots) { bestLots = l; best = m; }
+  }
+  return best;
 }
 
 // ── 建倉試算：槓桿 → 口數 ───────────────────────────────────────────────────
@@ -624,10 +799,10 @@ export function weightedEntry(batches: EntryBatch[], spec: FuturesSpec): Weighte
 
 // ── 上漲規劃：目標價 / 出金 / 移動停損 ──────────────────────────────────────
 
-/** 所有未平倉部位在指定價格的未實現損益合計（含來回費用） */
-export function pnlAtPrice(positions: FuturesPosition[], price: number, spec: FuturesSpec): number {
+/** 所有未平倉部位在指定報價下的未實現損益合計（含來回費用），逐月份取價 */
+export function pnlAtPrice(positions: FuturesPosition[], price: PriceInput, spec: FuturesSpec): number {
   return (Array.isArray(positions) ? positions : [])
-    .reduce((sum, p) => sum + positionPnl(p, price, spec).net_pnl, 0);
+    .reduce((sum, p) => sum + positionPnl(p, priceOf(price, p.month), spec).net_pnl, 0);
 }
 
 export interface TargetPlan {
@@ -651,16 +826,18 @@ export function targetPlan(
   positions: FuturesPosition[],
   spec: FuturesSpec,
   cash: number,
-  price: number,
+  price: PriceInput,
   gainPct: number,
   reserveMultiple = 2.5,
 ): TargetPlan {
-  const p0 = Math.max(0, safe(price));
   const g = safe(gainPct);
+  const refMonth = referenceMonthOf(positions);
+  const p0 = priceOf(price, refMonth);
   const target_price = p0 * (1 + g);
 
-  const now = pnlAtPrice(positions, p0, spec);
-  const then = pnlAtPrice(positions, target_price, spec);
+  // 各月份按同一比例上漲（價差結構維持），再逐月份取價算損益
+  const now = pnlAtPrice(positions, price, spec);
+  const then = pnlAtPrice(positions, scalePrices(price, 1 + g), spec);
   const profit = then - now;
 
   const equity_now = safe(cash) + now;
@@ -701,23 +878,30 @@ export interface TrailingStopPlan {
 export function trailingStopPlan(
   positions: FuturesPosition[],
   spec: FuturesSpec,
+  price: PriceInput,
   peakPrice: number,
   distance: number,
 ): TrailingStopPlan {
-  const peak = Math.max(0, safe(peakPrice));
+  const refMonth = referenceMonthOf(positions);
+  const refPrice = priceOf(price, refMonth);
+  const peak = safe(peakPrice) > 0 ? safe(peakPrice) : refPrice;
   const dist = Math.abs(safe(distance));
   const net = (Array.isArray(positions) ? positions : [])
     .reduce((s, p) => s + sign(p.side) * Math.max(0, safe(p.lots)), 0);
   const dir = net < 0 ? -1 : 1; // 空單：停損價在最低價之上
   const stop_price = Math.max(0, peak - dir * dist);
 
+  // peak / stop 都是「參考月份」的價格，換算成整份報價的平移量後再逐月份評價
+  const atPeak = pnlAtPrice(positions, shiftPrices(price, peak - refPrice), spec);
+  const atStop = pnlAtPrice(positions, shiftPrices(price, stop_price - refPrice), spec);
+
   return {
     peak_price: peak,
     stop_price,
     distance: dist,
     ticks: spec.tick_size > 0 ? Math.round(dist / spec.tick_size) : 0,
-    locked_pnl: pnlAtPrice(positions, stop_price, spec),
-    give_back: Math.abs(pnlAtPrice(positions, peak, spec) - pnlAtPrice(positions, stop_price, spec)),
+    locked_pnl: atStop,
+    give_back: Math.abs(atPeak - atStop),
   };
 }
 
@@ -829,8 +1013,11 @@ export function buildRiskReport(input: RiskReportInput): string {
   L.push('【期貨部位風控評估】');
   L.push('─'.repeat(34));
   L.push(`商品：${symbol_name}（一口 ${spec.contract_size.toLocaleString('en-US')} 單位）`);
-  L.push(`現在價格：${price.toFixed(2)}${index > 0 ? `（對應加權指數約 ${Math.round(index).toLocaleString('en-US')} 點，beta ${beta.toFixed(2)}）` : ''}`);
+  L.push(`現在價格：${price.toFixed(2)}${s.reference_month ? `（${s.reference_month} 月份）` : ''}${index > 0 ? `，對應加權指數約 ${Math.round(index).toLocaleString('en-US')} 點（beta ${beta.toFixed(2)}）` : ''}`);
   L.push(`部位：多 ${s.long_lots} 口 / 空 ${s.short_lots} 口，淨 ${s.net_lots >= 0 ? '+' : ''}${s.net_lots} 口`);
+  if (s.months.length > 1) {
+    L.push(`持有月份：${s.months.join('、')}（各月份分別報價，追繳／斷頭價以 ${s.reference_month} 表示）`);
+  }
   L.push(`名目曝險：${nt(s.contract_value)}${s.leverage !== null ? `（槓桿 ${s.leverage.toFixed(2)} 倍）` : ''}`);
   L.push('');
   L.push('【保證金水位】');
@@ -859,8 +1046,13 @@ export function buildRiskReport(input: RiskReportInput): string {
     L.push('');
     L.push('【壓力測試】');
     for (const r of stress) {
-      const tag = r.status === 'danger' ? '🟥 斷頭' : r.status === 'call' ? '🟨 追繳' : r.status === 'warn' ? '⚠️ 低於原始' : '✅ 正常';
-      L.push(`  大盤 -${(r.drop * 100).toFixed(0)}% → 價 ${r.price_after.toFixed(2)}、權益 ${nt(r.equity)}、風險指標 ${pctText(r.risk_indicator, 0)} ${tag}`);
+      const tag = r.status === 'flat' ? '⬜ 已全數出場'
+        : r.status === 'danger' ? '🟥 斷頭'
+        : r.status === 'call' ? '🟨 追繳'
+        : r.status === 'warn' ? '⚠️ 低於原始' : '✅ 正常';
+      const move = r.drop >= 0 ? `-${(r.drop * 100).toFixed(0)}%` : `+${(-r.drop * 100).toFixed(0)}%`;
+      const stopped = r.stopped_lots > 0 ? `、停損出場 ${r.stopped_lots} 口(${nt(r.stop_realized)})` : '';
+      L.push(`  大盤 ${move} → 價 ${r.price_after.toFixed(2)}、權益 ${nt(r.equity)}、風險指標 ${pctText(r.risk_indicator, 0)}${stopped} ${tag}`);
     }
   }
 

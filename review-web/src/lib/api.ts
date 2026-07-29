@@ -590,7 +590,20 @@ export const api = {
     }),
   getFuturesQuote: (contract = 'SRF') =>
     req<FuturesQuoteResp>(`/futures/quote${qs({ contract })}`),
+  // 台股休市日曆（證交所 OpenAPI，只涵蓋當年度）——期貨最後交易日遇假日要順延
+  getMarketHolidays: () => req<MarketHolidaysResp>('/market/holidays'),
 };
+
+/** 台股休市日曆。stale＝證交所抓不到、回的是磁碟快取（假日曆一年才變，仍可用）。 */
+export interface MarketHolidaysResp {
+  year: number;
+  dates: string[];             // 'YYYY-MM-DD'
+  source: string;
+  fetched_at: string;
+  cached?: boolean;
+  stale?: boolean;
+  stale_reason?: string;
+}
 
 // ── 期貨損益總覽 ────────────────────────────────────────────────────────────
 export interface FuturesPositionsResp {

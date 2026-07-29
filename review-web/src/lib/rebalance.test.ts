@@ -7,6 +7,8 @@ import {
   allocateDefensive,
   computeMarketStatus,
   computeBondRegime,
+  combineFuturesBeta,
+  stockTargetForOverallBeta,
   ETF_CODE,
   DEFAULT_CASH_RESERVE,
   type Trade,
@@ -984,5 +986,76 @@ describe('computeMarketStatus', () => {
     expect(s!.peak_close).toBe(100);
     expect(s!.drawdown).toBeCloseTo(0.22, 6);
     expect(s!.tier).toBe(3);
+  });
+});
+
+// ── 期貨曝險合併（2026-07-29）────────────────────────────────────────────────
+
+describe('combineFuturesBeta：把期貨曝險併進投組 β', () => {
+  // 現股：00631L 60 萬（β2）＋ 防守端 40 萬 → 總值 100 萬、曝險 120 萬、β 1.2
+  const stock = { etf_value: 600_000, total_value: 1_000_000 };
+
+  it('沒有期貨時 combined 等於 stock_only（不動原本的數字）', () => {
+    const r = combineFuturesBeta(stock, 2.0, null);
+    expect(r.has_futures).toBe(false);
+    expect(r.stock_only_beta).toBeCloseTo(1.2, 10);
+    expect(r.combined_beta).toBeCloseTo(1.2, 10);
+    expect(r.understated_by).toBeCloseTo(0, 10);
+  });
+
+  it('期貨多單會拉高真實 β——分母加權益數不是名目，槓桿才不會被洗掉', () => {
+    // 8 口 SRF @102 ＝ 名目 81.6 萬，保證金專戶權益數 20 萬
+    const r = combineFuturesBeta(stock, 2.0, { notional: 816_000, equity: 200_000, beta: 1 });
+    expect(r.total_value).toBe(1_200_000);          // 100 萬現股 ＋ 20 萬權益數
+    expect(r.total_exposure).toBe(2_016_000);       // 120 萬 ＋ 81.6 萬
+    expect(r.combined_beta).toBeCloseTo(1.68, 10);
+    expect(r.stock_only_beta).toBeCloseTo(1.2, 10);
+    expect(r.understated_by).toBeCloseTo(0.48, 10); // 現股模型少算了這麼多
+  });
+
+  it('若把名目而不是權益數放進分母，槓桿會被洗掉（這正是要避免的算法）', () => {
+    const r = combineFuturesBeta(stock, 2.0, { notional: 816_000, equity: 200_000, beta: 1 });
+    const wrong = (r.stock_exposure + r.futures_exposure) / (r.stock_value + r.futures_notional);
+    expect(wrong).toBeLessThan(r.combined_beta as number); // 錯算會低估
+    expect(wrong).toBeCloseTo(2_016_000 / 1_816_000, 10);
+  });
+
+  it('期貨空單會壓低真實 β', () => {
+    const r = combineFuturesBeta(stock, 2.0, { notional: -816_000, equity: 200_000, beta: 1 });
+    expect(r.combined_beta as number).toBeLessThan(1.2);
+    expect(r.understated_by as number).toBeLessThan(0);
+  });
+
+  it('現股為空（總值 0）時回 null 而不是 NaN', () => {
+    const r = combineFuturesBeta({ etf_value: 0, total_value: 0 }, 2.0, null);
+    expect(r.stock_only_beta).toBeNull();
+    expect(r.combined_beta).toBeNull();
+  });
+});
+
+describe('stockTargetForOverallBeta：反解現股該設多少目標 β', () => {
+  const stock = { etf_value: 600_000, total_value: 1_000_000 };
+
+  it('套回去確實命中整體目標', () => {
+    const c = combineFuturesBeta(stock, 2.0, { notional: 816_000, equity: 200_000, beta: 1 });
+    const { stock_target, over_exposed } = stockTargetForOverallBeta(1.3, c);
+    expect(over_exposed).toBe(false);
+    // 用這個現股 β 重算整體：(stock_value × stock_target + futures_exposure) / total_value
+    const back = (c.stock_value * (stock_target as number) + c.futures_exposure) / c.total_value;
+    expect(back).toBeCloseTo(1.3, 10);
+    // 期貨已經吃掉一部分曝險，現股目標必然低於整體目標
+    expect(stock_target as number).toBeLessThan(1.3);
+  });
+
+  it('沒有期貨時反解＝整體目標本身', () => {
+    const c = combineFuturesBeta(stock, 2.0, null);
+    expect(stockTargetForOverallBeta(1.3, c).stock_target).toBeCloseTo(1.3, 10);
+  });
+
+  it('期貨曝險已超過整體目標時標記 over_exposed 並 clamp 到 0', () => {
+    const c = combineFuturesBeta(stock, 2.0, { notional: 5_000_000, equity: 200_000, beta: 1 });
+    const { stock_target, over_exposed } = stockTargetForOverallBeta(1.3, c);
+    expect(over_exposed).toBe(true);
+    expect(stock_target).toBe(0);
   });
 });

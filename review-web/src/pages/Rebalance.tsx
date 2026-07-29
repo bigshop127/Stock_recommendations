@@ -2,7 +2,9 @@ import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { SlidersHorizontal, AlertTriangle, CheckCircle2, Info, ArrowRightLeft, ShieldAlert, RefreshCw, Loader2, Plus, Trash2, UploadCloud, Cloud, CloudOff, Lock, Unlock, BookOpen, TrendingUp, Activity } from 'lucide-react';
 import { getRebalanceConfig, saveRebalanceConfig, subscribeRebalance, type RebalanceConfig } from '../lib/rebalanceStore';
-import { computeRebalance, aggregatePortfolio, BOND_ETFS, ETF_CODE, DEFAULT_MACRO_THRESHOLDS, type RebalanceResult, type Trade, computeFundFlows, computeMarketStatus, type MarketStatus, type BondPriority, type MacroState, type MacroCombination, type MacroThresholds, type MacroKey } from '../lib/rebalance';
+import { computeRebalance, aggregatePortfolio, BOND_ETFS, ETF_CODE, DEFAULT_MACRO_THRESHOLDS, type RebalanceResult, type Trade, computeFundFlows, computeMarketStatus, type MarketStatus, type BondPriority, type MacroState, type MacroCombination, type MacroThresholds, type MacroKey, combineFuturesBeta, stockTargetForOverallBeta, type CombinedBetaResult } from '../lib/rebalance';
+import { getFuturesConfig, subscribeFutures } from '../lib/futuresStore';
+import { summarizeAccount, findPreset, type PriceInput } from '../lib/futures';
 import { api, type Settlement } from '../lib/api';
 
 // 資產清單（00631L＋防守端債券 ETF）【增修I】
@@ -38,6 +40,39 @@ const tradeSideCls = (code: string, side: 'buy' | 'sell') =>
   (TRADE_COLORS[code] ?? TRADE_COLORS['00631L'])[side];
 const tradeCodeCls = (code: string) => (TRADE_COLORS[code] ?? TRADE_COLORS['00631L']).code;
 
+/**
+ * 讀期貨頁的部位，換算成「名目曝險 ＋ 保證金專戶權益數」。
+ *
+ * 期貨頁與這頁原本各算各的 β，而 SRF 多單本質就是 0050 的市場曝險——不合併會
+ * 系統性低估真實槓桿。這裡只**讀**期貨的 store（同一份 localStorage，期貨頁存雲端
+ * 時會同步更新），不寫入、也不動 computeRebalance 的任何計算。
+ */
+function useFuturesExposure() {
+  const [cfg, setCfg] = useState(() => getFuturesConfig());
+  useEffect(() => subscribeFutures(() => setCfg(getFuturesConfig())), []);
+
+  return useMemo(() => {
+    const price: PriceInput = { byMonth: cfg.prices, fallback: cfg.price };
+    const s = summarizeAccount(cfg.positions, price, cfg.spec, cfg.cash, cfg.closed);
+    if (s.total_lots === 0) return null;
+    // 名目曝險要帶方向：contract_value 不分多空，淨曝險得用 net_lots 重算
+    const unit = cfg.spec.contract_size;
+    const notional = s.net_lots * unit * s.reference_price;
+    const preset = findPreset(cfg.contract);
+    return {
+      notional,
+      equity: s.equity,
+      // 台指期本身就是大盤（β=1）；ETF 期貨用使用者在期貨頁設的 beta
+      beta: preset?.index_linked ? 1 : cfg.beta,
+      contract: cfg.contract,
+      net_lots: s.net_lots,
+      long_lots: s.long_lots,
+      short_lots: s.short_lots,
+      risk_indicator: s.risk_indicator,
+    };
+  }, [cfg]);
+}
+
 // 分頁（像個股頁一樣，點開才看該區塊內容，不用整頁滑）
 // 【2026-07-13 合併】持倉現況＋建倉&交易紀錄合成一頁；Beta儀表＋偏離分析&建議合成一頁；整體邏輯放最後
 type RebalanceTab = 'holdings' | 'beta' | 'logic';
@@ -49,6 +84,95 @@ const REBALANCE_TABS: { id: RebalanceTab; label: string }[] = [
 const DEFAULT_REBALANCE_TAB: RebalanceTab = 'beta';
 
 // 半圓 SVG 儀表元件
+/**
+ * 含期貨的真實投組 β。
+ *
+ * 這張卡刻意**只顯示、不自動改**目標 β：期貨部位是手動維護的，數字可能過時，
+ * 讓它自動去改交易建議（連帶影響每日告警信）風險太高。要據此調整就按按鈕，
+ * 一次一次確認。
+ */
+const CombinedBetaCard: React.FC<{
+  combined: CombinedBetaResult;
+  futures: ReturnType<typeof useFuturesExposure>;
+  targetBeta: number;
+  onApplyStockTarget: (v: number) => void;
+}> = ({ combined, futures, targetBeta, onApplyStockTarget }) => {
+  const { stock_target, over_exposed } = stockTargetForOverallBeta(targetBeta, combined);
+  const gap = combined.understated_by ?? 0;
+  const money = (v: number) => `${v < 0 ? '−' : ''}$${Math.abs(Math.round(v)).toLocaleString()}`;
+
+  return (
+    <div className="space-y-3 pt-3 border-t border-border/50">
+      <div className="flex items-center justify-between gap-2 flex-wrap">
+        <div className="flex items-center gap-1.5">
+          <Activity className="w-3.5 h-3.5 text-cyan-400" />
+          <span className="text-xs font-semibold text-zinc-300">含期貨的真實 β</span>
+        </div>
+        <a href="/review/futures" className="text-[10px] text-zinc-500 hover:text-zinc-300 underline">
+          {futures?.contract}．淨 {futures && futures.net_lots >= 0 ? '+' : ''}{futures?.net_lots} 口 →
+        </a>
+      </div>
+
+      <div className="grid grid-cols-3 gap-2 text-center">
+        <div className="bg-zinc-950/60 border border-border/60 rounded-lg p-2.5">
+          <div className="text-[10px] text-zinc-500">只看現股</div>
+          <div className="font-mono text-sm font-bold text-zinc-400 mt-0.5">
+            {combined.stock_only_beta !== null ? `${combined.stock_only_beta.toFixed(2)}X` : '—'}
+          </div>
+        </div>
+        <div className="bg-cyan-500/10 border border-cyan-500/30 rounded-lg p-2.5">
+          <div className="text-[10px] text-cyan-400">含期貨</div>
+          <div className="font-mono text-sm font-bold text-cyan-300 mt-0.5">
+            {combined.combined_beta !== null ? `${combined.combined_beta.toFixed(2)}X` : '—'}
+          </div>
+        </div>
+        <div className="bg-zinc-950/60 border border-border/60 rounded-lg p-2.5">
+          <div className="text-[10px] text-zinc-500">被低估</div>
+          <div className={`font-mono text-sm font-bold mt-0.5 ${Math.abs(gap) < 0.005 ? 'text-zinc-400' : gap > 0 ? 'text-amber-400' : 'text-emerald-400'}`}>
+            {gap >= 0 ? '+' : '−'}{Math.abs(gap).toFixed(2)}
+          </div>
+        </div>
+      </div>
+
+      <dl className="text-[11px] space-y-1">
+        <div className="flex justify-between"><dt className="text-zinc-500">期貨名目曝險</dt>
+          <dd className="font-mono text-zinc-300">{money(combined.futures_notional)}</dd></div>
+        <div className="flex justify-between"><dt className="text-zinc-500">保證金專戶權益數</dt>
+          <dd className="font-mono text-zinc-300">{money(combined.futures_equity)}</dd></div>
+        <div className="flex justify-between"><dt className="text-zinc-500">總資產（現股＋期貨權益）</dt>
+          <dd className="font-mono text-zinc-100">{money(combined.total_value)}</dd></div>
+      </dl>
+
+      {over_exposed ? (
+        <div className="text-[11px] text-rose-400 bg-rose-500/10 border border-rose-500/30 rounded-lg p-2.5">
+          光是期貨曝險就已經超過整體目標 β {targetBeta.toFixed(2)}X 了。要拉回目標得先減期貨口數，
+          現股這邊就算清空也壓不下來。
+        </div>
+      ) : stock_target !== null && (
+        <div className="flex flex-wrap items-center justify-between gap-2 bg-zinc-950/40 border border-border/50 rounded-lg p-2.5">
+          <div className="text-[11px] text-zinc-400">
+            要讓<strong className="text-zinc-200">整體</strong> β ＝ {targetBeta.toFixed(2)}X，
+            現股這邊的目標應設 <strong className="text-cyan-300 font-mono">{stock_target.toFixed(2)}X</strong>
+          </div>
+          <button
+            onClick={() => onApplyStockTarget(stock_target)}
+            disabled={Math.abs(stock_target - targetBeta) < 0.005}
+            className="text-[11px] px-2.5 py-1 rounded-md bg-cyan-600 hover:bg-cyan-500 disabled:bg-zinc-800 disabled:text-zinc-600 text-white font-semibold transition"
+          >
+            套用
+          </button>
+        </div>
+      )}
+
+      <p className="text-[10px] text-zinc-600 leading-relaxed">
+        分子＝現股 ETF 市值 × {'β'} ＋ 期貨名目 × {'β'}；分母＝現股組合總值 ＋ 期貨<strong className="text-zinc-500">權益數</strong>
+        （不是名目——名目是槓桿撐出來的曝險，放進分母會把槓桿洗掉）。
+        期貨部位是手動維護的，這張卡只顯示不自動調整；上方滑桿與每日告警信仍只看現股。
+      </p>
+    </div>
+  );
+};
+
 const BetaGauge: React.FC<{
   currentBeta: number | null;
   targetBeta: number;
@@ -586,6 +710,13 @@ export function Rebalance() {
   const fundFlows = useMemo(() => {
     return computeFundFlows(result);
   }, [result]);
+
+  // 期貨曝險合併（純顯示，不影響上面的 result 與每日告警腳本）
+  const futuresExp = useFuturesExposure();
+  const combined = useMemo(
+    () => combineFuturesBeta(result, config.etf_beta, futuresExp),
+    [result, config.etf_beta, futuresExp],
+  );
 
   const renderBreakdown = (key: string) => {
     const sourceNode = fundFlows.sources.find((s) => s.key === key);
@@ -1559,6 +1690,16 @@ export function Rebalance() {
               <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-sm bg-violet-500/80 inline-block" />{BOND_ETFS[1].code} {BOND_ETFS[1].name}</span>
             </div>
           </div>
+
+          {/* 期貨曝險合併：只在期貨頁真的有部位時出現 */}
+          {combined.has_futures && (
+            <CombinedBetaCard
+              combined={combined}
+              futures={futuresExp}
+              targetBeta={config.target_beta}
+              onApplyStockTarget={(v) => updateConfig({ target_beta: Math.round(v * 100) / 100 })}
+            />
+          )}
 
           {/* 容忍區間設定 & 區間指標 */}
           <div className="bg-zinc-950/40 p-4 rounded-lg border border-border/50 space-y-3">

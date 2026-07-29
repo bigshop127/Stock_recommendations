@@ -43,7 +43,8 @@ export interface SpotCompareConfig {
 
 export interface FuturesConfig {
   contract: string;          // 商品／期交所行情代碼（SRF / NYF / MTX / TMF，可自訂）
-  price: number;             // 現在價格（抓期交所或手動輸入）
+  price: number;             // 參考價／缺月份時的退路（抓期交所或手動輸入）
+  prices: Record<string, number>; // 各到期月份的價格 'YYYYMM' → 價；抓行情時全部存下來
   price_month: string;       // price 對應的到期月份（抓價時帶回）
   price_as_of: string;       // 報價日期 'YYYY-MM-DD'
   cash: number;              // 保證金專戶現金餘額（入金 ± 已實現損益）
@@ -80,6 +81,7 @@ export const DEFAULT_SPOT: SpotCompareConfig = {
 const SEED: FuturesConfig = {
   contract: CONTRACT_CODE,
   price: 0,
+  prices: {},
   price_month: '',
   price_as_of: '',
   cash: 0,
@@ -187,14 +189,28 @@ function sanitizeBatches(v: unknown): EntryBatch[] {
   return out;
 }
 
+// 負值＝上漲情境（空單看的是那一側），故區間是 (−1, 1) 而不是 (0, 1)
 function sanitizeDrops(v: unknown): number[] {
   const arr = Array.isArray(v) ? v : [];
-  const out = arr
+  const out = [...new Set(arr
     .map((d) => num(d, NaN))
-    .filter((d) => Number.isFinite(d) && d > 0 && d < 1)
-    .slice(0, 12)
+    .filter((d) => Number.isFinite(d) && d > -1 && d < 1 && d !== 0))]
+    .slice(0, 14)
     .sort((a, b) => a - b);
   return out.length > 0 ? out : [...DEFAULT_PLANNER.stress_drops];
+}
+
+/** 各月份報價：key 必須是 'YYYYMM'，價格必須 > 0，否則丟掉 */
+function sanitizePrices(v: unknown): Record<string, number> {
+  const o = (v && typeof v === 'object' ? v : {}) as Record<string, unknown>;
+  const out: Record<string, number> = {};
+  for (const [k, val] of Object.entries(o)) {
+    const m = safeMonth(k);
+    if (!m) continue;
+    const p = num(val, 0);
+    if (p > 0) out[m] = p;
+  }
+  return out;
 }
 
 function sanitizePlanner(v: unknown): PlannerConfig {
@@ -245,6 +261,7 @@ export function normalizeFutures(parsed: Record<string, unknown>): FuturesConfig
   return {
     contract: (str(parsed.contract, CONTRACT_CODE) || CONTRACT_CODE).toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 6) || CONTRACT_CODE,
     price: Math.max(0, num(parsed.price, 0)),
+    prices: sanitizePrices(parsed.prices),
     price_month: safeMonth(parsed.price_month),
     price_as_of: safeDate(parsed.price_as_of),
     cash: num(parsed.cash, 0), // 權益數可以是負的（穿價），不 clamp

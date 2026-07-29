@@ -36,6 +36,16 @@ interface LayoutProps {
   children: React.ReactNode;
 }
 
+/**
+ * 完全不依賴 Python engine 的頁面——engine 掛掉時不該在這些頁面掛降級紅字。
+ * 期貨頁的三個資料來源（期交所行情、gateway 的部位檔、證交所休市日曆）都在
+ * Node gateway 裡，engine 死活跟它無關。
+ *
+ * 注意再平衡頁**不在**這個名單：它的「抓最新價」走 /api/stocks/:code/ohlcv，
+ * 那條是 engine 的代理。
+ */
+const ENGINE_FREE_PATHS = new Set(['/futures']);
+
 export const Layout: React.FC<LayoutProps> = ({ children }) => {
   const location = useLocation();
   const match = location.pathname.match(/^\/stock\/([a-zA-Z0-9]+)/);
@@ -438,8 +448,21 @@ export const Layout: React.FC<LayoutProps> = ({ children }) => {
               : 'RWD 規範驗證'}
           </div>
           <div className="flex items-center gap-4">
-            {/* Engine 下線警告 Banner */}
-            {!loading && (!health || health.engine === 'down') && (
+            {/*
+              兩種故障要分開講，因為嚴重程度差很多：
+                gateway 連不上 → 整個網站沒有任何資料，每一頁都掛（這是最常見的「忘了
+                                 啟動 server.cjs」）。
+                engine 掛掉    → 只有需要 Python 引擎的頁面降級；期貨頁完全不碰 engine
+                                 （行情走期交所、部位存檔案、假日曆走證交所），在那一頁
+                                 掛紅字只會讓人以為期貨數字有問題。
+            */}
+            {!loading && !health && (
+              <div className="flex items-center gap-2 bg-rose-500/10 border border-rose-500/30 text-rose-400 px-3 py-1 rounded-md text-xs font-semibold animate-pulse">
+                <ShieldAlert className="w-4 h-4" />
+                連不上後端 gateway——請確認 server.cjs 有在跑
+              </div>
+            )}
+            {!loading && health && health.engine === 'down' && !ENGINE_FREE_PATHS.has(location.pathname) && (
               <div className="flex items-center gap-2 bg-bull/10 border border-bull/20 text-bull px-3 py-1 rounded-md text-xs font-semibold animate-pulse">
                 <ShieldAlert className="w-4 h-4" />
                 後端運算引擎異常斷線，目前使用降級降軌模式

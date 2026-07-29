@@ -110,7 +110,7 @@ const DEFAULT_PLANNER = {
   reserve_multiple: 2.5,
   trailing_peak: 0,
   trailing_dist: 2,
-  stress_drops: [0.03, 0.05, 0.08, 0.1, 0.15, 0.2, 0.25, 0.3],
+  stress_drops: [-0.05, 0.03, 0.05, 0.08, 0.1, 0.15, 0.2, 0.25, 0.3],
 };
 
 const DEFAULT_SPOT = {
@@ -124,6 +124,20 @@ const DEFAULT_SPOT = {
 
 const clamp = (v, lo, hi, fb) => Math.min(hi, Math.max(lo, num(v, fb)));
 
+// 各月份報價：key 必須是 'YYYYMM'、價格 > 0。不同月份是不同合約不同價格，
+// 全部套同一個數字會讓多月份持倉的損益與追繳價一起偏掉。
+function sanitizePrices(v) {
+  const o = v && typeof v === 'object' ? v : {};
+  const out = {};
+  for (const [k, val] of Object.entries(o)) {
+    const m = safeMonth(k);
+    if (!m) continue;
+    const p = num(val, 0);
+    if (p > 0) out[m] = p;
+  }
+  return out;
+}
+
 function sanitizeBatches(v) {
   const arr = Array.isArray(v) ? v : [];
   const out = arr.slice(0, 6).map((b) => {
@@ -136,10 +150,11 @@ function sanitizeBatches(v) {
 
 function sanitizePlanner(v) {
   const o = v && typeof v === 'object' ? v : {};
-  const drops = (Array.isArray(o.stress_drops) ? o.stress_drops : [])
+  // 負值＝上漲情境（空單那一側），故區間是 (−1, 1)
+  const drops = [...new Set((Array.isArray(o.stress_drops) ? o.stress_drops : [])
     .map((d) => num(d, NaN))
-    .filter((d) => Number.isFinite(d) && d > 0 && d < 1)
-    .slice(0, 12)
+    .filter((d) => Number.isFinite(d) && d > -1 && d < 1 && d !== 0))]
+    .slice(0, 14)
     .sort((a, b) => a - b);
   return {
     capital: Math.max(0, num(o.capital, DEFAULT_PLANNER.capital)),
@@ -180,6 +195,7 @@ function sanitizeFutures(body) {
   return {
     contract,
     price: Math.max(0, num(b.price, 0)),
+    prices: sanitizePrices(b.prices),
     price_month: safeMonth(b.price_month),
     price_as_of: safeDate(b.price_as_of),
     cash: num(b.cash, 0), // 權益數可為負（穿價），不 clamp
@@ -306,6 +322,92 @@ router.get('/api/futures/quote', async (req, res) => {
     return res.json(data);
   } catch (err) {
     return sendError(res, httpError(502, 'TAIFEX', '抓取期交所行情失敗: ' + err.message));
+  }
+});
+
+// ── 台股休市日曆 ────────────────────────────────────────────────────────────
+//
+// 路徑掛在 /api/market/* 底下（語意上是全市場資料），但**實作放這個檔案**：
+// routes/market.js 整支都是 Python engine 的代理，而期貨頁刻意不依賴 engine，
+// 期貨的最後交易日又非有假日曆不可，所以放在同樣 engine-free 的這裡。
+//
+// 來源：證交所 OpenAPI（公開、免金鑰）。只給**當年度**，跨年的月份查不到，
+// 前端會退回純「第三個星期三」規則並標示未經假日校正。
+const TWSE_HOLIDAY_URL = 'https://openapi.twse.com.tw/v1/holidaySchedule/holidaySchedule';
+const HOLIDAY_TTL_MS = 6 * 60 * 60 * 1000; // 一年才變一次，快取半天綽綽有餘
+const HOLIDAY_CACHE_PATH = path.join(DATA_DIR, 'twse_holidays.json');
+let holidayCache = { at: 0, data: null };
+
+/** 民國日期字串 '1150101' → '2026-01-01'；格式不對回 null */
+function rocToIso(v) {
+  const s = str(v).trim();
+  const m = /^(\d{3,4})(\d{2})(\d{2})$/.exec(s);
+  if (!m) return null;
+  const y = Number(m[1]) + 1911;
+  return `${y}-${m[2]}-${m[3]}`;
+}
+
+/**
+ * 證交所這份清單裡混了**兩種**列：真正的休市日，以及「國曆新年開始交易日」
+ * 「農曆春節前最後交易日」「農曆春節後開始交易日」這種**有開盤**的標記列。
+ * 名稱含「交易日」的都是後者，必須排除，否則會把開盤日當成休市日。
+ * 「市場無交易，僅辦理結算交割作業」不含「交易日」三字，會正確留下。
+ */
+function parseHolidays(rows) {
+  const out = new Set();
+  for (const r of Array.isArray(rows) ? rows : []) {
+    const name = str(r && r.Name);
+    if (name.includes('交易日')) continue;
+    const iso = rocToIso(r && r.Date);
+    if (iso) out.add(iso);
+  }
+  return [...out].sort();
+}
+
+// GET /api/market/holidays —— 台股休市日（當年度）
+router.get('/api/market/holidays', async (req, res) => {
+  const now = Date.now();
+  if (holidayCache.data && now - holidayCache.at < HOLIDAY_TTL_MS) {
+    return res.json({ ...holidayCache.data, cached: true });
+  }
+  const serveDisk = (reason) => {
+    // 證交所掛掉時退回磁碟快取——假日曆一年才變一次，舊的一份仍然可用，
+    // 比整個功能失效好。前端靠 stale 旗標決定要不要提醒。
+    try {
+      if (fs.existsSync(HOLIDAY_CACHE_PATH)) {
+        const disk = JSON.parse(fs.readFileSync(HOLIDAY_CACHE_PATH, 'utf-8'));
+        holidayCache = { at: now, data: disk };
+        return res.json({ ...disk, stale: true, stale_reason: reason });
+      }
+    } catch { /* 快取檔壞掉就當沒有 */ }
+    return sendError(res, httpError(502, 'TWSE', '抓取證交所休市日曆失敗: ' + reason));
+  };
+
+  try {
+    const r = await fetch(TWSE_HOLIDAY_URL, {
+      headers: { Accept: 'application/json', 'User-Agent': 'puhui-review-web/1.0' },
+      signal: AbortSignal.timeout(20000),
+    });
+    if (!r.ok) return serveDisk(`HTTP ${r.status}`);
+    const dates = parseHolidays(await r.json());
+    if (!dates.length) return serveDisk('回應沒有可用的休市日');
+
+    const data = {
+      year: Number(dates[0].slice(0, 4)),
+      dates,
+      source: 'twse-openapi',
+      fetched_at: new Date().toISOString(),
+    };
+    try {
+      fs.mkdirSync(DATA_DIR, { recursive: true });
+      const tmp = HOLIDAY_CACHE_PATH + '.tmp';
+      fs.writeFileSync(tmp, JSON.stringify(data, null, 2));
+      fs.renameSync(tmp, HOLIDAY_CACHE_PATH);
+    } catch { /* 落地失敗不影響這次回應 */ }
+    holidayCache = { at: now, data };
+    return res.json(data);
+  } catch (err) {
+    return serveDisk(err.message);
   }
 });
 
