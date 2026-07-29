@@ -288,11 +288,19 @@ const LEVEL_META = {
   warn: { zh: '⚠️ 接近追繳', color: '#f9a825', urgency: `風險指標低於 ${Math.round(WARN_RATIO * 100)}%（自訂預警線，非期交所規定）。還有時間決定補錢還是減碼。` },
 };
 
-function buildEmail(s, contract, quoteDate, rollovers) {
+function buildEmail(s, contract, quoteDate, rollovers, marginNotice) {
   const meta = LEVEL_META[s.status];
   const isRolloverOnly = !meta;
+
+  let subjectPrefix = '【期貨轉倉提醒】';
+  if (marginNotice && rollovers.length > 0) {
+    subjectPrefix = '【期貨保證金異動與轉倉提醒】';
+  } else if (marginNotice) {
+    subjectPrefix = '【期貨保證金異動通知】';
+  }
+
   const subject = isRolloverOnly
-    ? `【期貨轉倉提醒】${contract} ${rollovers.map((r) => r.month).join('、')} 即將到期`
+    ? `${subjectPrefix}${contract}${rollovers.length > 0 ? ` ${rollovers.map((r) => r.month).join('、')} 即將到期` : ''}`
     : `【期貨風險告警】${contract} ${meta.zh}｜風險指標 ${fmtPct(s.risk_indicator)}`;
 
   const rolloverLines = rollovers.length > 0
@@ -301,8 +309,19 @@ function buildEmail(s, contract, quoteDate, rollovers) {
       : `● ${r.month} 還剩 ${r.left} 個交易日到期（最後交易日 ${r.ltd}），持有 ${r.lots} 口`)]
     : [];
 
+  const marginLines = marginNotice
+    ? [
+      '',
+      '── 保證金異動 ──',
+      `● 期交所 ${marginNotice.date} 公告：原始 ${marginNotice.apiInitial.toLocaleString()} / 維持 ${marginNotice.apiMaintenance.toLocaleString()}`,
+      `● 你目前設定：原始 ${marginNotice.currentInitial.toLocaleString()} / 維持 ${marginNotice.currentMaintenance.toLocaleString()}`,
+      `● 依新值重算，你的追繳價會從 ${fmtPx(marginNotice.oldMarginCallPrice)} 變成 ${fmtPx(marginNotice.newMarginCallPrice)}`,
+      `● 到「契約規格 & 設定」按「同步保證金」更新`
+    ]
+    : [];
+
   const lines = [
-    isRolloverOnly ? `${contract} 期貨轉倉提醒` : `${contract} 期貨風險告警：${meta.zh}`,
+    isRolloverOnly ? `${contract} 期貨轉倉與設定提醒` : `${contract} 期貨風險告警：${meta.zh}`,
     '',
     ...(meta ? [meta.urgency, ''] : []),
     '── 帳戶 ──',
@@ -321,6 +340,7 @@ function buildEmail(s, contract, quoteDate, rollovers) {
     `● 追繳價：${fmtPx(s.margin_call_price)}`,
     `● 斷頭價：${fmtPx(s.liquidation_price)}`,
     ...rolloverLines,
+    ...marginLines,
     '',
     '※ 依期交所**每日行情**（收盤／結算價）計算，不是盤中即時價；盤中跌破的話這封信會晚一天。',
     '※ 口數與保證金專戶餘額取自 data/futures_positions.json，如已異動請在網頁上更新並「存到雲端」。',
@@ -331,7 +351,7 @@ function buildEmail(s, contract, quoteDate, rollovers) {
   const color = meta ? meta.color : '#1565c0';
   const html = `<!DOCTYPE html><html><head><meta charset="utf-8"></head>
 <body style="font-family:-apple-system,Segoe UI,Roboto,sans-serif;color:#1a1a1a;line-height:1.6;max-width:560px;margin:0 auto;padding:16px;">
-  <h2 style="margin:0 0 4px;">${contract} 期貨${isRolloverOnly ? '轉倉提醒' : '風險告警'}</h2>
+  <h2 style="margin:0 0 4px;">${contract} 期貨${isRolloverOnly ? '設定與轉倉提醒' : '風險告警'}</h2>
   ${meta ? `<p style="margin:0 0 12px;color:${color};font-weight:bold;">${meta.zh}</p>` : ''}
   <div style="background:${color}11;border:1px solid ${color}33;border-radius:6px;padding:14px;text-align:center;margin-bottom:14px;">
     <div style="font-size:13px;color:#555;">風險指標</div>
@@ -347,6 +367,14 @@ function buildEmail(s, contract, quoteDate, rollovers) {
     <tr><td style="padding:6px;border:1px solid #eee;">追繳價 / 斷頭價</td><td style="padding:6px;border:1px solid #eee;"><b style="color:#ef6c00;">${fmtPx(s.margin_call_price)}</b> / <b style="color:#c62828;">${fmtPx(s.liquidation_price)}</b></td></tr>
     ${rollovers.map((r) => `<tr><td style="padding:6px;border:1px solid #eee;">轉倉 ${r.month}</td><td style="padding:6px;border:1px solid #eee;">${r.expired ? `已過最後交易日 ${r.ltd}` : `剩 ${r.left} 個交易日（${r.ltd}）`}，${r.lots} 口</td></tr>`).join('\n    ')}
   </table>
+  ${marginNotice ? `
+  <div style="background:#fff3e0;border:1px solid #ffe0b2;border-radius:6px;padding:12px;margin-top:14px;font-size:13px;">
+    <h4 style="margin:0 0 6px;color:#e65100;">── 保證金異動 ──</h4>
+    <p style="margin:0 0 4px;">● 期交所 <b>${marginNotice.date}</b> 公告：原始 ${marginNotice.apiInitial.toLocaleString()} / 維持 ${marginNotice.apiMaintenance.toLocaleString()}</p>
+    <p style="margin:0 0 4px;">● 你目前設定：原始 ${marginNotice.currentInitial.toLocaleString()} / 維持 ${marginNotice.currentMaintenance.toLocaleString()}</p>
+    <p style="margin:0 0 4px;">● 依新值重算，你的追繳價會從 <b>${fmtPx(marginNotice.oldMarginCallPrice)}</b> 變成 <b>${fmtPx(marginNotice.newMarginCallPrice)}</b></p>
+    <p style="margin:0;color:#e65100;font-weight:bold;">● 請到「契約規格 & 設定」按「同步保證金」更新</p>
+  </div>` : ''}
   <p style="font-size:12px;color:#999;margin-top:14px;">依期交所每日行情計算（非盤中即時價）；崩盤時期交所常調高保證金，實際追繳會更早。持倉取自 data/futures_positions.json。機械提醒，非投資建議。</p>
 </body></html>`;
 

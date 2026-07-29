@@ -6,7 +6,7 @@ import {
   ClipboardCopy, Check, Zap, Target, PiggyBank, Layers,
 } from 'lucide-react';
 import { api } from '../lib/api';
-import type { FuturesMonthQuote, FuturesEquityHistoryResp } from '../lib/api';
+import type { FuturesMonthQuote, FuturesEquityHistoryResp, FuturesMarginsResp } from '../lib/api';
 import {
   CONTRACT_CODE, CONTRACT_NAME, UNDERLYING_CODE,
   DEFAULT_SPEC, SYMBOL_PRESETS, findPreset,
