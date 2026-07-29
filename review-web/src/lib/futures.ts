@@ -522,6 +522,16 @@ export interface SymbolPreset {
   index_linked: boolean;  // true＝標的本身就是大盤指數（beta 固定 1，不需另填指數）
 }
 
+/**
+ * 保證金來源：
+ *   指數類（TX / MTX / TMF）＝期交所 OpenAPI `v1/IndexFuturesAndOptionsMargining`
+ *     的 2026-07-28 公告值（該端點每日更新，opt25 會接成自動同步）。
+ *   股票／ETF 類（SRF / NYF）＝期交所 2026-06-18 公告，**該類沒有 OpenAPI 端點**，
+ *     只有 taifex.com.tw/cht/5/stockMargining 的 HTML 表格，目前仍需手動維護。
+ *
+ * 代碼是期交所 `DailyMarketReportFut` 的 Contract 欄位實際值（已對 361 個代碼核對），
+ * 抓行情就是拿它去打 /api/futures/quote?contract=XXX。
+ */
 export const SYMBOL_PRESETS: (SymbolPreset & { spec: FuturesSpec })[] = [
   {
     code: 'SRF',
@@ -550,6 +560,19 @@ export const SYMBOL_PRESETS: (SymbolPreset & { spec: FuturesSpec })[] = [
     },
   },
   {
+    code: 'TX',
+    name: '臺股期貨（大台）',
+    underlying: '加權指數',
+    unit_label: '元/點',
+    price_label: '台指點數',
+    index_linked: true,
+    spec: {
+      contract_size: 200, tick_size: 1,
+      initial_margin: 636000, maintenance_margin: 488000,
+      fee_per_lot: 60, tax_rate: 0.00002, rollover_days: 7, liquidation_ratio: 0.25,
+    },
+  },
+  {
     code: 'MTX',
     name: '小型臺指期貨',
     underlying: '加權指數',
@@ -558,7 +581,7 @@ export const SYMBOL_PRESETS: (SymbolPreset & { spec: FuturesSpec })[] = [
     index_linked: true,
     spec: {
       contract_size: 50, tick_size: 1,
-      initial_margin: 79500, maintenance_margin: 61000,
+      initial_margin: 159000, maintenance_margin: 122000,
       fee_per_lot: 50, tax_rate: 0.00002, rollover_days: 7, liquidation_ratio: 0.25,
     },
   },
@@ -571,7 +594,7 @@ export const SYMBOL_PRESETS: (SymbolPreset & { spec: FuturesSpec })[] = [
     index_linked: true,
     spec: {
       contract_size: 10, tick_size: 1,
-      initial_margin: 15900, maintenance_margin: 12200,
+      initial_margin: 31800, maintenance_margin: 24400,
       fee_per_lot: 30, tax_rate: 0.00002, rollover_days: 7, liquidation_ratio: 0.25,
     },
   },

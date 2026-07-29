@@ -325,6 +325,43 @@ router.get('/api/futures/quote', async (req, res) => {
   }
 });
 
+// ── 權益數歷史（scripts/futures_alert.cjs 每日寫入）──────────────────────────
+//
+// 只讀不寫：寫入端是排程腳本，網頁改設定不該動到歷史紀錄。檔案不存在（還沒跑過
+// 任何一天）時回空陣列而不是 404，前端才好處理「還沒有資料」的空態。
+const EQUITY_HISTORY_PATH = path.join(DATA_DIR, 'futures_equity_history.json');
+
+router.get('/api/futures/equity-history', (req, res) => {
+  try {
+    if (!fs.existsSync(EQUITY_HISTORY_PATH)) {
+      return res.json({ exists: false, rows: [], updated_at: null });
+    }
+    const parsed = JSON.parse(fs.readFileSync(EQUITY_HISTORY_PATH, 'utf-8'));
+    const rows = (Array.isArray(parsed.rows) ? parsed.rows : [])
+      .filter((r) => r && safeDate(r.date))
+      .map((r) => ({
+        date: safeDate(r.date),
+        equity: num(r.equity, 0),
+        cash: num(r.cash, 0),
+        unrealized: num(r.unrealized, 0),
+        contract_value: num(r.contract_value, 0),
+        net_lots: num(r.net_lots, 0),
+        total_lots: num(r.total_lots, 0),
+        risk_indicator: Number.isFinite(num(r.risk_indicator, NaN)) ? num(r.risk_indicator, 0) : null,
+        price: num(r.price, 0),
+        status: str(r.status, 'ok'),
+      }))
+      .sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+    return res.json({
+      exists: true,
+      rows,
+      updated_at: typeof parsed.updated_at === 'string' ? parsed.updated_at : null,
+    });
+  } catch (err) {
+    return sendError(res, httpError(500, 'INTERNAL', '讀取權益數歷史失敗: ' + err.message));
+  }
+});
+
 // ── 台股休市日曆 ────────────────────────────────────────────────────────────
 //
 // 路徑掛在 /api/market/* 底下（語意上是全市場資料），但**實作放這個檔案**：
