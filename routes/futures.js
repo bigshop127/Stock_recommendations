@@ -101,6 +101,70 @@ function sanitizeClosed(val) {
   return out;
 }
 
+// 建倉試算與存股比較的參數：純規劃用，但一樣要跟著雲端走，換裝置才不會歸零。
+// 每個欄位都 clamp 在合理區間，手改壞檔案也不會讓前端算出 NaN。
+const DEFAULT_PLANNER = {
+  capital: 0,
+  target_leverage: 3,
+  gain_pct: 0.2,
+  reserve_multiple: 2.5,
+  trailing_peak: 0,
+  trailing_dist: 2,
+  stress_drops: [0.03, 0.05, 0.08, 0.1, 0.15, 0.2, 0.25, 0.3],
+};
+
+const DEFAULT_SPOT = {
+  dividend_yield: 0.035,
+  income_tax_rate: 0.12,
+  idle_rate: 0.02,
+  rollovers_per_year: 11,
+  spread_per_rollover: 0.2,
+  broker_discount: 0.6,
+};
+
+const clamp = (v, lo, hi, fb) => Math.min(hi, Math.max(lo, num(v, fb)));
+
+function sanitizeBatches(v) {
+  const arr = Array.isArray(v) ? v : [];
+  const out = arr.slice(0, 6).map((b) => {
+    const o = b && typeof b === 'object' ? b : {};
+    return { price: Math.max(0, num(o.price, 0)), lots: Math.max(0, num(o.lots, 0)) };
+  });
+  while (out.length < 3) out.push({ price: 0, lots: 0 });
+  return out;
+}
+
+function sanitizePlanner(v) {
+  const o = v && typeof v === 'object' ? v : {};
+  const drops = (Array.isArray(o.stress_drops) ? o.stress_drops : [])
+    .map((d) => num(d, NaN))
+    .filter((d) => Number.isFinite(d) && d > 0 && d < 1)
+    .slice(0, 12)
+    .sort((a, b) => a - b);
+  return {
+    capital: Math.max(0, num(o.capital, DEFAULT_PLANNER.capital)),
+    target_leverage: clamp(o.target_leverage, 0.1, 10, DEFAULT_PLANNER.target_leverage),
+    gain_pct: clamp(o.gain_pct, -0.9, 5, DEFAULT_PLANNER.gain_pct),
+    reserve_multiple: clamp(o.reserve_multiple, 1, 10, DEFAULT_PLANNER.reserve_multiple),
+    trailing_peak: Math.max(0, num(o.trailing_peak, DEFAULT_PLANNER.trailing_peak)),
+    trailing_dist: Math.max(0, num(o.trailing_dist, DEFAULT_PLANNER.trailing_dist)),
+    batches: sanitizeBatches(o.batches),
+    stress_drops: drops.length ? drops : [...DEFAULT_PLANNER.stress_drops],
+  };
+}
+
+function sanitizeSpot(v) {
+  const o = v && typeof v === 'object' ? v : {};
+  return {
+    dividend_yield: clamp(o.dividend_yield, 0, 1, DEFAULT_SPOT.dividend_yield),
+    income_tax_rate: clamp(o.income_tax_rate, 0, 1, DEFAULT_SPOT.income_tax_rate),
+    idle_rate: clamp(o.idle_rate, 0, 1, DEFAULT_SPOT.idle_rate),
+    rollovers_per_year: clamp(o.rollovers_per_year, 0, 52, DEFAULT_SPOT.rollovers_per_year),
+    spread_per_rollover: Math.max(0, num(o.spread_per_rollover, DEFAULT_SPOT.spread_per_rollover)),
+    broker_discount: clamp(o.broker_discount, 0.01, 1, DEFAULT_SPOT.broker_discount),
+  };
+}
+
 function sanitizeFutures(body) {
   const b = body && typeof body === 'object' ? body : {};
   const positions = sanitizePositions(b.positions);
@@ -112,16 +176,21 @@ function sanitizeFutures(body) {
     const p = num(stopIn[k], 0);
     if (p > 0) stop_loss[k] = p;
   }
+  const contract = (str(b.contract, 'SRF') || 'SRF').toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 6) || 'SRF';
   return {
-    contract: str(b.contract, 'SRF') || 'SRF',
+    contract,
     price: Math.max(0, num(b.price, 0)),
     price_month: safeMonth(b.price_month),
     price_as_of: safeDate(b.price_as_of),
     cash: num(b.cash, 0), // 權益數可為負（穿價），不 clamp
+    index_ref: Math.max(0, num(b.index_ref, 0)),
+    beta: clamp(b.beta, 0.01, 5, 1),
     spec: sanitizeSpec(b.spec),
     positions,
     closed: sanitizeClosed(b.closed),
     stop_loss,
+    planner: sanitizePlanner(b.planner),
+    spot: sanitizeSpot(b.spot),
   };
 }
 

@@ -8,26 +8,74 @@
 import {
   DEFAULT_SPEC,
   CONTRACT_CODE,
+  DEFAULT_STRESS_DROPS,
   type FuturesSpec,
   type FuturesPosition,
   type ClosedTrade,
   type Side,
+  type EntryBatch,
 } from './futures';
 
 const VERSION = 'v1';
 const KEY = `review:futures:${VERSION}`;
 
+/** 建倉試算的參數（純規劃用，不影響實際部位的損益計算） */
+export interface PlannerConfig {
+  capital: number;           // 帳戶可用本金（空著＝沿用保證金專戶現金）
+  target_leverage: number;   // 槓桿滑桿的位置（1.0～10.0）
+  gain_pct: number;          // 上漲目標（0.2＝+20%）
+  reserve_multiple: number;  // 出金時要留下的原始保證金倍數
+  trailing_peak: number;     // 移動停損的參考最高價（0＝用目標價）
+  trailing_dist: number;     // 回檔多少就出場（元／點）
+  batches: EntryBatch[];     // 分批進場的價格與口數
+  stress_drops: number[];    // 壓力測試的情境
+}
+
+/** 「期貨替代現貨存股」的比較參數 */
+export interface SpotCompareConfig {
+  dividend_yield: number;
+  income_tax_rate: number;
+  idle_rate: number;
+  rollovers_per_year: number;
+  spread_per_rollover: number;
+  broker_discount: number;
+}
+
 export interface FuturesConfig {
-  contract: string;          // 商品代碼（目前只做 SRF，保留欄位以後可擴充大型 NYF）
+  contract: string;          // 商品／期交所行情代碼（SRF / NYF / MTX / TMF，可自訂）
   price: number;             // 現在價格（抓期交所或手動輸入）
   price_month: string;       // price 對應的到期月份（抓價時帶回）
   price_as_of: string;       // 報價日期 'YYYY-MM-DD'
   cash: number;              // 保證金專戶現金餘額（入金 ± 已實現損益）
+  index_ref: number;         // 現價當下的加權指數（用來把價格翻譯成大盤點數）
+  beta: number;              // 標的相對大盤的連動係數（0050 約 1.0～1.1；台指期＝1）
   spec: FuturesSpec;         // 契約規格與費用設定
   positions: FuturesPosition[];
   closed: ClosedTrade[];
   stop_loss: Record<string, number>; // 每筆部位的停損價（key＝position id）
+  planner: PlannerConfig;
+  spot: SpotCompareConfig;
 }
+
+export const DEFAULT_PLANNER: PlannerConfig = {
+  capital: 0,
+  target_leverage: 3,
+  gain_pct: 0.2,
+  reserve_multiple: 2.5,
+  trailing_peak: 0,
+  trailing_dist: 2,
+  batches: [{ price: 0, lots: 0 }, { price: 0, lots: 0 }, { price: 0, lots: 0 }],
+  stress_drops: [...DEFAULT_STRESS_DROPS],
+};
+
+export const DEFAULT_SPOT: SpotCompareConfig = {
+  dividend_yield: 0.035,
+  income_tax_rate: 0.12,
+  idle_rate: 0.02,
+  rollovers_per_year: 11,
+  spread_per_rollover: 0.2,
+  broker_discount: 0.6,
+};
 
 const SEED: FuturesConfig = {
   contract: CONTRACT_CODE,
@@ -35,10 +83,14 @@ const SEED: FuturesConfig = {
   price_month: '',
   price_as_of: '',
   cash: 0,
+  index_ref: 0,
+  beta: 1,
   spec: { ...DEFAULT_SPEC },
   positions: [],
   closed: [],
   stop_loss: {},
+  planner: { ...DEFAULT_PLANNER },
+  spot: { ...DEFAULT_SPOT },
 };
 
 export function seedFuturesConfig(): FuturesConfig {
@@ -48,6 +100,8 @@ export function seedFuturesConfig(): FuturesConfig {
     positions: [],
     closed: [],
     stop_loss: {},
+    planner: { ...DEFAULT_PLANNER, batches: DEFAULT_PLANNER.batches.map((b) => ({ ...b })), stress_drops: [...DEFAULT_PLANNER.stress_drops] },
+    spot: { ...DEFAULT_SPOT },
   };
 }
 
@@ -122,6 +176,53 @@ function sanitizeClosed(v: unknown, i: number): ClosedTrade | null {
   return { id, month, side, lots, entry_price, exit_price, exit_date, ...(note ? { note } : {}) };
 }
 
+function sanitizeBatches(v: unknown): EntryBatch[] {
+  const arr = Array.isArray(v) ? v : [];
+  const out: EntryBatch[] = arr.slice(0, 6).map((b) => {
+    const o = (b && typeof b === 'object' ? b : {}) as Record<string, unknown>;
+    return { price: Math.max(0, num(o.price, 0)), lots: Math.max(0, num(o.lots, 0)) };
+  });
+  // 一律補滿 3 格，UI 才有固定的三張卡可以填
+  while (out.length < 3) out.push({ price: 0, lots: 0 });
+  return out;
+}
+
+function sanitizeDrops(v: unknown): number[] {
+  const arr = Array.isArray(v) ? v : [];
+  const out = arr
+    .map((d) => num(d, NaN))
+    .filter((d) => Number.isFinite(d) && d > 0 && d < 1)
+    .slice(0, 12)
+    .sort((a, b) => a - b);
+  return out.length > 0 ? out : [...DEFAULT_PLANNER.stress_drops];
+}
+
+function sanitizePlanner(v: unknown): PlannerConfig {
+  const o = (v && typeof v === 'object' ? v : {}) as Record<string, unknown>;
+  return {
+    capital: Math.max(0, num(o.capital, DEFAULT_PLANNER.capital)),
+    target_leverage: Math.min(10, Math.max(0.1, num(o.target_leverage, DEFAULT_PLANNER.target_leverage))),
+    gain_pct: Math.min(5, Math.max(-0.9, num(o.gain_pct, DEFAULT_PLANNER.gain_pct))),
+    reserve_multiple: Math.min(10, Math.max(1, num(o.reserve_multiple, DEFAULT_PLANNER.reserve_multiple))),
+    trailing_peak: Math.max(0, num(o.trailing_peak, DEFAULT_PLANNER.trailing_peak)),
+    trailing_dist: Math.max(0, num(o.trailing_dist, DEFAULT_PLANNER.trailing_dist)),
+    batches: sanitizeBatches(o.batches),
+    stress_drops: sanitizeDrops(o.stress_drops),
+  };
+}
+
+function sanitizeSpot(v: unknown): SpotCompareConfig {
+  const o = (v && typeof v === 'object' ? v : {}) as Record<string, unknown>;
+  return {
+    dividend_yield: Math.min(1, Math.max(0, num(o.dividend_yield, DEFAULT_SPOT.dividend_yield))),
+    income_tax_rate: Math.min(1, Math.max(0, num(o.income_tax_rate, DEFAULT_SPOT.income_tax_rate))),
+    idle_rate: Math.min(1, Math.max(0, num(o.idle_rate, DEFAULT_SPOT.idle_rate))),
+    rollovers_per_year: Math.min(52, Math.max(0, num(o.rollovers_per_year, DEFAULT_SPOT.rollovers_per_year))),
+    spread_per_rollover: Math.max(0, num(o.spread_per_rollover, DEFAULT_SPOT.spread_per_rollover)),
+    broker_discount: Math.min(1, Math.max(0.01, num(o.broker_discount, DEFAULT_SPOT.broker_discount))),
+  };
+}
+
 export function normalizeFutures(parsed: Record<string, unknown>): FuturesConfig {
   const positions = (Array.isArray(parsed.positions) ? parsed.positions : [])
     .map((p, i) => sanitizePosition(p, i))
@@ -142,15 +243,19 @@ export function normalizeFutures(parsed: Record<string, unknown>): FuturesConfig
   }
 
   return {
-    contract: str(parsed.contract, CONTRACT_CODE) || CONTRACT_CODE,
+    contract: (str(parsed.contract, CONTRACT_CODE) || CONTRACT_CODE).toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 6) || CONTRACT_CODE,
     price: Math.max(0, num(parsed.price, 0)),
     price_month: safeMonth(parsed.price_month),
     price_as_of: safeDate(parsed.price_as_of),
     cash: num(parsed.cash, 0), // 權益數可以是負的（穿價），不 clamp
+    index_ref: Math.max(0, num(parsed.index_ref, 0)),
+    beta: Math.min(5, Math.max(0.01, num(parsed.beta, 1))),
     spec: sanitizeSpec(parsed.spec),
     positions,
     closed,
     stop_loss,
+    planner: sanitizePlanner(parsed.planner),
+    spot: sanitizeSpot(parsed.spot),
   };
 }
 
