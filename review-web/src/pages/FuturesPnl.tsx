@@ -3,8 +3,11 @@ import { useSearchParams } from 'react-router-dom';
 import {
   Activity, AlertTriangle, CalendarClock, Cloud, CloudOff, Loader2,
   Plus, RefreshCw, Trash2, TrendingUp, TrendingDown, Gauge,
-  ClipboardCopy, Check, Zap, Target, PiggyBank, Layers,
+  ClipboardCopy, Check, Target, PiggyBank, Layers,
+  ShieldCheck, Wallet, ListOrdered, CalendarSync, Scale, SlidersHorizontal, BookOpen,
+  LineChart, Flame, Ruler,
 } from 'lucide-react';
+import { Panel, StatTile, RiskMeter, ThreatCard, LevelCard, Row, Chip, type Tone } from '../components/futures/ui';
 import { api } from '../lib/api';
 import type { FuturesMonthQuote, FuturesEquityHistoryResp, FuturesMarginsResp } from '../lib/api';
 import {
@@ -24,15 +27,15 @@ import {
 } from '../lib/futuresStore';
 
 type FuturesTab = 'overview' | 'positions' | 'stress' | 'planner' | 'rollover' | 'spot' | 'settings' | 'logic';
-const FUTURES_TABS: { id: FuturesTab; label: string }[] = [
-  { id: 'overview', label: '損益總覽' },
-  { id: 'positions', label: '部位 & 平倉紀錄' },
-  { id: 'stress', label: '壓力測試' },
-  { id: 'planner', label: '建倉 & 出場試算' },
-  { id: 'rollover', label: '到期 & 轉倉' },
-  { id: 'spot', label: '存股比較' },
-  { id: 'settings', label: '契約規格 & 設定' },
-  { id: 'logic', label: '整體邏輯' },
+const FUTURES_TABS: { id: FuturesTab; label: string; icon: React.ElementType }[] = [
+  { id: 'overview', label: '損益總覽', icon: Gauge },
+  { id: 'positions', label: '部位 & 平倉紀錄', icon: ListOrdered },
+  { id: 'stress', label: '壓力測試', icon: Flame },
+  { id: 'planner', label: '建倉 & 出場試算', icon: Target },
+  { id: 'rollover', label: '到期 & 轉倉', icon: CalendarSync },
+  { id: 'spot', label: '存股比較', icon: Scale },
+  { id: 'settings', label: '契約規格 & 設定', icon: SlidersHorizontal },
+  { id: 'logic', label: '整體邏輯', icon: BookOpen },
 ];
 const DEFAULT_TAB: FuturesTab = 'overview';
 
@@ -45,12 +48,12 @@ const todayStr = () => new Date().toLocaleDateString('sv-SE'); // 'YYYY-MM-DD'�
 const monthLabel = (m: string) => (/^\d{6}$/.test(m) ? `${m.slice(0, 4)}/${m.slice(4)}` : m || '—');
 
 // 風險指標的顏色門檻（與 summarizeAccount 的 status 對齊）
-const STATUS_META: Record<string, { cls: string; ring: string; label: string; desc: string }> = {
-  flat: { cls: 'text-zinc-400', ring: 'stroke-zinc-600', label: '無部位', desc: '目前沒有未平倉部位' },
-  ok: { cls: 'text-emerald-400', ring: 'stroke-emerald-500', label: '安全', desc: '權益數高於所需原始保證金' },
-  warn: { cls: 'text-amber-400', ring: 'stroke-amber-500', label: '低於原始保證金', desc: '還不會被追繳，但已無法再開新倉' },
-  call: { cls: 'text-orange-400', ring: 'stroke-orange-500', label: '追繳區', desc: '權益數低於維持保證金，期貨商會發追繳通知' },
-  danger: { cls: 'text-rose-500', ring: 'stroke-rose-500', label: '斷頭風險', desc: '風險指標低於 25%，盤中會被強制平倉' },
+const STATUS_META: Record<string, { cls: string; ring: string; tone: Tone; label: string; desc: string }> = {
+  flat: { cls: 'text-zinc-400', ring: 'stroke-zinc-600', tone: 'zinc', label: '無部位', desc: '目前沒有未平倉部位' },
+  ok: { cls: 'text-emerald-400', ring: 'stroke-emerald-500', tone: 'emerald', label: '安全', desc: '權益數高於所需原始保證金' },
+  warn: { cls: 'text-amber-400', ring: 'stroke-amber-500', tone: 'amber', label: '低於原始保證金', desc: '還不會被追繳，但已無法再開新倉' },
+  call: { cls: 'text-orange-400', ring: 'stroke-orange-500', tone: 'orange', label: '追繳區', desc: '權益數低於維持保證金，期貨商會發追繳通知' },
+  danger: { cls: 'text-rose-500', ring: 'stroke-rose-500', tone: 'rose', label: '斷頭風險', desc: '風險指標低於 25%，盤中會被強制平倉' },
 };
 
 export function FuturesPnl() {
@@ -253,44 +256,65 @@ export function FuturesPnl() {
 
   return (
     <div className="space-y-6">
-      {/* 標題列 */}
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <h1 className="text-2xl font-bold text-zinc-100 flex items-center gap-2">
-            <Activity className="w-6 h-6 text-primary" />
-            期貨損益總覽
-          </h1>
-          <p className="text-xs text-zinc-500 mt-1">
-            {symbolName} — 一口 {spec.contract_size.toLocaleString()} {preset?.unit_label ?? '股/口'}
-            {preset ? `（${preset.underlying}）` : ` ${UNDERLYING_CODE}`}，
-            跳一檔 {spec.tick_size} ＝ {money(tickValue(spec))}
-          </p>
-        </div>
-        <div className="flex items-center gap-3">
-          <CopyReportButton text={report} />
-          <button
-            onClick={() => void realSync()}
-            disabled={quote.status === 'loading' || cloud.status === 'loading'}
-            className="text-[11px] text-cyan-400 hover:text-cyan-300 disabled:text-zinc-600 flex items-center gap-1 transition-colors"
-            title="抓期交所最新行情更新現價，並與雲端對存回讀。注意：券商沒有期貨帳戶 API，口數/進場價/保證金餘額仍需手動維護。"
-          >
-            {quote.status === 'loading' ? <Loader2 className="w-3 h-3 animate-spin" /> : <RefreshCw className="w-3 h-3" />}
-            真實同步
-          </button>
-          <button
-            onClick={() => void saveToCloud()}
-            disabled={cloud.status === 'loading'}
-            className="text-[11px] text-emerald-400 hover:text-emerald-300 disabled:text-zinc-600 flex items-center gap-1 transition-colors"
-            title="只把目前設定存回雲端，不抓行情"
-          >
-            {cloud.status === 'loading' ? <Loader2 className="w-3 h-3 animate-spin" /> : <Cloud className="w-3 h-3" />}
-            存到雲端
-          </button>
+      {/*
+        標題列。改版重點：狀態（安全／追繳）與操作（同步／存雲端）以前都是
+        11px 的純文字連結，跟旁邊的說明字混在一起看不出可按；現在標題本身有
+        重量，操作是真的按鈕，契約規格改用 chip 排開，一眼掃得完。
+      */}
+      <div className="rounded-2xl border border-border bg-gradient-to-br from-zinc-900 via-card to-zinc-900/60 p-5 shadow-sm">
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="w-9 h-9 rounded-xl bg-primary/15 border border-primary/30 grid place-items-center shrink-0">
+                <Activity className="w-5 h-5 text-primary" />
+              </span>
+              <h1 className="text-2xl sm:text-3xl font-extrabold bg-gradient-to-r from-sky-300 via-cyan-200 to-emerald-300 bg-clip-text text-transparent">
+                期貨風控與損益總覽
+              </h1>
+              <Chip tone={statusMeta.tone} title={statusMeta.desc}>
+                <ShieldCheck className="w-3 h-3" />
+                {statusMeta.label}
+              </Chip>
+            </div>
+            <p className="text-xs text-zinc-500 mt-2">
+              保證金水位、追繳／斷頭價位、暴跌壓力測試與存股比較
+            </p>
+            <div className="flex flex-wrap items-center gap-2 mt-3">
+              <Chip tone="primary">{symbolName}</Chip>
+              <Chip tone="zinc">
+                一口 {spec.contract_size.toLocaleString()} {preset?.unit_label ?? '股/口'}
+                {preset ? `（${preset.underlying}）` : ` ${UNDERLYING_CODE}`}
+              </Chip>
+              <Chip tone="zinc">跳一檔 {spec.tick_size} ＝ {money(tickValue(spec))}</Chip>
+              <Chip tone="zinc">原始 / 維持保證金 {money(spec.initial_margin)} / {money(spec.maintenance_margin)}</Chip>
+            </div>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              onClick={() => void realSync()}
+              disabled={quote.status === 'loading' || cloud.status === 'loading'}
+              className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-semibold bg-cyan-500/15 border border-cyan-500/30 text-cyan-300 hover:bg-cyan-500/25 disabled:opacity-40 disabled:cursor-not-allowed transition"
+              title="抓期交所最新行情更新現價，並與雲端對存回讀。注意：券商沒有期貨帳戶 API，口數/進場價/保證金餘額仍需手動維護。"
+            >
+              {quote.status === 'loading' ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5" />}
+              真實同步
+            </button>
+            <button
+              onClick={() => void saveToCloud()}
+              disabled={cloud.status === 'loading'}
+              className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-semibold bg-emerald-500/15 border border-emerald-500/30 text-emerald-300 hover:bg-emerald-500/25 disabled:opacity-40 disabled:cursor-not-allowed transition"
+              title="只把目前設定存回雲端，不抓行情"
+            >
+              {cloud.status === 'loading' ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Cloud className="w-3.5 h-3.5" />}
+              存到雲端
+            </button>
+            <CopyReportButton text={report} />
+          </div>
         </div>
       </div>
 
       {(cloud.msg || quote.msg) && (
-        <div className="flex flex-wrap items-center gap-4 text-[11px] -mt-3">
+        <div className="flex flex-wrap items-center gap-4 text-[11px] -mt-4">
           {cloud.msg && (
             <span className={`flex items-center gap-1 ${cloud.status === 'error' ? 'text-amber-400' : 'text-emerald-400'}`}>
               {cloud.status === 'error' ? <CloudOff className="w-3.5 h-3.5" /> : <Cloud className="w-3.5 h-3.5" />}
@@ -327,7 +351,7 @@ export function FuturesPnl() {
           <div className="flex items-start gap-3">
             <CalendarClock className={`w-5 h-5 shrink-0 mt-0.5 ${dueAlerts.some((a) => a.expired) ? 'text-rose-400' : 'text-amber-400'}`} />
             <div className="space-y-1">
-              <div className="text-sm font-semibold text-zinc-100">轉倉提醒</div>
+              <div className="text-sm font-bold text-zinc-100 tracking-wide">轉倉提醒</div>
               {dueAlerts.map((a) => (
                 <div key={a.month} className="text-xs text-zinc-300">
                   {a.expired ? (
@@ -361,13 +385,13 @@ export function FuturesPnl() {
         分頁導覽。八個分頁在手機上橫向捲動很容易讓人以為只有前兩個，
         所以小螢幕改用下拉選單（一眼看得到全部），sm 以上才用原本的 tab 列。
       */}
-      <div className="border-b border-border/80">
-        <div className="sm:hidden pb-2">
+      <div>
+        <div className="sm:hidden">
           <select
             value={activeTab}
             onChange={(e) => handleTabChange(e.target.value as FuturesTab)}
             aria-label="切換分頁"
-            className="w-full bg-primary text-white text-sm font-semibold rounded-lg px-3 py-2.5 border-0"
+            className="w-full bg-primary text-white text-sm font-semibold rounded-xl px-3 py-2.5 border-0"
           >
             {FUTURES_TABS.map((t, i) => (
               <option key={t.id} value={t.id} className="bg-zinc-900 text-zinc-100 font-normal">
@@ -376,18 +400,26 @@ export function FuturesPnl() {
             ))}
           </select>
         </div>
-        <div className="hidden sm:flex items-center gap-2 overflow-x-auto pb-2 scrollbar-none">
-          {FUTURES_TABS.map((t) => (
-            <button
-              key={t.id}
-              onClick={() => handleTabChange(t.id)}
-              className={`flex items-center gap-1.5 px-4 py-2 text-xs font-semibold rounded-lg transition whitespace-nowrap shrink-0 ${
-                activeTab === t.id ? 'bg-primary text-white shadow-sm' : 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800/40'
-              }`}
-            >
-              {t.label}
-            </button>
-          ))}
+        <div className="hidden sm:flex items-center gap-1.5 overflow-x-auto p-1.5 rounded-xl border border-border bg-zinc-900/50 scrollbar-none">
+          {FUTURES_TABS.map((t) => {
+            const Icon = t.icon;
+            const on = activeTab === t.id;
+            return (
+              <button
+                key={t.id}
+                onClick={() => handleTabChange(t.id)}
+                aria-current={on ? 'page' : undefined}
+                className={`flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold rounded-lg transition whitespace-nowrap shrink-0 ${
+                  on
+                    ? 'bg-primary/20 text-sky-200 border border-primary/40 shadow-[0_0_0_1px_rgba(59,130,246,0.15)]'
+                    : 'border border-transparent text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800/60'
+                }`}
+              >
+                <Icon className={`w-3.5 h-3.5 ${on ? 'text-primary' : 'text-zinc-500'}`} />
+                {t.label}
+              </button>
+            );
+          })}
         </div>
       </div>
 
@@ -443,10 +475,10 @@ const CopyReportButton: React.FC<{ text: string }> = ({ text }) => {
   return (
     <button
       onClick={() => void copy()}
-      className="text-[11px] text-zinc-400 hover:text-zinc-200 flex items-center gap-1 transition-colors"
+      className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-semibold bg-zinc-800/70 border border-border text-zinc-300 hover:text-zinc-100 hover:border-zinc-500 transition"
       title="把目前的部位、保證金水位、危險價位與壓力測試結果複製成一段純文字"
     >
-      {done ? <Check className="w-3 h-3 text-emerald-400" /> : <ClipboardCopy className="w-3 h-3" />}
+      {done ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <ClipboardCopy className="w-3.5 h-3.5" />}
       {done ? '已複製' : '複製風控報告'}
     </button>
   );
@@ -456,14 +488,14 @@ const CopyReportButton: React.FC<{ text: string }> = ({ text }) => {
 
 type Summary = ReturnType<typeof summarizeAccount>;
 
-const StatCard: React.FC<{ label: string; value: string; sub?: string; cls?: string; hint?: string }> = ({
-  label, value, sub, cls, hint,
-}) => (
-  <div className="bg-card border border-border rounded-xl p-4 shadow-sm" title={hint}>
-    <div className="text-[11px] text-zinc-500 font-medium">{label}</div>
-    <div className={`text-xl font-bold font-mono mt-1 ${cls ?? 'text-zinc-100'}`}>{value}</div>
-    {sub && <div className="text-[11px] text-zinc-500 mt-1">{sub}</div>}
-  </div>
+/**
+ * StatTile 的相容外殼。各分頁原本就用 `cls` 傳數值顏色（多半是損益的紅綠），
+ * 保留這個簽名可以不用一次改二十幾個呼叫點；新寫的地方直接用 StatTile。
+ */
+const StatCard: React.FC<{
+  label: string; value: string; sub?: React.ReactNode; cls?: string; hint?: string; tone?: Tone; icon?: React.ReactNode;
+}> = ({ label, value, sub, cls, hint, tone, icon }) => (
+  <StatTile label={label} value={value} sub={sub} valueCls={cls} hint={hint} tone={tone} icon={icon} />
 );
 
 /** 把價格翻成加權指數點數的小工具；沒填參考指數時回空字串（不顯示） */
@@ -537,7 +569,7 @@ const EquityCurveCard: React.FC<{
 
   if (loading) {
     return (
-      <div className="bg-card border border-border rounded-xl p-5 shadow-sm flex items-center justify-center h-48">
+      <div className="bg-card/70 border border-border rounded-2xl p-5 shadow-sm flex items-center justify-center h-48">
         <Loader2 className="w-6 h-6 animate-spin text-zinc-500 mr-2" />
         <span className="text-xs text-zinc-400">載入歷史資料中...</span>
       </div>
@@ -546,7 +578,7 @@ const EquityCurveCard: React.FC<{
 
   if (error) {
     return (
-      <div className="bg-card border border-border rounded-xl p-5 shadow-sm text-center py-8">
+      <div className="bg-card/70 border border-border rounded-2xl p-5 shadow-sm text-center py-8">
         <AlertTriangle className="w-8 h-8 text-rose-500 mx-auto mb-2" />
         <p className="text-xs text-rose-400 font-semibold">載入歷史資料失敗</p>
         <p className="text-[11px] text-zinc-500 mt-1">{error}</p>
@@ -558,7 +590,7 @@ const EquityCurveCard: React.FC<{
 
   if (!data?.exists || rows.length === 0) {
     return (
-      <div className="bg-card border border-border rounded-xl p-5 shadow-sm text-center py-8">
+      <div className="bg-card/70 border border-border rounded-2xl p-5 shadow-sm text-center py-8">
         <p className="text-xs text-zinc-400 font-semibold">還沒有歷史資料。</p>
         <p className="text-[11px] text-zinc-500 mt-1">快照由 VM 每日收盤後自動寫入，明天收盤後就會出現第一筆。</p>
       </div>
@@ -568,9 +600,9 @@ const EquityCurveCard: React.FC<{
   if (rows.length === 1) {
     const singlePoint = rows[0];
     return (
-      <div className="bg-card border border-border rounded-xl p-5 shadow-sm space-y-4">
+      <div className="bg-card/70 border border-border rounded-2xl p-5 shadow-sm space-y-4">
         <div className="flex items-center justify-between">
-          <h2 className="text-sm font-semibold text-zinc-100">權益數走勢</h2>
+          <div className="flex items-center gap-2.5"><span className="w-7 h-7 rounded-lg bg-primary/10 border border-primary/30 grid place-items-center shrink-0"><LineChart className="w-4 h-4 text-primary" /></span><h2 className="text-sm font-bold text-zinc-100 tracking-wide">權益數走勢</h2></div>
         </div>
         <div className="border border-border/50 rounded-lg p-4 bg-zinc-900/30">
           <p className="text-xs text-zinc-400">日期：{singlePoint.date}</p>
@@ -596,9 +628,9 @@ const EquityCurveCard: React.FC<{
 
   if (points.length === 0) {
     return (
-      <div className="bg-card border border-border rounded-xl p-5 shadow-sm space-y-4">
+      <div className="bg-card/70 border border-border rounded-2xl p-5 shadow-sm space-y-4">
         <div className="flex items-center justify-between">
-          <h2 className="text-sm font-semibold text-zinc-100">權益數走勢</h2>
+          <div className="flex items-center gap-2.5"><span className="w-7 h-7 rounded-lg bg-primary/10 border border-primary/30 grid place-items-center shrink-0"><LineChart className="w-4 h-4 text-primary" /></span><h2 className="text-sm font-bold text-zinc-100 tracking-wide">權益數走勢</h2></div>
           <RangeSelector active={rangeType} onChange={setRangeType} />
         </div>
         <div className="text-center py-8">
@@ -611,9 +643,9 @@ const EquityCurveCard: React.FC<{
   if (points.length === 1) {
     const singlePoint = points[0];
     return (
-      <div className="bg-card border border-border rounded-xl p-5 shadow-sm space-y-4">
+      <div className="bg-card/70 border border-border rounded-2xl p-5 shadow-sm space-y-4">
         <div className="flex items-center justify-between">
-          <h2 className="text-sm font-semibold text-zinc-100">權益數走勢</h2>
+          <div className="flex items-center gap-2.5"><span className="w-7 h-7 rounded-lg bg-primary/10 border border-primary/30 grid place-items-center shrink-0"><LineChart className="w-4 h-4 text-primary" /></span><h2 className="text-sm font-bold text-zinc-100 tracking-wide">權益數走勢</h2></div>
           <RangeSelector active={rangeType} onChange={setRangeType} />
         </div>
         <div className="border border-border/50 rounded-lg p-4 bg-zinc-900/30">
@@ -706,7 +738,7 @@ const EquityCurveCard: React.FC<{
   const maxDdY = maxDdIdx !== -1 ? 190 + (maxDrawdown / minDrawdown) * 80 : null;
 
   return (
-    <div className="bg-card border border-border rounded-xl p-5 shadow-sm space-y-4">
+    <div className="bg-card/70 border border-border rounded-2xl p-5 shadow-sm space-y-4">
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-border/50 pb-4">
         <div className="grid grid-cols-3 gap-6">
           <div>
@@ -879,7 +911,7 @@ const EquityCurveCard: React.FC<{
 const OverviewTab: React.FC<{
   config: FuturesConfig;
   summary: Summary;
-  statusMeta: { cls: string; ring: string; label: string; desc: string };
+  statusMeta: { cls: string; ring: string; tone: Tone; label: string; desc: string };
   spec: FuturesSpec;
   beta: number;
   plan: ReturnType<typeof targetPlan>;
@@ -894,153 +926,197 @@ const OverviewTab: React.FC<{
   const riPctText = ri === null ? '—' : `${(ri * 100).toFixed(0)}%`;
   const refPrice = summary.reference_price;
   const idx = (p: number | null) => idxText(p, refPrice, config.index_ref, beta);
+  const hasLevels = summary.total_lots > 0 && summary.net_lots !== 0;
+
+  /**
+   * 警戒卡的四行。原本追繳／斷頭只是「危險價位」清單裡的兩列，跟現價、
+   * 距離混在一起；拆成兩張獨立染色的卡之後，每一張自己回答同一組問題：
+   * 觸發價、對應大盤點位、還能跌多少、大盤要掉幾點。
+   */
+  const threatRows = (price: number | null) => {
+    const indexAt = price === null ? null : indexAtPrice(price, refPrice, config.index_ref, beta);
+    const move = price !== null && refPrice > 0 ? (price - refPrice) / refPrice : null;
+    const gap = indexAt === null ? null : indexAt - config.index_ref;
+    return [
+      { label: '觸發的標的價格', value: price !== null ? `${px(price)} 元` : '—', strong: true },
+      {
+        label: '對應加權指數',
+        value: indexAt !== null ? `${Math.round(indexAt).toLocaleString()} 點` : '未填參考指數',
+        hint: '在「契約規格 & 設定」填入目前的加權指數才會換算。',
+      },
+      {
+        label: '最大容忍幅度',
+        value: move !== null ? `${move > 0 ? '+' : ''}${(move * 100).toFixed(2)}%` : '—',
+        hint: '相對目前價格。空單的警戒線在上方，所以會是正的漲幅。',
+      },
+      {
+        label: '大盤折算點數',
+        value: gap !== null ? `${gap >= 0 ? '+' : ''}${Math.round(gap).toLocaleString()} 點` : '—',
+        hint: `以 beta ${beta.toFixed(2)} 換算，僅供對照。`,
+      },
+    ];
+  };
 
   return (
     <div className="space-y-5">
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-        <StatCard
-          label="保證金權益數"
-          value={money(summary.equity)}
-          sub={`現金 ${money(config.cash)} ＋ 未實現 ${money(summary.unrealized)}`}
-          cls={pnlCls(summary.equity)}
-          hint="權益數＝保證金專戶現金餘額 ＋ 未實現損益。期貨每日結算，這個數字才是你真正的家當。"
-        />
-        <StatCard
-          label="未實現損益"
-          value={money(summary.unrealized)}
-          sub={summary.required_initial > 0 ? `佔原始保證金 ${pct(summary.unrealized / summary.required_initial)}` : '無部位'}
-          cls={pnlCls(summary.unrealized)}
-          hint="已扣掉來回手續費與期交稅的淨額。"
-        />
-        <StatCard
-          label="風險指標"
-          value={riPctText}
-          sub={statusMeta.label}
-          cls={statusMeta.cls}
-          hint="權益數 ÷ 所需維持保證金。低於 100% 會收到追繳通知，盤中低於 25% 會被強制平倉。"
-        />
-        <StatCard
-          label="名目曝險"
-          value={money(summary.contract_value)}
-          sub={summary.leverage !== null ? `槓桿 ${summary.leverage.toFixed(1)} 倍` : '無部位'}
-          hint="契約總值＝價格 × 契約單位 × 口數。這才是你實際承受的市場曝險，不是保證金那點錢。"
-        />
-      </div>
+      {/* 帳戶狀態：四塊數字 + 一條風險量表，開頁第一眼要回答的就是「我現在安不安全」 */}
+      <Panel
+        title="帳戶目前狀態"
+        icon={<Wallet className="w-4 h-4" />}
+        tone={statusMeta.tone}
+        right={<Chip tone={statusMeta.tone} title={statusMeta.desc}>{statusMeta.label}</Chip>}
+        desc={statusMeta.desc}
+      >
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+          <StatTile
+            label="保證金權益數"
+            value={money(summary.equity)}
+            sub={`現金 ${money(config.cash)} ＋ 未實現 ${money(summary.unrealized)}`}
+            valueCls={pnlCls(summary.equity)}
+            tone="primary"
+            icon={<Wallet className="w-3 h-3" />}
+            hint="權益數＝保證金專戶現金餘額 ＋ 未實現損益。期貨每日結算，這個數字才是你真正的家當。"
+          />
+          <StatTile
+            label="未實現損益"
+            value={money(summary.unrealized)}
+            sub={summary.required_initial > 0 ? `佔原始保證金 ${pct(summary.unrealized / summary.required_initial)}` : '無部位'}
+            valueCls={pnlCls(summary.unrealized)}
+            /* 色帶維持中性：數字已經用台股的漲紅跌綠表態，色帶再用 rose/emerald 會變成
+               「紅棒配綠字」的反向暗示。風險語意留給風險指標那一塊。 */
+            tone="zinc"
+            icon={<LineChart className="w-3 h-3" />}
+            hint="已扣掉來回手續費與期交稅的淨額。"
+          />
+          <StatTile
+            label="風險指標"
+            value={riPctText}
+            sub={statusMeta.label}
+            valueCls={statusMeta.cls}
+            tone={statusMeta.tone}
+            icon={<Gauge className="w-3 h-3" />}
+            hint="權益數 ÷ 所需維持保證金。低於 100% 會收到追繳通知，盤中低於 25% 會被強制平倉。"
+          />
+          <StatTile
+            label="名目曝險"
+            value={money(summary.contract_value)}
+            sub={summary.leverage !== null ? `實質槓桿 ${summary.leverage.toFixed(2)} 倍` : '無部位'}
+            tone="sky"
+            icon={<Ruler className="w-3 h-3" />}
+            hint="契約總值＝價格 × 契約單位 × 口數。這才是你實際承受的市場曝險，不是保證金那點錢。"
+          />
+        </div>
+        <div className="mt-3">
+          <RiskMeter value={ri} tone={statusMeta.tone} liquidationRatio={spec.liquidation_ratio} />
+        </div>
+      </Panel>
 
       <EquityCurveCard historyState={historyState} />
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        {/* 保證金水位 */}
-        <div className="bg-card border border-border rounded-xl p-5 shadow-sm space-y-3">
-          <div className="flex items-center gap-2">
-            <Gauge className="w-4 h-4 text-primary" />
-            <h2 className="text-sm font-semibold text-zinc-100">保證金水位</h2>
-            <span className={`ml-auto text-[11px] px-2 py-0.5 rounded-full border ${statusMeta.cls} border-current/30`}>
-              {statusMeta.label}
-            </span>
-          </div>
-          <p className="text-[11px] text-zinc-500">{statusMeta.desc}</p>
-          <dl className="space-y-2 text-xs">
-            <Row label="權益數" value={money(summary.equity)} cls={pnlCls(summary.equity)} />
-            <Row label={`所需原始保證金（${summary.total_lots} 口 × ${money(spec.initial_margin)}）`} value={money(summary.required_initial)} />
-            <Row label={`所需維持保證金（${summary.total_lots} 口 × ${money(spec.maintenance_margin)}）`} value={money(summary.required_maintenance)} />
-            <Row
-              label="超額保證金"
-              value={money(summary.excess)}
-              cls={summary.excess >= 0 ? 'text-emerald-400' : 'text-rose-400'}
-              hint="權益數 − 所需原始保證金。正的部分才是能再開倉或承受回檔的緩衝。"
-            />
-          </dl>
-        </div>
-
-        {/* 危險價位 */}
-        <div className="bg-card border border-border rounded-xl p-5 shadow-sm space-y-3">
-          <div className="flex items-center gap-2">
-            <AlertTriangle className="w-4 h-4 text-amber-400" />
-            <h2 className="text-sm font-semibold text-zinc-100">危險價位</h2>
-          </div>
-          {summary.total_lots === 0 ? (
-            <p className="text-xs text-zinc-500">目前沒有未平倉部位。</p>
-          ) : summary.net_lots === 0 ? (
-            <p className="text-xs text-zinc-500">
-              多空完全對沖（多 {summary.long_lots} 口 / 空 {summary.short_lots} 口），價格已不影響權益數，因此沒有追繳價可言。
-            </p>
-          ) : (
-            <>
-              <dl className="space-y-2 text-xs">
-                <Row
-                  label={`現在價格${summary.months.length > 1 ? `（${monthLabel(summary.reference_month)} 參考月）` : ''}`}
-                  value={px(refPrice)}
-                  cls="text-zinc-100"
-                  sub={config.index_ref > 0 ? `${Math.round(config.index_ref).toLocaleString()} 點` : ''}
-                />
-                <Row
-                  label="追繳價（權益數＝維持保證金）"
-                  value={summary.margin_call_price !== null ? px(summary.margin_call_price) : '—'}
-                  cls="text-orange-400"
-                  sub={idx(summary.margin_call_price)}
-                  hint="跌（空單為漲）到這個價位就會收到期貨商的追繳通知，要補錢補到原始保證金水準。"
-                />
-                <Row
-                  label={`斷頭價（風險指標 ${pct(spec.liquidation_ratio, 0)}）`}
-                  value={summary.liquidation_price !== null ? px(summary.liquidation_price) : '—'}
-                  cls="text-rose-400"
-                  sub={idx(summary.liquidation_price)}
-                  hint="盤中觸及這個價位，期貨商會直接代為沖銷，不會等你補錢。"
-                />
-                {summary.margin_call_shift !== null && refPrice > 0 && (
-                  <Row
-                    label="距追繳還有"
-                    value={`${pct(Math.abs(summary.margin_call_shift) / refPrice)}（${Math.abs(
-                      Math.round(summary.margin_call_shift / spec.tick_size),
-                    )} 檔）`}
-                    cls="text-zinc-300"
-                  />
-                )}
-              </dl>
-              <p className="text-[11px] text-zinc-500 pt-1">
-                以目前部位與權益數計算，含來回手續費與期交稅。加碼、平倉或入金都會改變這兩個價位。
-                {summary.months.length > 1 && (
-                  <> 你同時持有 {summary.months.map(monthLabel).join('、')}，
-                  各月份分別報價；追繳／斷頭價是<strong className="text-zinc-400">各月份一起移動</strong>
-                  {summary.margin_call_shift !== null && <> {summary.margin_call_shift >= 0 ? '+' : ''}{summary.margin_call_shift.toFixed(2)} 元</>}
-                  的意思，用 {monthLabel(summary.reference_month)} 的價格表示。</>
-                )}
-                {config.index_ref > 0
-                  ? ` 大盤點數以 beta ${beta.toFixed(2)} 換算，僅供對照。`
-                  : ' 在「契約規格 & 設定」填入目前的加權指數，這裡就會一併顯示對應點位。'}
-              </p>
-            </>
-          )}
-        </div>
-      </div>
-
-      {/* 關鍵價格防線：斷頭 → 追繳 → 成本 → 目標，一眼看出自己站在哪 */}
-      {summary.total_lots > 0 && summary.net_lots !== 0 && (
-        <div className="bg-card border border-border rounded-xl p-5 shadow-sm space-y-3">
-          <div className="flex flex-wrap items-baseline justify-between gap-2">
-            <h2 className="text-sm font-semibold text-zinc-100">關鍵價格防線</h2>
-            <span className="text-[11px] text-zinc-600">斷頭價 → 追繳價 → 現價 → 目標價</span>
-          </div>
-          <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-            <LevelCard tone="rose" label="斷頭價" value={summary.liquidation_price} sub={idx(summary.liquidation_price)} base={refPrice} />
-            <LevelCard tone="amber" label="追繳價" value={summary.margin_call_price} sub={idx(summary.margin_call_price)} base={refPrice} />
-            <LevelCard tone="sky" label="現在價格" value={refPrice} sub={config.index_ref > 0 ? `${Math.round(config.index_ref).toLocaleString()} 點` : ''} base={refPrice} />
-            <LevelCard tone="emerald" label={`目標價（+${(config.planner.gain_pct * 100).toFixed(0)}%）`} value={plan.target_price} sub={idx(plan.target_price)} base={refPrice} />
-          </div>
-          <p className="text-[11px] text-zinc-500">
-            目標價的幅度可在「建倉 &amp; 出場試算」分頁調整。空單的追繳／斷頭價在現價之上，卡片會顯示為上漲幅度。
+      {/* 兩張警戒卡：整張染色，是全頁唯一會被餘光抓到的區塊 */}
+      {summary.total_lots === 0 ? (
+        <Panel title="警戒價位" icon={<AlertTriangle className="w-4 h-4" />} tone="zinc">
+          <p className="text-xs text-zinc-500">目前沒有未平倉部位。到「部位 &amp; 平倉紀錄」分頁新增後，這裡會算出追繳與斷頭價位。</p>
+        </Panel>
+      ) : summary.net_lots === 0 ? (
+        <Panel title="警戒價位" icon={<AlertTriangle className="w-4 h-4" />} tone="zinc">
+          <p className="text-xs text-zinc-500">
+            多空完全對沖（多 {summary.long_lots} 口 / 空 {summary.short_lots} 口），價格已不影響權益數，因此沒有追繳價可言。
           </p>
+        </Panel>
+      ) : (
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+          <ThreatCard
+            tone="amber"
+            title="黃牌 · 追繳點位"
+            tag="權益數低於維持保證金"
+            rows={threatRows(summary.margin_call_price)}
+            footer={
+              summary.margin_call_shift !== null && refPrice > 0
+                ? `距追繳還有 ${pct(Math.abs(summary.margin_call_shift) / refPrice)}（${Math.abs(
+                    Math.round(summary.margin_call_shift / spec.tick_size),
+                  )} 檔）。到價會收到期貨商追繳通知，要補錢補到原始保證金水準。`
+                : '到價會收到期貨商追繳通知，要補錢補到原始保證金水準。'
+            }
+          />
+          <ThreatCard
+            tone="rose"
+            title="紅牌 · 斷頭點位"
+            tag={`風險指標 ＜ ${pct(spec.liquidation_ratio, 0)}`}
+            rows={threatRows(summary.liquidation_price)}
+            footer="盤中觸及就會被期貨商代為沖銷，不會等你補錢。實際崩盤常因跳空而更早發生。"
+          />
         </div>
       )}
 
+      {/* 關鍵價格防線：斷頭 → 追繳 → 成本 → 目標，一眼看出自己站在哪 */}
+      {hasLevels && (
+        <Panel
+          title="關鍵價格防線"
+          icon={<Target className="w-4 h-4" />}
+          tone="sky"
+          right={<span className="text-[11px] text-zinc-600">斷頭價 → 追繳價 → 現價 → 目標價</span>}
+        >
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+            <LevelCard tone="rose" label="紅牌斷頭價" value={summary.liquidation_price} sub={idx(summary.liquidation_price)} base={refPrice} />
+            <LevelCard tone="amber" label="黃牌追繳價" value={summary.margin_call_price} sub={idx(summary.margin_call_price)} base={refPrice} />
+            <LevelCard
+              tone="sky"
+              current
+              label={`目前價格${summary.months.length > 1 ? `（${monthLabel(summary.reference_month)}）` : ''}`}
+              value={refPrice}
+              sub={config.index_ref > 0 ? `${Math.round(config.index_ref).toLocaleString()} 點` : ''}
+              base={refPrice}
+            />
+            <LevelCard tone="emerald" label={`目標價（+${(config.planner.gain_pct * 100).toFixed(0)}%）`} value={plan.target_price} sub={idx(plan.target_price)} base={refPrice} />
+          </div>
+          <p className="text-[11px] text-zinc-500 mt-3">
+            以目前部位與權益數計算，含來回手續費與期交稅——加碼、平倉或入金都會改變這些價位。
+            目標價的幅度可在「建倉 &amp; 出場試算」分頁調整；空單的追繳／斷頭價在現價之上，卡片會顯示為上漲幅度。
+            {summary.months.length > 1 && (
+              <> 你同時持有 {summary.months.map(monthLabel).join('、')}，各月份分別報價；追繳／斷頭價是
+              <strong className="text-zinc-400">各月份一起移動</strong>
+              {summary.margin_call_shift !== null && <> {summary.margin_call_shift >= 0 ? '+' : ''}{summary.margin_call_shift.toFixed(2)} 元</>}
+              的意思，用 {monthLabel(summary.reference_month)} 的價格表示。</>
+            )}
+            {config.index_ref <= 0 && ' 在「契約規格 & 設定」填入目前的加權指數，這裡就會一併顯示對應點位。'}
+          </p>
+        </Panel>
+      )}
+
+      {/* 保證金水位：警戒價位是「會發生什麼」，這裡是「錢的組成」 */}
+      <Panel
+        title="保證金水位"
+        icon={<Gauge className="w-4 h-4" />}
+        tone={statusMeta.tone}
+        right={<Chip tone={summary.excess >= 0 ? 'emerald' : 'rose'}>超額 {money(summary.excess)}</Chip>}
+      >
+        <dl className="space-y-2.5 text-xs">
+          <Row label="權益數" value={money(summary.equity)} cls={`text-base font-bold ${pnlCls(summary.equity)}`} />
+          <Row label={`所需原始保證金（${summary.total_lots} 口 × ${money(spec.initial_margin)}）`} value={money(summary.required_initial)} />
+          <Row label={`所需維持保證金（${summary.total_lots} 口 × ${money(spec.maintenance_margin)}）`} value={money(summary.required_maintenance)} />
+          <Row
+            label="超額保證金"
+            value={money(summary.excess)}
+            cls={summary.excess >= 0 ? 'text-emerald-400' : 'text-rose-400'}
+            hint="權益數 − 所需原始保證金。正的部分才是能再開倉或承受回檔的緩衝。"
+          />
+        </dl>
+      </Panel>
+
       {/* 部位明細 */}
-      <div className="bg-card border border-border rounded-xl p-5 shadow-sm">
-        <h2 className="text-sm font-semibold text-zinc-100 mb-3">未平倉部位</h2>
+      <Panel
+        title="未平倉部位"
+        icon={<Layers className="w-4 h-4" />}
+        tone="primary"
+        right={summary.total_lots > 0
+          ? <Chip tone="zinc">共 {summary.total_lots} 口（多 {summary.long_lots} / 空 {summary.short_lots}）</Chip>
+          : undefined}
+      >
         {config.positions.length === 0 ? (
           <p className="text-xs text-zinc-500">還沒有部位。到「部位 &amp; 平倉紀錄」分頁新增。</p>
         ) : (
-          <div className="overflow-x-auto">
+          <div className="overflow-x-auto -mx-1 px-1">
             <table className="w-full text-xs">
               <thead>
                 <tr className="text-zinc-500 border-b border-border">
@@ -1059,23 +1135,25 @@ const OverviewTab: React.FC<{
                   const mp = priceOf(priceInput, p.month);
                   const r = positionPnl(p, mp, spec);
                   return (
-                    <tr key={p.id} className="border-b border-border/50 last:border-0">
-                      <td className="py-2 pr-3 font-mono text-zinc-300">{monthLabel(p.month)}</td>
-                      <td className="py-2 pr-3">
-                        <span className={`inline-flex items-center gap-1 ${p.side === 'long' ? 'text-bull' : 'text-bear'}`}>
+                    <tr key={p.id} className="border-b border-border/50 last:border-0 hover:bg-zinc-800/40 transition-colors">
+                      <td className="py-2.5 pr-3 font-mono text-zinc-300">{monthLabel(p.month)}</td>
+                      <td className="py-2.5 pr-3">
+                        <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded border text-[11px] font-semibold ${
+                          p.side === 'long' ? 'text-bull border-bull/30 bg-bull/10' : 'text-bear border-bear/30 bg-bear/10'
+                        }`}>
                           {p.side === 'long' ? <TrendingUp className="w-3 h-3" /> : <TrendingDown className="w-3 h-3" />}
                           {p.side === 'long' ? '多' : '空'}
                         </span>
                       </td>
-                      <td className="py-2 pr-3 text-right font-mono text-zinc-300">{p.lots}</td>
-                      <td className="py-2 pr-3 text-right font-mono text-zinc-300">{px(p.entry_price)}</td>
-                      <td className={`py-2 pr-3 text-right font-mono ${config.prices[p.month] ? 'text-zinc-300' : 'text-amber-400'}`}
+                      <td className="py-2.5 pr-3 text-right font-mono tabular-nums text-zinc-300">{p.lots}</td>
+                      <td className="py-2.5 pr-3 text-right font-mono tabular-nums text-zinc-300">{px(p.entry_price)}</td>
+                      <td className={`py-2.5 pr-3 text-right font-mono tabular-nums ${config.prices[p.month] ? 'text-zinc-300' : 'text-amber-400'}`}
                         title={config.prices[p.month] ? '期交所該月份行情' : '該月份沒有行情，用參考價代替'}>
                         {px(mp)}{config.prices[p.month] ? '' : '*'}
                       </td>
-                      <td className="py-2 pr-3 text-right font-mono text-zinc-500">{px(r.break_even)}</td>
-                      <td className={`py-2 pr-3 text-right font-mono font-semibold ${pnlCls(r.net_pnl)}`}>{money(r.net_pnl)}</td>
-                      <td className={`py-2 text-right font-mono ${pnlCls(r.return_on_margin)}`}>{pct(r.return_on_margin)}</td>
+                      <td className="py-2.5 pr-3 text-right font-mono tabular-nums text-zinc-500">{px(r.break_even)}</td>
+                      <td className={`py-2.5 pr-3 text-right font-mono tabular-nums font-semibold ${pnlCls(r.net_pnl)}`}>{money(r.net_pnl)}</td>
+                      <td className={`py-2.5 text-right font-mono tabular-nums ${pnlCls(r.return_on_margin)}`}>{pct(r.return_on_margin)}</td>
                     </tr>
                   );
                 })}
@@ -1083,56 +1161,17 @@ const OverviewTab: React.FC<{
             </table>
           </div>
         )}
-      </div>
+      </Panel>
 
       {config.closed.length > 0 && (
-        <div className="bg-card border border-border rounded-xl p-4 shadow-sm flex flex-wrap items-center gap-x-6 gap-y-2 text-xs">
+        <div className="bg-card/70 border border-border rounded-2xl p-4 shadow-sm flex flex-wrap items-center gap-x-6 gap-y-2 text-xs">
           <span className="text-zinc-500">已實現損益（{config.closed.length} 筆平倉）</span>
-          <span className={`font-mono font-semibold ${pnlCls(summary.realized)}`}>{money(summary.realized)}</span>
+          <span className={`font-mono font-bold text-base tabular-nums ${pnlCls(summary.realized)}`}>{money(summary.realized)}</span>
           <span className="text-zinc-600 text-[11px]">
             期貨每日結算，已實現損益早就進出過保證金專戶了，所以不再加進權益數，這裡只作績效回顧。
           </span>
         </div>
       )}
-    </div>
-  );
-};
-
-const Row: React.FC<{ label: string; value: string; cls?: string; hint?: string; sub?: string }> = ({
-  label, value, cls, hint, sub,
-}) => (
-  <div className="flex items-baseline justify-between gap-3" title={hint}>
-    <dt className="text-zinc-500">{label}</dt>
-    <dd className={`font-mono font-medium ${cls ?? 'text-zinc-300'}`}>
-      {value}
-      {sub ? <span className="text-zinc-600 font-normal ml-1.5">{sub}</span> : null}
-    </dd>
-  </div>
-);
-
-const LEVEL_TONES = {
-  rose: 'bg-rose-500/10 border-rose-500/30 text-rose-300',
-  amber: 'bg-amber-500/10 border-amber-500/30 text-amber-300',
-  sky: 'bg-sky-500/10 border-sky-500/30 text-sky-200',
-  emerald: 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300',
-} as const;
-
-const LevelCard: React.FC<{
-  tone: keyof typeof LEVEL_TONES;
-  label: string;
-  value: number | null;
-  sub?: string;
-  base: number;
-}> = ({ tone, label, value, sub, base }) => {
-  const delta = value !== null && base > 0 ? (value - base) / base : null;
-  return (
-    <div className={`rounded-xl border p-3 ${LEVEL_TONES[tone]}`}>
-      <div className="text-[10px] opacity-80">{label}</div>
-      <div className="text-lg font-bold font-mono mt-0.5">{value !== null ? px(value) : '—'}</div>
-      <div className="text-[10px] opacity-70 mt-0.5 h-3.5">
-        {delta !== null && Math.abs(delta) > 1e-9 ? `${delta > 0 ? '+' : ''}${(delta * 100).toFixed(2)}%` : ''}
-        {sub ? <span className="ml-1.5">{sub}</span> : null}
-      </div>
     </div>
   );
 };
@@ -1215,8 +1254,8 @@ const PositionsTab: React.FC<{
   return (
     <div className="space-y-5">
       {/* 帳戶輸入 */}
-      <div className="bg-card border border-border rounded-xl p-5 shadow-sm space-y-4">
-        <h2 className="text-sm font-semibold text-zinc-100">帳戶</h2>
+      <div className="bg-card/70 border border-border rounded-2xl p-5 shadow-sm space-y-4">
+        <div className="flex items-center gap-2.5"><span className="w-7 h-7 rounded-lg bg-primary/10 border border-primary/30 grid place-items-center shrink-0"><Wallet className="w-4 h-4 text-primary" /></span><h2 className="text-sm font-bold text-zinc-100 tracking-wide">帳戶</h2></div>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           <Field
             label="保證金專戶現金餘額"
@@ -1289,8 +1328,8 @@ const PositionsTab: React.FC<{
       </div>
 
       {/* 新增部位 */}
-      <div className="bg-card border border-border rounded-xl p-5 shadow-sm space-y-4">
-        <h2 className="text-sm font-semibold text-zinc-100">新增部位</h2>
+      <div className="bg-card/70 border border-border rounded-2xl p-5 shadow-sm space-y-4">
+        <div className="flex items-center gap-2.5"><span className="w-7 h-7 rounded-lg bg-emerald-400/10 border border-emerald-400/30 grid place-items-center shrink-0"><Plus className="w-4 h-4 text-emerald-400" /></span><h2 className="text-sm font-bold text-zinc-100 tracking-wide">新增部位</h2></div>
         <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
           <Field label="到期月份">
             <select
@@ -1345,8 +1384,8 @@ const PositionsTab: React.FC<{
       </div>
 
       {/* 現有部位 */}
-      <div className="bg-card border border-border rounded-xl p-5 shadow-sm space-y-3">
-        <h2 className="text-sm font-semibold text-zinc-100">未平倉部位（{config.positions.length}）</h2>
+      <div className="bg-card/70 border border-border rounded-2xl p-5 shadow-sm space-y-3">
+        <div className="flex items-center gap-2.5"><span className="w-7 h-7 rounded-lg bg-primary/10 border border-primary/30 grid place-items-center shrink-0"><Layers className="w-4 h-4 text-primary" /></span><h2 className="text-sm font-bold text-zinc-100 tracking-wide">未平倉部位（{config.positions.length}）</h2></div>
         {config.positions.length === 0 ? (
           <p className="text-xs text-zinc-500">還沒有部位。</p>
         ) : config.positions.map((p) => {
@@ -1425,8 +1464,8 @@ const PositionsTab: React.FC<{
       </div>
 
       {/* 平倉紀錄 */}
-      <div className="bg-card border border-border rounded-xl p-5 shadow-sm">
-        <h2 className="text-sm font-semibold text-zinc-100 mb-3">平倉紀錄（{config.closed.length}）</h2>
+      <div className="bg-card/70 border border-border rounded-2xl p-5 shadow-sm">
+        <div className="flex items-center gap-2.5 mb-3"><span className="w-7 h-7 rounded-lg bg-zinc-400/10 border border-zinc-400/30 grid place-items-center shrink-0"><ListOrdered className="w-4 h-4 text-zinc-400" /></span><h2 className="text-sm font-bold text-zinc-100 tracking-wide">平倉紀錄（{config.closed.length}）</h2></div>
         {config.closed.length === 0 ? (
           <p className="text-xs text-zinc-500">還沒有平倉紀錄。平倉時會自動把損益結算進上方的保證金專戶現金餘額。</p>
         ) : (
@@ -1665,10 +1704,10 @@ const RolloverTab: React.FC<{
   return (
     <div className="space-y-5">
       {/* 一鍵轉倉 */}
-      <div className="bg-card border border-border rounded-xl p-5 shadow-sm space-y-4">
+      <div className="bg-card/70 border border-border rounded-2xl p-5 shadow-sm space-y-4">
         <div className="flex items-center gap-2">
-          <RefreshCw className="w-4 h-4 text-primary" />
-          <h2 className="text-sm font-semibold text-zinc-100">一鍵轉倉</h2>
+          <span className="w-7 h-7 rounded-lg bg-primary/10 border border-primary/30 grid place-items-center shrink-0"><RefreshCw className="w-4 h-4 text-primary" /></span>
+          <h2 className="text-sm font-bold text-zinc-100 tracking-wide">一鍵轉倉</h2>
         </div>
         {config.positions.length === 0 ? (
           <p className="text-xs text-zinc-500">目前沒有未平倉部位。</p>
@@ -1712,8 +1751,8 @@ const RolloverTab: React.FC<{
         )}
       </div>
 
-      <div className="bg-card border border-border rounded-xl p-5 shadow-sm space-y-3">
-        <h2 className="text-sm font-semibold text-zinc-100">持倉月份到期狀態</h2>
+      <div className="bg-card/70 border border-border rounded-2xl p-5 shadow-sm space-y-3">
+        <div className="flex items-center gap-2.5"><span className="w-7 h-7 rounded-lg bg-amber-400/10 border border-amber-400/30 grid place-items-center shrink-0"><CalendarClock className="w-4 h-4 text-amber-400" /></span><h2 className="text-sm font-bold text-zinc-100 tracking-wide">持倉月份到期狀態</h2></div>
         {alerts.length === 0 ? (
           <p className="text-xs text-zinc-500">目前沒有未平倉部位。</p>
         ) : (
@@ -1766,8 +1805,8 @@ const RolloverTab: React.FC<{
       </div>
 
       {/* 轉倉成本試算 */}
-      <div className="bg-card border border-border rounded-xl p-5 shadow-sm space-y-4">
-        <h2 className="text-sm font-semibold text-zinc-100">轉倉成本試算</h2>
+      <div className="bg-card/70 border border-border rounded-2xl p-5 shadow-sm space-y-4">
+        <div className="flex items-center gap-2.5"><span className="w-7 h-7 rounded-lg bg-primary/10 border border-primary/30 grid place-items-center shrink-0"><CalendarSync className="w-4 h-4 text-primary" /></span><h2 className="text-sm font-bold text-zinc-100 tracking-wide">轉倉成本試算</h2></div>
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
           <Field label="平掉的月份（近月）">
             <select value={near} onChange={(e) => setNear(e.target.value)}
@@ -1806,8 +1845,8 @@ const RolloverTab: React.FC<{
 
       {/* 各月份行情 */}
       {quoteMonths.length > 0 && (
-        <div className="bg-card border border-border rounded-xl p-5 shadow-sm">
-          <h2 className="text-sm font-semibold text-zinc-100 mb-3">{CONTRACT_CODE} 各月份行情（期交所每日行情）</h2>
+        <div className="bg-card/70 border border-border rounded-2xl p-5 shadow-sm">
+          <div className="flex items-center gap-2.5 mb-3"><span className="w-7 h-7 rounded-lg bg-primary/10 border border-primary/30 grid place-items-center shrink-0"><LineChart className="w-4 h-4 text-primary" /></span><h2 className="text-sm font-bold text-zinc-100 tracking-wide">{CONTRACT_CODE} 各月份行情（期交所每日行情）</h2></div>
           <div className="overflow-x-auto">
             <table className="w-full text-xs">
               <thead>
@@ -1891,12 +1930,12 @@ const NumInput: React.FC<{
 
 // ── 壓力測試 ────────────────────────────────────────────────────────────────
 
-const STRESS_TONE: Record<string, { cls: string; label: string }> = {
-  flat: { cls: 'text-zinc-500', label: '⬜ 已全數出場' },
-  ok: { cls: 'text-emerald-400', label: '✅ 正常持倉' },
-  warn: { cls: 'text-amber-400', label: '⚠️ 低於原始保證金' },
-  call: { cls: 'text-orange-400', label: '🟨 黃牌追繳' },
-  danger: { cls: 'text-rose-400 font-semibold', label: '🟥 紅牌斷頭' },
+const STRESS_TONE: Record<string, { cls: string; tone: Tone; label: string }> = {
+  flat: { cls: 'text-zinc-500', tone: 'zinc', label: '已全數出場' },
+  ok: { cls: 'text-emerald-400', tone: 'emerald', label: '正常持倉' },
+  warn: { cls: 'text-amber-400', tone: 'amber', label: '低於原始保證金' },
+  call: { cls: 'text-orange-400', tone: 'orange', label: '黃牌追繳' },
+  danger: { cls: 'text-rose-400 font-semibold', tone: 'rose', label: '紅牌斷頭' },
 };
 
 const STRESS_PRESETS: { label: string; drops: number[] }[] = [
@@ -1938,7 +1977,7 @@ const StressTab: React.FC<{
 
   if (summary.total_lots === 0) {
     return (
-      <div className="bg-card border border-border rounded-xl p-5 shadow-sm">
+      <div className="bg-card/70 border border-border rounded-2xl p-5 shadow-sm">
         <p className="text-xs text-zinc-500">目前沒有未平倉部位，沒有東西可以壓力測試。先到「部位 &amp; 平倉紀錄」新增，或到「建倉 &amp; 出場試算」規劃一個組合。</p>
       </div>
     );
@@ -1952,29 +1991,35 @@ const StressTab: React.FC<{
           value={survivable ? `-${(survivable.drop * 100).toFixed(0)}%` : '＜表列最小情境'}
           sub={survivable ? `權益數還有 ${money(survivable.equity)}` : '目前部位已在警戒區'}
           cls={survivable ? 'text-emerald-400' : 'text-rose-400'}
+          tone={survivable ? 'emerald' : 'rose'}
+          icon={<ShieldCheck className="w-3 h-3" />}
           hint="表列情境中，最後一個仍未觸發追繳的跌幅。"
         />
         <StatCard
-          label="開始追繳"
+          label="開始追繳（黃牌）"
           value={firstCall ? `-${(firstCall.drop * 100).toFixed(0)}%` : '表列情境內都不會'}
           sub={firstCall ? `價格 ${px(firstCall.price_after)}` : `追繳價 ${summary.margin_call_price !== null ? px(summary.margin_call_price) : '—'}`}
           cls={firstCall ? 'text-orange-400' : 'text-emerald-400'}
+          tone={firstCall ? 'amber' : 'emerald'}
+          icon={<AlertTriangle className="w-3 h-3" />}
         />
         <StatCard
-          label="開始斷頭"
+          label="開始斷頭（紅牌）"
           value={firstDanger ? `-${(firstDanger.drop * 100).toFixed(0)}%` : '表列情境內都不會'}
           sub={firstDanger ? `價格 ${px(firstDanger.price_after)}` : `斷頭價 ${summary.liquidation_price !== null ? px(summary.liquidation_price) : '—'}`}
           cls={firstDanger ? 'text-rose-400' : 'text-emerald-400'}
+          tone={firstDanger ? 'rose' : 'emerald'}
+          icon={<Flame className="w-3 h-3" />}
         />
       </div>
 
-      <div className="bg-card border border-border rounded-xl p-5 shadow-sm space-y-4">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div className="flex items-center gap-2">
-            <Zap className="w-4 h-4 text-amber-400" />
-            <h2 className="text-sm font-semibold text-zinc-100">大盤下跌壓力測試</h2>
-          </div>
-          <div className="flex flex-wrap items-center gap-2">
+      <Panel
+        title="大盤暴跌壓力測試矩陣"
+        icon={<Flame className="w-4 h-4" />}
+        tone="amber"
+        right={
+          <div className="flex flex-wrap items-center gap-1.5">
+            <span className="text-[10px] text-zinc-600 mr-1">試算不同修正幅度下的帳戶衝擊</span>
             {STRESS_PRESETS.map((p) => (
               <button
                 key={p.label}
@@ -1985,51 +2030,58 @@ const StressTab: React.FC<{
               </button>
             ))}
           </div>
-        </div>
-
-        <div className="overflow-x-auto">
+        }
+      >
+        <div className="overflow-x-auto -mx-1 px-1">
           <table className="w-full text-xs">
             <thead>
               <tr className="text-zinc-500 border-b border-border">
-                <th className="text-left font-medium py-2 pr-3">大盤修正</th>
-                {config.index_ref > 0 && <th className="text-right font-medium py-2 pr-3">加權指數</th>}
-                <th className="text-right font-medium py-2 pr-3">標的價格</th>
-                <th className="text-right font-medium py-2 pr-3">未實現損益</th>
-                <th className="text-right font-medium py-2 pr-3">權益數</th>
-                <th className="text-right font-medium py-2 pr-3">超額保證金</th>
-                <th className="text-right font-medium py-2 pr-3">風險指標</th>
-                {anyStops && <th className="text-right font-medium py-2 pr-3">停損出場</th>}
-                <th className="text-left font-medium py-2">狀態</th>
+                <th className="text-left font-semibold py-2.5 pr-3">大盤修正</th>
+                {config.index_ref > 0 && <th className="text-right font-semibold py-2.5 pr-3">預估加權指數</th>}
+                <th className="text-right font-semibold py-2.5 pr-3">預估標的價格</th>
+                <th className="text-right font-semibold py-2.5 pr-3">未實現損益</th>
+                <th className="text-right font-semibold py-2.5 pr-3">帳戶剩餘淨值</th>
+                <th className="text-right font-semibold py-2.5 pr-3">超額保證金</th>
+                <th className="text-right font-semibold py-2.5 pr-3">預估風險指標</th>
+                {anyStops && <th className="text-right font-semibold py-2.5 pr-3">停損出場</th>}
+                <th className="text-left font-semibold py-2.5">帳戶狀態評估</th>
               </tr>
             </thead>
             <tbody>
               {stress.map((r) => {
                 const tone = STRESS_TONE[r.status] ?? STRESS_TONE.flat;
                 return (
-                  <tr key={r.drop} className={`border-b border-border/50 last:border-0 ${r.drop < 0 ? 'bg-emerald-500/5' : ''}`}>
-                    <td className={`py-2 pr-3 font-mono font-semibold ${r.drop >= 0 ? 'text-rose-400' : 'text-emerald-400'}`}>
+                  <tr
+                    key={r.drop}
+                    className={`border-b border-border/40 last:border-0 transition-colors hover:bg-zinc-800/40 ${
+                      r.drop < 0 ? 'bg-emerald-500/[0.04]' : r.status === 'danger' ? 'bg-rose-500/[0.06]' : ''
+                    }`}
+                  >
+                    <td className={`py-2.5 pr-3 font-mono font-bold tabular-nums ${r.drop >= 0 ? 'text-rose-400' : 'text-emerald-400'}`}>
                       {moveText(r.drop)}
                     </td>
                     {config.index_ref > 0 && (
-                      <td className="py-2 pr-3 text-right font-mono text-zinc-400">
+                      <td className="py-2.5 pr-3 text-right font-mono tabular-nums text-zinc-400">
                         {r.index_after !== null ? Math.round(r.index_after).toLocaleString() : '—'}
                       </td>
                     )}
-                    <td className="py-2 pr-3 text-right font-mono text-zinc-300">{px(r.price_after)}</td>
-                    <td className={`py-2 pr-3 text-right font-mono ${pnlCls(r.unrealized)}`}>{money(r.unrealized)}</td>
-                    <td className={`py-2 pr-3 text-right font-mono font-semibold ${r.equity < 0 ? 'text-rose-500' : 'text-zinc-200'}`}>{money(r.equity)}</td>
-                    <td className={`py-2 pr-3 text-right font-mono ${r.excess >= 0 ? 'text-zinc-400' : 'text-amber-400'}`}>{money(r.excess)}</td>
-                    <td className={`py-2 pr-3 text-right font-mono ${tone.cls}`}>
-                      {r.risk_indicator !== null ? `${(r.risk_indicator * 100).toFixed(0)}%` : '—'}
+                    <td className="py-2.5 pr-3 text-right font-mono tabular-nums text-zinc-300">{px(r.price_after)}</td>
+                    <td className={`py-2.5 pr-3 text-right font-mono tabular-nums ${pnlCls(r.unrealized)}`}>{money(r.unrealized)}</td>
+                    <td className={`py-2.5 pr-3 text-right font-mono tabular-nums font-bold ${r.equity < 0 ? 'text-rose-500' : 'text-zinc-100'}`}>{money(r.equity)}</td>
+                    <td className={`py-2.5 pr-3 text-right font-mono tabular-nums ${r.excess >= 0 ? 'text-zinc-400' : 'text-amber-400'}`}>{money(r.excess)}</td>
+                    <td className={`py-2.5 pr-3 text-right font-mono tabular-nums font-semibold ${tone.cls}`}>
+                      {r.risk_indicator !== null ? `${(r.risk_indicator * 100).toFixed(1)}%` : '—'}
                     </td>
                     {anyStops && (
-                      <td className="py-2 pr-3 text-right font-mono text-[11px]">
+                      <td className="py-2.5 pr-3 text-right font-mono tabular-nums text-[11px]">
                         {r.stopped_lots > 0
                           ? <span className="text-cyan-400">{r.stopped_lots} 口 <span className={pnlCls(r.stop_realized)}>{money(r.stop_realized)}</span></span>
                           : <span className="text-zinc-600">—</span>}
                       </td>
                     )}
-                    <td className={`py-2 text-[11px] ${tone.cls}`}>{tone.label}</td>
+                    <td className="py-2.5">
+                      <Chip tone={tone.tone}>{tone.label}</Chip>
+                    </td>
                   </tr>
                 );
               })}
@@ -2037,7 +2089,7 @@ const StressTab: React.FC<{
           </table>
         </div>
 
-        <p className="text-[11px] text-zinc-500">
+        <p className="text-[11px] text-zinc-500 mt-4">
           每一列都是把各月份報價按比例換掉、重跑一次總覽頁那組算式，所以費用、期交稅、多空對沖的處理完全一致。
           標的變動 ＝ 大盤變動 × beta（目前 {beta.toFixed(2)}）。綠底列是<strong className="text-zinc-400">上漲</strong>情境（空單看的是那一側）。
           {anyStops
@@ -2047,7 +2099,7 @@ const StressTab: React.FC<{
           而且保證金維持現在的水準——實際崩盤時期交所通常會<strong className="text-zinc-400">調高</strong>保證金、
           停損也常因跳空而滑價，斷頭會比表上更早發生。
         </p>
-      </div>
+      </Panel>
     </div>
   );
 };
@@ -2110,10 +2162,10 @@ const PlannerTab: React.FC<{
   return (
     <div className="space-y-5">
       {/* 槓桿 → 口數 */}
-      <div className="bg-card border border-border rounded-xl p-5 shadow-sm space-y-4">
+      <div className="bg-card/70 border border-border rounded-2xl p-5 shadow-sm space-y-4">
         <div className="flex items-center gap-2">
-          <Layers className="w-4 h-4 text-primary" />
-          <h2 className="text-sm font-semibold text-zinc-100">槓桿與口數規劃</h2>
+          <span className="w-7 h-7 rounded-lg bg-primary/10 border border-primary/30 grid place-items-center shrink-0"><Layers className="w-4 h-4 text-primary" /></span>
+          <h2 className="text-sm font-bold text-zinc-100 tracking-wide">槓桿與口數規劃</h2>
         </div>
 
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -2182,9 +2234,9 @@ const PlannerTab: React.FC<{
       </div>
 
       {/* 分批進場 */}
-      <div className="bg-card border border-border rounded-xl p-5 shadow-sm space-y-4">
+      <div className="bg-card/70 border border-border rounded-2xl p-5 shadow-sm space-y-4">
         <div>
-          <h2 className="text-sm font-semibold text-zinc-100">分批進場／加碼試算</h2>
+          <div className="flex items-center gap-2.5"><span className="w-7 h-7 rounded-lg bg-primary/10 border border-primary/30 grid place-items-center shrink-0"><Layers className="w-4 h-4 text-primary" /></span><h2 className="text-sm font-bold text-zinc-100 tracking-wide">分批進場／加碼試算</h2></div>
           <p className="text-[11px] text-zinc-500 mt-1">
             填入各批的價格與口數，算出加權平均成本，並用這個組合跑一次風險模型。這裡只是試算，不會動到實際部位。
           </p>
@@ -2229,10 +2281,10 @@ const PlannerTab: React.FC<{
       </div>
 
       {/* 上漲目標與出場 */}
-      <div className="bg-card border border-border rounded-xl p-5 shadow-sm space-y-4">
+      <div className="bg-card/70 border border-border rounded-2xl p-5 shadow-sm space-y-4">
         <div className="flex items-center gap-2">
-          <Target className="w-4 h-4 text-emerald-400" />
-          <h2 className="text-sm font-semibold text-zinc-100">上漲目標與出金規劃</h2>
+          <span className="w-7 h-7 rounded-lg bg-emerald-400/10 border border-emerald-400/30 grid place-items-center shrink-0"><Target className="w-4 h-4 text-emerald-400" /></span>
+          <h2 className="text-sm font-bold text-zinc-100 tracking-wide">上漲目標與出金規劃</h2>
         </div>
 
         {summary.total_lots === 0 ? (
@@ -2359,10 +2411,10 @@ const SpotCompareTab: React.FC<{
 
   return (
     <div className="space-y-5">
-      <div className="bg-card border border-border rounded-xl p-5 shadow-sm space-y-4">
+      <div className="bg-card/70 border border-border rounded-2xl p-5 shadow-sm space-y-4">
         <div className="flex items-center gap-2">
-          <PiggyBank className="w-4 h-4 text-emerald-400" />
-          <h2 className="text-sm font-semibold text-zinc-100">用期貨存股，一年省多少？</h2>
+          <span className="w-7 h-7 rounded-lg bg-emerald-400/10 border border-emerald-400/30 grid place-items-center shrink-0"><PiggyBank className="w-4 h-4 text-emerald-400" /></span>
+          <h2 className="text-sm font-bold text-zinc-100 tracking-wide">用期貨存股，一年省多少？</h2>
         </div>
         <p className="text-[11px] text-zinc-500">
           比較基準：{usingActual ? '目前實際部位' : '建倉試算的建議口數'} —— {lots} 口、名目曝險 {money(notional)}。
@@ -2403,8 +2455,8 @@ const SpotCompareTab: React.FC<{
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        <div className="bg-card border border-border rounded-xl p-5 shadow-sm space-y-2">
-          <h3 className="text-sm font-semibold text-zinc-100 border-b border-border pb-2">買現貨持有一年</h3>
+        <div className="bg-card/70 border border-border rounded-2xl p-5 shadow-sm space-y-2">
+          <h3 className="text-sm font-bold text-zinc-100 tracking-wide border-b border-border pb-2">買現貨持有一年</h3>
           <dl className="space-y-2 text-xs pt-1">
             <Row label="手續費（買＋賣）" value={money(r.spot.trading_fee)} />
             <Row label="證交稅（賣出 0.1%）" value={money(r.spot.transaction_tax)} />
@@ -2444,8 +2496,8 @@ const SpotCompareTab: React.FC<{
           : `這個規模下期貨反而多花 ${money(-r.advantage)}——轉倉成本吃掉了稅負優勢`}
       </div>
 
-      <div className="bg-card border border-border rounded-xl p-5 shadow-sm space-y-2">
-        <h3 className="text-sm font-semibold text-zinc-100">這個比較沒有算進去的事</h3>
+      <div className="bg-card/70 border border-border rounded-2xl p-5 shadow-sm space-y-2">
+        <h3 className="text-sm font-bold text-zinc-100 tracking-wide">這個比較沒有算進去的事</h3>
         <ul className="text-[11px] text-zinc-400 leading-relaxed space-y-1.5 list-disc list-inside">
           <li><strong className="text-zinc-300">兩邊都不計股利收入</strong>：期貨價格已內含除息貼水，期貨持有人靠價差拿到等值股利且免稅，所以現貨這邊只算「多繳的稅」，不重複計算股利本身。</li>
           <li><strong className="text-zinc-300">閒置資金利息是有條件的</strong>：只有在你本來就準備好全額現金、只是改押保證金時才成立。拿 50 萬去開 300 萬曝險，那 250 萬不存在，這段利息是幻覺。</li>
@@ -2625,9 +2677,9 @@ const SettingsTab: React.FC<{
   return (
     <div className="space-y-5">
       {/* 商品切換 */}
-      <div className="bg-card border border-border rounded-xl p-5 shadow-sm space-y-4">
+      <div className="bg-card/70 border border-border rounded-2xl p-5 shadow-sm space-y-4">
         <div>
-          <h2 className="text-sm font-semibold text-zinc-100">交易商品</h2>
+          <div className="flex items-center gap-2.5"><span className="w-7 h-7 rounded-lg bg-primary/10 border border-primary/30 grid place-items-center shrink-0"><SlidersHorizontal className="w-4 h-4 text-primary" /></span><h2 className="text-sm font-bold text-zinc-100 tracking-wide">交易商品</h2></div>
           <p className="text-[11px] text-zinc-500 mt-1">
             切換會一併帶入該商品的契約單位與保證金預設值。代碼同時是期交所行情 API 的商品代碼，抓行情用的就是它。
           </p>
@@ -2685,9 +2737,9 @@ const SettingsTab: React.FC<{
         </div>
       </div>
 
-      <div className="bg-card border border-border rounded-xl p-5 shadow-sm space-y-4">
+      <div className="bg-card/70 border border-border rounded-2xl p-5 shadow-sm space-y-4">
         <div>
-          <h2 className="text-sm font-semibold text-zinc-100">契約規格與費用</h2>
+          <div className="flex items-center gap-2.5"><span className="w-7 h-7 rounded-lg bg-primary/10 border border-primary/30 grid place-items-center shrink-0"><Ruler className="w-4 h-4 text-primary" /></span><h2 className="text-sm font-bold text-zinc-100 tracking-wide">契約規格與費用</h2></div>
           <p className={`text-[11px] mt-1 ${marginDescription.warn ? 'text-amber-400 font-medium' : 'text-zinc-500'}`}>
             {marginDescription.text}
           </p>
@@ -2954,8 +3006,8 @@ const LogicTab: React.FC<{ spec: FuturesSpec }> = ({ spec }) => (
 );
 
 const Section: React.FC<{ title: string; children: React.ReactNode }> = ({ title, children }) => (
-  <div className="bg-card border border-border rounded-xl p-5 shadow-sm space-y-3">
-    <h2 className="text-sm font-semibold text-zinc-100">{title}</h2>
+  <div className="bg-card/70 border border-border rounded-2xl p-5 shadow-sm space-y-3">
+    <h2 className="text-sm font-bold text-zinc-100 tracking-wide">{title}</h2>
     {children}
   </div>
 );
