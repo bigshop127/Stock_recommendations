@@ -1,5 +1,7 @@
 // 前端 API 資料接口：只對接 Node gateway /api，絕對不直連 Python engine
 // 統一錯誤格式 { error: { code, message, detail? } }
+import type { FuturesEquityRow } from './futures';
+
 const BASE = '/api';
 
 export class ApiError extends Error {
@@ -596,18 +598,9 @@ export const api = {
   getFuturesEquityHistory: () => req<FuturesEquityHistoryResp>('/futures/equity-history'),
 };
 
-export interface FuturesEquityRow {
-  date: string;
-  equity: number;
-  cash: number;
-  unrealized: number;
-  contract_value: number;
-  net_lots: number;
-  total_lots: number;
-  risk_indicator: number | null;
-  price: number;
-  status: string;
-}
+// 快照列的形狀定義在 lib/futures.ts（純計算層），這裡只轉出去給呼叫端用——
+// 傳輸層依賴領域層，反過來不行。
+export type { FuturesEquityRow } from './futures';
 
 export interface FuturesEquityHistoryResp {
   exists: boolean;

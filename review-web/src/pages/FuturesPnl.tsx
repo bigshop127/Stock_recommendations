@@ -2527,7 +2527,7 @@ const SettingsTab: React.FC<{
       if (isIdentical) {
         setSyncState({
           status: 'success',
-          message: `已是最新（期交所 ${resp.date} 公告）`
+          message: `已是最新（期交所 ${resp.date} 現行值${resp.stale ? '，磁碟快取' : ''}）`
         });
         return;
       }
@@ -2542,8 +2542,8 @@ const SettingsTab: React.FC<{
       const oldSummary = summarizeAccount(config.positions, priceInput, config.spec, config.cash, config.closed);
       const newSummary = summarizeAccount(config.positions, priceInput, newSpec, config.cash, config.closed);
 
-      const totalLots = config.positions.reduce((acc, p) => acc + p.lots, 0);
-
+      // 口數與所需保證金直接取彙總的結果，不要自己再 reduce 一次——
+      // summarizeAccount 會把負數/壞掉的 lots 夾成 0，手算的版本不會。
       setSyncModal({
         isOpen: true,
         date: resp.date,
@@ -2551,9 +2551,9 @@ const SettingsTab: React.FC<{
         newInitial: marginInfo.initial,
         oldMaintenance: config.spec.maintenance_margin,
         newMaintenance: marginInfo.maintenance,
-        lots: totalLots,
-        oldMarginUsed: totalLots * config.spec.initial_margin,
-        newMarginUsed: totalLots * marginInfo.initial,
+        lots: oldSummary.total_lots,
+        oldMarginUsed: oldSummary.required_initial,
+        newMarginUsed: newSummary.required_initial,
         oldMarginCallPrice: oldSummary.margin_call_price,
         newMarginCallPrice: newSummary.margin_call_price,
         pendingSpec: newSpec,
@@ -2567,19 +2567,33 @@ const SettingsTab: React.FC<{
     }
   };
 
-  const getMarginDescription = () => {
+  // 說明文字有四種狀態，其中「不一致」是最需要講話的那一種——你的追繳價正在用
+  // 舊保證金算。原本這個狀態會掉到最後的預設文案，反而什麼都不提醒。
+  const marginDescription: { text: string; warn: boolean } = (() => {
+    const stale = apiMargins?.stale ? '（期交所暫時抓不到，顯示的是磁碟快取）' : '';
     if (apiMargins) {
       const marginInfo = apiMargins.margins[config.contract];
       if (marginInfo) {
-        if (config.spec.initial_margin === marginInfo.initial && config.spec.maintenance_margin === marginInfo.maintenance) {
-          return `保證金＝期交所 ${apiMargins.date} 公告（OpenAPI 自動同步）`;
+        const same = config.spec.initial_margin === marginInfo.initial
+          && config.spec.maintenance_margin === marginInfo.maintenance;
+        if (same) {
+          return { text: `保證金＝期交所 ${apiMargins.date} 現行值（OpenAPI 自動同步）${stale}`, warn: false };
         }
-      } else {
-        return `保證金＝期交所 2026-06-18 公告，這個商品沒有 API，需手動維護`;
+        return {
+          text: `⚠️ 目前設定（原始 ${money(config.spec.initial_margin)}／維持 ${money(config.spec.maintenance_margin)}）`
+            + `與期交所 ${apiMargins.date} 現行值（原始 ${money(marginInfo.initial)}／維持 ${money(marginInfo.maintenance)}）不一致`
+            + `${stale}，追繳價與斷頭價正在用舊值計算——請按下方「同步保證金」。`,
+          warn: true,
+        };
       }
+      return { text: '這個商品期交所沒有提供 OpenAPI，保證金請依期貨商通知手動維護。', warn: false };
     }
-    return `預設值＝期交所 2026-06-18 起適用的保證金公告。保證金會依市場風險調整，期貨商通知調整時回來這裡改，追繳價與斷頭價會跟著更新。`;
-  };
+    return {
+      text: '保證金會依市場風險調整，期貨商通知調整時回來這裡改，追繳價與斷頭價會跟著更新。'
+        + '指數類商品（TX／MTX／TMF）可以按下方「同步保證金」直接抓期交所現行值。',
+      warn: false,
+    };
+  })();
 
   // 非受控＋key：按「還原預設值」時 key 跟著變，輸入框重掛載吃到新值
   const commit = (key: keyof FuturesSpec, raw: string) => {
@@ -2674,8 +2688,8 @@ const SettingsTab: React.FC<{
       <div className="bg-card border border-border rounded-xl p-5 shadow-sm space-y-4">
         <div>
           <h2 className="text-sm font-semibold text-zinc-100">契約規格與費用</h2>
-          <p className="text-[11px] text-zinc-500 mt-1">
-            {getMarginDescription()}
+          <p className={`text-[11px] mt-1 ${marginDescription.warn ? 'text-amber-400 font-medium' : 'text-zinc-500'}`}>
+            {marginDescription.text}
           </p>
         </div>
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
@@ -2743,7 +2757,7 @@ const SettingsTab: React.FC<{
                 確認同步保證金規格
               </h3>
               <p className="text-[11px] text-zinc-400 mt-1">
-                期交所 {syncModal.date} 公告值已與目前設定不同，請確認變更後的影響：
+                期交所 {syncModal.date} 現行值已與目前設定不同，請確認變更後的影響：
               </p>
             </div>
 
@@ -2806,8 +2820,10 @@ const SettingsTab: React.FC<{
               </button>
               <button
                 onClick={() => {
+                  const d = syncModal.date;
                   void saveToCloud(patch((c) => ({ ...c, spec: syncModal.pendingSpec })));
                   setSyncModal(null);
+                  setSyncState({ status: 'success', message: `已套用期交所 ${d} 現行值並存到雲端` });
                 }}
                 className="flex-1 bg-primary hover:bg-primary/90 text-primary-foreground py-2 rounded-lg text-xs font-semibold transition shadow-md shadow-primary/20"
               >

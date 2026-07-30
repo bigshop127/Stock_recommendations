@@ -77,6 +77,7 @@ data/oracle_source_details.json
 # === Added 2026-06-13 (Phase 1: Python engine) ===
 # Python 引擎虛擬環境與快取（可重建，不進 repo）
 engine/.venv/
+__pycache__/
 engine/**/__pycache__/
 engine/.pytest_cache/
 engine/**/*.pyc
@@ -97,3 +98,14 @@ data/rebalance_alert_state.json
 data/futures_positions.json
 # 真實同步的最近一次執行結果（含錯誤訊息與 log 尾巴，屬執行期狀態）
 data/sync_holdings_status.json
+
+# === Added 2026-07-30 (opt24/25 權益曲線＋保證金同步) ===
+# 每日權益數快照（個人財務數字，由 scripts/futures_alert.cjs 寫入）
+data/futures_equity_history.json
+# 告警去重狀態（純執行期狀態）
+data/futures_alert_state.json
+# 外部 OpenAPI 的磁碟快取，隨時可重抓，不該進版控
+data/taifex_margins.json
+data/twse_holidays.json
+# 保留下來的舊 log 樣本（見 ops-local-gateway-autostart.md §4.1b 的 pm2 當機迴圈）
+data/_archive/

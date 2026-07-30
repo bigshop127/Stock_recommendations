@@ -67,8 +67,10 @@ const WARN_RATIO = Math.max(1, Number(process.env.FUTURES_WARN_RATIO) || 1.5);
 const DATA_DIR = path.join(__dirname, '..', 'data');
 // 可覆寫路徑：測試時指到別的檔案，免得動到 production 那份（前端會從它載入）
 const POSITIONS_PATH = process.env.FUTURES_POSITIONS_PATH || path.join(DATA_DIR, 'futures_positions.json');
-const STATE_PATH = path.join(DATA_DIR, 'futures_alert_state.json');
-const HISTORY_PATH = path.join(DATA_DIR, 'futures_equity_history.json');
+// 三個路徑都可以用環境變數覆寫，理由同 FUTURES_POSITIONS_PATH：測告警與去重時
+// 不該去動到真的狀態檔與真的權益數歷史。
+const STATE_PATH = process.env.FUTURES_ALERT_STATE_PATH || path.join(DATA_DIR, 'futures_alert_state.json');
+const HISTORY_PATH = process.env.FUTURES_EQUITY_HISTORY_PATH || path.join(DATA_DIR, 'futures_equity_history.json');
 const LOG_PATH = path.join(DATA_DIR, 'futures_alert.log');
 const HISTORY_MAX = 1500; // 約 6 年交易日，夠畫曲線又不會讓檔案無限長
 
@@ -292,12 +294,11 @@ function buildEmail(s, contract, quoteDate, rollovers, marginNotice) {
   const meta = LEVEL_META[s.status];
   const isRolloverOnly = !meta;
 
-  let subjectPrefix = '【期貨轉倉提醒】';
-  if (marginNotice && rollovers.length > 0) {
-    subjectPrefix = '【期貨保證金異動與轉倉提醒】';
-  } else if (marginNotice) {
-    subjectPrefix = '【期貨保證金異動通知】';
-  }
+  // 風險在安全區時，標題與抬頭要講「實際上發生了什麼」，不要無條件寫轉倉
+  const noticeLabel = (rollovers.length > 0 && marginNotice) ? '轉倉與保證金提醒'
+    : marginNotice ? '保證金異動提醒'
+      : '轉倉提醒';
+  const subjectPrefix = `【期貨${noticeLabel}】`;
 
   const subject = isRolloverOnly
     ? `${subjectPrefix}${contract}${rollovers.length > 0 ? ` ${rollovers.map((r) => r.month).join('、')} 即將到期` : ''}`
@@ -313,7 +314,7 @@ function buildEmail(s, contract, quoteDate, rollovers, marginNotice) {
     ? [
       '',
       '── 保證金異動 ──',
-      `● 期交所 ${marginNotice.date} 公告：原始 ${marginNotice.apiInitial.toLocaleString()} / 維持 ${marginNotice.apiMaintenance.toLocaleString()}`,
+      `● 期交所 ${marginNotice.date} 現行值${marginNotice.stale ? '（期交所暫時抓不到，這是磁碟快取）' : ''}：原始 ${marginNotice.apiInitial.toLocaleString()} / 維持 ${marginNotice.apiMaintenance.toLocaleString()}`,
       `● 你目前設定：原始 ${marginNotice.currentInitial.toLocaleString()} / 維持 ${marginNotice.currentMaintenance.toLocaleString()}`,
       `● 依新值重算，你的追繳價會從 ${fmtPx(marginNotice.oldMarginCallPrice)} 變成 ${fmtPx(marginNotice.newMarginCallPrice)}`,
       `● 到「契約規格 & 設定」按「同步保證金」更新`
@@ -321,7 +322,7 @@ function buildEmail(s, contract, quoteDate, rollovers, marginNotice) {
     : [];
 
   const lines = [
-    isRolloverOnly ? `${contract} 期貨轉倉與設定提醒` : `${contract} 期貨風險告警：${meta.zh}`,
+    isRolloverOnly ? `${contract} 期貨${noticeLabel}` : `${contract} 期貨風險告警：${meta.zh}`,
     '',
     ...(meta ? [meta.urgency, ''] : []),
     '── 帳戶 ──',
@@ -351,7 +352,7 @@ function buildEmail(s, contract, quoteDate, rollovers, marginNotice) {
   const color = meta ? meta.color : '#1565c0';
   const html = `<!DOCTYPE html><html><head><meta charset="utf-8"></head>
 <body style="font-family:-apple-system,Segoe UI,Roboto,sans-serif;color:#1a1a1a;line-height:1.6;max-width:560px;margin:0 auto;padding:16px;">
-  <h2 style="margin:0 0 4px;">${contract} 期貨${isRolloverOnly ? '設定與轉倉提醒' : '風險告警'}</h2>
+  <h2 style="margin:0 0 4px;">${contract} 期貨${isRolloverOnly ? noticeLabel : '風險告警'}</h2>
   ${meta ? `<p style="margin:0 0 12px;color:${color};font-weight:bold;">${meta.zh}</p>` : ''}
   <div style="background:${color}11;border:1px solid ${color}33;border-radius:6px;padding:14px;text-align:center;margin-bottom:14px;">
     <div style="font-size:13px;color:#555;">風險指標</div>
@@ -370,7 +371,7 @@ function buildEmail(s, contract, quoteDate, rollovers, marginNotice) {
   ${marginNotice ? `
   <div style="background:#fff3e0;border:1px solid #ffe0b2;border-radius:6px;padding:12px;margin-top:14px;font-size:13px;">
     <h4 style="margin:0 0 6px;color:#e65100;">── 保證金異動 ──</h4>
-    <p style="margin:0 0 4px;">● 期交所 <b>${marginNotice.date}</b> 公告：原始 ${marginNotice.apiInitial.toLocaleString()} / 維持 ${marginNotice.apiMaintenance.toLocaleString()}</p>
+    <p style="margin:0 0 4px;">● 期交所 <b>${marginNotice.date}</b> 現行值${marginNotice.stale ? '（期交所暫時抓不到，這是磁碟快取）' : ''}：原始 ${marginNotice.apiInitial.toLocaleString()} / 維持 ${marginNotice.apiMaintenance.toLocaleString()}</p>
     <p style="margin:0 0 4px;">● 你目前設定：原始 ${marginNotice.currentInitial.toLocaleString()} / 維持 ${marginNotice.currentMaintenance.toLocaleString()}</p>
     <p style="margin:0 0 4px;">● 依新值重算，你的追繳價會從 <b>${fmtPx(marginNotice.oldMarginCallPrice)}</b> 變成 <b>${fmtPx(marginNotice.newMarginCallPrice)}</b></p>
     <p style="margin:0;color:#e65100;font-weight:bold;">● 請到「契約規格 & 設定」按「同步保證金」更新</p>
@@ -471,6 +472,43 @@ async function main() {
   const s = summarize(Object.assign({}, futures, { positions }), prices);
   log(`風險指標=${fmtPct(s.risk_indicator)} 狀態=${s.status} 權益=${fmtMoney(s.equity)} 參考價=${fmtPx(s.reference_price)}@${quoteDate}${quoteStale ? '(存價)' : ''} 追繳=${fmtPx(s.margin_call_price)} 斷頭=${fmtPx(s.liquidation_price)}`);
 
+  // 抓期交所保證金（用於核對不一致）
+  let marginNotice = null;
+  try {
+    const apiMargins = await httpGetJson(`${GATEWAY_BASE}/api/futures/margins`);
+    if (apiMargins && apiMargins.margins && apiMargins.margins[contract]) {
+      const info = apiMargins.margins[contract];
+      const currentInitial = safeNum(futures.spec?.initial_margin, 0);
+      const currentMaintenance = safeNum(futures.spec?.maintenance_margin, 0);
+      if (currentInitial !== info.initial || currentMaintenance !== info.maintenance) {
+        const virtualSpec = Object.assign({}, futures.spec || {}, {
+          initial_margin: info.initial,
+          maintenance_margin: info.maintenance,
+        });
+        // 跟上面的 s 用同一份 positions，否則兩邊的追繳價不是同一個基準
+        const virtualFutures = Object.assign({}, futures, { spec: virtualSpec, positions });
+        const virtualSummary = summarize(virtualFutures, prices);
+
+        marginNotice = {
+          date: apiMargins.date,
+          // 去重要用「保證金數值」，不能用 date：實測期交所這個端點的 Date 是
+          // **資料日**（每個交易日都推進一天），不是公告日。用 date 當 key 的話
+          // 只要設定沒同步，就會每個交易日都寄一封一模一樣的信。
+          key: `${info.initial}/${info.maintenance}`,
+          stale: apiMargins.stale === true,
+          apiInitial: info.initial,
+          apiMaintenance: info.maintenance,
+          currentInitial,
+          currentMaintenance,
+          oldMarginCallPrice: s.margin_call_price,
+          newMarginCallPrice: virtualSummary.margin_call_price,
+        };
+      }
+    }
+  } catch (e) {
+    log(`抓期交所保證金失敗（${e.message}），略過保證金核對`);
+  }
+
   // 快照：只有拿到當天真行情才寫，否則會把舊價寫成新的一天
   if (!dryRun && !quoteStale) {
     const row = writeSnapshot(readHistory(), s, quoteDate);
@@ -501,25 +539,29 @@ async function main() {
   const rolloverKey = rollovers.map((r) => `${r.month}:${r.expired ? 'x' : 'due'}`).join(',');
   const rolloverChanged = rolloverKey !== '' && rolloverKey !== state.last_rollover_key;
 
+  // 保證金去重：同一組保證金數值只講一次（見上面 key 的註解，不能用日期）
+  const hasNewMarginNotice = marginNotice && state.last_margin_notice_key !== marginNotice.key;
+
   if (!dryRun) {
     writeState({
       last_status: s.status,
       last_rollover_key: rolloverKey,
       last_date: quoteDate,
       risk_indicator: s.risk_indicator,
+      last_margin_notice_key: marginNotice ? marginNotice.key : state.last_margin_notice_key,
       updated_at: new Date().toISOString(),
     });
   }
 
-  if (!riskActionable && rollovers.length === 0) { log('風險指標安全且無到期部位，無需告警。'); return; }
-  if (!force && !riskChanged && !rolloverChanged) {
-    log(`狀態 ${s.status}／轉倉 ${rolloverKey || '無'} 皆未變（上次已通知），略過寄信。加 --force 可強制寄。`);
+  if (!riskActionable && rollovers.length === 0 && !hasNewMarginNotice) { log('風險指標安全、無到期部位且無新保證金通知，無需告警。'); return; }
+  if (!force && !riskChanged && !rolloverChanged && !hasNewMarginNotice) {
+    log(`狀態 ${s.status}／轉倉 ${rolloverKey || '無'}／保證金公告 皆未變（上次已通知），略過寄信。加 --force 可強制寄。`);
     return;
   }
-  // 風險在安全區、只是轉倉提醒時，仍要寄（信件標題會自動切成轉倉版）
-  if (!riskActionable && !rolloverChanged && !force) { log('轉倉提醒未變化，略過。'); return; }
+  // 風險在安全區、只是轉倉提醒或保證金通知時，仍要寄（信件標題會自動切成轉倉/保證金版）
+  if (!riskActionable && !rolloverChanged && !hasNewMarginNotice && !force) { log('轉倉提醒/保證金未變化，略過。'); return; }
 
-  const { subject, text, html } = buildEmail(s, contract, quoteDate + (quoteStale ? '（存價）' : ''), rollovers);
+  const { subject, text, html } = buildEmail(s, contract, quoteDate + (quoteStale ? '（存價）' : ''), rollovers, marginNotice);
   if (dryRun) { log('DRY-RUN，不寄信。主旨: ' + subject); console.log('\n' + text + '\n'); return; }
 
   const token = await getAccessToken();

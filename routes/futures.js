@@ -328,7 +328,14 @@ router.get('/api/futures/quote', async (req, res) => {
 // ── 期交所保證金自動同步 ──────────────────────────────────────────────────
 const MARGINS_CACHE_PATH = path.join(DATA_DIR, 'taifex_margins.json');
 const MARGINS_TTL_MS = 6 * 60 * 60 * 1000;
-let marginsCache = { at: 0, data: null };
+// 退回磁碟快取時只快取 15 分鐘：保證金直接決定追繳價，期交所一次暫時性失敗
+// 不該讓我們接下來六小時都不再去問。
+const MARGINS_STALE_TTL_MS = 15 * 60 * 1000;
+// 覆寫用途只有一個：測「期交所掛掉時會不會正確標 stale」。同 FUTURES_POSITIONS_PATH
+// 的用法——沒有辦法讓外部 API 按需失敗，就得留一個可以指向壞掉端點的開關。
+const MARGINS_URL = process.env.TAIFEX_MARGINS_URL
+  || 'https://openapi.taifex.com.tw/v1/IndexFuturesAndOptionsMargining';
+let marginsCache = { at: 0, data: null, stale: false };
 
 const MARGIN_NAME_TO_CODE = {
   '臺股期貨': 'TX',
@@ -350,23 +357,27 @@ function parseTaifexDate(v) {
 // GET /api/futures/margins —— 期交所保證金
 router.get('/api/futures/margins', async (req, res) => {
   const now = Date.now();
-  if (marginsCache.data && now - marginsCache.at < MARGINS_TTL_MS) {
-    return res.json({ ...marginsCache.data, cached: true });
+  const ttl = marginsCache.stale ? MARGINS_STALE_TTL_MS : MARGINS_TTL_MS;
+  if (marginsCache.data && now - marginsCache.at < ttl) {
+    // stale 要跟著記憶體快取一起帶出去。少了這個旗標，一次抓取失敗之後的每個
+    // 命中都會把磁碟上的舊保證金講成當前值，而前端就是靠它決定要不要警告。
+    return res.json({ ...marginsCache.data, cached: true, stale: marginsCache.stale });
   }
 
   const serveDisk = (reason) => {
     try {
       if (fs.existsSync(MARGINS_CACHE_PATH)) {
         const disk = JSON.parse(fs.readFileSync(MARGINS_CACHE_PATH, 'utf-8'));
-        marginsCache = { at: now, data: disk };
-        return res.json({ ...disk, cached: false, stale: true, stale_reason: reason });
+        const stale = { ...disk, stale_reason: reason };
+        marginsCache = { at: now, data: stale, stale: true };
+        return res.json({ ...stale, cached: false, stale: true });
       }
-    } catch { /* ignored */ }
+    } catch { /* 快取檔壞掉就當沒有 */ }
     return sendError(res, httpError(502, 'TAIFEX', '抓取期交所保證金失敗: ' + reason));
   };
 
   try {
-    const r = await fetch('https://openapi.taifex.com.tw/v1/IndexFuturesAndOptionsMargining', {
+    const r = await fetch(MARGINS_URL, {
       headers: { Accept: 'application/json', 'User-Agent': 'puhui-review-web/1.0' },
       signal: AbortSignal.timeout(20000),
     });
@@ -420,14 +431,14 @@ router.get('/api/futures/margins', async (req, res) => {
 
     const date = dates[0] || parseTaifexDate(rows[0].Date) || '';
 
+    // cached / stale 是「這次回應」的性質，不是資料本身的性質，所以不落地——
+    // 否則下次從磁碟讀回來會夾帶一個寫死的 stale:false。
     const data = {
       date,
       source: 'taifex-openapi',
       fetched_at: new Date().toISOString(),
       margins,
       unmapped: [...unmappedSet],
-      cached: false,
-      stale: false,
     };
 
     try {
@@ -439,8 +450,8 @@ router.get('/api/futures/margins', async (req, res) => {
       // 落地失敗不影響這次回應
     }
 
-    marginsCache = { at: now, data };
-    return res.json(data);
+    marginsCache = { at: now, data, stale: false };
+    return res.json({ ...data, cached: false, stale: false });
   } catch (err) {
     return serveDisk(err.message);
   }
@@ -494,7 +505,7 @@ router.get('/api/futures/equity-history', (req, res) => {
 const TWSE_HOLIDAY_URL = 'https://openapi.twse.com.tw/v1/holidaySchedule/holidaySchedule';
 const HOLIDAY_TTL_MS = 6 * 60 * 60 * 1000; // 一年才變一次，快取半天綽綽有餘
 const HOLIDAY_CACHE_PATH = path.join(DATA_DIR, 'twse_holidays.json');
-let holidayCache = { at: 0, data: null };
+let holidayCache = { at: 0, data: null, stale: false };
 
 /** 民國日期字串 '1150101' → '2026-01-01'；格式不對回 null */
 function rocToIso(v) {
@@ -526,16 +537,18 @@ function parseHolidays(rows) {
 router.get('/api/market/holidays', async (req, res) => {
   const now = Date.now();
   if (holidayCache.data && now - holidayCache.at < HOLIDAY_TTL_MS) {
-    return res.json({ ...holidayCache.data, cached: true });
+    return res.json({ ...holidayCache.data, cached: true, stale: holidayCache.stale });
   }
   const serveDisk = (reason) => {
     // 證交所掛掉時退回磁碟快取——假日曆一年才變一次，舊的一份仍然可用，
-    // 比整個功能失效好。前端靠 stale 旗標決定要不要提醒。
+    // 比整個功能失效好。前端靠 stale 旗標決定要不要提醒，所以旗標要跟著進
+    // 記憶體快取，不然後續的命中會把舊資料講成新鮮的。
     try {
       if (fs.existsSync(HOLIDAY_CACHE_PATH)) {
         const disk = JSON.parse(fs.readFileSync(HOLIDAY_CACHE_PATH, 'utf-8'));
-        holidayCache = { at: now, data: disk };
-        return res.json({ ...disk, stale: true, stale_reason: reason });
+        const stale = { ...disk, stale_reason: reason };
+        holidayCache = { at: now, data: stale, stale: true };
+        return res.json({ ...stale, stale: true });
       }
     } catch { /* 快取檔壞掉就當沒有 */ }
     return sendError(res, httpError(502, 'TWSE', '抓取證交所休市日曆失敗: ' + reason));
@@ -562,8 +575,8 @@ router.get('/api/market/holidays', async (req, res) => {
       fs.writeFileSync(tmp, JSON.stringify(data, null, 2));
       fs.renameSync(tmp, HOLIDAY_CACHE_PATH);
     } catch { /* 落地失敗不影響這次回應 */ }
-    holidayCache = { at: now, data };
-    return res.json(data);
+    holidayCache = { at: now, data, stale: false };
+    return res.json({ ...data, stale: false });
   } catch (err) {
     return serveDisk(err.message);
   }

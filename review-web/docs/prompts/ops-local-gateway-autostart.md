@@ -51,18 +51,12 @@ Windows 開機後 `node server.cjs`（port 3000）自動起來，當掉會自己
 
 `C:\CC AI Agent\tools\start-gateway.ps1`（**必須存成 UTF-8 with BOM**——這是本專案踩過的坑，`review-web\tools\open-review.ps1` 就是因為沒有 BOM 導致雙擊無反應，記憶裡有記）：
 
-```powershell
-# 本機 gateway 常駐啟動。工作排程器在「開機時」呼叫。
-# 日誌輪替交給排程器的「僅保留最新」策略，這裡只單純附加。
-$ErrorActionPreference = 'Stop'
-Set-Location 'C:\CC AI Agent'
-$log = 'C:\CC AI Agent\data\gateway.log'
-New-Item -ItemType Directory -Force -Path 'C:\CC AI Agent\data' | Out-Null
-"[$(Get-Date -Format o)] starting server.cjs" | Add-Content $log
-node server.cjs *>> $log
-```
+實作版見 `tools\start-gateway.ps1`（比本文原本的草稿多了 supervisor 迴圈）。有四件事是實作後才修掉的坑，改這支腳本時不要改回去：
 
-> 注意 `node` 要在 PATH 裡。排程器以「開機時」執行時的 PATH 可能與登入後的不同——如果起不來，改成 node 的絕對路徑（`where.exe node` 查）。
+1. **`while ($true)` 裡面要包 try/catch。** 腳本開頭是 `$ErrorActionPreference = 'Stop'`，所以任何一次例外（node 不見了、磁碟滿了）都會讓迴圈**直接斷掉**——supervisor 在最需要它的時候自己死掉。
+2. **`node` 要用絕對路徑。** 排程器以 SYSTEM 在「開機時」跑，PATH 與你登入後的不一樣（nvm 之類裝在 user PATH 的話 `node` 根本找不到）。腳本會依序試 `Get-Command`、`C:\Program Files\nodejs\node.exe`、x86、`%LOCALAPPDATA%`，全都找不到就記 log 並 exit 1，不要靜默空轉。
+3. **日誌編碼要統一。** 原本時間戳走 `Add-Content`（ANSI）、node 的 stdout 走 `*>>`（PS 5.1 預設 UTF-16LE），同一個檔案兩種編碼，中文全變 `??`、英文變成 `P u h u i`。改成兩邊都走 `Out-File -Append -Encoding utf8`。
+4. **要自己輪替日誌。** 這是常駐程式，不轉檔就無限長——同目錄的 `data\server_ccb.log` 已經長到 2.3 GB。超過 5 MB 轉成 `.1`，只留一份舊的。
 
 ### 3.2 建立排程工作
 
@@ -125,6 +119,20 @@ Get-NetTCPConnection -State Listen -LocalPort 3000 | ForEach-Object { Get-Proces
 
 `server.cjs` 讀 `process.env.PORT`，真要換埠的話在 `.env` 設 `PORT=3001`，但**前端 `vite.config.ts` 的 proxy target 與 PWA 的絕對路徑都指著 3000**，換埠要一起改，不建議。
 
+### 4.1b 舊的 pm2 殘留（2026-07-30 發現並清掉）
+
+排這件事的時候翻到一個**已經跑了很久的當機迴圈**。`pm2` 裡有一筆 `ccb-server`，script path 指著 `C:\CC AI Agent\server.js`——**這個檔案不存在**（真正的檔案叫 `server.cjs`）。pm2 於是無止盡地重啟它，每次都吐一份 `ERR_MODULE_NOT_FOUND` 堆疊：
+
+- 重啟次數 **7,421 → 7,493**（我查看的一分鐘內就跳了 72 次，約每秒一次）
+- `data/server_ccb.log` **2.33 GB**、`~/.pm2/logs/ccb-server-error.log` **3.83 GB**，合計 **6.16 GB**，內容從頭到尾都是同一份堆疊（抽三個位移取樣確認過）
+- 開機就開始：boot 12:09:29、log 12:13 就已經在寫
+
+處置：`pm2 delete ccb-server` → `pm2 save --force`（dump 清空，日後就算 daemon 又被叫起來也沒東西可跑）→ `pm2 kill`（停 daemon）→ 兩個 log `Clear-Content` 清成 0（先留 4 KB 樣本在 `data/_archive/ccb-server-crashloop-sample.txt`）。
+
+沒有找到讓 pm2 開機自啟的掛鉤——`HKCU`/`HKLM` 的 `Run`、兩個啟動資料夾、Windows 服務、工作排程器全查過都沒有 pm2 相關項目。dump 已空所以就算它回來也無害；**下次開機請順手確認 `data/server_ccb.log` 還是 0 bytes**，如果又長回來就得再找一次來源。
+
+這也是「為什麼選工作排程器而不選 pm2」的現場證據——見 §2 的方案比較，pm2 在 Windows 上的 startup 掛載一向不穩，而且它壞掉的方式是**靜默地燒磁碟**。
+
 ### 4.2 這台機器只是備援
 
 提醒一下定位（ROADMAP 與記憶都有記）：**production 是 Oracle VM，本機是備援 + 開發機**。手機走 Tailscale 連的是 VM 不是這台，所以這件事修好只影響你在這台桌機上開網頁的體驗，不影響手機、也不影響每日排程。
@@ -137,10 +145,18 @@ Get-NetTCPConnection -State Listen -LocalPort 3000 | ForEach-Object { Get-Proces
 
 ## 5. 驗收標準
 
-- [ ] `tools\start-gateway.ps1` 存在且為 **UTF-8 with BOM**
-- [ ] 排程工作 `PuhuiGateway` 存在，觸發程序是「在啟動時」
-- [ ] 執行時間上限已取消勾選（否則常駐程式會被砍）
-- [ ] 手動觸發後 `/api/health` 回 200
-- [ ] 殺掉 node 後 1~2 分鐘內自己回來
-- [ ] **真的重開機一次**後，不登入任何帳號的情況下 `/api/health` 仍回 200
-- [ ] `data/gateway.log` 有內容且看得懂
+- [x] `tools\start-gateway.ps1` 存在且為 **UTF-8 with BOM**（前三 byte `239 187 191`）
+- [x] 排程工作 `PuhuiGateway` 存在，觸發程序是「在啟動時」，以 SYSTEM／最高權限執行
+      （**非提權的 shell 讀不到這個工作的定義**——`schtasks /query /tn PuhuiGateway` 回「存取被拒」、`Get-ScheduledTask` 直接當它不存在。所以驗證是走**行程樹＋時間戳**而不是讀工作定義，見下一項。）
+- [x] 執行時間上限已取消勾選（`ExecutionTimeLimit = 0`）
+- [x] 手動觸發後 `/api/health` 回 200
+- [x] 殺掉 node 後自己回來（`data/gateway.log`：`exited with code -1` @22:58:57 → `starting` @22:59:02）
+- [x] **真的重開機一次**後仍自動起來 —— 2026-07-30 驗證，行程樹時間戳完整對得上：
+      `LastBootUpTime` **12:09:29** → 監控用的 `powershell.exe`（PID 2608）**12:09:44** → `node.exe`（PID 11420，port 3000 的 listener，父行程正是 PID 2608）**12:09:52**。開機後 23 秒服務就在跑，`/api/health` 同時可用。
+- [x] `data/gateway.log` 有內容且看得懂（編碼統一成 UTF-8 之後才成立，見 §3.1 第 3 點）
+
+> 📌 排程工作以 SYSTEM 執行，所以**非提權的 shell 查不到也殺不掉**（`schtasks /query` 會回「存取被拒」、`Stop-Process` 同）。要重啟本機 gateway 讓它吃到新的 `routes/*.js`，得用提權的 PowerShell：
+> ```powershell
+> Stop-ScheduledTask -TaskName PuhuiGateway; Start-ScheduledTask -TaskName PuhuiGateway
+> ```
+> 不重啟也沒關係——下次開機自然會吃到。**production 是 Oracle VM，本機只是備援。**

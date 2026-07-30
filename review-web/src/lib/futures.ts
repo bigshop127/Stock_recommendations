@@ -13,8 +13,6 @@
  * 依風險調整，故全部做成可設定值，預設值只是「現在的公告值」。
  */
 
-import type { FuturesEquityRow } from './api';
-
 /** 商品規格與費用設定（可在頁面上調整；預設＝期交所 2026-06-18 公告值） */
 export interface FuturesSpec {
   contract_size: number;       // 契約單位（股/口）：SRF＝1,000 股（大型 NYF 是 10,000）
@@ -1105,6 +1103,20 @@ export function buildRiskReport(input: RiskReportInput): string {
   L.push(`產生時間：${new Date().toLocaleString('zh-TW', { hour12: false })}`);
   L.push('※ 試算僅供風險檢視，實際保證金與結算以期交所／期貨商公告為準。');
   return L.join('\n');
+}
+
+/** scripts/futures_alert.cjs 每日寫進 data/futures_equity_history.json 的一列快照 */
+export interface FuturesEquityRow {
+  date: string;
+  equity: number;
+  cash: number;
+  unrealized: number;
+  contract_value: number;
+  net_lots: number;
+  total_lots: number;
+  risk_indicator: number | null;
+  price: number;
+  status: string;
 }
 
 export interface EquityPoint {

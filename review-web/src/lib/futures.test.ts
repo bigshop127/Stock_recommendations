@@ -958,4 +958,43 @@ describe('equityStats', () => {
     expect(res.max_drawdown).toBe(-0.1);
     expect(res.max_drawdown_date).toBe('2026-07-02');
   });
+
+  // range 是「近 1 個月／近 3 個月」選單唯一依賴的東西，必須釘住
+  const spanRows = [
+    dummyRow('2026-05-01', 1000),
+    dummyRow('2026-06-01', 2000),
+    dummyRow('2026-07-01', 1000),
+    dummyRow('2026-08-01', 1500),
+  ];
+
+  it('range.from -> 只留起日之後，且高點只從該區間算起', () => {
+    const res = equityStats(spanRows, { from: '2026-07-01' });
+    expect(res.points.map(p => p.date)).toEqual(['2026-07-01', '2026-08-01']);
+    // 6/01 的 2000 落在區間外，所以 7/01 是新高、回撤 0，不是 −50%
+    expect(res.points[0].peak).toBe(1000);
+    expect(res.max_drawdown).toBe(0);
+    expect(res.total_return).toBeCloseTo(0.5, 10);
+  });
+
+  it('range.to -> 只留迄日之前（含當日）', () => {
+    const res = equityStats(spanRows, { to: '2026-07-01' });
+    expect(res.points.map(p => p.date)).toEqual(['2026-05-01', '2026-06-01', '2026-07-01']);
+    expect(res.last?.date).toBe('2026-07-01');
+    expect(res.max_drawdown).toBe(-0.5);
+    expect(res.max_drawdown_date).toBe('2026-07-01');
+  });
+
+  it('range 起迄同一天 -> 只剩一筆，report 不噴錯', () => {
+    const res = equityStats(spanRows, { from: '2026-06-01', to: '2026-06-01' });
+    expect(res.days).toBe(1);
+    expect(res.total_return).toBe(0);
+    expect(res.max_drawdown).toBe(0);
+  });
+
+  it('range 完全落在資料之外 -> 視為沒有資料', () => {
+    const res = equityStats(spanRows, { from: '2027-01-01' });
+    expect(res.days).toBe(0);
+    expect(res.first).toBeNull();
+    expect(res.total_return).toBeNull();
+  });
 });
