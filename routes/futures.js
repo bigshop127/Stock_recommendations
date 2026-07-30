@@ -113,14 +113,6 @@ const DEFAULT_PLANNER = {
   stress_drops: [-0.05, 0.03, 0.05, 0.08, 0.1, 0.15, 0.2, 0.25, 0.3],
 };
 
-const DEFAULT_SPOT = {
-  dividend_yield: 0.035,
-  income_tax_rate: 0.12,
-  idle_rate: 0.02,
-  rollovers_per_year: 11,
-  spread_per_rollover: 0.2,
-  broker_discount: 0.6,
-};
 
 const clamp = (v, lo, hi, fb) => Math.min(hi, Math.max(lo, num(v, fb)));
 
@@ -168,17 +160,6 @@ function sanitizePlanner(v) {
   };
 }
 
-function sanitizeSpot(v) {
-  const o = v && typeof v === 'object' ? v : {};
-  return {
-    dividend_yield: clamp(o.dividend_yield, 0, 1, DEFAULT_SPOT.dividend_yield),
-    income_tax_rate: clamp(o.income_tax_rate, 0, 1, DEFAULT_SPOT.income_tax_rate),
-    idle_rate: clamp(o.idle_rate, 0, 1, DEFAULT_SPOT.idle_rate),
-    rollovers_per_year: clamp(o.rollovers_per_year, 0, 52, DEFAULT_SPOT.rollovers_per_year),
-    spread_per_rollover: Math.max(0, num(o.spread_per_rollover, DEFAULT_SPOT.spread_per_rollover)),
-    broker_discount: clamp(o.broker_discount, 0.01, 1, DEFAULT_SPOT.broker_discount),
-  };
-}
 
 function sanitizeFutures(body) {
   const b = body && typeof body === 'object' ? body : {};
@@ -206,7 +187,6 @@ function sanitizeFutures(body) {
     closed: sanitizeClosed(b.closed),
     stop_loss,
     planner: sanitizePlanner(b.planner),
-    spot: sanitizeSpot(b.spot),
   };
 }
 

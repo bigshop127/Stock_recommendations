@@ -78,7 +78,7 @@ export const Panel: React.FC<{
   className?: string;
 }> = ({ title, icon, tone = 'primary', right, desc, children, className = '' }) => (
   <section className={`bg-card/70 border border-border rounded-2xl shadow-sm overflow-hidden ${className}`}>
-    <header className="flex flex-wrap items-center gap-3 px-5 pt-4 pb-3">
+    <header className="flex flex-wrap items-center gap-2 sm:gap-3 px-4 sm:px-5 pt-4 pb-3">
       {icon && (
         <span className={`shrink-0 w-7 h-7 rounded-lg border grid place-items-center ${TONE[tone].bg} ${TONE[tone].border} ${TONE[tone].text}`}>
           {icon}
@@ -87,8 +87,8 @@ export const Panel: React.FC<{
       <h2 className="text-sm font-bold text-zinc-100 tracking-wide">{title}</h2>
       {right && <div className="ml-auto flex flex-wrap items-center gap-2">{right}</div>}
     </header>
-    {desc && <p className="px-5 -mt-1 pb-2 text-[11px] text-zinc-500">{desc}</p>}
-    <div className="px-5 pb-5">{children}</div>
+    {desc && <p className="px-4 sm:px-5 -mt-1 pb-2 text-[11px] text-zinc-500">{desc}</p>}
+    <div className="px-4 sm:px-5 pb-4 sm:pb-5">{children}</div>
   </section>
 );
 
@@ -115,7 +115,8 @@ export const StatTile: React.FC<{
       {icon}
       {label}
     </div>
-    <div className={`text-xl sm:text-2xl font-bold font-mono mt-1 tabular-nums leading-tight ${valueCls ?? 'text-zinc-100'}`}>
+    {/* 手機一行只放得下兩塊，$1,504,000 這種七位數在 text-xl 會頂到邊，降一階 */}
+    <div className={`text-lg sm:text-2xl font-bold font-mono mt-1 tabular-nums leading-tight ${valueCls ?? 'text-zinc-100'}`}>
       {value}
     </div>
     {sub && <div className="text-[11px] text-zinc-500 mt-1 leading-snug">{sub}</div>}

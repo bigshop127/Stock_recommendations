@@ -596,6 +596,8 @@ export const api = {
   // 台股休市日曆（證交所 OpenAPI，只涵蓋當年度）——期貨最後交易日遇假日要順延
   getMarketHolidays: () => req<MarketHolidaysResp>('/market/holidays'),
   getFuturesEquityHistory: () => req<FuturesEquityHistoryResp>('/futures/equity-history'),
+  // 加權指數：gateway 自己抓 TWSE（盤中走 MIS 即時、收盤後退每日 OpenAPI），不經 engine
+  getTaiex: () => req<TaiexResp>('/market/taiex'),
 };
 
 // 快照列的形狀定義在 lib/futures.ts（純計算層），這裡只轉出去給呼叫端用——
@@ -658,6 +660,24 @@ export interface FuturesMarginInfo {
   maintenance: number;
   clearing: number;
   contract_name: string;
+}
+
+export interface TaiexResp {
+  index: number;              // 最新加權指數（盤中＝成交價，收盤後＝收盤價）
+  prev_close: number | null;
+  open: number | null;
+  high: number | null;
+  low: number | null;
+  change: number | null;
+  change_pct: number | null;  // 小數，0.01 ＝ +1%
+  date: string;               // YYYY-MM-DD
+  time: string;               // HH:MM:SS，只有 MIS 來源才有
+  source: 'twse-mis' | 'twse-openapi' | string;
+  intraday: boolean;          // true ＝ 盤中即時價；false ＝ 收盤／昨收
+  fetched_at: string;
+  cached?: boolean;
+  stale?: boolean;
+  stale_reason?: string;
 }
 
 export interface FuturesMarginsResp {

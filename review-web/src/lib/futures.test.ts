@@ -26,7 +26,6 @@ import {
   pnlAtPrice,
   targetPlan,
   trailingStopPlan,
-  compareSpotVsFutures,
   buildRiskReport,
   SYMBOL_PRESETS,
   equityStats,
@@ -769,60 +768,6 @@ describe('trailingStopPlan：移動停損', () => {
     // 平移量 = 108 − 100 = +8 → 09 月變成 108.5
     const expected = pnlAtPrice(positions, { byMonth: { 202608: 108, 202609: 108.5 }, fallback: 108 }, spec);
     expect(r.locked_pnl).toBeCloseTo(expected, 8);
-  });
-});
-
-describe('compareSpotVsFutures：期貨存股比較', () => {
-  const base = {
-    notional: 1_500_000,
-    lots: 15,
-    dividend_yield: 0.035,
-    income_tax_rate: 0.12,
-    idle_rate: 0.02,
-    rollovers_per_year: 11,
-    spread_per_rollover: 0.2,
-    broker_discount: 0.6,
-  };
-
-  it('現貨成本＝來回手續費＋證交稅＋股利稅＋二代健保', () => {
-    const r = compareSpotVsFutures(base, spec);
-    expect(r.spot.trading_fee).toBeCloseTo(1_500_000 * 0.001425 * 0.6 * 2, 6);
-    expect(r.spot.transaction_tax).toBeCloseTo(1_500, 6);
-    expect(r.spot.dividend).toBeCloseTo(52_500, 6);
-    expect(r.spot.dividend_tax).toBeCloseTo(52_500 * 0.12 - 52_500 * 0.085, 6);
-    expect(r.spot.nhi_premium).toBeCloseTo(52_500 * 0.0211, 6);
-    expect(r.spot.total_cost).toBeCloseTo(
-      r.spot.trading_fee + r.spot.transaction_tax + r.spot.dividend_tax + r.spot.nhi_premium, 6,
-    );
-  });
-
-  it('低稅率時股利稅被 8.5% 可抵減吃光，不會變負數', () => {
-    expect(compareSpotVsFutures({ ...base, income_tax_rate: 0.05 }, spec).spot.dividend_tax).toBe(0);
-  });
-
-  it('股利未達 2 萬不課二代健保', () => {
-    const r = compareSpotVsFutures({ ...base, notional: 400_000, dividend_yield: 0.03 }, spec);
-    expect(r.spot.dividend).toBeCloseTo(12_000, 6);
-    expect(r.spot.nhi_premium).toBe(0);
-  });
-
-  it('期貨閒置資金＝名目曝險 − 原始保證金', () => {
-    const r = compareSpotVsFutures(base, spec);
-    expect(r.futures.margin).toBeCloseTo(15 * spec.initial_margin, 6);
-    expect(r.futures.idle_cash).toBeCloseTo(1_500_000 - 15 * spec.initial_margin, 6);
-    expect(r.futures.interest).toBeCloseTo(r.futures.idle_cash * 0.02, 6);
-  });
-
-  it('轉倉次數拉高會把稅負優勢吃光，advantage 轉負', () => {
-    const few = compareSpotVsFutures({ ...base, rollovers_per_year: 1 }, spec);
-    const many = compareSpotVsFutures({ ...base, rollovers_per_year: 50 }, spec);
-    expect(few.advantage).toBeGreaterThan(many.advantage);
-    expect(many.advantage).toBeLessThan(0);
-  });
-
-  it('advantage ＝ 現貨成本 − 期貨淨成本', () => {
-    const r = compareSpotVsFutures(base, spec);
-    expect(r.advantage).toBeCloseTo(r.spot.total_cost - r.futures.total_cost, 6);
   });
 });
 

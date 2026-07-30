@@ -3,37 +3,36 @@ import { useSearchParams } from 'react-router-dom';
 import {
   Activity, AlertTriangle, CalendarClock, Cloud, CloudOff, Loader2,
   Plus, RefreshCw, Trash2, TrendingUp, TrendingDown, Gauge,
-  ClipboardCopy, Check, Target, PiggyBank, Layers,
-  ShieldCheck, Wallet, ListOrdered, CalendarSync, Scale, SlidersHorizontal, BookOpen,
+  ClipboardCopy, Check, Target, Layers,
+  ShieldCheck, Wallet, ListOrdered, CalendarSync, SlidersHorizontal, BookOpen,
   LineChart, Flame, Ruler,
 } from 'lucide-react';
 import { Panel, StatTile, RiskMeter, ThreatCard, LevelCard, Row, Chip, type Tone } from '../components/futures/ui';
 import { api } from '../lib/api';
-import type { FuturesMonthQuote, FuturesEquityHistoryResp, FuturesMarginsResp } from '../lib/api';
+import type { FuturesMonthQuote, FuturesEquityHistoryResp, FuturesMarginsResp, TaiexResp } from '../lib/api';
 import {
   CONTRACT_CODE, CONTRACT_NAME, UNDERLYING_CODE,
   DEFAULT_SPEC, SYMBOL_PRESETS, findPreset,
   tickValue, lastTradingDay, tradingDaysBetween,
   positionPnl, closedPnl, summarizeAccount, rolloverAlerts, rolloverCost, stopLossRisk,
   indexAtPrice, stressTest, suggestLots, weightedEntry, targetPlan, trailingStopPlan,
-  compareSpotVsFutures, buildRiskReport, priceOf, referenceMonthOf,
+  buildRiskReport, priceOf, referenceMonthOf,
   equityStats,
   type FuturesPosition, type ClosedTrade, type Side, type FuturesSpec, type StressRow,
   type PriceInput, type EquityPoint,
 } from '../lib/futures';
 import {
   getFuturesConfig, saveFuturesConfig, subscribeFutures,
-  DEFAULT_PLANNER, DEFAULT_SPOT, type FuturesConfig,
+  DEFAULT_PLANNER, type FuturesConfig,
 } from '../lib/futuresStore';
 
-type FuturesTab = 'overview' | 'positions' | 'stress' | 'planner' | 'rollover' | 'spot' | 'settings' | 'logic';
+type FuturesTab = 'overview' | 'positions' | 'stress' | 'planner' | 'rollover' | 'settings' | 'logic';
 const FUTURES_TABS: { id: FuturesTab; label: string; icon: React.ElementType }[] = [
   { id: 'overview', label: '損益總覽', icon: Gauge },
   { id: 'positions', label: '部位 & 平倉紀錄', icon: ListOrdered },
   { id: 'stress', label: '壓力測試', icon: Flame },
   { id: 'planner', label: '建倉 & 出場試算', icon: Target },
   { id: 'rollover', label: '到期 & 轉倉', icon: CalendarSync },
-  { id: 'spot', label: '存股比較', icon: Scale },
   { id: 'settings', label: '契約規格 & 設定', icon: SlidersHorizontal },
   { id: 'logic', label: '整體邏輯', icon: BookOpen },
 ];
@@ -76,6 +75,11 @@ export function FuturesPnl() {
   const [quote, setQuote] = useState<{ status: 'idle' | 'loading' | 'done' | 'error'; msg: string | null; months: FuturesMonthQuote[] }>({
     status: 'idle', msg: null, months: [],
   });
+  const [taiex, setTaiex] = useState<{
+    status: 'idle' | 'loading' | 'done' | 'error';
+    data: TaiexResp | null;
+    msg: string | null;
+  }>({ status: 'idle', data: null, msg: null });
   // 台股休市日曆：最後交易日遇假日要順延，沒有它算出來的日期只是「規則上的第三個星期三」
   const [holidays, setHolidays] = useState<Set<string> | undefined>(undefined);
   useEffect(() => {
@@ -127,7 +131,11 @@ export function FuturesPnl() {
       .catch((e) => {
         if (!cancelled) setCloud({ status: 'error', msg: e instanceof Error ? e.message : '雲端載入失敗' });
       })
-      .finally(() => { if (!cancelled) void fetchQuote(false); });
+      .finally(() => {
+        if (cancelled) return;
+        void fetchQuote(false);
+        void fetchTaiex();
+      });
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -161,7 +169,11 @@ export function FuturesPnl() {
    * 保證金專戶餘額仍需手動維護**——按鈕旁的說明有寫清楚，別讓人以為按了就對帳完成。
    */
   const realSync = async () => {
-    await fetchQuote(true);
+    // 兩件事都先不存，最後一次寫回雲端——否則抓價存一次、抓指數再存一次，
+    // 中間那次的 index_ref 還是舊的，另一台裝置剛好回讀就會拿到半套。
+    await fetchQuote(false);
+    await fetchTaiex();
+    await saveToCloud();
     try {
       const resp = await api.getFuturesPositions();
       if (resp.exists && resp.futures) {
@@ -170,6 +182,25 @@ export function FuturesPnl() {
       }
     } catch {
       /* 回讀失敗不影響前面已完成的抓價與存檔，狀態列已顯示 */
+    }
+  };
+
+  /**
+   * 抓最新加權指數填進 `index_ref`。**盤中是即時的**：gateway 走 TWSE MIS
+   * （看盤網頁自己在用的端點，約每 5 秒更新），收盤後 MIS 的成交價會變成 '-'，
+   * 那時退回昨收並把 `intraday` 標成 false，狀態列會照實說是收盤價。
+   *
+   * 只動 `index_ref`（大盤點數換算的基準），不動任何期貨價格——標的價格一律
+   * 以期交所行情為準，用 beta 反推指數只會多一層誤差。
+   */
+  const fetchTaiex = async () => {
+    setTaiex((t) => ({ ...t, status: 'loading' }));
+    try {
+      const r = await api.getTaiex();
+      setTaiex({ status: 'done', data: r, msg: null });
+      if (r.index > 0) patch((c) => ({ ...c, index_ref: r.index }));
+    } catch (e) {
+      setTaiex({ status: 'error', data: null, msg: e instanceof Error ? e.message : '抓取失敗' });
     }
   };
 
@@ -277,24 +308,29 @@ export function FuturesPnl() {
               </Chip>
             </div>
             <p className="text-xs text-zinc-500 mt-2">
-              保證金水位、追繳／斷頭價位、暴跌壓力測試與存股比較
+              保證金水位、追繳／斷頭價位、暴跌壓力測試與建倉試算
             </p>
+            {/*
+              契約規格 chips：手機上這四顆會疊成三行，把資料整個推到螢幕外，
+              而它們是「查一次就記得」的參考值（設定頁也有）——所以小螢幕只留商品名。
+            */}
             <div className="flex flex-wrap items-center gap-2 mt-3">
               <Chip tone="primary">{symbolName}</Chip>
-              <Chip tone="zinc">
+              <Chip tone="zinc" className="hidden sm:inline-flex">
                 一口 {spec.contract_size.toLocaleString()} {preset?.unit_label ?? '股/口'}
                 {preset ? `（${preset.underlying}）` : ` ${UNDERLYING_CODE}`}
               </Chip>
-              <Chip tone="zinc">跳一檔 {spec.tick_size} ＝ {money(tickValue(spec))}</Chip>
-              <Chip tone="zinc">原始 / 維持保證金 {money(spec.initial_margin)} / {money(spec.maintenance_margin)}</Chip>
+              <Chip tone="zinc" className="hidden sm:inline-flex">跳一檔 {spec.tick_size} ＝ {money(tickValue(spec))}</Chip>
+              <Chip tone="zinc" className="hidden sm:inline-flex">原始 / 維持保證金 {money(spec.initial_margin)} / {money(spec.maintenance_margin)}</Chip>
             </div>
           </div>
-          <div className="flex flex-wrap items-center gap-2">
+          {/* 手機排成等寬三格（原本會換行成 2+1，看起來像壞掉） */}
+          <div className="grid grid-cols-3 gap-2 w-full sm:w-auto sm:flex sm:flex-wrap sm:items-center">
             <button
               onClick={() => void realSync()}
               disabled={quote.status === 'loading' || cloud.status === 'loading'}
-              className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-semibold bg-cyan-500/15 border border-cyan-500/30 text-cyan-300 hover:bg-cyan-500/25 disabled:opacity-40 disabled:cursor-not-allowed transition"
-              title="抓期交所最新行情更新現價，並與雲端對存回讀。注意：券商沒有期貨帳戶 API，口數/進場價/保證金餘額仍需手動維護。"
+              className="flex items-center justify-center gap-1.5 px-2 sm:px-3 py-2 rounded-lg text-[11px] sm:text-xs font-semibold bg-cyan-500/15 border border-cyan-500/30 text-cyan-300 hover:bg-cyan-500/25 disabled:opacity-40 disabled:cursor-not-allowed transition whitespace-nowrap"
+              title="抓期交所最新行情更新各月份現價、抓 TWSE 最新加權指數（盤中即時），並與雲端對存回讀。注意：券商沒有期貨帳戶 API，口數/進場價/保證金專戶餘額仍需手動維護。"
             >
               {quote.status === 'loading' ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5" />}
               真實同步
@@ -302,7 +338,7 @@ export function FuturesPnl() {
             <button
               onClick={() => void saveToCloud()}
               disabled={cloud.status === 'loading'}
-              className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-semibold bg-emerald-500/15 border border-emerald-500/30 text-emerald-300 hover:bg-emerald-500/25 disabled:opacity-40 disabled:cursor-not-allowed transition"
+              className="flex items-center justify-center gap-1.5 px-2 sm:px-3 py-2 rounded-lg text-[11px] sm:text-xs font-semibold bg-emerald-500/15 border border-emerald-500/30 text-emerald-300 hover:bg-emerald-500/25 disabled:opacity-40 disabled:cursor-not-allowed transition whitespace-nowrap"
               title="只把目前設定存回雲端，不抓行情"
             >
               {cloud.status === 'loading' ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Cloud className="w-3.5 h-3.5" />}
@@ -313,8 +349,8 @@ export function FuturesPnl() {
         </div>
       </div>
 
-      {(cloud.msg || quote.msg) && (
-        <div className="flex flex-wrap items-center gap-4 text-[11px] -mt-4">
+      {(cloud.msg || quote.msg || taiex.status !== 'idle') && (
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 text-[11px] -mt-4">
           {cloud.msg && (
             <span className={`flex items-center gap-1 ${cloud.status === 'error' ? 'text-amber-400' : 'text-emerald-400'}`}>
               {cloud.status === 'error' ? <CloudOff className="w-3.5 h-3.5" /> : <Cloud className="w-3.5 h-3.5" />}
@@ -328,18 +364,50 @@ export function FuturesPnl() {
             </span>
           )}
           {quote.status === 'error' && <span className="text-amber-400">行情抓取失敗：{quote.msg}</span>}
+          {/* 加權指數：即時與收盤要分得出來，否則盤中看到一個不動的數字會以為當掉了 */}
+          {taiex.status === 'done' && taiex.data && (
+            <span className={taiex.data.stale ? 'text-amber-400' : 'text-zinc-500'}>
+              加權指數{' '}
+              <strong className="text-zinc-300 font-mono tabular-nums">
+                {Math.round(taiex.data.index).toLocaleString()}
+              </strong>
+              {taiex.data.change_pct !== null && (
+                <span className={`ml-1 font-mono ${taiex.data.change_pct >= 0 ? 'text-bull' : 'text-bear'}`}>
+                  {taiex.data.change_pct >= 0 ? '+' : ''}{(taiex.data.change_pct * 100).toFixed(2)}%
+                </span>
+              )}
+              {taiex.data.stale
+                ? `（快取，${taiex.data.date}，來源暫時失效）`
+                : taiex.data.intraday
+                  ? `（盤中即時 ${taiex.data.time}）`
+                  : `（${taiex.data.date} 收盤）`}
+            </span>
+          )}
+          {taiex.status === 'error' && <span className="text-amber-400">加權指數抓取失敗：{taiex.msg}</span>}
         </div>
       )}
 
-      {/* 「真實同步」的涵蓋範圍——講在最前面，免得誤以為按了就等於跟券商對帳完成 */}
-      <div className="text-[11px] text-zinc-500 -mt-3 flex items-start gap-1.5">
-        <RefreshCw className="w-3 h-3 mt-0.5 shrink-0 text-zinc-600" />
-        <span>
-          <strong className="text-zinc-400">「真實同步」＝抓期交所最新行情更新現價＋與雲端對存回讀</strong>。
-          口數／進場價／保證金專戶餘額<strong className="text-zinc-400">仍需手動維護</strong>——券商沒有期貨帳戶 API
-          （玉山交易 API 只涵蓋證券帳戶，期貨是獨立的期貨商帳戶），詳見「整體邏輯」分頁。
-        </span>
-      </div>
+      {/*
+        「真實同步」的涵蓋範圍。收成可展開：它是「看一次就記得」的參考說明，
+        但在手機上攤開會佔掉六行、把實際數字推出第一屏。摘要那行仍然把最會被
+        誤會的一點（不會抓券商餘額）直接寫在外面，不必展開也看得到。
+      */}
+      <details className="-mt-3 group">
+        <summary className="text-[11px] text-zinc-500 flex items-start gap-1.5 cursor-pointer list-none marker:content-none hover:text-zinc-400">
+          <RefreshCw className="w-3 h-3 mt-0.5 shrink-0 text-zinc-600" />
+          <span>
+            「真實同步」<strong className="text-zinc-400">不會抓券商的期貨帳戶餘額</strong>
+            （券商沒有期貨帳戶 API）
+            <span className="text-zinc-600 group-open:hidden">．展開看它實際做了什麼</span>
+          </span>
+        </summary>
+        <p className="text-[11px] text-zinc-500 mt-1.5 pl-[18px]">
+          <strong className="text-zinc-400">同步內容＝期交所各月份行情 ＋ TWSE 加權指數（盤中即時）＋ 與雲端對存回讀</strong>。
+          口數／進場價／<strong className="text-zinc-400">保證金專戶餘額仍需手動維護</strong>——
+          玉山交易 API 只涵蓋證券帳戶（庫存／餘額／交割都是股票的），期貨是獨立的期貨商帳戶，
+          該 SDK 沒有任何期貨帳務方法，官方文件的期貨章節也只有行情不含帳務。詳見「整體邏輯」分頁。
+        </p>
+      </details>
 
       {/* 轉倉提醒橫幅：任何分頁都看得到，因為忘了轉倉的代價比看錯損益大 */}
       {dueAlerts.length > 0 && (
@@ -438,9 +506,6 @@ export function FuturesPnl() {
       {activeTab === 'rollover' && (
         <RolloverTab config={config} spec={spec} summary={summary} alerts={alerts} quoteMonths={quote.months} holidays={holidays} patch={patch} saveToCloud={saveToCloud} />
       )}
-      {activeTab === 'spot' && (
-        <SpotCompareTab config={config} spec={spec} summary={summary} patch={patch} saveToCloud={saveToCloud} />
-      )}
       {activeTab === 'settings' && (
         <SettingsTab config={config} preset={preset} patch={patch} saveToCloud={saveToCloud} />
       )}
@@ -475,7 +540,7 @@ const CopyReportButton: React.FC<{ text: string }> = ({ text }) => {
   return (
     <button
       onClick={() => void copy()}
-      className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-semibold bg-zinc-800/70 border border-border text-zinc-300 hover:text-zinc-100 hover:border-zinc-500 transition"
+      className="flex items-center justify-center gap-1.5 px-2 sm:px-3 py-2 rounded-lg text-[11px] sm:text-xs font-semibold bg-zinc-800/70 border border-border text-zinc-300 hover:text-zinc-100 hover:border-zinc-500 transition whitespace-nowrap"
       title="把目前的部位、保證金水位、危險價位與壓力測試結果複製成一段純文字"
     >
       {done ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <ClipboardCopy className="w-3.5 h-3.5" />}
@@ -1116,7 +1181,45 @@ const OverviewTab: React.FC<{
         {config.positions.length === 0 ? (
           <p className="text-xs text-zinc-500">還沒有部位。到「部位 &amp; 平倉紀錄」分頁新增。</p>
         ) : (
-          <div className="overflow-x-auto -mx-1 px-1">
+          <>
+          {/*
+            手機改成一部位一張卡。八欄硬塞進 390px 會把 `-$30,766` 截成 `-$30`——
+            截掉的是損益的位數，這種「看起來像數字但其實錯了」比放不下更糟。
+          */}
+          <div className="sm:hidden space-y-2">
+            {config.positions.map((p) => {
+              const mp = priceOf(priceInput, p.month);
+              const r = positionPnl(p, mp, spec);
+              return (
+                <div key={p.id} className="rounded-xl border border-border bg-zinc-900/40 p-3">
+                  <div className="flex items-center gap-2">
+                    <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded border text-[11px] font-semibold ${
+                      p.side === 'long' ? 'text-bull border-bull/30 bg-bull/10' : 'text-bear border-bear/30 bg-bear/10'
+                    }`}>
+                      {p.side === 'long' ? <TrendingUp className="w-3 h-3" /> : <TrendingDown className="w-3 h-3" />}
+                      {p.side === 'long' ? '多' : '空'}
+                    </span>
+                    <span className="font-mono text-xs text-zinc-300">{monthLabel(p.month)}</span>
+                    <span className="text-xs text-zinc-500">{p.lots} 口</span>
+                    <span className={`ml-auto font-mono font-bold text-base tabular-nums ${pnlCls(r.net_pnl)}`}>
+                      {money(r.net_pnl)}
+                    </span>
+                  </div>
+                  <dl className="grid grid-cols-2 gap-x-3 gap-y-1 mt-2 text-[11px]">
+                    <Row label="進場價" value={px(p.entry_price)} />
+                    <Row
+                      label="該月現價"
+                      value={`${px(mp)}${config.prices[p.month] ? '' : '*'}`}
+                      cls={config.prices[p.month] ? 'text-zinc-300' : 'text-amber-400'}
+                    />
+                    <Row label="損益平衡" value={px(r.break_even)} cls="text-zinc-500" />
+                    <Row label="保證金報酬率" value={pct(r.return_on_margin)} cls={pnlCls(r.return_on_margin)} />
+                  </dl>
+                </div>
+              );
+            })}
+          </div>
+          <div className="hidden sm:block overflow-x-auto -mx-1 px-1">
             <table className="w-full text-xs">
               <thead>
                 <tr className="text-zinc-500 border-b border-border">
@@ -1160,6 +1263,7 @@ const OverviewTab: React.FC<{
               </tbody>
             </table>
           </div>
+          </>
         )}
       </Panel>
 
@@ -1469,8 +1573,11 @@ const PositionsTab: React.FC<{
         {config.closed.length === 0 ? (
           <p className="text-xs text-zinc-500">還沒有平倉紀錄。平倉時會自動把損益結算進上方的保證金專戶現金餘額。</p>
         ) : (
+          <>
+          {/* 手機看不出這張表可以左右滑，補一句——否則會以為欄位就這幾個 */}
+          <p className="sm:hidden text-[10px] text-zinc-600 mb-1.5">← 左右滑動可看完整欄位 →</p>
           <div className="overflow-x-auto">
-            <table className="w-full text-xs">
+            <table className="w-full min-w-[700px] text-xs">
               <thead>
                 <tr className="text-zinc-500 border-b border-border">
                   <th className="text-left font-medium py-2 pr-3">平倉日</th>
@@ -1514,6 +1621,7 @@ const PositionsTab: React.FC<{
               </tbody>
             </table>
           </div>
+          </>
         )}
       </div>
     </div>
@@ -1756,8 +1864,11 @@ const RolloverTab: React.FC<{
         {alerts.length === 0 ? (
           <p className="text-xs text-zinc-500">目前沒有未平倉部位。</p>
         ) : (
+          <>
+          {/* 手機看不出這張表可以左右滑，補一句——否則會以為欄位就這幾個 */}
+          <p className="sm:hidden text-[10px] text-zinc-600 mb-1.5">← 左右滑動可看完整欄位 →</p>
           <div className="overflow-x-auto">
-            <table className="w-full text-xs">
+            <table className="w-full min-w-[640px] text-xs">
               <thead>
                 <tr className="text-zinc-500 border-b border-border">
                   <th className="text-left font-medium py-2 pr-3">月份</th>
@@ -1795,6 +1906,7 @@ const RolloverTab: React.FC<{
               </tbody>
             </table>
           </div>
+          </>
         )}
         <p className="text-[11px] text-zinc-500">
           最後交易日＝到期月份的第三個星期三；該日休市時<strong className="text-zinc-400">順延至次一營業日</strong>（期交所明文規定）。
@@ -1847,8 +1959,10 @@ const RolloverTab: React.FC<{
       {quoteMonths.length > 0 && (
         <div className="bg-card/70 border border-border rounded-2xl p-5 shadow-sm">
           <div className="flex items-center gap-2.5 mb-3"><span className="w-7 h-7 rounded-lg bg-primary/10 border border-primary/30 grid place-items-center shrink-0"><LineChart className="w-4 h-4 text-primary" /></span><h2 className="text-sm font-bold text-zinc-100 tracking-wide">{CONTRACT_CODE} 各月份行情（期交所每日行情）</h2></div>
+          {/* 手機看不出這張表可以左右滑，補一句——否則會以為欄位就這幾個 */}
+          <p className="sm:hidden text-[10px] text-zinc-600 mb-1.5">← 左右滑動可看完整欄位 →</p>
           <div className="overflow-x-auto">
-            <table className="w-full text-xs">
+            <table className="w-full min-w-[560px] text-xs">
               <thead>
                 <tr className="text-zinc-500 border-b border-border">
                   <th className="text-left font-medium py-2 pr-3">月份</th>
@@ -2032,8 +2146,9 @@ const StressTab: React.FC<{
           </div>
         }
       >
+        <p className="sm:hidden text-[10px] text-zinc-600 mb-1.5">← 左右滑動可看完整欄位 →</p>
         <div className="overflow-x-auto -mx-1 px-1">
-          <table className="w-full text-xs">
+          <table className="w-full min-w-[780px] text-xs">
             <thead>
               <tr className="text-zinc-500 border-b border-border">
                 <th className="text-left font-semibold py-2.5 pr-3">大盤修正</th>
@@ -2365,151 +2480,6 @@ const PlannerTab: React.FC<{
   );
 };
 
-// ── 存股比較（期貨 vs 現貨）─────────────────────────────────────────────────
-
-const TAX_BRACKETS = [
-  { v: 0.05, label: '5%（小資族，股利可退稅）' },
-  { v: 0.12, label: '12%（一般上班族）' },
-  { v: 0.2, label: '20%（中產）' },
-  { v: 0.3, label: '30%（高所得）' },
-  { v: 0.4, label: '40%（頂級所得）' },
-];
-
-const SpotCompareTab: React.FC<{
-  config: FuturesConfig;
-  spec: FuturesSpec;
-  summary: Summary;
-  patch: (u: (c: FuturesConfig) => FuturesConfig) => FuturesConfig;
-  saveToCloud: (cfg?: FuturesConfig) => Promise<void>;
-}> = ({ config, spec, summary, patch, saveToCloud }) => {
-  const s = config.spot;
-  const setSpot = (u: (x: FuturesConfig['spot']) => FuturesConfig['spot']) => {
-    void saveToCloud(patch((c) => ({ ...c, spot: u(c.spot) })));
-  };
-
-  // 比較基準：有部位就用實際曝險，沒有就用建倉試算的建議口數
-  const fallback = useMemo(
-    () => suggestLots(config.planner.capital > 0 ? config.planner.capital : config.cash, config.price, config.planner.target_leverage, spec),
-    [config.planner.capital, config.cash, config.price, config.planner.target_leverage, spec],
-  );
-  const lots = summary.total_lots > 0 ? summary.total_lots : fallback.lots;
-  const notional = summary.total_lots > 0 ? summary.contract_value : fallback.notional;
-  const usingActual = summary.total_lots > 0;
-
-  const r = useMemo(
-    () => compareSpotVsFutures({
-      notional, lots,
-      dividend_yield: s.dividend_yield,
-      income_tax_rate: s.income_tax_rate,
-      idle_rate: s.idle_rate,
-      rollovers_per_year: s.rollovers_per_year,
-      spread_per_rollover: s.spread_per_rollover,
-      broker_discount: s.broker_discount,
-    }, spec),
-    [notional, lots, s, spec],
-  );
-
-  return (
-    <div className="space-y-5">
-      <div className="bg-card/70 border border-border rounded-2xl p-5 shadow-sm space-y-4">
-        <div className="flex items-center gap-2">
-          <span className="w-7 h-7 rounded-lg bg-emerald-400/10 border border-emerald-400/30 grid place-items-center shrink-0"><PiggyBank className="w-4 h-4 text-emerald-400" /></span>
-          <h2 className="text-sm font-bold text-zinc-100 tracking-wide">用期貨存股，一年省多少？</h2>
-        </div>
-        <p className="text-[11px] text-zinc-500">
-          比較基準：{usingActual ? '目前實際部位' : '建倉試算的建議口數'} —— {lots} 口、名目曝險 {money(notional)}。
-          {!usingActual && ' 有實際部位後會自動改用實際數字。'}
-        </p>
-
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-          <Field label="標的現金殖利率" hint="0050 近年約 3%～4%。這裡只用來算「因為領股利多繳的稅」。">
-            <NumInput value={+(s.dividend_yield * 100).toFixed(2)} step="0.1" min="0"
-              onCommit={(v) => setSpot((x) => ({ ...x, dividend_yield: Math.max(0, v) / 100 }))} />
-          </Field>
-          <Field label="個人綜所稅邊際稅率">
-            <select
-              value={s.income_tax_rate}
-              onChange={(e) => setSpot((x) => ({ ...x, income_tax_rate: parseFloat(e.target.value) }))}
-              className="w-full bg-zinc-900 border border-border rounded-lg px-3 py-2 text-sm text-zinc-100"
-            >
-              {TAX_BRACKETS.map((b) => <option key={b.v} value={b.v}>{b.label}</option>)}
-            </select>
-          </Field>
-          <Field label="閒置資金年化報酬（%）" hint="定存或貨幣型基金。用期貨只押保證金，省下的錢可以生息。">
-            <NumInput value={+(s.idle_rate * 100).toFixed(2)} step="0.1" min="0"
-              onCommit={(v) => setSpot((x) => ({ ...x, idle_rate: Math.max(0, v) / 100 }))} />
-          </Field>
-          <Field label="一年轉倉次數" hint="月結算商品續抱一整年約 11～12 次。">
-            <NumInput value={s.rollovers_per_year} step="1" min="0"
-              onCommit={(v) => setSpot((x) => ({ ...x, rollovers_per_year: Math.max(0, v) }))} />
-          </Field>
-          <Field label="每次轉倉的月份價差" hint="遠月比近月貴多少（元／點）。正價差是轉倉的隱形成本，可在「到期 & 轉倉」查實際數字。">
-            <NumInput value={s.spread_per_rollover} step="0.05" min="0"
-              onCommit={(v) => setSpot((x) => ({ ...x, spread_per_rollover: Math.max(0, v) }))} />
-          </Field>
-          <Field label="現股手續費折數" hint="0.6＝六折。電子下單常見 2～6 折。">
-            <NumInput value={s.broker_discount} step="0.05" min="0.01"
-              onCommit={(v) => setSpot((x) => ({ ...x, broker_discount: Math.max(0.01, Math.min(1, v)) }))} />
-          </Field>
-        </div>
-      </div>
-
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        <div className="bg-card/70 border border-border rounded-2xl p-5 shadow-sm space-y-2">
-          <h3 className="text-sm font-bold text-zinc-100 tracking-wide border-b border-border pb-2">買現貨持有一年</h3>
-          <dl className="space-y-2 text-xs pt-1">
-            <Row label="手續費（買＋賣）" value={money(r.spot.trading_fee)} />
-            <Row label="證交稅（賣出 0.1%）" value={money(r.spot.transaction_tax)} />
-            <Row label={`現金股利（${pct(s.dividend_yield, 2)}）`} value={money(r.spot.dividend)} cls="text-zinc-500" hint="不計為收入——期貨價格已內含除息貼水，兩邊都拿得到，故只比較稅負差異。" />
-            <Row label="股利所得稅（扣 8.5% 可抵減）" value={money(r.spot.dividend_tax)} cls="text-rose-400" />
-            <Row label="二代健保補充保費 2.11%" value={money(r.spot.nhi_premium)} cls="text-rose-400"
-              hint="單筆股利達 2 萬元才課，這裡以全年股利當單筆估算，實際依配息次數可能較低。" />
-          </dl>
-          <div className="flex justify-between text-xs font-semibold pt-2 border-t border-border">
-            <span className="text-zinc-300">一年總成本</span>
-            <span className="font-mono text-rose-400">{money(r.spot.total_cost)}</span>
-          </div>
-        </div>
-
-        <div className="bg-card border border-primary/30 rounded-xl p-5 shadow-sm space-y-2">
-          <h3 className="text-sm font-semibold text-primary border-b border-border pb-2">買期貨持有一年</h3>
-          <dl className="space-y-2 text-xs pt-1">
-            <Row label={`轉倉手續費（${s.rollovers_per_year} 次來回）`} value={money(r.futures.rollover_fee)} cls="text-rose-400" />
-            <Row label="轉倉期交稅" value={money(r.futures.rollover_tax)} cls="text-rose-400" />
-            <Row label="月份價差成本" value={money(r.futures.spread_cost)} cls="text-rose-400" />
-            <Row label="股利所得稅 / 二代健保" value="$0（免）" cls="text-emerald-400" />
-            <Row label={`閒置資金 ${money(r.futures.idle_cash)} 的利息`} value={money(r.futures.interest)} cls="text-emerald-400"
-              hint="＝名目曝險 − 原始保證金。前提是你本來就有這筆錢；拿小本金開高槓桿的話這段利息不存在。" />
-          </dl>
-          <div className="flex justify-between text-xs font-semibold pt-2 border-t border-border">
-            <span className="text-zinc-300">一年淨成本</span>
-            <span className={`font-mono ${r.futures.total_cost > 0 ? 'text-rose-400' : 'text-emerald-400'}`}>{money(r.futures.total_cost)}</span>
-          </div>
-        </div>
-      </div>
-
-      <div className={`rounded-xl border p-4 text-center text-sm font-semibold ${
-        r.advantage >= 0 ? 'bg-emerald-500/10 border-emerald-500/40 text-emerald-300' : 'bg-rose-500/10 border-rose-500/40 text-rose-300'
-      }`}>
-        {r.advantage >= 0
-          ? `用期貨替代現貨，這個規模下一年約省 ${money(r.advantage)}`
-          : `這個規模下期貨反而多花 ${money(-r.advantage)}——轉倉成本吃掉了稅負優勢`}
-      </div>
-
-      <div className="bg-card/70 border border-border rounded-2xl p-5 shadow-sm space-y-2">
-        <h3 className="text-sm font-bold text-zinc-100 tracking-wide">這個比較沒有算進去的事</h3>
-        <ul className="text-[11px] text-zinc-400 leading-relaxed space-y-1.5 list-disc list-inside">
-          <li><strong className="text-zinc-300">兩邊都不計股利收入</strong>：期貨價格已內含除息貼水，期貨持有人靠價差拿到等值股利且免稅，所以現貨這邊只算「多繳的稅」，不重複計算股利本身。</li>
-          <li><strong className="text-zinc-300">閒置資金利息是有條件的</strong>：只有在你本來就準備好全額現金、只是改押保證金時才成立。拿 50 萬去開 300 萬曝險，那 250 萬不存在，這段利息是幻覺。</li>
-          <li><strong className="text-zinc-300">期貨會斷頭，現貨不會</strong>：現股套牢可以放十年，期貨跌到維持保證金以下就得補錢，補不出來就被平倉在最低點。這個風險沒有金額，但它是最貴的一項。</li>
-          <li><strong className="text-zinc-300">價差會變</strong>：正價差在多頭時會擴大，實際轉倉成本可能高於這裡的固定假設；逆價差時反而是收入。</li>
-          <li><strong className="text-zinc-300">流動性</strong>：{CONTRACT_CODE} 的成交量遠小於台指期，遠月份可能掛不到好價位，滑價沒有計入。</li>
-        </ul>
-      </div>
-    </div>
-  );
-};
-
 // ── 契約規格 & 設定 ─────────────────────────────────────────────────────────
 
 const SPEC_FIELDS: { key: keyof FuturesSpec; label: string; step: string; hint: string; suffix?: string }[] = [
@@ -2719,7 +2689,7 @@ const SettingsTab: React.FC<{
               className="w-full bg-zinc-900 border border-border rounded-lg px-3 py-2 text-sm font-mono text-zinc-100"
             />
           </Field>
-          <Field label="目前加權指數" hint="填今天的收盤指數，追繳價與壓力測試就會一併換算成大盤點數。留 0 ＝不顯示點數。">
+          <Field label="目前加權指數" hint="按上方「真實同步」會自動抓 TWSE 最新指數填進來（盤中即時），也可以手動覆寫。留 0 ＝不顯示大盤點數換算。">
             <NumInput value={config.index_ref} step="10" min="0" placeholder="例：40039"
               onCommit={(v) => void saveToCloud(patch((c) => ({ ...c, index_ref: Math.max(0, v) })))} />
           </Field>
@@ -2787,12 +2757,11 @@ const SettingsTab: React.FC<{
             onClick={() => void saveToCloud(patch((c) => ({
               ...c,
               planner: { ...DEFAULT_PLANNER, batches: DEFAULT_PLANNER.batches.map((b) => ({ ...b })), stress_drops: [...DEFAULT_PLANNER.stress_drops] },
-              spot: { ...DEFAULT_SPOT },
             })))}
             className="text-[11px] text-zinc-400 hover:text-zinc-200"
             title="只清掉試算頁的參數，實際部位與平倉紀錄不受影響"
           >
-            還原試算與存股比較參數
+            還原試算參數
           </button>
           <span className="text-[11px] text-zinc-600">
             目前一跳 ＝ {money(tickValue(config.spec))}
@@ -2939,7 +2908,7 @@ const LogicTab: React.FC<{ spec: FuturesSpec }> = ({ spec }) => (
       </ul>
     </Section>
 
-    <Section title="試算頁在算什麼（壓力測試／建倉／存股比較）">
+    <Section title="試算頁在算什麼（壓力測試／建倉試算）">
       <ul className="text-xs text-zinc-300 leading-relaxed space-y-2 list-disc list-inside">
         <li>
           <strong className="text-zinc-100">壓力測試</strong>不是另一套公式：它把「現在價格」換成修正後的價格，
@@ -2954,11 +2923,6 @@ const LogicTab: React.FC<{ spec: FuturesSpec }> = ({ spec }) => (
         <li>
           <strong className="text-zinc-100">安全出金上限</strong>＝到價後的權益數 − 指定倍數的原始保證金。
           賺到的錢不能全領走，部位還在，領太多風險指標就掉回警戒區。
-        </li>
-        <li>
-          <strong className="text-zinc-100">存股比較兩邊都不計股利收入</strong>：期貨價格已內含除息貼水，
-          期貨持有人靠價差拿到等值股利而且免稅，所以現貨那邊只算「因為領股利而多繳的稅」，不重複計算股利本身。
-          閒置資金利息則只有在「你本來就有全額現金、只是改押保證金」時才成立。
         </li>
         <li>
           <strong className="text-zinc-100">大盤點數換算</strong>只是把價格翻譯成看盤時有感的刻度，
@@ -2983,6 +2947,7 @@ const LogicTab: React.FC<{ spec: FuturesSpec }> = ({ spec }) => (
           <span className="font-mono text-zinc-400"> DailyMarketReportFut</span>（公開資料、免金鑰）。
           給的是<strong className="text-zinc-100">每日行情</strong>（收盤與結算價），不是即時報價——
           這頁定位是收盤後對帳與風險檢視，盤中即時價請看期貨商軟體，或手動改「現在價格」。
+          （<strong className="text-zinc-100">加權指數是即時的、期貨價不是</strong>——兩者來源不同，見下方「加權指數」條。）
         </li>
         <li>
           <strong className="text-zinc-100">部位</strong>：手動輸入。玉山證券的交易 API（esun_trade）只涵蓋
@@ -2991,6 +2956,15 @@ const LogicTab: React.FC<{ spec: FuturesSpec }> = ({ spec }) => (
           因此這頁的「真實同步」<strong className="text-zinc-100">只做行情＋雲端對存</strong>，
           不像再平衡頁那顆會登入券商抓庫存——口數、進場價、保證金專戶餘額都要自己維護。
           真要自動化，得等期貨商開放帳務 API，或改用有期貨 API 的期貨商（如永豐 Shioaji、富邦 Neo）。
+        </li>
+        <li>
+          <strong className="text-zinc-100">加權指數</strong>：gateway 直接抓證交所，兩個源接力——
+          <strong className="text-zinc-100">盤中走 MIS</strong>（<span className="font-mono text-zinc-400">mis.twse.com.tw</span>，
+          看盤網頁自己在用的端點，約每 5 秒更新，所以按「真實同步」拿到的是<strong className="text-zinc-100">即時</strong>指數）；
+          收盤後 MIS 的成交價會變成 <span className="font-mono text-zinc-400">'-'</span>，改退回證交所
+          OpenAPI 的每日收盤指數，狀態列會照實標成「收盤」而不是「即時」。
+          這條路刻意<strong className="text-zinc-100">不經 Python engine</strong>——期貨頁是本機 gateway
+          （沒有 engine）少數還能用的頁面，掛上去會讓本機的「真實同步」直接壞掉。
         </li>
         <li>
           <strong className="text-zinc-100">最後交易日</strong>：按第三個星期三的規則推算，不含台股國定假日曆。

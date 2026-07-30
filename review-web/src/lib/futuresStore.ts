@@ -31,16 +31,6 @@ export interface PlannerConfig {
   stress_drops: number[];    // 壓力測試的情境
 }
 
-/** 「期貨替代現貨存股」的比較參數 */
-export interface SpotCompareConfig {
-  dividend_yield: number;
-  income_tax_rate: number;
-  idle_rate: number;
-  rollovers_per_year: number;
-  spread_per_rollover: number;
-  broker_discount: number;
-}
-
 export interface FuturesConfig {
   contract: string;          // 商品／期交所行情代碼（SRF / NYF / MTX / TMF，可自訂）
   price: number;             // 參考價／缺月份時的退路（抓期交所或手動輸入）
@@ -55,7 +45,6 @@ export interface FuturesConfig {
   closed: ClosedTrade[];
   stop_loss: Record<string, number>; // 每筆部位的停損價（key＝position id）
   planner: PlannerConfig;
-  spot: SpotCompareConfig;
 }
 
 export const DEFAULT_PLANNER: PlannerConfig = {
@@ -67,15 +56,6 @@ export const DEFAULT_PLANNER: PlannerConfig = {
   trailing_dist: 2,
   batches: [{ price: 0, lots: 0 }, { price: 0, lots: 0 }, { price: 0, lots: 0 }],
   stress_drops: [...DEFAULT_STRESS_DROPS],
-};
-
-export const DEFAULT_SPOT: SpotCompareConfig = {
-  dividend_yield: 0.035,
-  income_tax_rate: 0.12,
-  idle_rate: 0.02,
-  rollovers_per_year: 11,
-  spread_per_rollover: 0.2,
-  broker_discount: 0.6,
 };
 
 const SEED: FuturesConfig = {
@@ -92,7 +72,6 @@ const SEED: FuturesConfig = {
   closed: [],
   stop_loss: {},
   planner: { ...DEFAULT_PLANNER },
-  spot: { ...DEFAULT_SPOT },
 };
 
 export function seedFuturesConfig(): FuturesConfig {
@@ -103,7 +82,6 @@ export function seedFuturesConfig(): FuturesConfig {
     closed: [],
     stop_loss: {},
     planner: { ...DEFAULT_PLANNER, batches: DEFAULT_PLANNER.batches.map((b) => ({ ...b })), stress_drops: [...DEFAULT_PLANNER.stress_drops] },
-    spot: { ...DEFAULT_SPOT },
   };
 }
 
@@ -227,18 +205,6 @@ function sanitizePlanner(v: unknown): PlannerConfig {
   };
 }
 
-function sanitizeSpot(v: unknown): SpotCompareConfig {
-  const o = (v && typeof v === 'object' ? v : {}) as Record<string, unknown>;
-  return {
-    dividend_yield: Math.min(1, Math.max(0, num(o.dividend_yield, DEFAULT_SPOT.dividend_yield))),
-    income_tax_rate: Math.min(1, Math.max(0, num(o.income_tax_rate, DEFAULT_SPOT.income_tax_rate))),
-    idle_rate: Math.min(1, Math.max(0, num(o.idle_rate, DEFAULT_SPOT.idle_rate))),
-    rollovers_per_year: Math.min(52, Math.max(0, num(o.rollovers_per_year, DEFAULT_SPOT.rollovers_per_year))),
-    spread_per_rollover: Math.max(0, num(o.spread_per_rollover, DEFAULT_SPOT.spread_per_rollover)),
-    broker_discount: Math.min(1, Math.max(0.01, num(o.broker_discount, DEFAULT_SPOT.broker_discount))),
-  };
-}
-
 export function normalizeFutures(parsed: Record<string, unknown>): FuturesConfig {
   const positions = (Array.isArray(parsed.positions) ? parsed.positions : [])
     .map((p, i) => sanitizePosition(p, i))
@@ -272,7 +238,6 @@ export function normalizeFutures(parsed: Record<string, unknown>): FuturesConfig
     closed,
     stop_loss,
     planner: sanitizePlanner(parsed.planner),
-    spot: sanitizeSpot(parsed.spot),
   };
 }
 
