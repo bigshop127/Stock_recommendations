@@ -109,6 +109,24 @@ Invoke-WebRequest http://localhost:3000/api/health -UseBasicParsing
 
 ## 4. 附帶事項
 
+### 4.0 ⚠️ 這件事撞掉了桌面捷徑（2026-07-30 實際發生，已修）
+
+**開機自啟讓本機 gateway 佔住 3000，而桌面捷徑 `review-web/tools/open-review.ps1` 原本正是用 3000 開 SSH 通道去看 VM。** 更糟的是它靠「`/api/health` 有沒有回 200」判斷通道是否已通——本機 gateway 也回 200，於是它**誤判成通道已開直接重用**，瀏覽器開到的是本機那個沒有 Python engine 的 gateway。症狀＝大盤儀表板／資金潮汐／產業熱力圖／watchlist 全部 **503**（不是 `ERR_CONNECTION_REFUSED`，因為 gateway 確實活著），畫面上出現「後端運算引擎異常斷線」——這次那句話是**對的**，engine 真的不在。
+
+**修法＝通道改用專屬埠 3100，本機 gateway 留在 3000 不動。**
+
+為什麼不是把本機 gateway 搬走：**期貨頁與再平衡頁的設定存在 localStorage，而 localStorage 綁 origin**。使用者一直在 `localhost:3000` 開期貨頁，把本機 gateway 換埠等於換到一份空的 localStorage，部位看起來會憑空消失（雲端那份當時還是 `positions: []`）。
+
+改完的分工，記牢：
+
+| 網址 | 是誰 | engine | 能看什麼 |
+|---|---|---|---|
+| `localhost:3000/review/` | **本機** gateway（開機自啟） | ✗ down | 期貨損益總覽、再平衡計算機（這兩頁不需要 engine） |
+| `localhost:3100/review/` | **VM**（SSH 通道，桌面捷徑） | ✓ up | 全部，包含大盤儀表板／資金潮汐／產業熱力圖／個股審查 |
+| `https://puhui-oracle-vm.tail73ac0d.ts.net/review/` | **VM**（Tailscale，手機用） | ✓ up | 全部 |
+
+> 📌 **本機的 Python engine 從沒建過也不建**：`engine\.venv` 不存在，而且本機 `.env` **沒有 FinMind token**（只有 Google/Groq/Gemini/Telegram），就算建了環境資料源也是缺的。需要 engine 的頁面一律看 VM。
+
 ### 4.1 埠位衝突
 
 如果 3000 已被別的東西佔用，`server.cjs` 會直接崩掉並被排程器反覆重試。先確認：
