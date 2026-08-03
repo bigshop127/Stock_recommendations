@@ -26,6 +26,20 @@ const https = require('https');
 const path = require('path');
 const { execSync, spawnSync } = require('child_process');
 
+// 關掉 Node 的 Happy Eyeballs（2026-08-03 事故修復）。
+// Why: Oracle VM 到 api.telegram.org 的連線要 ~800ms（跨海），但 Node 20 的
+//      autoSelectFamily 預設 autoSelectFamilyAttemptTimeout 只有 250ms。VM 裝了
+//      Tailscale 之後多出一個 global scope 的 IPv6 位址（fd7a:…）卻沒有 IPv6
+//      default route，於是 AAAA 那條必然 ENETUNREACH、A 那條又慢到來不及在 250ms
+//      內握完手 → 整包連線在 ~260ms 就以 AggregateError(ETIMEDOUT) 收場。
+//      而 AggregateError.message 是空字串，日誌只印「Telegram 發送失敗: 」，
+//      毫無線索 —— cookies 過期告警就這樣在 VM 上靜默了 17 天（2026-07-16 起）。
+//      症狀會時好時壞（7/16–7/24 混雜成功），因為 250ms 剛好卡在成敗邊界。
+//      ipv4first 單獨無效（已實測），必須連 autoSelectFamily 一起關掉才穩定。
+//      shell 端的 refresh.sh／healthcheck.sh 走 curl 不受影響，只有 Node 中鏢。
+require('dns').setDefaultResultOrder('ipv4first');
+require('net').setDefaultAutoSelectFamily(false);
+
 // ── 設定 ────────────────────────────────────────────────
 // TARGET_DATE 用 Asia/Taipei 算當天日期。
 // Why: 原本用 new Date().toISOString() = UTC，當 cron 在台北凌晨跑時 UTC 還在「昨天」，
@@ -80,6 +94,13 @@ const EXISTING_OUTPUT_PATH = WRITE_OBSIDIAN ? NOTE_PATH : REPORT_PATH;
 const COOKIES_PATH = path.join(__dirname, '..', 'data', 'pressplay_cookies.json');
 const LOG_PATH = path.join(__dirname, '..', 'data', 'puhui_daily.log');
 const PUHUI_CACHE_PATH = path.join(__dirname, '..', 'data', 'puhui_cache.json');
+
+// PressPlay cookies 是否已過期（步驟 0 判定，供後續「抓不到文章」時區分死因用）。
+// Why: 2026-07-16 cookies 過期後，每天的候選文章 canRead 全是 false，通知信卻寫
+//      「文章不在你的閱讀權限內」—— 那是 3999 會員專屬週報的說法，害人往訂閱方案
+//      的方向查。過期與沒權限是兩種完全不同的故障，通知必須講得出是哪一種。
+let cookiesExpired = false;
+let cookiesExpiredOn = '';
 
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
 const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET;
@@ -173,8 +194,18 @@ async function sendTelegram(text, { html = false } = {}) {
       log(`Telegram API 回傳失敗: ${JSON.stringify(result)}`);
     }
   } catch (e) {
-    log(`Telegram 發送失敗: ${e.message}`);
+    log(`Telegram 發送失敗: ${describeError(e)}`);
   }
+}
+
+// AggregateError（Node happy-eyeballs 連線失敗）的 .message 是空字串，
+// 直接印會變成沒有線索的空白告警 —— 攤平成 code 清單才看得出是 ENETUNREACH/ETIMEDOUT。
+function describeError(e) {
+  if (!e) return 'unknown';
+  const inner = Array.isArray(e.errors)
+    ? e.errors.map(x => `${x.code || x.name}: ${x.message}`).join(' | ')
+    : '';
+  return e.message || inner || `${e.name || 'Error'}${e.code ? ` (${e.code})` : ''}`;
 }
 
 // 偶發失敗（chromium SIGSEGV、暫時性網路錯誤）的 retry 包裝
@@ -1039,7 +1070,10 @@ async function main() {
 
   // 0. 檢查 PressPlay cookies 過期狀態
   try {
-    if (fs.existsSync(COOKIES_PATH)) {
+    if (!fs.existsSync(COOKIES_PATH)) {
+      cookiesExpired = true;
+      log('⛔ 找不到 data/pressplay_cookies.json！');
+    } else {
       const cookies = JSON.parse(fs.readFileSync(COOKIES_PATH, 'utf-8'));
       const jwt = Array.isArray(cookies)
         ? cookies.find(c => c.name === 'JAccessToken')?.value
@@ -1049,6 +1083,8 @@ async function main() {
         const expMs = payload.exp * 1000;
         const daysLeft = Math.ceil((expMs - Date.now()) / 86400000);
         if (daysLeft <= 0) {
+          cookiesExpired = true;
+          cookiesExpiredOn = new Date(expMs).toISOString().slice(0, 10);
           log('⛔ JAccessToken 已過期！請立刻更新 PressPlay cookies');
           await sendTelegram('⛔ 浦惠投顧 PressPlay cookies 已過期！請立刻更新並重新存入 data/pressplay_cookies.json');
         } else if (daysLeft <= 5) {
@@ -1175,9 +1211,22 @@ async function main() {
           }
         }
         if (!articleUrl) {
+          const list = candidates.map(c => '- ' + c.text).join('\n');
+          if (cookiesExpired) {
+            // 過期的 cookies 會讓「每一篇」都 canRead=false，跟真的沒權限長得一模一樣，
+            // 但修法完全不同（重新登入抓 cookies vs. 沒訂到那個方案），所以分開報。
+            log(`⛔ 候選文章全部 canRead=false，且 cookies 已過期 → 判定為 cookies 失效，非閱讀權限問題`);
+            await notify(`${DATE_DISPLAY} PressPlay cookies 已過期，無法讀取文章`,
+              `⛔ 浦惠投顧 ${DATE_DISPLAY}\n\nPressPlay cookies ` +
+              `${cookiesExpiredOn ? `已於 ${cookiesExpiredOn} 過期` : '檔案遺失或無效'}，` +
+              `當日 ${candidates.length} 篇文章全部讀不到（這不是閱讀權限問題）：\n${list}\n\n` +
+              `修復：重新登入 PressPlay 並更新 data/pressplay_cookies.json（見 docs/runbook.md §7.1），` +
+              `更新後補跑 node scripts/puhui_daily.cjs ${TARGET_DATE}`);
+            return;
+          }
           log(`所有候選文章都無權限閱讀（可能是 3999 會員專屬週報等）`);
           await notify(`${DATE_DISPLAY} 今日無一般每日盤勢文`,
-            `ℹ️ 浦惠投顧 ${DATE_DISPLAY}\n\n當日有 ${candidates.length} 篇文章但都不在你的閱讀權限內：\n${candidates.map(c => '- ' + c.text).join('\n')}`);
+            `ℹ️ 浦惠投顧 ${DATE_DISPLAY}\n\n當日有 ${candidates.length} 篇文章但都不在你的閱讀權限內：\n${list}`);
           return;
         }
         log(`選定可讀 URL: ${articleUrl}`);
