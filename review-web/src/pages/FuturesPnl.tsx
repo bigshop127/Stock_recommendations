@@ -27,6 +27,17 @@ import {
 } from '../lib/futuresStore';
 
 type FuturesTab = 'overview' | 'positions' | 'stress' | 'planner' | 'rollover' | 'settings' | 'logic';
+
+/** 期交所行情的取得狀態。價格出現在哪一頁，這包東西就要跟到哪，否則數字會沒有出處。 */
+type QuoteState = {
+  status: 'idle' | 'loading' | 'done' | 'error';
+  msg: string | null;                 // 每日行情檔的日期 'YYYY-MM-DD'
+  months: FuturesMonthQuote[];
+  live_source?: string | null;
+  live_as_of?: string | null;
+  intraday?: boolean;
+  live_error?: string | null;
+};
 const FUTURES_TABS: { id: FuturesTab; label: string; icon: React.ElementType }[] = [
   { id: 'overview', label: '損益總覽', icon: Gauge },
   { id: 'positions', label: '部位 & 平倉紀錄', icon: ListOrdered },
@@ -72,17 +83,7 @@ export function FuturesPnl() {
   const [cloud, setCloud] = useState<{ status: 'idle' | 'loading' | 'saved' | 'error'; msg: string | null }>({
     status: 'idle', msg: null,
   });
-  const [quote, setQuote] = useState<{
-    status: 'idle' | 'loading' | 'done' | 'error';
-    msg: string | null;
-    months: FuturesMonthQuote[];
-    live_source?: string | null;
-    live_as_of?: string | null;
-    intraday?: boolean;
-    live_error?: string | null;
-  }>({
-    status: 'idle', msg: null, months: [],
-  });
+  const [quote, setQuote] = useState<QuoteState>({ status: 'idle', msg: null, months: [] });
   const [taiex, setTaiex] = useState<{
     status: 'idle' | 'loading' | 'done' | 'error';
     data: TaiexResp | null;
@@ -542,7 +543,7 @@ export function FuturesPnl() {
       </div>
 
       {activeTab === 'overview' && (
-        <OverviewTab config={config} summary={summary} statusMeta={statusMeta} spec={spec} beta={beta} plan={plan} priceInput={priceInput} historyState={historyState} />
+        <OverviewTab config={config} summary={summary} statusMeta={statusMeta} spec={spec} beta={beta} plan={plan} priceInput={priceInput} quote={quote} historyState={historyState} />
       )}
       {activeTab === 'positions' && (
         <PositionsTab config={config} spec={spec} summary={summary} priceInput={priceInput} quote={quote} holidays={holidays} patch={patch} saveToCloud={saveToCloud} />
@@ -1023,6 +1024,41 @@ const EquityCurveCard: React.FC<{
   );
 };
 
+/**
+ * 每個月份的現價「是哪來的」。
+ *
+ * 夜盤（15:00–翌日 05:00）跟日盤收盤價差個兩三塊是常態——2026-08-04 日盤收 100.95、
+ * 同日夜盤 00:14 已經是 103.35。數字旁邊不標時段的話，看習慣日盤收盤價的人會直接
+ * 認定是抓錯了（使用者當天就是這樣回報的）。所以價格出現在哪，這個標示就要跟到哪。
+ */
+function priceOrigin(month: string, quote: QuoteState, hasOwnPrice: boolean) {
+  if (!hasOwnPrice) {
+    return { label: '後備價', title: '沒有這個月份的行情，正在用後備價', cls: 'text-amber-400' };
+  }
+  const q = quote.months.find((x) => x.month === month);
+  if (q && q.live !== null) {
+    const night = q.live_session === 'night';
+    const hhmm = q.live_time ? q.live_time.slice(11, 16) : '';
+    return {
+      label: `${night ? '夜盤' : '日盤'} ${hhmm}`.trim(),
+      title: night
+        ? `盤後（夜盤）交易時段的最新成交價${hhmm ? `（${hhmm} 成交）` : ''}。夜盤 15:00–翌日 05:00 照樣在跑，跟日盤收盤價差幾塊是常態，不是抓錯。`
+        : `一般（日盤）交易時段的最新成交價${hhmm ? `（${hhmm} 成交）` : ''}。`,
+      cls: night
+        ? 'text-indigo-300 border border-indigo-400/40 bg-indigo-400/10 rounded px-1'
+        : 'text-zinc-400',
+    };
+  }
+  if (q && (q.settlement !== null || q.last !== null)) {
+    return {
+      label: '結算價',
+      title: `${quote.msg || ''} 期交所每日結算價——這個月份目前沒有成交，所以沒有即時價`,
+      cls: 'text-zinc-500',
+    };
+  }
+  return null;
+}
+
 const OverviewTab: React.FC<{
   config: FuturesConfig;
   summary: Summary;
@@ -1031,12 +1067,13 @@ const OverviewTab: React.FC<{
   beta: number;
   plan: ReturnType<typeof targetPlan>;
   priceInput: PriceInput;
+  quote: QuoteState;
   historyState: {
     loading: boolean;
     error: string | null;
     data: FuturesEquityHistoryResp | null;
   };
-}> = ({ config, summary, statusMeta, spec, beta, plan, priceInput, historyState }) => {
+}> = ({ config, summary, statusMeta, spec, beta, plan, priceInput, quote, historyState }) => {
   const ri = summary.risk_indicator;
   const riPctText = ri === null ? '—' : `${(ri * 100).toFixed(0)}%`;
   const refPrice = summary.reference_price;
@@ -1300,10 +1337,19 @@ const OverviewTab: React.FC<{
                       </td>
                       <td className="py-2.5 pr-3 text-right font-mono tabular-nums text-zinc-300">{p.lots}</td>
                       <td className="py-2.5 pr-3 text-right font-mono tabular-nums text-zinc-300">{px(p.entry_price)}</td>
-                      <td className={`py-2.5 pr-3 text-right font-mono tabular-nums ${config.prices[p.month] ? 'text-zinc-300' : 'text-amber-400'}`}
-                        title={config.prices[p.month] ? '期交所該月份行情' : '該月份沒有行情，用參考價代替'}>
-                        {px(mp)}{config.prices[p.month] ? '' : '*'}
-                      </td>
+                      {(() => {
+                        // 現價旁邊要看得出是日盤還是夜盤——夜盤價跟日盤收盤差兩三塊是常態
+                        const origin = priceOrigin(p.month, quote, !!config.prices[p.month]);
+                        return (
+                          <td className={`py-2.5 pr-3 text-right font-mono tabular-nums ${config.prices[p.month] ? 'text-zinc-300' : 'text-amber-400'}`}
+                            title={origin ? origin.title : '該月份沒有行情，用後備價代替'}>
+                            {px(mp)}
+                            {origin && (
+                              <span className={`ml-1.5 text-[10px] font-sans font-semibold ${origin.cls}`}>{origin.label}</span>
+                            )}
+                          </td>
+                        );
+                      })()}
                       <td className="py-2.5 pr-3 text-right font-mono tabular-nums text-zinc-500">{px(r.break_even)}</td>
                       <td className={`py-2.5 pr-3 text-right font-mono tabular-nums font-semibold ${pnlCls(r.net_pnl)}`}>{money(r.net_pnl)}</td>
                       <td className={`py-2.5 text-right font-mono tabular-nums ${pnlCls(r.return_on_margin)}`}>{pct(r.return_on_margin)}</td>
@@ -1337,15 +1383,7 @@ const PositionsTab: React.FC<{
   spec: FuturesSpec;
   summary: Summary;
   priceInput: PriceInput;
-  quote: {
-    status: 'idle' | 'loading' | 'done' | 'error';
-    msg: string | null;
-    months: FuturesMonthQuote[];
-    live_source?: string | null;
-    live_as_of?: string | null;
-    intraday?: boolean;
-    live_error?: string | null;
-  };
+  quote: QuoteState;
   holidays: Set<string> | undefined;
   patch: (u: (c: FuturesConfig) => FuturesConfig) => FuturesConfig;
   saveToCloud: (cfg?: FuturesConfig) => Promise<void>;
@@ -1447,9 +1485,7 @@ const PositionsTab: React.FC<{
             <div className="text-[11px] text-zinc-500">持倉月份的現價（各月份分別計價）</div>
             <div className="flex flex-wrap gap-2">
               {[...new Set(config.positions.map((p) => p.month))].sort().map((m) => {
-                const mq = quote.months.find((q) => q.month === m);
-                const hasLive = mq && mq.live !== null;
-                const hasDaily = mq && (mq.settlement !== null || mq.last !== null);
+                const origin = priceOrigin(m, quote, !!config.prices[m]);
                 return (
                   <div key={m} className="flex items-center gap-1.5 bg-zinc-900/50 border border-border rounded-lg px-2.5 py-1.5">
                     <span className="text-[11px] font-mono text-zinc-400">{monthLabel(m)}</span>
@@ -1471,11 +1507,10 @@ const PositionsTab: React.FC<{
                       }}
                       className="w-20 bg-zinc-950 border border-border rounded px-2 py-0.5 text-xs font-mono text-zinc-100"
                     />
-                    {!config.prices[m] && (
-                      <span className="text-[10px] text-amber-400 font-semibold" title="沒有這個月份的行情，正在用後備價">後備價</span>
-                    )}
-                    {config.prices[m] && !hasLive && hasDaily && (
-                      <span className="text-[10px] text-zinc-500 font-semibold" title={`${quote.msg || ''} 結算價`}>結算價</span>
+                    {origin && (
+                      <span className={`text-[10px] font-semibold whitespace-nowrap ${origin.cls}`} title={origin.title}>
+                        {origin.label}
+                      </span>
                     )}
                   </div>
                 );
