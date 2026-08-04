@@ -178,7 +178,8 @@ function sanitizeFutures(body) {
     price: Math.max(0, num(b.price, 0)),
     prices: sanitizePrices(b.prices),
     price_month: safeMonth(b.price_month),
-    price_as_of: safeDate(b.price_as_of),
+    price_as_of: /^\d{4}-\d{2}-\d{2}/.test(str(b.price_as_of)) ? str(b.price_as_of) : '',
+    price_source: b.price_source === 'live' ? 'live' : 'daily',
     cash: num(b.cash, 0), // 權益數可為負（穿價），不 clamp
     index_ref: Math.max(0, num(b.index_ref, 0)),
     beta: clamp(b.beta, 0.01, 5, 1),
@@ -220,14 +221,115 @@ router.post('/api/futures/positions', (req, res) => {
   }
 });
 
-// ── 期交所每日行情 ──────────────────────────────────────────────────────────
+// ── 期交所每日行情與即時報價 ──────────────────────────────────────────────────
 const TAIFEX_URL = 'https://openapi.taifex.com.tw/v1/DailyMarketReportFut';
-const QUOTE_TTL_MS = 10 * 60 * 1000; // 每日行情一天只變一次，快取 10 分鐘足夠擋掉連點
-let quoteCache = { at: 0, key: '', data: null };
+const TAIFEX_MIS_URL = process.env.TAIFEX_MIS_URL
+  || 'https://mis.taifex.com.tw/futures/api/getQuoteDetail';
+
+const CONTRACT_TO_MIS = {
+  'SRF': 'SRF',
+  'NYF': 'NYF',
+  'TX': 'TXF',
+  'MTX': 'MXF',
+  'TMF': 'TMF'
+};
+const MONTH_CODES = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L'];
+const QUOTE_TTL_LIVE_MS = 20 * 1000;
+const QUOTE_TTL_CLOSED_MS = 10 * 60 * 1000;
+const DAILY_TTL_MS = 10 * 60 * 1000;
+
+let dailyRawCache = { at: 0, rows: null };
+let liveQuoteCache = {}; // keyed by contract: { at, data, live_as_of }
 
 function pickNum(v) {
   const n = parseFloat(String(v));
   return Number.isFinite(n) ? n : null;
+}
+
+function getPreferredSession(tpeDate) {
+  const hh = tpeDate.getUTCHours();
+  const mm = tpeDate.getUTCMinutes();
+  const timeVal = hh * 60 + mm;
+  return (timeVal >= 525 && timeVal < 900) ? 'day' : 'night';
+}
+
+function getValidQuote(q) {
+  if (!q) return null;
+  const lastPrice = parseFloat(q.CLastPrice);
+  const time = q.CTime;
+  if (Number.isFinite(lastPrice) && lastPrice > 0 && typeof time === 'string' && time.trim() !== '') {
+    return {
+      price: lastPrice,
+      refPrice: parseFloat(q.CRefPrice) || null,
+      volume: parseInt(q.CTotalVolume, 10) || 0,
+      bid: parseFloat(q.CBestBidPrice) || null,
+      ask: parseFloat(q.CBestAskPrice) || null,
+      date: q.CDate,
+      time: q.CTime
+    };
+  }
+  return null;
+}
+
+/**
+ * 把 MIS 的 CTime（HHMMSS）組成帶時區的時間戳。
+ *
+ * 刻意**不用 CDate**：夜盤跨過午夜之後期交所是回開盤日還是當日，官方沒文件，
+ * 白天也驗不出來（22:14 與 23:41 兩次實測都是 20260804，兩種語意都成立）。
+ * 而 CDate 一旦是開盤日，凌晨 00:30 夜盤正熱時 live_time 會變成 24 小時前，
+ * 連帶 live_as_of → intraday → 快取 TTL → 狀態列文案全部跟著錯。
+ *
+ * 各時段的行情板每天都會重置（實測：8/3 有成交的 SRFF7，8/4 沒成交就回空，
+ * 不會殘留前一天的價），所以 CTime 必定落在「現在往前推 24 小時」內——
+ * 用台北時鐘反推日期比賭 CDate 的語意可靠：報價時刻若看起來比現在還晚，
+ * 那就是昨天的（夜盤時 -F 板留著的是昨天下午的成交）。
+ */
+function liveTimeFromClock(ctime, nowMs = Date.now()) {
+  if (typeof ctime !== 'string') return null;
+  // 先驗後補零：直接 padStart 的話空字串會變成 '000000'，一筆沒有時間的報價
+  // 會被講成「今天午夜成交」。實測 MIS 給的是補滿的 6 碼（094459），5 碼是保險。
+  const raw = ctime.trim();
+  if (!/^\d{5,6}$/.test(raw)) return null;
+  const ct = raw.padStart(6, '0');
+
+  const tpe = new Date(nowMs + 8 * 3600 * 1000);
+  const quoteSec = Number(ct.slice(0, 2)) * 3600 + Number(ct.slice(2, 4)) * 60 + Number(ct.slice(4, 6));
+  const nowSec = tpe.getUTCHours() * 3600 + tpe.getUTCMinutes() * 60 + tpe.getUTCSeconds();
+  // 留 120 秒容差，免得 VM 與期交所之間幾秒的時鐘差把剛成交的報價推成昨天
+  const shifted = new Date(tpe.getTime() + (quoteSec > nowSec + 120 ? -86400000 : 0));
+
+  const y = shifted.getUTCFullYear();
+  const m = String(shifted.getUTCMonth() + 1).padStart(2, '0');
+  const d = String(shifted.getUTCDate()).padStart(2, '0');
+  return `${y}-${m}-${d}T${ct.slice(0, 2)}:${ct.slice(2, 4)}:${ct.slice(4, 6)}+08:00`;
+}
+
+function monthToSymbol(contract, monthStr) {
+  const misCode = CONTRACT_TO_MIS[contract];
+  if (!misCode) return null;
+  const year = parseInt(monthStr.slice(0, 4), 10);
+  const monthNum = parseInt(monthStr.slice(4, 6), 10);
+  if (!Number.isFinite(year) || !Number.isFinite(monthNum) || monthNum < 1 || monthNum > 12) return null;
+  const yearCode = String(year % 10);
+  const monthCode = MONTH_CODES[monthNum - 1];
+  return misCode + monthCode + yearCode;
+}
+
+function symbolToMonth(symbol) {
+  const cleanSymbol = symbol.split('-')[0];
+  const len = cleanSymbol.length;
+  if (len < 3) return null;
+  const yearCodeStr = cleanSymbol.slice(len - 1);
+  const monthCodeStr = cleanSymbol.slice(len - 2, len - 1);
+
+  const yearDigit = parseInt(yearCodeStr, 10);
+  const monthIdx = MONTH_CODES.indexOf(monthCodeStr);
+  if (!Number.isFinite(yearDigit) || monthIdx === -1) return null;
+
+  const monthNum = monthIdx + 1;
+  const monthStr = String(monthNum).padStart(2, '0');
+  const year = 2020 + yearDigit;
+  return `${year}${monthStr}`;
 }
 
 /**
@@ -269,40 +371,222 @@ function parseRows(rows, contract) {
 }
 
 // GET /api/futures/quote?contract=SRF
-// 回傳該商品所有到期月份的每日行情。前端拿來填現價、列到期月份選單、算轉倉價差。
+// 回傳該商品所有到期月份的每日行情與即時報價。前端拿來填現價、列到期月份選單、算轉倉價差。
 router.get('/api/futures/quote', async (req, res) => {
   const contract = (str(req.query.contract, 'SRF') || 'SRF').toUpperCase().slice(0, 6);
   const now = Date.now();
-  if (quoteCache.data && quoteCache.key === contract && now - quoteCache.at < QUOTE_TTL_MS) {
-    return res.json({ ...quoteCache.data, cached: true });
-  }
-  try {
-    const r = await fetch(TAIFEX_URL, {
-      headers: { Accept: 'application/json', 'User-Agent': 'puhui-review-web/1.0' },
-      signal: AbortSignal.timeout(20000),
-    });
-    if (!r.ok) {
-      return sendError(res, httpError(502, 'TAIFEX', `期交所回應 HTTP ${r.status}`));
+
+  // 1. Cache hit check
+  const cached = liveQuoteCache[contract];
+  if (cached) {
+    const cachedTpe = new Date(cached.at + 8 * 3600 * 1000);
+    const currentTpe = new Date(now + 8 * 3600 * 1000);
+    const sameSession = getPreferredSession(cachedTpe) === getPreferredSession(currentTpe);
+
+    if (sameSession) {
+      const dynamicIntraday = cached.live_as_of ? (now - new Date(cached.live_as_of).getTime() < 5 * 60 * 1000) : false;
+      const ttl = (dynamicIntraday || cached.data.live_error) ? QUOTE_TTL_LIVE_MS : QUOTE_TTL_CLOSED_MS;
+      if (now - cached.at < ttl) {
+        return res.json({
+          ...cached.data,
+          intraday: dynamicIntraday,
+          cached: true
+        });
+      }
     }
-    const rows = await r.json();
-    const months = parseRows(rows, contract);
+  }
+
+  let months = [];
+  let date = '';
+
+  // 2. Fetch or reuse daily market report
+  try {
+    // 新鮮度只看 dailyRawCache.at，不能看 parseRows 的結果——「這份檔裡沒有這個商品」
+    // 跟「快取過期」是兩件事，混在一起的話不認識的 contract 會每次請求都重抓 815 KB。
+    if (!dailyRawCache.rows || now - dailyRawCache.at >= DAILY_TTL_MS) {
+      const r = await fetch(TAIFEX_URL, {
+        headers: { Accept: 'application/json', 'User-Agent': 'puhui-review-web/1.0' },
+        signal: AbortSignal.timeout(20000),
+      });
+      if (!r.ok) {
+        return sendError(res, httpError(502, 'TAIFEX', `期交所回應 HTTP ${r.status}`));
+      }
+      dailyRawCache = { at: now, rows: await r.json() };
+    }
+
+    months = parseRows(dailyRawCache.rows, contract);
+    if (months.length > 0) {
+      date = months[0].date;
+    }
+
     if (!months.length) {
       return sendError(res, httpError(404, 'TAIFEX', `期交所今日行情沒有 ${contract} 的資料`));
     }
-    const data = {
-      contract,
-      // 期交所給的是民國/西元 yyyymmdd 字串，轉成 'YYYY-MM-DD' 方便前端直接用
-      date: months[0].date && months[0].date.length === 8
-        ? `${months[0].date.slice(0, 4)}-${months[0].date.slice(4, 6)}-${months[0].date.slice(6, 8)}`
-        : '',
-      months,
-      fetched_at: new Date().toISOString(),
-    };
-    quoteCache = { at: now, key: contract, data };
-    return res.json(data);
   } catch (err) {
     return sendError(res, httpError(502, 'TAIFEX', '抓取期交所行情失敗: ' + err.message));
   }
+
+  let live_error = null;
+  let live_source = null;
+  let updatedMonths = months.map(m => ({
+    ...m,
+    live: null,
+    live_session: null,
+    live_time: null,
+    live_volume: null,
+    live_bid: null,
+    live_ask: null
+  }));
+
+  // 3. Fetch live details from MIS
+  const misCode = CONTRACT_TO_MIS[contract];
+  if (misCode) {
+    try {
+      const symbolIDs = [];
+      for (const m of months) {
+        const baseSymbol = monthToSymbol(contract, m.month);
+        if (baseSymbol) {
+          symbolIDs.push(`${baseSymbol}-F`, `${baseSymbol}-M`);
+        }
+      }
+
+      const misRes = await fetch(TAIFEX_MIS_URL, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Referer': 'https://mis.taifex.com.tw/futures/',
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        },
+        body: JSON.stringify({ SymbolID: symbolIDs }),
+        signal: AbortSignal.timeout(10000)
+      });
+
+      if (!misRes.ok) {
+        throw new Error(`MIS 回應 HTTP ${misRes.status}`);
+      }
+      const misJson = await misRes.json();
+      if (misJson.RtCode !== '0') {
+        throw new Error(misJson.RtMsg || `MIS RtCode ${misJson.RtCode}`);
+      }
+
+      const quoteLookup = new Map();
+      for (const q of (misJson.RtData?.QuoteList || [])) {
+        if (q && q.SymbolID) {
+          quoteLookup.set(q.SymbolID, q);
+        }
+      }
+
+      const tpe = new Date(Date.now() + 8 * 3600 * 1000);
+      const hh = tpe.getUTCHours();
+      const mm = tpe.getUTCMinutes();
+      const timeVal = hh * 60 + mm;
+
+      live_source = 'taifex-mis';
+
+      updatedMonths = months.map(m => {
+        const baseSymbol = monthToSymbol(contract, m.month);
+        if (!baseSymbol) {
+          return {
+            ...m,
+            live: null,
+            live_session: null,
+            live_time: null,
+            live_volume: null,
+            live_bid: null,
+            live_ask: null
+          };
+        }
+        const symbolF = `${baseSymbol}-F`;
+        const symbolM = `${baseSymbol}-M`;
+
+        const qF = getValidQuote(quoteLookup.get(symbolF));
+        const qM = getValidQuote(quoteLookup.get(symbolM));
+
+        let pickedSession = null;
+        let pickedQuote = null;
+
+        if (timeVal >= 525 && timeVal < 900) { // 08:45 <= t < 15:00
+          if (qF) {
+            pickedSession = 'day';
+            pickedQuote = qF;
+          } else if (qM) {
+            pickedSession = 'night';
+            pickedQuote = qM;
+          }
+        } else {
+          if (qM) {
+            pickedSession = 'night';
+            pickedQuote = qM;
+          } else if (qF) {
+            pickedSession = 'day';
+            pickedQuote = qF;
+          }
+        }
+
+        if (pickedQuote) {
+          return {
+            ...m,
+            live: pickedQuote.price,
+            live_session: pickedSession,
+            live_time: liveTimeFromClock(pickedQuote.time),
+            live_volume: pickedQuote.volume,
+            live_bid: pickedQuote.bid,
+            live_ask: pickedQuote.ask
+          };
+        }
+        return {
+          ...m,
+          live: null,
+          live_session: null,
+          live_time: null,
+          live_volume: null,
+          live_bid: null,
+          live_ask: null
+        };
+      });
+    } catch (err) {
+      live_error = err.message;
+    }
+  }
+
+  // Find live_as_of (newest live_time among all months)
+  let live_as_of = null;
+  for (const m of updatedMonths) {
+    if (m.live_time) {
+      if (!live_as_of || m.live_time > live_as_of) {
+        live_as_of = m.live_time;
+      }
+    }
+  }
+
+  const formattedDate = date && date.length === 8
+    ? `${date.slice(0, 4)}-${date.slice(4, 6)}-${date.slice(6, 8)}`
+    : '';
+
+  const data = {
+    contract,
+    date: formattedDate,
+    live_source,
+    live_as_of,
+    live_error,
+    months: updatedMonths,
+    fetched_at: new Date().toISOString(),
+  };
+
+  // Store to cache
+  liveQuoteCache[contract] = {
+    at: now,
+    data,
+    live_as_of
+  };
+
+  const dynamicIntraday = live_as_of ? (Date.now() - new Date(live_as_of).getTime() < 5 * 60 * 1000) : false;
+
+  return res.json({
+    ...data,
+    intraday: dynamicIntraday,
+    cached: false
+  });
 });
 
 // ── 期交所保證金自動同步 ──────────────────────────────────────────────────
@@ -561,5 +845,12 @@ router.get('/api/market/holidays', async (req, res) => {
     return serveDisk(err.message);
   }
 });
+
+router.monthToSymbol = monthToSymbol;
+router.symbolToMonth = symbolToMonth;
+router.getValidQuote = getValidQuote;
+router.liveTimeFromClock = liveTimeFromClock;
+router.CONTRACT_TO_MIS = CONTRACT_TO_MIS;
+router.MONTH_CODES = MONTH_CODES;
 
 module.exports = router;

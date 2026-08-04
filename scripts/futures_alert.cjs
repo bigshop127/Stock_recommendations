@@ -453,11 +453,23 @@ async function main() {
     const months = (q && q.months) || [];
     let got = 0;
     for (const m of months) {
-      const p = m.settlement !== null && m.settlement !== undefined ? m.settlement : m.last;
+      const p = m.live !== null && m.live !== undefined ? m.live : (m.settlement !== null && m.settlement !== undefined ? m.settlement : m.last);
       if (Number.isFinite(p) && p > 0) { prices[m.month] = p; got += 1; }
     }
-    if (got > 0) { quoteDate = q.date || quoteDate; quoteStale = false; }
-    else log('期交所回應沒有可用價格，改用部位檔裡的存價');
+    if (got > 0) {
+      const tpe = new Date(Date.now() + 8 * 3600 * 1000);
+      const todayTaipei = tpe.toISOString().slice(0, 10);
+      const liveDate = q.live_as_of ? q.live_as_of.slice(0, 10) : null;
+      if (liveDate === todayTaipei) {
+        quoteDate = todayTaipei;
+        quoteStale = false;
+      } else {
+        quoteDate = q.date || quoteDate;
+        quoteStale = true;
+      }
+    } else {
+      log('期交所回應沒有可用價格，改用部位檔裡的存價');
+    }
   } catch (e) {
     log(`抓期交所行情失敗（${e.message}），改用部位檔裡的存價 ${quoteDate}`);
   }

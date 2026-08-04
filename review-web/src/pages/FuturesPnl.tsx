@@ -72,7 +72,15 @@ export function FuturesPnl() {
   const [cloud, setCloud] = useState<{ status: 'idle' | 'loading' | 'saved' | 'error'; msg: string | null }>({
     status: 'idle', msg: null,
   });
-  const [quote, setQuote] = useState<{ status: 'idle' | 'loading' | 'done' | 'error'; msg: string | null; months: FuturesMonthQuote[] }>({
+  const [quote, setQuote] = useState<{
+    status: 'idle' | 'loading' | 'done' | 'error';
+    msg: string | null;
+    months: FuturesMonthQuote[];
+    live_source?: string | null;
+    live_as_of?: string | null;
+    intraday?: boolean;
+    live_error?: string | null;
+  }>({
     status: 'idle', msg: null, months: [],
   });
   const [taiex, setTaiex] = useState<{
@@ -213,12 +221,20 @@ export function FuturesPnl() {
     setQuote((q) => ({ ...q, status: 'loading', msg: null }));
     try {
       const resp = await api.getFuturesQuote(getFuturesConfig().contract || CONTRACT_CODE);
-      setQuote({ status: 'done', msg: resp.date, months: resp.months });
+      setQuote({
+        status: 'done',
+        msg: resp.date,
+        months: resp.months,
+        live_source: resp.live_source,
+        live_as_of: resp.live_as_of,
+        intraday: resp.intraday,
+        live_error: resp.live_error,
+      });
 
-      // 結算價優先（只有日盤有），沒有才退回最後成交價
+      // 優先使用即時價，沒有才退回結算價、最後成交價
       const prices: Record<string, number> = {};
       for (const m of resp.months) {
-        const p = m.settlement ?? m.last ?? 0;
+        const p = m.live ?? m.settlement ?? m.last ?? 0;
         if (p > 0) prices[m.month] = p;
       }
       if (Object.keys(prices).length === 0) return;
@@ -234,7 +250,12 @@ export function FuturesPnl() {
         ...c,
         prices: { ...c.prices, ...prices },
         ...(price > 0 ? { price, price_month: target!.month } : {}),
-        price_as_of: resp.date,
+        // live_source 只代表「MIS 這次請求有通」，不代表參考月份真的拿到即時價
+        // （休市日、或只持有沒成交的遠月，MIS 會回 200 但每個月份都是空的）。
+        // 這兩格描述的是「存下來的 price 是哪來的」，所以只能看參考月份自己。
+        ...(target && target.live !== null && target.live !== undefined
+          ? { price_as_of: target.live_time ?? resp.live_as_of ?? resp.date, price_source: 'live' as const }
+          : { price_as_of: resp.date, price_source: 'daily' as const }),
       }));
       if (persist) void saveToCloud(next);
     } catch (e) {
@@ -357,13 +378,42 @@ export function FuturesPnl() {
               {cloud.msg}
             </span>
           )}
-          {quote.status === 'done' && (
-            <span className="text-zinc-500">
-              期交所行情 {quote.msg}
-              {config.price_month ? `（${monthLabel(config.price_month)} 月份）` : ''}
-            </span>
-          )}
-          {quote.status === 'error' && <span className="text-amber-400">行情抓取失敗：{quote.msg}</span>}
+          {quote.status === 'done' && (() => {
+            // 這行只能印「期交所給的數字」。config.price 是下面那格後備價，使用者手打得進去，
+            // 印它等於把使用者自己輸入的值標成期交所報價。
+            const refMonthQuote = quote.months.find((m) => m.month === config.price_month);
+            const shown = refMonthQuote ? (refMonthQuote.live ?? refMonthQuote.settlement ?? refMonthQuote.last) : null;
+            const monthSuffix = config.price_month ? `（${monthLabel(config.price_month)} 月份）` : '';
+            const px = shown === null || shown === undefined
+              ? null
+              : <strong className="text-zinc-300 font-mono">{shown.toFixed(2)}</strong>;
+
+            // MIS 有嘗試但失敗 → live_error 有值；不支援的商品是 live_source / live_error 都 null。
+            if (quote.live_error) {
+              return (
+                <span className="text-amber-400 font-semibold" title={quote.live_error}>
+                  期交所報價 {px}（{quote.msg} 結算價，即時報價暫時失效）{monthSuffix}
+                </span>
+              );
+            }
+            if (refMonthQuote && refMonthQuote.live !== null) {
+              const sessionName = refMonthQuote.live_session === 'night' ? '夜盤' : '日盤';
+              return (
+                <span className="text-zinc-500">
+                  期交所報價 {px}
+                  （{quote.intraday
+                    ? `${sessionName}即時 ${refMonthQuote.live_time?.slice(11, 19) ?? ''}`
+                    : `${refMonthQuote.live_time?.slice(0, 10) ?? quote.msg} ${sessionName}收盤`}）{monthSuffix}
+                </span>
+              );
+            }
+            return (
+              <span className="text-zinc-500">
+                期交所報價 {px}（{quote.msg} 結算價）{monthSuffix}
+              </span>
+            );
+          })()}
+          {quote.status === 'error' && <span className="text-amber-400 font-semibold">行情抓取失敗：{quote.msg}</span>}
           {/* 加權指數：即時與收盤要分得出來，否則盤中看到一個不動的數字會以為當掉了 */}
           {taiex.status === 'done' && taiex.data && (
             <span className={taiex.data.stale ? 'text-amber-400' : 'text-zinc-500'}>
@@ -495,7 +545,7 @@ export function FuturesPnl() {
         <OverviewTab config={config} summary={summary} statusMeta={statusMeta} spec={spec} beta={beta} plan={plan} priceInput={priceInput} historyState={historyState} />
       )}
       {activeTab === 'positions' && (
-        <PositionsTab config={config} spec={spec} summary={summary} priceInput={priceInput} quoteMonths={quote.months} holidays={holidays} patch={patch} saveToCloud={saveToCloud} />
+        <PositionsTab config={config} spec={spec} summary={summary} priceInput={priceInput} quote={quote} holidays={holidays} patch={patch} saveToCloud={saveToCloud} />
       )}
       {activeTab === 'stress' && (
         <StressTab config={config} summary={summary} stress={stress} beta={beta} patch={patch} saveToCloud={saveToCloud} />
@@ -1287,19 +1337,27 @@ const PositionsTab: React.FC<{
   spec: FuturesSpec;
   summary: Summary;
   priceInput: PriceInput;
-  quoteMonths: FuturesMonthQuote[];
+  quote: {
+    status: 'idle' | 'loading' | 'done' | 'error';
+    msg: string | null;
+    months: FuturesMonthQuote[];
+    live_source?: string | null;
+    live_as_of?: string | null;
+    intraday?: boolean;
+    live_error?: string | null;
+  };
   holidays: Set<string> | undefined;
   patch: (u: (c: FuturesConfig) => FuturesConfig) => FuturesConfig;
   saveToCloud: (cfg?: FuturesConfig) => Promise<void>;
-}> = ({ config, spec, summary, priceInput, quoteMonths, holidays, patch, saveToCloud }) => {
+}> = ({ config, spec, summary, priceInput, quote, holidays, patch, saveToCloud }) => {
   const [form, setForm] = useState({ month: '', side: 'long' as Side, lots: '', entry_price: '', entry_date: todayStr() });
   const [closeForm, setCloseForm] = useState<{ id: string; exit_price: string; exit_date: string } | null>(null);
 
   const monthOptions = useMemo(() => {
-    const fromQuote = quoteMonths.map((m) => m.month);
+    const fromQuote = quote.months.map((m) => m.month);
     const fromPositions = config.positions.map((p) => p.month);
     return [...new Set([...fromQuote, ...fromPositions])].sort();
-  }, [quoteMonths, config.positions]);
+  }, [quote.months, config.positions]);
 
   const addPosition = () => {
     const lots = parseFloat(form.lots);
@@ -1360,7 +1418,7 @@ const PositionsTab: React.FC<{
       {/* 帳戶輸入 */}
       <div className="bg-card/70 border border-border rounded-2xl p-5 shadow-sm space-y-4">
         <div className="flex items-center gap-2.5"><span className="w-7 h-7 rounded-lg bg-primary/10 border border-primary/30 grid place-items-center shrink-0"><Wallet className="w-4 h-4 text-primary" /></span><h2 className="text-sm font-bold text-zinc-100 tracking-wide">帳戶</h2></div>
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+        <div className="grid grid-cols-1 gap-4">
           <Field
             label="保證金專戶現金餘額"
             hint="入金金額 ± 已實現損益（不含未實現）。期貨商軟體上通常叫「保證金餘額」或「前日餘額＋今日存提」。"
@@ -1379,20 +1437,6 @@ const PositionsTab: React.FC<{
               placeholder="例：60000"
             />
           </Field>
-          <Field label="參考價（沒有行情的月份用這個）" hint="按上方「真實同步」會自動填入期交所結算價；盤中想用即時價可手動改。有抓到行情的月份會各自用自己的價格，不吃這一格。">
-            <input
-              key={`price-${config.price}`}
-              type="number"
-              step="0.05"
-              defaultValue={config.price || ''}
-              onBlur={(e) => {
-                const v = parseFloat(e.target.value);
-                if (Number.isFinite(v) && v >= 0) void saveToCloud(patch((c) => ({ ...c, price: v })));
-              }}
-              className="w-full bg-zinc-900 border border-border rounded-lg px-3 py-2 text-sm font-mono text-zinc-100"
-              placeholder="例：102.05"
-            />
-          </Field>
         </div>
 
         <CashReconcile config={config} summary={summary} patch={patch} saveToCloud={saveToCloud} />
@@ -1402,33 +1446,78 @@ const PositionsTab: React.FC<{
           <div className="pt-3 border-t border-border/50 space-y-2">
             <div className="text-[11px] text-zinc-500">持倉月份的現價（各月份分別計價）</div>
             <div className="flex flex-wrap gap-2">
-              {[...new Set(config.positions.map((p) => p.month))].sort().map((m) => (
-                <div key={m} className="flex items-center gap-1.5 bg-zinc-900/50 border border-border rounded-lg px-2.5 py-1.5">
-                  <span className="text-[11px] font-mono text-zinc-400">{monthLabel(m)}</span>
-                  <input
-                    key={`mp-${m}-${config.prices[m] ?? 0}`}
-                    type="number"
-                    step="0.05"
-                    defaultValue={config.prices[m] ?? ''}
-                    placeholder={px(config.price)}
-                    onBlur={(e) => {
-                      const raw = e.target.value.trim();
-                      void saveToCloud(patch((c) => {
-                        const next = { ...c.prices };
-                        const v = parseFloat(raw);
-                        if (raw === '' || !Number.isFinite(v) || v <= 0) delete next[m];
-                        else next[m] = v;
-                        return { ...c, prices: next };
-                      }));
-                    }}
-                    className="w-20 bg-zinc-950 border border-border rounded px-2 py-0.5 text-xs font-mono text-zinc-100"
-                  />
-                  {!config.prices[m] && <span className="text-[10px] text-amber-400" title="沒有這個月份的行情，正在用參考價">參考價</span>}
-                </div>
-              ))}
+              {[...new Set(config.positions.map((p) => p.month))].sort().map((m) => {
+                const mq = quote.months.find((q) => q.month === m);
+                const hasLive = mq && mq.live !== null;
+                const hasDaily = mq && (mq.settlement !== null || mq.last !== null);
+                return (
+                  <div key={m} className="flex items-center gap-1.5 bg-zinc-900/50 border border-border rounded-lg px-2.5 py-1.5">
+                    <span className="text-[11px] font-mono text-zinc-400">{monthLabel(m)}</span>
+                    <input
+                      key={`mp-${m}-${config.prices[m] ?? 0}`}
+                      type="number"
+                      step="0.05"
+                      defaultValue={config.prices[m] ?? ''}
+                      placeholder={px(config.price)}
+                      onBlur={(e) => {
+                        const raw = e.target.value.trim();
+                        void saveToCloud(patch((c) => {
+                          const next = { ...c.prices };
+                          const v = parseFloat(raw);
+                          if (raw === '' || !Number.isFinite(v) || v <= 0) delete next[m];
+                          else next[m] = v;
+                          return { ...c, prices: next };
+                        }));
+                      }}
+                      className="w-20 bg-zinc-950 border border-border rounded px-2 py-0.5 text-xs font-mono text-zinc-100"
+                    />
+                    {!config.prices[m] && (
+                      <span className="text-[10px] text-amber-400 font-semibold" title="沒有這個月份的行情，正在用後備價">後備價</span>
+                    )}
+                    {config.prices[m] && !hasLive && hasDaily && (
+                      <span className="text-[10px] text-zinc-500 font-semibold" title={`${quote.msg || ''} 結算價`}>結算價</span>
+                    )}
+                  </div>
+                );
+              })}
             </div>
           </div>
         )}
+
+        {/* 後備價 */}
+        {(() => {
+          const usingBackupMonths = [...new Set(config.positions.map((p) => p.month))].filter((m) => !config.prices[m]);
+          return (
+            <div className="pt-3 border-t border-border/50 space-y-2">
+              <Field
+                label="後備價（只有抓不到行情的月份會用到）"
+                hint="按上方「真實同步」會自動填入期交所結算價；盤中想用即時價可手動改。有抓到行情的月份會各自用自己的價格，不吃這一格。"
+              >
+                <input
+                  key={`price-${config.price}`}
+                  type="number"
+                  step="0.05"
+                  defaultValue={config.price || ''}
+                  onBlur={(e) => {
+                    const v = parseFloat(e.target.value);
+                    if (Number.isFinite(v) && v >= 0) void saveToCloud(patch((c) => ({ ...c, price: v })));
+                  }}
+                  className="w-full sm:w-64 bg-zinc-900 border border-border rounded-lg px-3 py-2 text-sm font-mono text-zinc-100"
+                  placeholder="例：102.05"
+                />
+              </Field>
+              <div className="text-[11px] mt-1">
+                {usingBackupMonths.length === 0 ? (
+                  <span className="text-zinc-500">目前所有持倉月份都有行情，這格沒有被使用</span>
+                ) : (
+                  <span className="text-amber-400">
+                    {usingBackupMonths.map((m) => monthLabel(m)).join('、')} 正在用這格計價
+                  </span>
+                )}
+              </div>
+            </div>
+          );
+        })()}
       </div>
 
       {/* 新增部位 */}
@@ -2943,11 +3032,11 @@ const LogicTab: React.FC<{ spec: FuturesSpec }> = ({ spec }) => (
     <Section title="資料來源與限制">
       <ul className="text-xs text-zinc-300 leading-relaxed space-y-2 list-disc list-inside">
         <li>
-          <strong className="text-zinc-100">報價</strong>：期交所 OpenAPI 的
-          <span className="font-mono text-zinc-400"> DailyMarketReportFut</span>（公開資料、免金鑰）。
-          給的是<strong className="text-zinc-100">每日行情</strong>（收盤與結算價），不是即時報價——
-          這頁定位是收盤後對帳與風險檢視，盤中即時價請看期貨商軟體，或手動改「現在價格」。
-          （<strong className="text-zinc-100">加權指數是即時的、期貨價不是</strong>——兩者來源不同，見下方「加權指數」條。）
+          <strong className="text-zinc-100">報價</strong>：串接期交所 MIS 即時行情與
+          <span className="font-mono text-zinc-400"> DailyMarketReportFut</span> 每日行情。
+          <strong className="text-zinc-100">日盤／夜盤 MIS 即時價優先</strong>，按「真實同步」可取得當下最新報價；
+          若當下非交易時段、MIS 暫時失效或該合約月份沒有成交（如遠月合約），則<strong className="text-zinc-100">退回每日行情檔的結算價／收盤價</strong>
+          （遠月合約沒有成交量時無即時價，顯示「結算價」為正常現象而非故障）。
         </li>
         <li>
           <strong className="text-zinc-100">部位</strong>：手動輸入。玉山證券的交易 API（esun_trade）只涵蓋

@@ -37,6 +37,7 @@ export interface FuturesConfig {
   prices: Record<string, number>; // 各到期月份的價格 'YYYYMM' → 價；抓行情時全部存下來
   price_month: string;       // price 對應的到期月份（抓價時帶回）
   price_as_of: string;       // 報價日期 'YYYY-MM-DD'
+  price_source: 'live' | 'daily'; // 新增：'live' | 'daily'
   cash: number;              // 保證金專戶現金餘額（入金 ± 已實現損益）
   index_ref: number;         // 現價當下的加權指數（用來把價格翻譯成大盤點數）
   beta: number;              // 標的相對大盤的連動係數（0050 約 1.0～1.1；台指期＝1）
@@ -64,6 +65,7 @@ const SEED: FuturesConfig = {
   prices: {},
   price_month: '',
   price_as_of: '',
+  price_source: 'daily',
   cash: 0,
   index_ref: 0,
   beta: 1,
@@ -229,7 +231,8 @@ export function normalizeFutures(parsed: Record<string, unknown>): FuturesConfig
     price: Math.max(0, num(parsed.price, 0)),
     prices: sanitizePrices(parsed.prices),
     price_month: safeMonth(parsed.price_month),
-    price_as_of: safeDate(parsed.price_as_of),
+    price_as_of: /^\d{4}-\d{2}-\d{2}/.test(str(parsed.price_as_of)) ? str(parsed.price_as_of) : '',
+    price_source: parsed.price_source === 'live' ? 'live' : 'daily',
     cash: num(parsed.cash, 0), // 權益數可以是負的（穿價），不 clamp
     index_ref: Math.max(0, num(parsed.index_ref, 0)),
     beta: Math.min(5, Math.max(0.01, num(parsed.beta, 1))),

@@ -943,3 +943,89 @@ describe('equityStats', () => {
     expect(res.total_return).toBeNull();
   });
 });
+
+// @ts-ignore
+import futuresRouter from '../../../routes/futures.js';
+
+describe('期交所 MIS 即時報價解析與轉換測試', () => {
+  const { getValidQuote, monthToSymbol, symbolToMonth, CONTRACT_TO_MIS, liveTimeFromClock } = futuresRouter;
+
+  // 夜盤跨午夜是這支的唯一難點：-M 板已經是新的一天，-F 板還留著昨天下午的成交，
+  // 兩者都只給 HHMMSS。日期必須從台北時鐘反推，不能吃 MIS 的 CDate。
+  it('liveTimeFromClock：用台北時鐘反推日期，夜盤跨午夜也不會把日期算錯', () => {
+    // 台北 2026-08-04 23:41（夜盤，同一天）
+    const night = Date.UTC(2026, 7, 4, 15, 41, 0);
+    expect(liveTimeFromClock('233628', night)).toBe('2026-08-04T23:36:28+08:00');
+    expect(liveTimeFromClock('134458', night)).toBe('2026-08-04T13:44:58+08:00');
+
+    // 台北 2026-08-05 00:30（夜盤已跨過午夜）
+    const afterMidnight = Date.UTC(2026, 7, 4, 16, 30, 0);
+    expect(liveTimeFromClock('002500', afterMidnight)).toBe('2026-08-05T00:25:00+08:00');
+    // -F 板留著的 13:44 看起來「比現在晚」，代表那是昨天的
+    expect(liveTimeFromClock('134458', afterMidnight)).toBe('2026-08-04T13:44:58+08:00');
+
+    // 台北 2026-08-05 06:00（夜盤 05:00 收完、日盤還沒開）
+    const preOpen = Date.UTC(2026, 7, 4, 22, 0, 0);
+    expect(liveTimeFromClock('045959', preOpen)).toBe('2026-08-05T04:59:59+08:00');
+    expect(liveTimeFromClock('134458', preOpen)).toBe('2026-08-04T13:44:58+08:00');
+
+    // 月底跨月也要對
+    expect(liveTimeFromClock('134458', Date.UTC(2026, 7, 31, 16, 30, 0)))
+      .toBe('2026-08-31T13:44:58+08:00');
+
+    expect(liveTimeFromClock('', night)).toBeNull();
+    expect(liveTimeFromClock('abcdef', night)).toBeNull();
+    expect(liveTimeFromClock(null, night)).toBeNull();
+  });
+
+  it('getValidQuote 驗證：無成交量或時間為空時判定為無效', () => {
+    const valid = getValidQuote({
+      CLastPrice: '100.95',
+      CRefPrice: '101.65',
+      CTotalVolume: '16356',
+      CBestBidPrice: '100.95',
+      CBestAskPrice: '101.00',
+      CDate: '20260804',
+      CTime: '134458',
+    });
+    expect(valid).not.toBeNull();
+    expect(valid?.price).toBe(100.95);
+    expect(valid?.volume).toBe(16356);
+
+    const invalid1 = getValidQuote({
+      CLastPrice: '0.00',
+      CRefPrice: '101.65',
+      CTotalVolume: '0',
+      CDate: '20260804',
+      CTime: '',
+    });
+    expect(invalid1).toBeNull();
+
+    const invalid2 = getValidQuote({
+      CLastPrice: '',
+      CRefPrice: '101.65',
+      CTotalVolume: '10',
+      CDate: '20260804',
+      CTime: '134458',
+    });
+    expect(invalid2).toBeNull();
+  });
+
+  it('月碼與 SymbolID 雙向轉換', () => {
+    expect(monthToSymbol('SRF', '202608')).toBe('SRFH6');
+    expect(monthToSymbol('SRF', '202703')).toBe('SRFC7');
+
+    expect(symbolToMonth('SRFH6')).toBe('202608');
+    expect(symbolToMonth('SRFC7')).toBe('202703');
+    expect(symbolToMonth('SRFH6-F')).toBe('202608');
+    expect(symbolToMonth('SRFH6-M')).toBe('202608');
+  });
+
+  it('商品代碼對照與無效代碼退回', () => {
+    expect(CONTRACT_TO_MIS['TX']).toBe('TXF');
+    expect(CONTRACT_TO_MIS['MTX']).toBe('MXF');
+    expect(CONTRACT_TO_MIS['XYZ']).toBeUndefined();
+
+    expect(monthToSymbol('XYZ', '202608')).toBeNull();
+  });
+});

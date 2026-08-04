@@ -632,7 +632,6 @@ export interface FuturesPositionsSaveResp {
   futures: Record<string, unknown>;
   saved_at: string;
 }
-/** 期交所每日行情：一個到期月份一筆（價差契約已濾除，夜盤只在無日盤資料時墊底） */
 export interface FuturesMonthQuote {
   month: string;             // 'YYYYMM'
   date: string;              // 期交所原始 'YYYYMMDD'
@@ -646,6 +645,14 @@ export interface FuturesMonthQuote {
   open_interest: number | null;
   best_bid: number | null;
   best_ask: number | null;
+
+  // 新增即時報價欄位
+  live: number | null;
+  live_session: 'day' | 'night' | null;
+  live_time: string | null;
+  live_volume: number | null;
+  live_bid: number | null;
+  live_ask: number | null;
 }
 export interface FuturesQuoteResp {
   contract: string;
@@ -653,6 +660,12 @@ export interface FuturesQuoteResp {
   months: FuturesMonthQuote[];
   fetched_at: string;
   cached?: boolean;
+
+  // 新增即時報價欄位
+  live_source: string | null;
+  live_as_of: string | null;
+  intraday?: boolean;
+  live_error: string | null;
 }
 
 export interface FuturesMarginInfo {
