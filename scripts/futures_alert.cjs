@@ -290,14 +290,17 @@ const LEVEL_META = {
   warn: { zh: '⚠️ 接近追繳', color: '#f9a825', urgency: `風險指標低於 ${Math.round(WARN_RATIO * 100)}%（自訂預警線，非期交所規定）。還有時間決定補錢還是減碼。` },
 };
 
-function buildEmail(s, contract, quoteDate, rollovers, marginNotice) {
+function buildEmail(s, contract, quoteDate, rollovers, marginNotice, notes = {}) {
   const meta = LEVEL_META[s.status];
   const isRolloverOnly = !meta;
 
-  // 風險在安全區時，標題與抬頭要講「實際上發生了什麼」，不要無條件寫轉倉
-  const noticeLabel = (rollovers.length > 0 && marginNotice) ? '轉倉與保證金提醒'
-    : marginNotice ? '保證金異動提醒'
-      : '轉倉提醒';
+  // 風險在安全區時，標題與抬頭要講「實際上發生了什麼」，不要無條件寫轉倉——
+  // 從真的存在的事由組出來，才不會因為快照沒寫成就寄一封標題叫「轉倉提醒」的信
+  const reasons = [];
+  if (rollovers.length > 0) reasons.push('轉倉');
+  if (marginNotice) reasons.push('保證金');
+  if (notes.snapshotSkip) reasons.push('權益曲線');
+  const noticeLabel = reasons.length > 0 ? `${reasons.join('與')}提醒` : '狀態提醒';
   const subjectPrefix = `【期貨${noticeLabel}】`;
 
   const subject = isRolloverOnly
@@ -321,6 +324,20 @@ function buildEmail(s, contract, quoteDate, rollovers, marginNotice) {
     ]
     : [];
 
+  const snapshotLines = notes.snapshotSkip
+    ? ['', '── 權益曲線 ──', `● ${notes.snapshotSkip}`, '● 補救：期交所每日行情恢復後會自動接上，但缺的那幾天不會回填']
+    : [];
+
+  // 這封信用的是「此刻的市價」，可能是夜盤。夜盤價跟日盤收盤差兩三塊是常態，
+  // 不講清楚的話收信的人會以為算錯——網頁上那個徽章的同一個問題。
+  const sessionNote = notes.quoteStale
+    ? '※ ⚠ 完全抓不到期交所行情，本信用的是 data/futures_positions.json 裡**上次存下來的價**，可能已經過期很久，只能當作「部位還在」的提醒，數字不要當真。'
+    : notes.session === 'night'
+      ? '※ 報價取自期交所**盤後（夜盤）交易時段**的最新成交價。夜盤 15:00–翌日 05:00 照樣在跑，跟日盤收盤價差幾塊是常態。注意：官方每日結算價與追繳通知只由日盤決定，本信是提前示警。'
+      : notes.session === 'day'
+        ? '※ 報價取自期交所**一般（日盤）交易時段**的最新成交價。'
+        : '※ 該月份目前沒有成交，報價退回期交所**每日結算價**（比今天慢一個交易日），盤中跌破的話這封信會晚一天。';
+
   const lines = [
     isRolloverOnly ? `${contract} 期貨${noticeLabel}` : `${contract} 期貨風險告警：${meta.zh}`,
     '',
@@ -342,8 +359,9 @@ function buildEmail(s, contract, quoteDate, rollovers, marginNotice) {
     `● 斷頭價：${fmtPx(s.liquidation_price)}`,
     ...rolloverLines,
     ...marginLines,
+    ...snapshotLines,
     '',
-    '※ 依期交所**每日行情**（收盤／結算價）計算，不是盤中即時價；盤中跌破的話這封信會晚一天。',
+    sessionNote,
     '※ 口數與保證金專戶餘額取自 data/futures_positions.json，如已異動請在網頁上更新並「存到雲端」。',
     '※ 崩盤時期交所常會調高保證金，實際追繳會比本信更早發生。本信為機械提醒，非投資建議。',
   ];
@@ -376,7 +394,13 @@ function buildEmail(s, contract, quoteDate, rollovers, marginNotice) {
     <p style="margin:0 0 4px;">● 依新值重算，你的追繳價會從 <b>${fmtPx(marginNotice.oldMarginCallPrice)}</b> 變成 <b>${fmtPx(marginNotice.newMarginCallPrice)}</b></p>
     <p style="margin:0;color:#e65100;font-weight:bold;">● 請到「契約規格 & 設定」按「同步保證金」更新</p>
   </div>` : ''}
-  <p style="font-size:12px;color:#999;margin-top:14px;">依期交所每日行情計算（非盤中即時價）；崩盤時期交所常調高保證金，實際追繳會更早。持倉取自 data/futures_positions.json。機械提醒，非投資建議。</p>
+  ${notes.snapshotSkip ? `
+  <div style="background:#fffde7;border:1px solid #fff59d;border-radius:6px;padding:12px;margin-top:14px;font-size:13px;">
+    <h4 style="margin:0 0 6px;color:#f57f17;">── 權益曲線 ──</h4>
+    <p style="margin:0 0 4px;">● ${notes.snapshotSkip}</p>
+    <p style="margin:0;">● 期交所每日行情恢復後會自動接上，但缺的那幾天不會回填</p>
+  </div>` : ''}
+  <p style="font-size:12px;color:#999;margin-top:14px;">${sessionNote.replace(/^※ /, '').replace(/\*\*/g, '')}<br>崩盤時期交所常調高保證金，實際追繳會更早。持倉取自 data/futures_positions.json。機械提醒，非投資建議。</p>
 </body></html>`;
 
   return { subject, text, html };
@@ -445,31 +469,41 @@ async function main() {
 
   // 行情：打本機 gateway（它會代抓期交所並快取），抓不到就用存檔裡的價格續行——
   // 部位還在、風險還在，用舊價至少能算出一個保守的提醒，比整支跳過好。
+  // 兩套價，用途不同、不能混：
+  //   prices         ── 風險評估用「此刻的市價」（即時價優先），信裡講的追繳距離要照這個
+  //   snapshotPrices ── 權益曲線用「日盤結算價」。每日結算價只由一般交易時段決定
+  //                     （期交所每日行情檔的盤後列 SettlementPrice 是 NULL），追繳也照它算；
+  //                     而且用當下成交價的話，同一天幾點跑 cron 就得到不同的歷史值，
+  //                     曲線會變成不可重現。代價是曲線比今天慢一個交易日（每日檔要等
+  //                     夜盤跑完才出），這是刻意換來的。
+  const pos = (v) => (Number.isFinite(v) && v > 0 ? v : null);
   let prices = Object.assign({}, futures.prices || {});
+  let snapshotPrices = null;
+  let snapshotDate = null;
   let quoteDate = String(futures.price_as_of || '').slice(0, 10) || new Date().toLocaleDateString('sv-SE');
   let quoteStale = true;
+  let priceSession = null;   // 'day' | 'night' | null，只用來在信裡講清楚報價是哪個時段
   try {
     const q = await httpGetJson(`${GATEWAY_BASE}/api/futures/quote?contract=${encodeURIComponent(contract)}`);
     const months = (q && q.months) || [];
+    const snap = {};
     let got = 0;
+    let settleGot = 0;
     for (const m of months) {
-      const p = m.live !== null && m.live !== undefined ? m.live : (m.settlement !== null && m.settlement !== undefined ? m.settlement : m.last);
-      if (Number.isFinite(p) && p > 0) { prices[m.month] = p; got += 1; }
+      const live = pos(m.live);
+      const daily = pos(m.settlement) ?? pos(m.last);
+      if (live !== null || daily !== null) { prices[m.month] = live ?? daily; got += 1; }
+      if (daily !== null) { snap[m.month] = daily; settleGot += 1; }
     }
     if (got > 0) {
-      const tpe = new Date(Date.now() + 8 * 3600 * 1000);
-      const todayTaipei = tpe.toISOString().slice(0, 10);
-      const liveDate = q.live_as_of ? q.live_as_of.slice(0, 10) : null;
-      if (liveDate === todayTaipei) {
-        quoteDate = todayTaipei;
-        quoteStale = false;
-      } else {
-        quoteDate = q.date || quoteDate;
-        quoteStale = true;
-      }
+      quoteStale = false;
+      quoteDate = q.live_as_of ? q.live_as_of.slice(0, 10) : (q.date || quoteDate);
+      const withLive = months.find((m) => pos(m.live) !== null);
+      priceSession = withLive ? (withLive.live_session || null) : null;
     } else {
       log('期交所回應沒有可用價格，改用部位檔裡的存價');
     }
+    if (settleGot > 0 && q.date) { snapshotPrices = snap; snapshotDate = q.date; }
   } catch (e) {
     log(`抓期交所行情失敗（${e.message}），改用部位檔裡的存價 ${quoteDate}`);
   }
@@ -521,12 +555,20 @@ async function main() {
     log(`抓期交所保證金失敗（${e.message}），略過保證金核對`);
   }
 
-  // 快照：只有拿到當天真行情才寫，否則會把舊價寫成新的一天
-  if (!dryRun && !quoteStale) {
-    const row = writeSnapshot(readHistory(), s, quoteDate);
-    log(`已寫入權益快照 ${row.date}：權益 ${fmtMoney(row.equity)}`);
-  } else if (quoteStale) {
-    log('行情是存價不是當日真行情，略過快照（避免把舊價寫成新的一天）');
+  // 快照：用日盤結算價那套價，日期也用每日行情檔自己的日期——不是「今天」。
+  // 抓不到每日行情就整個略過，寧可曲線缺一天，也不要寫進一列基準不同的資料。
+  let snapshotSkip = null;
+  if (snapshotPrices && snapshotDate) {
+    const snapSummary = summarize(Object.assign({}, futures, { positions }), snapshotPrices);
+    if (dryRun) {
+      log(`DRY-RUN 快照 ${snapshotDate}（日盤結算價）：權益 ${fmtMoney(snapSummary.equity)}`);
+    } else {
+      const row = writeSnapshot(readHistory(), snapSummary, snapshotDate);
+      log(`已寫入權益快照 ${row.date}（日盤結算價）：權益 ${fmtMoney(row.equity)}`);
+    }
+  } else {
+    snapshotSkip = '抓不到期交所每日行情，今天沒有寫入權益快照——曲線會缺這一段';
+    log(snapshotSkip);
   }
   if (snapshotOnly) return;
 
@@ -554,6 +596,10 @@ async function main() {
   // 保證金去重：同一組保證金數值只講一次（見上面 key 的註解，不能用日期）
   const hasNewMarginNotice = marginNotice && state.last_margin_notice_key !== marginNotice.key;
 
+  // 快照沒寫成的話要講一聲，否則權益曲線會安靜地長洞。只在「從正常變成寫不進去」
+  // 那一次寄，連續失敗不重複轟炸——跟上面狀態／轉倉／保證金同一套去重邏輯。
+  const snapshotSkipNew = !!snapshotSkip && !state.last_snapshot_skip;
+
   if (!dryRun) {
     writeState({
       last_status: s.status,
@@ -561,19 +607,23 @@ async function main() {
       last_date: quoteDate,
       risk_indicator: s.risk_indicator,
       last_margin_notice_key: marginNotice ? marginNotice.key : state.last_margin_notice_key,
+      last_snapshot_skip: !!snapshotSkip,
       updated_at: new Date().toISOString(),
     });
   }
 
-  if (!riskActionable && rollovers.length === 0 && !hasNewMarginNotice) { log('風險指標安全、無到期部位且無新保證金通知，無需告警。'); return; }
-  if (!force && !riskChanged && !rolloverChanged && !hasNewMarginNotice) {
-    log(`狀態 ${s.status}／轉倉 ${rolloverKey || '無'}／保證金公告 皆未變（上次已通知），略過寄信。加 --force 可強制寄。`);
+  if (!riskActionable && rollovers.length === 0 && !hasNewMarginNotice && !snapshotSkipNew) { log('風險指標安全、無到期部位、無新保證金通知且快照正常，無需告警。'); return; }
+  if (!force && !riskChanged && !rolloverChanged && !hasNewMarginNotice && !snapshotSkipNew) {
+    log(`狀態 ${s.status}／轉倉 ${rolloverKey || '無'}／保證金公告／快照 皆未變（上次已通知），略過寄信。加 --force 可強制寄。`);
     return;
   }
   // 風險在安全區、只是轉倉提醒或保證金通知時，仍要寄（信件標題會自動切成轉倉/保證金版）
-  if (!riskActionable && !rolloverChanged && !hasNewMarginNotice && !force) { log('轉倉提醒/保證金未變化，略過。'); return; }
+  if (!riskActionable && !rolloverChanged && !hasNewMarginNotice && !snapshotSkipNew && !force) { log('轉倉提醒/保證金未變化，略過。'); return; }
 
-  const { subject, text, html } = buildEmail(s, contract, quoteDate + (quoteStale ? '（存價）' : ''), rollovers, marginNotice);
+  const { subject, text, html } = buildEmail(
+    s, contract, quoteDate + (quoteStale ? '（存價）' : ''), rollovers, marginNotice,
+    { session: priceSession, snapshotSkip, quoteStale },
+  );
   if (dryRun) { log('DRY-RUN，不寄信。主旨: ' + subject); console.log('\n' + text + '\n'); return; }
 
   const token = await getAccessToken();
