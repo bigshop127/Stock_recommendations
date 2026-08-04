@@ -948,7 +948,28 @@ describe('equityStats', () => {
 import futuresRouter from '../../../routes/futures.js';
 
 describe('期交所 MIS 即時報價解析與轉換測試', () => {
-  const { getValidQuote, monthToSymbol, symbolToMonth, CONTRACT_TO_MIS, liveTimeFromClock } = futuresRouter;
+  const {
+    getValidQuote, monthToSymbol, symbolToMonth, CONTRACT_TO_MIS,
+    liveTimeFromClock, cacheTtlFor,
+  } = futuresRouter;
+
+  // 2026-08-05 00:04 實測踩到：23:57 抓的資料在 00:04 被當成收盤資料續發，
+  // 同一時間 MIS 上 00:03:45 才剛成交。TTL 必須問「抓的當下市場在不在動」，
+  // 不能問「這份資料現在還新不新」——後者是循環，資料會自己老到升級成長 TTL。
+  it('cacheTtlFor：TTL 看抓取當下，不看資料現在多舊', () => {
+    const LIVE = 20 * 1000;
+    const CLOSED = 10 * 60 * 1000;
+    const at = Date.parse('2026-08-04T23:57:40+08:00');
+
+    // 抓的當下報價才剛成交 → 盤中，短 TTL；就算之後放了 7 分鐘沒人問也一樣
+    expect(cacheTtlFor(at, '2026-08-04T23:57:37+08:00', false)).toBe(LIVE);
+    // 抓的當下報價已經是 20 分鐘前的 → 收盤，長 TTL
+    expect(cacheTtlFor(at, '2026-08-04T23:37:00+08:00', false)).toBe(CLOSED);
+    // MIS 掛掉要快點重試
+    expect(cacheTtlFor(at, null, true)).toBe(LIVE);
+    // 完全沒有即時價（休市日）→ 長 TTL
+    expect(cacheTtlFor(at, null, false)).toBe(CLOSED);
+  });
 
   // 夜盤跨午夜是這支的唯一難點：-M 板已經是新的一天，-F 板還留著昨天下午的成交，
   // 兩者都只給 HHMMSS。日期必須從台北時鐘反推，不能吃 MIS 的 CDate。

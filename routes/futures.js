@@ -246,6 +246,27 @@ function pickNum(v) {
   return Number.isFinite(n) ? n : null;
 }
 
+const FRESH_MS = 5 * 60 * 1000;
+
+/** 報價時間距離某個時刻在 5 分鐘內＝那時候市場正在動。休市日也能正確判為 false。 */
+function isFresh(liveAsOf, atMs) {
+  if (!liveAsOf) return false;
+  const t = new Date(liveAsOf).getTime();
+  return Number.isFinite(t) && atMs - t < FRESH_MS;
+}
+
+/**
+ * 快取要放多久。
+ *
+ * 關鍵是拿 **cachedAt**（抓的當下）而不是 now 去問「市場在不在動」。用 now 會變成
+ * 循環：只要沒人請求超過 5 分鐘，這份資料就自己老到過門檻、被判成「非即時」而升級
+ * 成 10 分鐘 TTL，接著在夜盤正熱的時候繼續放送舊價。2026-08-05 00:04 實測踩到——
+ * 23:57 抓的資料在 00:04 被當成收盤資料續發，同一時間 MIS 上 00:03:45 才剛成交。
+ */
+function cacheTtlFor(cachedAt, liveAsOf, hadError) {
+  return (isFresh(liveAsOf, cachedAt) || hadError) ? QUOTE_TTL_LIVE_MS : QUOTE_TTL_CLOSED_MS;
+}
+
 function getPreferredSession(tpeDate) {
   const hh = tpeDate.getUTCHours();
   const mm = tpeDate.getUTCMinutes();
@@ -384,12 +405,12 @@ router.get('/api/futures/quote', async (req, res) => {
     const sameSession = getPreferredSession(cachedTpe) === getPreferredSession(currentTpe);
 
     if (sameSession) {
-      const dynamicIntraday = cached.live_as_of ? (now - new Date(cached.live_as_of).getTime() < 5 * 60 * 1000) : false;
-      const ttl = (dynamicIntraday || cached.data.live_error) ? QUOTE_TTL_LIVE_MS : QUOTE_TTL_CLOSED_MS;
+      const ttl = cacheTtlFor(cached.at, cached.live_as_of, !!cached.data.live_error);
       if (now - cached.at < ttl) {
+        // intraday 是「這次回應」的性質，照現在的時間重算（見 routes/market.js 同一個坑）
         return res.json({
           ...cached.data,
-          intraday: dynamicIntraday,
+          intraday: isFresh(cached.live_as_of, now),
           cached: true
         });
       }
@@ -580,7 +601,7 @@ router.get('/api/futures/quote', async (req, res) => {
     live_as_of
   };
 
-  const dynamicIntraday = live_as_of ? (Date.now() - new Date(live_as_of).getTime() < 5 * 60 * 1000) : false;
+  const dynamicIntraday = isFresh(live_as_of, Date.now());
 
   return res.json({
     ...data,
@@ -850,6 +871,8 @@ router.monthToSymbol = monthToSymbol;
 router.symbolToMonth = symbolToMonth;
 router.getValidQuote = getValidQuote;
 router.liveTimeFromClock = liveTimeFromClock;
+router.cacheTtlFor = cacheTtlFor;
+router.isFresh = isFresh;
 router.CONTRACT_TO_MIS = CONTRACT_TO_MIS;
 router.MONTH_CODES = MONTH_CODES;
 
