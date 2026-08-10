@@ -14,8 +14,8 @@
 | 連線 | `ssh -i C:\Users\bigsh\.ssh\oracle_puhui.key ubuntu@140.238.48.197` |
 | repo 路徑 | `/home/ubuntu/Stock_recommendations`（**非 "CC AI Agent"**；bootstrap 要帶 `APP_DIR`） |
 | 常駐服務 | systemd `puhui-engine`(127.0.0.1:8000) + `puhui-gateway`(:3000)，**enabled 重開機自起** |
-| cron | `0 13` 老王 B1（`RUN_TARGET=vm`）／`0 14` `refresh.sh`／`*/15` `healthcheck.sh`（皆週一~五，台北時間） |
-| 老王 wrapper | `/home/ubuntu/puhui_daily_cron.sh`（**VM-local 非 repo 檔**，已加 `export RUN_TARGET=vm` + `CLAUDE_BIN=/usr/bin/claude`；舊版備份 `.bak.pre-phase9-*`） |
+| cron | `30,45 12` + `0 13` 老王 B1（`RUN_TARGET=vm`，前兩次帶 `--quiet`）／`0 14` `refresh.sh`／`*/15` `healthcheck.sh`（皆週一~五，台北時間） |
+| 老王 wrapper | `/home/ubuntu/puhui_daily_cron.sh`（**VM-local 非 repo 檔**，已加 `export RUN_TARGET=vm` + `CLAUDE_BIN=/usr/bin/claude`，並以 `"$@"` 把 cron 參數傳給 node；舊版備份 `.bak.pre-phase9-*`、`.bak.pre-1230`） |
 | LLM | 老王＝VM `/usr/bin/claude` 無頭（**B1 已生產運作 ~18 天**）；`/agents/decide`＝前端按鈕，VM 上 gemini 未裝→一律 claude fallback |
 | 前端 | 走 `ssh -L 3000:localhost:3000` tunnel 看；只開 SSH(22) 對外 |
 | 帳單 | PAYG 但用量在 Always-Free 內、月費 $0；**勿多開 instance/LB/volume** |
@@ -26,6 +26,7 @@
 - **VM Google OAuth refresh token 已過期/撤銷（`invalid_grant`）** → Gmail 路徑失效、自動走 Playwright fallback 抓文（報告不受影響，每次會 Telegram 預警）。要修：本機重跑 `node scripts/oauth_reauth.cjs` 後把新 token scp 上 VM。
 - **與既有 13:00 老王 cron 共存**：`bootstrap.sh` 只增刪 `# >>> puhui phase8 >>>` 標記區塊（refresh+healthcheck），**不碰** `0 13` 老王行；動前已備份 `~/crontab.backup.pre-phase9-*`。三方（老王/refresh/本機）寫同 repo 都 `git pull --rebase`、排程時間錯開。
 - 老王 B1 遷移：只改 VM-local wrapper 加 `RUN_TARGET=vm`（不寫 Obsidian、以 repo `reports/` 判斷已產出、不雙跑）。**勿啟用 `crontab.example` 裡 18:30 的 B1 行**（會與 13:00 雙跑）。
+- **2026-08-10 起改成一天試三次**（12:30 / 12:45 / 13:00，週一~五）：文章多半 12:30 前就發了，早點拿到報告。三次不會產生三份報告——`puhui_daily.cjs` 開頭先 `gitSyncReports` 再看 `reports/<月>/<週>/<日期>.md` 存不存在，已產出就直接 skip（`--force` 才會重做）。**前兩次帶 `--quiet`**（`sendTelegram`/`sendEmail` 只寫 log 不外發），否則假日或老王晚發時，同一件「今日無發文」會連寄三封、把真故障的信淹掉；**13:00 那次不帶 quiet，是唯一對外報告的一次 → 診斷時只信 13:00 之後的告警，12:30/12:45 的失敗要去 `~/puhui_daily.cron.log` 看**。
 
 ---
 
@@ -37,7 +38,7 @@
 | gateway + 前端（Node :3000，serve `web/dist`） | Oracle VM | 否 | systemd `puhui-gateway` |
 | 盤後數據/訊號刷新 + push `reports/signals/` | Oracle VM | 否 | cron `refresh.sh`（14:00 週一~五） |
 | 健康檢查 + 自動 restart + 告警 | Oracle VM | 否 | cron `healthcheck.sh`（每 15 分） |
-| 老王每日摘要（`puhui_daily.cjs`） | **Oracle VM cron（B1，預設，已生產運作）**；本機（B2）為離線備援 | 是 | VM cron 13:00（`RUN_TARGET=vm`）／本機 Task Scheduler 備援 |
+| 老王每日摘要（`puhui_daily.cjs`） | **Oracle VM cron（B1，預設，已生產運作）**；本機（B2）為離線備援 | 是 | VM cron 12:30／12:45／13:00（`RUN_TARGET=vm`）／本機 Task Scheduler 13:00 備援 |
 | `/agents/decide` 多 agent | 前端按鈕觸發（打 VM gateway） | 是 | 手動（很貴） |
 | 數據層回歸/健康備援 | GitHub Actions `data_refresh.yml` | 否 | 排程（VM 掛掉的 backstop） |
 | LLM 版老王 `puhui_daily.yml` | **停用** | 是 | Gemini free key quota=0 |
