@@ -163,6 +163,7 @@ ssh -L 3000:localhost:3000 <user>@<VM_IP>
 | ARM 套件裝不起來 | `cd engine && ./.venv/bin/pip install -r requirements.txt`（pandas/pyarrow 有 aarch64 wheel；若 pip 太舊先 `pip install -U pip wheel`） |
 | cron 沒 push | 看 `data/cron_refresh.log`；多半 git 認證（§3 deploy key/PAT）或分岔（腳本已 `pull --rebase` 重試一次） |
 | PressPlay cookies 失效 | 老王 Telegram 預警（≤5 天）/失效告警。**`refresh_pressplay_cookies.cjs` 已被 Google 擋自動化登入、勿再用**；改走 §7.1 新法（真 Chrome + CDP）重存 `data/pressplay_cookies.json`，再 scp 上 VM |
+| 收到「連續 N 天讀不到文章」🚨 | **登入 session 被作廢，`JAccessToken` exp 沒到也會發生**（2026-08-04 事故：exp 還有 23 天）。直接走 §7.1 重抓 cookies，別去查訂閱方案、也別只看 exp。連續天數存 `data/puhui_no_read_streak.json`（gitignored，VM/本機各一份，讀到文章即歸零）；第 1 天仍只發 ℹ️（可能真的只發了會員專屬週報），第 2 天起才升級 |
 | CLI 授權失效（B1） | 重跑 §6 步驟 1-2 重新登入；長期不穩就回退 B2 |
 | VM 重開機後 | systemd 已 `enable`，engine/gateway 開機自啟；驗證 `systemctl is-active puhui-engine puhui-gateway` + `curl /api/health`。cron 由 crond 自動恢復 |
 | 想重跑部署 | `bootstrap.sh` 冪等，可直接重跑（更新碼後 `git pull` 再 `sudo ./bootstrap.sh`） |
