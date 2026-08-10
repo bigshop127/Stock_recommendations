@@ -55,6 +55,7 @@ inventory_raw.txt
 
 # Data: machine-generated caches and mutable state
 data/puhui_cache.json
+data/puhui_no_read_streak.json
 data/finance_progress.json
 data/parse_error_list.json
 data/token_usage.json

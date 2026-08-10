@@ -101,6 +101,7 @@ const EXISTING_OUTPUT_PATH = WRITE_OBSIDIAN ? NOTE_PATH : REPORT_PATH;
 const COOKIES_PATH = path.join(__dirname, '..', 'data', 'pressplay_cookies.json');
 const LOG_PATH = path.join(__dirname, '..', 'data', 'puhui_daily.log');
 const PUHUI_CACHE_PATH = path.join(__dirname, '..', 'data', 'puhui_cache.json');
+const NO_READ_STREAK_PATH = path.join(__dirname, '..', 'data', 'puhui_no_read_streak.json');
 
 // PressPlay cookies 是否已過期（步驟 0 判定，供後續「抓不到文章」時區分死因用）。
 // Why: 2026-07-16 cookies 過期後，每天的候選文章 canRead 全是 false，通知信卻寫
@@ -401,6 +402,35 @@ async function sendEmail(subject, body, htmlBody = null) {
   } catch (e) {
     log(`Email 發送失敗: ${e.message}`);
   }
+}
+
+// ── 「全部讀不到」連續天數 ────────────────────────────────
+// Why: 2026-08-04~08-10 連五個工作日 canRead 全 false（登入 session 被作廢，但 JWT
+// 還沒到期所以走不到 cookiesExpired 分支），通知寫的是「不在你的閱讀權限內」——
+// 語氣像「今天老王只發會員專屬文」的日常，天天寄天天被當正常，拖了五天才發現。
+// 單獨一天讀不到確實可能只是 3999 週報；連兩天就不可能了，那是憑證死了。
+// 狀態存本機（VM 與本機各自一份，production 看 VM 那份），一天只計一次，
+// 所以 12:30/12:45/13:00 三次試探不會把同一天算成三天。
+function readNoReadStreak() {
+  try { return JSON.parse(fs.readFileSync(NO_READ_STREAK_PATH, 'utf-8')); }
+  catch (_) { return { lastFailDate: '', count: 0 }; }
+}
+
+function bumpNoReadStreak() {
+  const s = readNoReadStreak();
+  if (s.lastFailDate !== TARGET_DATE) {
+    s.count = (s.count || 0) + 1;
+    s.lastFailDate = TARGET_DATE;
+    try { fs.writeFileSync(NO_READ_STREAK_PATH, JSON.stringify(s)); } catch (_) {}
+  }
+  return s.count;
+}
+
+function clearNoReadStreak() {
+  const s = readNoReadStreak();
+  if (!s.count) return;
+  log(`讀取權限恢復正常 → 清掉「全部讀不到」連續 ${s.count} 天的計數`);
+  try { fs.writeFileSync(NO_READ_STREAK_PATH, JSON.stringify({ lastFailDate: '', count: 0 })); } catch (_) {}
 }
 
 async function notify(subject, text) {
@@ -1216,6 +1246,7 @@ async function main() {
           log(`  候選: ${title.substring(0, 50)} | canRead=${readable}`);
           if (readable) {
             articleUrl = c.url;
+            clearNoReadStreak();
             break;
           }
         }
@@ -1233,9 +1264,22 @@ async function main() {
               `更新後補跑 node scripts/puhui_daily.cjs ${TARGET_DATE}`);
             return;
           }
-          log(`所有候選文章都無權限閱讀（可能是 3999 會員專屬週報等）`);
+          const streak = bumpNoReadStreak();
+          log(`所有候選文章都無權限閱讀（連續第 ${streak} 天）`);
+          if (streak >= 2) {
+            // 連兩天以上讀不到 ≠ 剛好都發會員專屬文，是登入狀態死了（JWT 可能還沒到期）。
+            await notify(`${DATE_DISPLAY} 連續 ${streak} 天讀不到文章，PressPlay 登入可能已失效`,
+              `🚨 浦惠投顧 ${DATE_DISPLAY}\n\n已連續 ${streak} 天所有文章都 canRead=false，` +
+              `這不是「剛好都發會員專屬文」，是 PressPlay 登入 session 失效。\n` +
+              `⚠️ JAccessToken 沒過期也會發生（2026-08-04 事故：exp 還有 23 天，session 卻已被作廢），` +
+              `所以別只看 exp。\n\n當日候選：\n${list}\n\n` +
+              `修復：依 docs/runbook.md §7.1 重抓 cookies（真 Chrome + CDP），` +
+              `更新後補跑 node scripts/puhui_daily.cjs <日期>`);
+            return;
+          }
           await notify(`${DATE_DISPLAY} 今日無一般每日盤勢文`,
-            `ℹ️ 浦惠投顧 ${DATE_DISPLAY}\n\n當日有 ${candidates.length} 篇文章但都不在你的閱讀權限內：\n${list}`);
+            `ℹ️ 浦惠投顧 ${DATE_DISPLAY}\n\n當日有 ${candidates.length} 篇文章但都不在你的閱讀權限內：\n${list}\n\n` +
+            `（連續第 1 天，可能只是當天發的是會員專屬週報；若明天再讀不到會升級成告警）`);
           return;
         }
         log(`選定可讀 URL: ${articleUrl}`);
@@ -1389,6 +1433,7 @@ async function main() {
 
   // 8. Telegram 每日摘要已停發（2026-05-28）：報告改在 Obsidian / GitHub 查看
   //     保留：cookies 過期、OAuth 失效、崩潰通知（安全網警告）
+  clearNoReadStreak(); // 走 Gmail 摘要那條路時不會經過候選迴圈，這裡兜底歸零
   log('===== puhui_daily 完成 =====');
 }
 
