@@ -44,9 +44,16 @@ require('net').setDefaultAutoSelectFamily(false);
 // TARGET_DATE 用 Asia/Taipei 算當天日期。
 // Why: 原本用 new Date().toISOString() = UTC，當 cron 在台北凌晨跑時 UTC 還在「昨天」，
 // target 會算錯一天（2026-06-04→6-05 跳過事件就是這個 bug）。
-const TARGET_DATE = process.argv[2] || new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Taipei' }).format(new Date());
+const TARGET_DATE = (process.argv[2] && !process.argv[2].startsWith('--'))
+  ? process.argv[2]
+  : new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Taipei' }).format(new Date());
 const FORCE_REGENERATE = process.argv.includes('--force');
 const ARTICLE_URL_OVERRIDE = (process.argv[3] && !process.argv[3].startsWith('--')) ? process.argv[3] : null;
+// 靜音模式：只跑、不發任何 Telegram／Email。
+// Why: 2026-08-10 起改成一天試三次（12:30 / 12:45 / 13:00），前兩次是「文章可能還沒發」
+// 的試探。若照舊發告警，遇到假日或老王晚發，同一件事會連寄三封「今日無發文」，
+// 真故障的信反而被雜訊淹掉。故前兩次帶 --quiet 只寫 log，由 13:00 那次負責對外報告。
+const QUIET = process.argv.includes('--quiet') || process.env.PUHUI_QUIET === '1';
 
 // ── 執行環境解耦（階段8 §A）────────────────────────────────
 // 原本 IS_CI 一個旗標綁了四件事：用 Claude CLI / 寫 Obsidian / git push / 發告警。
@@ -181,6 +188,7 @@ function extractTextFromPayload(payload) {
 
 // ── 通知：Telegram + Email ────────────────────────────────
 async function sendTelegram(text, { html = false } = {}) {
+  if (QUIET) { log(`[quiet] 略過 Telegram: ${text.split('\n')[0]}`); return; }
   try {
     const payload = { chat_id: TELEGRAM_CHAT_ID, text };
     if (html) payload.parse_mode = 'HTML';
@@ -342,6 +350,7 @@ ${html}
 }
 
 async function sendEmail(subject, body, htmlBody = null) {
+  if (QUIET) { log(`[quiet] 略過 Email: ${subject}`); return; }
   if (!_gmailToken) return; // OAuth 尚未成功，跳過
   try {
     const encodedSubject = encodeSubject(subject);
@@ -1066,7 +1075,7 @@ function gitSyncReports(repoDir, branch) {
 
 // ── 主流程 ────────────────────────────────────────────────
 async function main() {
-  log(`===== puhui_daily 啟動 target=${TARGET_DATE} =====`);
+  log(`===== puhui_daily 啟動 target=${TARGET_DATE}${QUIET ? ' quiet=1' : ''} =====`);
 
   // 0. 檢查 PressPlay cookies 過期狀態
   try {
