@@ -70,6 +70,25 @@ export interface ClosedTrade {
   note?: string;
 }
 
+/**
+ * 一筆帳戶資金進出（入金／出金）。
+ *
+ * 為什麼要單獨記而不是直接改現金餘額：入出金**不是損益**。直接改餘額的話，
+ * 權益數曲線會出現一段憑空的跳升／跳降，被當成賺賠——出金 20 萬會在圖上長出
+ * 一段假的最大回撤。有了這本流水帳，報酬率與回撤才能把外部資金扣掉再算。
+ *
+ * `amount` 一律存正數，方向由 `type` 決定；要加減現金餘額請用 flowDelta()。
+ */
+export type CashFlowType = 'deposit' | 'withdraw';
+
+export interface CashFlow {
+  id: string;
+  date: string;        // 'YYYY-MM-DD'
+  type: CashFlowType;
+  amount: number;      // 恆為正數
+  note?: string;
+}
+
 function safe(n: unknown, fb = 0): number {
   if (typeof n === 'number' && Number.isFinite(n)) return n;
   if (typeof n === 'string') {
@@ -145,6 +164,14 @@ export function lastTradingDay(month: string, holidays?: Holidays): string | nul
  */
 export function finalSettlementDay(month: string, holidays?: Holidays): string | null {
   return lastTradingDay(month, holidays);
+}
+
+/** 次一日曆天（不管是不是營業日）；格式不對就原樣回傳 */
+export function nextDay(date: string): string {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return date;
+  const d = new Date(date + 'T00:00:00Z');
+  d.setUTCDate(d.getUTCDate() + 1);
+  return isoOf(d);
 }
 
 /** 兩個 'YYYY-MM-DD' 之間差幾個日曆天（to − from）；格式不對回 null */
@@ -234,6 +261,46 @@ export function closedPnl(t: ClosedTrade, spec: FuturesSpec): number {
   const fees = Math.max(0, safe(spec.fee_per_lot)) * lots * 2;
   const tax = (entry + exit) * unit * lots * Math.max(0, safe(spec.tax_rate));
   return gross - fees - tax;
+}
+
+// ── 帳戶資金進出 ────────────────────────────────────────────────────────────
+
+/** 這筆進出對保證金專戶現金餘額的增減：入金 +、出金 −（金額一律取絕對值） */
+export function flowDelta(f: CashFlow): number {
+  const amt = Math.abs(safe(f?.amount));
+  return f?.type === 'withdraw' ? -amt : amt;
+}
+
+export interface CashFlowSummary {
+  deposit: number;   // 期間累計入金
+  withdraw: number;  // 期間累計出金（正數）
+  net: number;       // 淨投入＝入金 − 出金（可為負，代表已經領回比投入多）
+  count: number;
+}
+
+/**
+ * 資金進出彙總。`range` 兩端都是**含**，不填就是全部。
+ *
+ * 算報酬率時要用的是「基準日之後」的流量，故 equityStats 傳的 from 會是基準日的
+ * 次一天——基準日當天的入金在那天收盤的權益數裡已經反映過了，再扣一次會重複。
+ */
+export function summarizeCashFlows(
+  flows: CashFlow[] | undefined,
+  range?: { from?: string; to?: string },
+): CashFlowSummary {
+  let deposit = 0;
+  let withdraw = 0;
+  let count = 0;
+  for (const f of Array.isArray(flows) ? flows : []) {
+    if (!f || !/^\d{4}-\d{2}-\d{2}$/.test(String(f.date))) continue;
+    if (range?.from && f.date < range.from) continue;
+    if (range?.to && f.date > range.to) continue;
+    const d = flowDelta(f);
+    if (d === 0) continue;
+    if (d > 0) deposit += d; else withdraw += -d;
+    count += 1;
+  }
+  return { deposit, withdraw, net: deposit - withdraw, count };
 }
 
 // ── 報價：逐月份 ────────────────────────────────────────────────────────────
@@ -941,6 +1008,7 @@ export interface RiskReportInput {
   stress: StressRow[];
   plan?: TargetPlan | null;
   alerts?: RolloverAlert[];
+  flows?: CashFlow[];   // 有記資金進出時，報告會多一行「淨投入 vs 現在值多少」
 }
 
 const nt = (v: number) => `${v < 0 ? '-' : ''}NT$ ${Math.abs(Math.round(v)).toLocaleString('en-US')}`;
@@ -948,7 +1016,7 @@ const pctText = (v: number | null, d = 1) => (v === null ? '—' : `${(v * 100).
 
 /** 把整頁的關鍵數字擠成一段可複製的純文字。UI 只負責複製，內容全在這裡決定。 */
 export function buildRiskReport(input: RiskReportInput): string {
-  const { symbol_name, spec, summary: s, price, cash, index, beta, stress, plan, alerts } = input;
+  const { symbol_name, spec, summary: s, price, cash, index, beta, stress, plan, alerts, flows } = input;
   const L: string[] = [];
 
   L.push('【期貨部位風控評估】');
@@ -968,6 +1036,11 @@ export function buildRiskReport(input: RiskReportInput): string {
   L.push(`所需原始／維持保證金：${nt(s.required_initial)} ／ ${nt(s.required_maintenance)}`);
   L.push(`超額保證金：${nt(s.excess)}`);
   L.push(`風險指標：${pctText(s.risk_indicator)}`);
+  const cf = summarizeCashFlows(flows);
+  if (cf.count > 0) {
+    L.push(`淨投入資金：${nt(cf.net)}（入金 ${nt(cf.deposit)} − 出金 ${nt(cf.withdraw)}，共 ${cf.count} 筆）`);
+    L.push(`相對淨投入的累積損益：${nt(s.equity - cf.net)}${cf.net > 0 ? `（${pctText((s.equity - cf.net) / cf.net)}）` : ''}`);
+  }
   L.push('');
   L.push('【危險價位】');
   if (s.margin_call_price === null) {
@@ -1043,6 +1116,9 @@ export interface EquityPoint {
   peak: number;          // 到當日為止的權益數高點
   drawdown: number;      // (equity − peak) / peak，≤ 0；peak ≤ 0 時為 0
   risk_indicator: number | null;
+  net_flow: number;      // 上一個快照日之後到當日（含）的淨入出金；第一個點恆為 0
+  twr_index: number;     // 扣除入出金的淨值指數（起點 ＝ 1）
+  twr_drawdown: number;  // 用 twr_index 算的回撤，≤ 0——出金不會在這條線上變成假回撤
 }
 
 export interface EquityStats {
@@ -1053,10 +1129,28 @@ export interface EquityStats {
   max_drawdown: number;          // 最深的 drawdown（負值；無資料 → 0）
   max_drawdown_date: string;     // 最深那天
   days: number;                  // 資料筆數
+  net_flow: number;              // 期間淨入出金（基準日之後）
+  pnl_ex_flow: number;           // 期間真正賺賠＝權益數變化 − 淨入出金
+  twr_return: number | null;     // 扣除入出金的期間報酬率（時間加權，跟基金淨值同一個口徑）
+  max_drawdown_twr: number;      // 扣除入出金的最大回撤
+  max_drawdown_twr_date: string;
+  has_flows: boolean;            // 期間內真的有入出金——沒有的話兩套數字會完全一樣
 }
 
-/** 從快照列算出權益曲線與回撤。rows 需已依日期升冪；函式內仍要自己排一次防呆。 */
-export function equityStats(rows: FuturesEquityRow[], range?: { from?: string; to?: string }): EquityStats {
+/**
+ * 從快照列算出權益曲線與回撤。rows 需已依日期升冪；函式內仍要自己排一次防呆。
+ *
+ * `flows` 傳入資金進出流水帳後，會另外算一組**扣掉外部資金**的數字：
+ *   - 每個相鄰快照之間的報酬率 r ＝ (今日權益 − 期間淨入出金 − 昨日權益) ÷ 昨日權益
+ *   - 把 r 連乘起來就是淨值指數（時間加權報酬，TWR），入出金不影響它
+ * 這是唯一能同時回答「我操作得好不好」與「回撤有多深」的口徑；直接看權益數的話，
+ * 出金會被算成虧損、入金會被算成獲利。
+ */
+export function equityStats(
+  rows: FuturesEquityRow[],
+  range?: { from?: string; to?: string },
+  flows?: CashFlow[],
+): EquityStats {
   // Sort rows in ascending order by date
   const sorted = [...rows].sort((a, b) => a.date.localeCompare(b.date));
 
@@ -1076,6 +1170,12 @@ export function equityStats(rows: FuturesEquityRow[], range?: { from?: string; t
       max_drawdown: 0,
       max_drawdown_date: '',
       days: 0,
+      net_flow: 0,
+      pnl_ex_flow: 0,
+      twr_return: null,
+      max_drawdown_twr: 0,
+      max_drawdown_twr_date: '',
+      has_flows: false,
     };
   }
 
@@ -1084,7 +1184,15 @@ export function equityStats(rows: FuturesEquityRow[], range?: { from?: string; t
   let maxDrawdown = 0; // Negative or 0
   let maxDrawdownDate = filtered[0].date;
 
-  for (const row of filtered) {
+  // 扣除入出金的淨值指數：起點 1，之後逐日連乘期間報酬率
+  let twrIndex = 1;
+  let twrPeak = 1;
+  let maxDrawdownTwr = 0;
+  let maxDrawdownTwrDate = filtered[0].date;
+  let flowCount = 0;
+
+  for (let i = 0; i < filtered.length; i += 1) {
+    const row = filtered[i];
     const equity = row.equity;
     if (equity > runningPeak) {
       runningPeak = equity;
@@ -1094,17 +1202,40 @@ export function equityStats(rows: FuturesEquityRow[], range?: { from?: string; t
       drawdown = (equity - runningPeak) / runningPeak;
     }
 
+    // 第一個點是基準日：當天的入出金已經反映在那天收盤的權益數裡，不能再扣一次，
+    // 所以流量區間取「前一個快照日的次一天 ～ 當日」（左開右閉）。
+    let netFlow = 0;
+    if (i > 0) {
+      const prev = filtered[i - 1];
+      const f = summarizeCashFlows(flows, { from: nextDay(prev.date), to: row.date });
+      netFlow = f.net;
+      flowCount += f.count;
+      const base = prev.equity;
+      // 權益數歸零或轉負時報酬率沒有意義（分母 ≤ 0），指數持平不亂跳
+      const r = base > 0 ? (equity - netFlow - base) / base : 0;
+      twrIndex = Math.max(0, twrIndex * (1 + r));
+    }
+    if (twrIndex > twrPeak) twrPeak = twrIndex;
+    const twrDrawdown = twrPeak > 0 ? (twrIndex - twrPeak) / twrPeak : 0;
+
     points.push({
       date: row.date,
       equity,
       peak: runningPeak,
       drawdown,
       risk_indicator: row.risk_indicator,
+      net_flow: netFlow,
+      twr_index: twrIndex,
+      twr_drawdown: twrDrawdown,
     });
 
     if (drawdown < maxDrawdown) {
       maxDrawdown = drawdown;
       maxDrawdownDate = row.date;
+    }
+    if (twrDrawdown < maxDrawdownTwr) {
+      maxDrawdownTwr = twrDrawdown;
+      maxDrawdownTwrDate = row.date;
     }
   }
 
@@ -1115,6 +1246,8 @@ export function equityStats(rows: FuturesEquityRow[], range?: { from?: string; t
     totalReturn = (lastPoint.equity - firstPoint.equity) / firstPoint.equity;
   }
 
+  const netFlowTotal = points.reduce((s, p) => s + p.net_flow, 0);
+
   return {
     points,
     first: firstPoint,
@@ -1123,5 +1256,12 @@ export function equityStats(rows: FuturesEquityRow[], range?: { from?: string; t
     max_drawdown: maxDrawdown,
     max_drawdown_date: maxDrawdownDate,
     days: points.length,
+    net_flow: netFlowTotal,
+    pnl_ex_flow: lastPoint.equity - firstPoint.equity - netFlowTotal,
+    // 只有一個點時「期間報酬」不存在（TWR 需要至少一段區間），維持 null 而不是 0%
+    twr_return: points.length > 1 ? twrIndex - 1 : null,
+    max_drawdown_twr: maxDrawdownTwr,
+    max_drawdown_twr_date: maxDrawdownTwrDate,
+    has_flows: flowCount > 0,
   };
 }

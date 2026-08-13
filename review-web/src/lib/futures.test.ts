@@ -29,8 +29,11 @@ import {
   buildRiskReport,
   SYMBOL_PRESETS,
   equityStats,
+  summarizeCashFlows,
+  flowDelta,
   type FuturesPosition,
   type FuturesSpec,
+  type CashFlow,
 } from './futures';
 
 const spec: FuturesSpec = { ...DEFAULT_SPEC };
@@ -944,6 +947,146 @@ describe('equityStats', () => {
   });
 });
 
+describe('資金進出（入金／出金）', () => {
+  const flow = (date: string, type: 'deposit' | 'withdraw', amount: number): CashFlow =>
+    ({ id: `${date}_${type}`, date, type, amount });
+
+  it('flowDelta：入金加、出金減，金額一律取絕對值', () => {
+    expect(flowDelta(flow('2026-08-13', 'deposit', 100000))).toBe(100000);
+    expect(flowDelta(flow('2026-08-13', 'withdraw', 100000))).toBe(-100000);
+    // 舊資料把出金存成負數時，仍然是出金，不能翻成入金
+    expect(flowDelta({ ...flow('2026-08-13', 'withdraw', 0), amount: -50000 })).toBe(-50000);
+  });
+
+  it('summarizeCashFlows：分開累計入出金，net 是淨投入', () => {
+    const s = summarizeCashFlows([
+      flow('2026-07-01', 'deposit', 500000),
+      flow('2026-07-20', 'withdraw', 120000),
+      flow('2026-08-13', 'deposit', 80000),
+    ]);
+    expect(s.deposit).toBe(580000);
+    expect(s.withdraw).toBe(120000);
+    expect(s.net).toBe(460000);
+    expect(s.count).toBe(3);
+  });
+
+  it('summarizeCashFlows：range 兩端都含，區間外不計', () => {
+    const list = [
+      flow('2026-07-01', 'deposit', 100),
+      flow('2026-07-02', 'deposit', 200),
+      flow('2026-07-03', 'withdraw', 50),
+    ];
+    expect(summarizeCashFlows(list, { from: '2026-07-02' }).net).toBe(150);
+    expect(summarizeCashFlows(list, { to: '2026-07-02' }).net).toBe(300);
+    expect(summarizeCashFlows(list, { from: '2026-07-02', to: '2026-07-02' }).net).toBe(200);
+  });
+
+  it('summarizeCashFlows：壞日期與 0 金額直接忽略，不會污染統計', () => {
+    const s = summarizeCashFlows([
+      flow('2026-07-01', 'deposit', 100),
+      { id: 'x', date: '2026/07/02', type: 'deposit', amount: 999 } as CashFlow,
+      flow('2026-07-03', 'withdraw', 0),
+    ]);
+    expect(s.net).toBe(100);
+    expect(s.count).toBe(1);
+    expect(summarizeCashFlows(undefined).count).toBe(0);
+  });
+});
+
+describe('equityStats × 資金進出', () => {
+  const row = (date: string, equity: number) => ({
+    date, equity, cash: equity, unrealized: 0, contract_value: 1000000,
+    net_lots: 1, total_lots: 1, risk_indicator: 1, price: 100, status: 'ok',
+  });
+  const flow = (date: string, type: 'deposit' | 'withdraw', amount: number): CashFlow =>
+    ({ id: `${date}_${type}`, date, type, amount });
+
+  it('沒有入出金時，扣除版與原始版完全一致（不能因為多傳一個空陣列就變了）', () => {
+    const rows = [row('2026-07-01', 1000), row('2026-07-02', 1200), row('2026-07-03', 1500)];
+    const res = equityStats(rows, undefined, []);
+    expect(res.has_flows).toBe(false);
+    expect(res.net_flow).toBe(0);
+    expect(res.twr_return).toBeCloseTo(res.total_return!, 10);
+    expect(res.max_drawdown_twr).toBe(res.max_drawdown);
+    expect(res.pnl_ex_flow).toBe(500);
+  });
+
+  it('入金不算獲利：權益數翻倍但實際一毛沒賺 → twr_return 為 0', () => {
+    const res = equityStats(
+      [row('2026-07-01', 1000), row('2026-07-02', 2000)],
+      undefined,
+      [flow('2026-07-02', 'deposit', 1000)],
+    );
+    expect(res.total_return).toBe(1);      // 原始口徑會說「賺一倍」
+    expect(res.twr_return).toBeCloseTo(0, 10); // 實際是入金，沒賺
+    expect(res.net_flow).toBe(1000);
+    expect(res.pnl_ex_flow).toBe(0);
+    expect(res.has_flows).toBe(true);
+  });
+
+  it('出金不算虧損：領走 800 造成的權益數下滑不該變成 53% 的假回撤', () => {
+    const res = equityStats(
+      [row('2026-07-01', 1000), row('2026-07-02', 1500), row('2026-07-03', 700)],
+      undefined,
+      [flow('2026-07-03', 'withdraw', 800)],
+    );
+    expect(res.max_drawdown).toBeCloseTo(-800 / 1500, 10); // 原始口徑的假回撤
+    expect(res.max_drawdown_twr).toBeCloseTo(0, 10);       // 扣掉出金後其實沒回撤
+    expect(res.twr_return).toBeCloseTo(0.5, 10);
+    expect(res.net_flow).toBe(-800);
+    expect(res.pnl_ex_flow).toBe(500);
+  });
+
+  it('基準日當天的入金已含在那天的權益數裡，不能再扣一次', () => {
+    const res = equityStats(
+      [row('2026-07-01', 1000), row('2026-07-02', 1100)],
+      undefined,
+      [flow('2026-07-01', 'deposit', 900)],
+    );
+    expect(res.net_flow).toBe(0);
+    expect(res.has_flows).toBe(false);
+    expect(res.twr_return).toBeCloseTo(0.1, 10);
+  });
+
+  it('區間外的入出金不影響區間內的報酬（range 與流水帳要對齊）', () => {
+    const rows = [row('2026-06-01', 1000), row('2026-07-01', 1000), row('2026-08-01', 1200)];
+    const res = equityStats(rows, { from: '2026-07-01' }, [
+      flow('2026-06-15', 'deposit', 5000),  // 起日之前
+      flow('2026-09-01', 'withdraw', 5000), // 迄日之後
+    ]);
+    expect(res.net_flow).toBe(0);
+    expect(res.twr_return).toBeCloseTo(0.2, 10);
+  });
+
+  it('兩個快照之間的入出金會歸到後面那天（非交易日匯款也抓得到）', () => {
+    // 7/03 是週五、7/06 是週一，週六匯的錢要算進 7/06 那一段
+    const res = equityStats(
+      [row('2026-07-03', 1000), row('2026-07-06', 2000)],
+      undefined,
+      [flow('2026-07-04', 'deposit', 1000)],
+    );
+    expect(res.points[1].net_flow).toBe(1000);
+    expect(res.twr_return).toBeCloseTo(0, 10);
+  });
+
+  it('權益數穿價變負 → 扣除版不噴 NaN／Infinity', () => {
+    const res = equityStats(
+      [row('2026-07-01', 1000), row('2026-07-02', -200), row('2026-07-03', 300)],
+      undefined,
+      [flow('2026-07-03', 'deposit', 500)],
+    );
+    expect(Number.isFinite(res.twr_return!)).toBe(true);
+    expect(Number.isFinite(res.max_drawdown_twr)).toBe(true);
+    expect(res.points.every((p) => Number.isFinite(p.twr_index))).toBe(true);
+  });
+
+  it('單筆快照 → twr_return 為 null（一天算不出期間報酬）', () => {
+    const res = equityStats([row('2026-07-01', 1000)], undefined, [flow('2026-07-01', 'deposit', 100)]);
+    expect(res.twr_return).toBeNull();
+    expect(res.net_flow).toBe(0);
+  });
+});
+
 // @ts-ignore
 import futuresRouter from '../../../routes/futures.js';
 
@@ -1048,5 +1191,38 @@ describe('期交所 MIS 即時報價解析與轉換測試', () => {
     expect(CONTRACT_TO_MIS['XYZ']).toBeUndefined();
 
     expect(monthToSymbol('XYZ', '202608')).toBeNull();
+  });
+});
+
+describe('gateway sanitizeCashFlows（伺服端也要擋壞資料，前端不是唯一防線）', () => {
+  const { sanitizeCashFlows } = futuresRouter;
+
+  it('保留合法紀錄並依日期排序，金額轉正、方向看 type', () => {
+    const out = sanitizeCashFlows([
+      { id: 'b', date: '2026-08-13', type: 'withdraw', amount: -50000, note: '領回' },
+      { id: 'a', date: '2026-07-01', type: 'deposit', amount: 500000 },
+    ]);
+    expect(out.map((f: CashFlow) => f.id)).toEqual(['a', 'b']);
+    expect(out[1].amount).toBe(50000);
+    expect(out[1].type).toBe('withdraw');
+    expect(out[1].note).toBe('領回');
+  });
+
+  it('沒日期、金額 0、不是物件的一律丟掉；type 亂填視為入金', () => {
+    const out = sanitizeCashFlows([
+      { date: '', type: 'deposit', amount: 100 },
+      { date: '2026-08-13', type: 'deposit', amount: 0 },
+      null,
+      'nope',
+      { date: '2026-08-13', type: '亂填', amount: 100 },
+    ]);
+    expect(out).toHaveLength(1);
+    expect(out[0].type).toBe('deposit');
+    expect(out[0].id).toMatch(/^cf_2026-08-13_deposit_/);
+  });
+
+  it('非陣列 → 空陣列（舊檔案沒有這個欄位也不會爆）', () => {
+    expect(sanitizeCashFlows(undefined)).toEqual([]);
+    expect(sanitizeCashFlows({})).toEqual([]);
   });
 });

@@ -12,6 +12,7 @@ import {
   type FuturesSpec,
   type FuturesPosition,
   type ClosedTrade,
+  type CashFlow,
   type Side,
   type EntryBatch,
 } from './futures';
@@ -44,6 +45,7 @@ export interface FuturesConfig {
   spec: FuturesSpec;         // 契約規格與費用設定
   positions: FuturesPosition[];
   closed: ClosedTrade[];
+  cash_flows: CashFlow[];    // 帳戶資金進出流水帳（入金／出金），現金餘額的異動來源之一
   stop_loss: Record<string, number>; // 每筆部位的停損價（key＝position id）
   planner: PlannerConfig;
 }
@@ -72,6 +74,7 @@ const SEED: FuturesConfig = {
   spec: { ...DEFAULT_SPEC },
   positions: [],
   closed: [],
+  cash_flows: [],
   stop_loss: {},
   planner: { ...DEFAULT_PLANNER },
 };
@@ -82,6 +85,7 @@ export function seedFuturesConfig(): FuturesConfig {
     spec: { ...DEFAULT_SPEC },
     positions: [],
     closed: [],
+    cash_flows: [],
     stop_loss: {},
     planner: { ...DEFAULT_PLANNER, batches: DEFAULT_PLANNER.batches.map((b) => ({ ...b })), stress_drops: [...DEFAULT_PLANNER.stress_drops] },
   };
@@ -156,6 +160,30 @@ function sanitizeClosed(v: unknown, i: number): ClosedTrade | null {
   const id = str(o.id) || `c_${month}_${side}_${i}_${lots}_${exit_price}`;
   const note = str(o.note);
   return { id, month, side, lots, entry_price, exit_price, exit_date, ...(note ? { note } : {}) };
+}
+
+/**
+ * 一筆資金進出。金額一律存正數、方向存在 type，這樣舊資料誤把出金存成負數時
+ * （Math.abs 後 type 仍是 withdraw）不會變成「負的出金＝入金」。金額 0 的丟掉。
+ */
+function sanitizeFlow(v: unknown, i: number): CashFlow | null {
+  if (!v || typeof v !== 'object') return null;
+  const o = v as Record<string, unknown>;
+  const date = safeDate(o.date);
+  if (!date) return null; // 沒有日期就沒辦法歸到權益曲線的哪一段，直接丟掉
+  const amount = Math.abs(num(o.amount, 0));
+  if (!(amount > 0)) return null;
+  const type: CashFlow['type'] = o.type === 'withdraw' ? 'withdraw' : 'deposit';
+  const id = str(o.id) || `cf_${date}_${type}_${i}_${amount}`;
+  const note = str(o.note).slice(0, 100);
+  return { id, date, type, amount, ...(note ? { note } : {}) };
+}
+
+function sanitizeFlows(v: unknown): CashFlow[] {
+  return (Array.isArray(v) ? v : [])
+    .map((f, i) => sanitizeFlow(f, i))
+    .filter((f): f is CashFlow => f !== null)
+    .sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
 }
 
 function sanitizeBatches(v: unknown): EntryBatch[] {
@@ -239,6 +267,7 @@ export function normalizeFutures(parsed: Record<string, unknown>): FuturesConfig
     spec: sanitizeSpec(parsed.spec),
     positions,
     closed,
+    cash_flows: sanitizeFlows(parsed.cash_flows),
     stop_loss,
     planner: sanitizePlanner(parsed.planner),
   };

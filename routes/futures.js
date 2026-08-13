@@ -101,6 +101,31 @@ function sanitizeClosed(val) {
   return out;
 }
 
+/**
+ * 帳戶資金進出（入金／出金）流水帳。
+ *
+ * 金額一律存正數、方向存在 type：舊資料若把出金存成負數，取絕對值後方向仍由
+ * type 決定，不會變成「負的出金＝入金」。沒有日期或金額 ≤ 0 的丟掉——沒有日期
+ * 就沒辦法歸到權益曲線的哪一段，留著只會讓報酬率算錯。
+ */
+function sanitizeCashFlows(val) {
+  if (!Array.isArray(val)) return [];
+  const out = [];
+  val.forEach((f, i) => {
+    if (!f || typeof f !== 'object') return;
+    const date = safeDate(f.date);
+    if (!date) return;
+    const amount = Math.abs(num(f.amount, 0));
+    if (!(amount > 0)) return;
+    const type = f.type === 'withdraw' ? 'withdraw' : 'deposit';
+    const id = str(f.id) || `cf_${date}_${type}_${i}_${amount}`;
+    const note = str(f.note).slice(0, 100);
+    out.push({ id, date, type, amount, ...(note ? { note } : {}) });
+  });
+  out.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+  return out;
+}
+
 // 建倉試算與存股比較的參數：純規劃用，但一樣要跟著雲端走，換裝置才不會歸零。
 // 每個欄位都 clamp 在合理區間，手改壞檔案也不會讓前端算出 NaN。
 const DEFAULT_PLANNER = {
@@ -186,6 +211,7 @@ function sanitizeFutures(body) {
     spec: sanitizeSpec(b.spec),
     positions,
     closed: sanitizeClosed(b.closed),
+    cash_flows: sanitizeCashFlows(b.cash_flows),
     stop_loss,
     planner: sanitizePlanner(b.planner),
   };
@@ -873,6 +899,7 @@ router.getValidQuote = getValidQuote;
 router.liveTimeFromClock = liveTimeFromClock;
 router.cacheTtlFor = cacheTtlFor;
 router.isFresh = isFresh;
+router.sanitizeCashFlows = sanitizeCashFlows;
 router.CONTRACT_TO_MIS = CONTRACT_TO_MIS;
 router.MONTH_CODES = MONTH_CODES;
 

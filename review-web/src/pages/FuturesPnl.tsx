@@ -5,7 +5,7 @@ import {
   Plus, RefreshCw, Trash2, TrendingUp, TrendingDown, Gauge,
   ClipboardCopy, Check, Target, Layers,
   ShieldCheck, Wallet, ListOrdered, CalendarSync, SlidersHorizontal, BookOpen,
-  LineChart, Flame, Ruler,
+  LineChart, Flame, Ruler, ArrowDownCircle, ArrowUpCircle, ArrowLeftRight,
 } from 'lucide-react';
 import { Panel, StatTile, RiskMeter, ThreatCard, LevelCard, Row, Chip, type Tone } from '../components/futures/ui';
 import { api } from '../lib/api';
@@ -17,8 +17,8 @@ import {
   positionPnl, closedPnl, summarizeAccount, rolloverAlerts, rolloverCost, stopLossRisk,
   indexAtPrice, stressTest, suggestLots, weightedEntry, targetPlan, trailingStopPlan,
   buildRiskReport, priceOf, referenceMonthOf,
-  equityStats,
-  type FuturesPosition, type ClosedTrade, type Side, type FuturesSpec, type StressRow,
+  equityStats, summarizeCashFlows, flowDelta,
+  type FuturesPosition, type ClosedTrade, type CashFlow, type Side, type FuturesSpec, type StressRow,
   type PriceInput, type EquityPoint,
 } from '../lib/futures';
 import {
@@ -303,8 +303,9 @@ export function FuturesPnl() {
       index: config.index_ref, beta, stress,
       plan: summary.total_lots > 0 ? plan : null,
       alerts,
+      flows: config.cash_flows,
     }),
-    [symbolName, spec, summary, config.cash, config.index_ref, beta, stress, plan, alerts],
+    [symbolName, spec, summary, config.cash, config.index_ref, beta, stress, plan, alerts, config.cash_flows],
   );
 
   return (
@@ -676,7 +677,8 @@ const EquityCurveCard: React.FC<{
     error: string | null;
     data: FuturesEquityHistoryResp | null;
   };
-}> = ({ historyState }) => {
+  flows: CashFlow[];
+}> = ({ historyState, flows }) => {
   const [rangeType, setRangeType] = useState<'1m' | '3m' | '1y' | 'all'>('all');
   const [hoveredPoint, setHoveredPoint] = useState<EquityPoint | null>(null);
   const [hoverX, setHoverX] = useState<number | null>(null);
@@ -739,7 +741,7 @@ const EquityCurveCard: React.FC<{
 
   const lastDateStr = rows[rows.length - 1]?.date;
   const startDate = getStartDateForRange(rangeType, lastDateStr);
-  const stats = equityStats(rows, { from: startDate });
+  const stats = equityStats(rows, { from: startDate }, flows);
   const points = stats.points;
 
   if (points.length === 0) {
@@ -775,6 +777,15 @@ const EquityCurveCard: React.FC<{
     );
   }
 
+  /*
+    期間內有入出金時，報酬率與回撤一律換成「已扣除入出金」的版本：權益數的變化裡
+    混著自己匯進匯出的錢，直接拿來當報酬率會騙人——入金 20 萬看起來像大賺、出金
+    20 萬看起來像大賠（下面那條回撤線尤其明顯）。沒有入出金時兩套數字完全相同。
+    上面那條權益數曲線維持原始權益數：它回答的是「帳戶裡現在有多少」。
+  */
+  const adjusted = stats.has_flows;
+  const ddOf = (p: EquityPoint) => (adjusted ? p.twr_drawdown : p.drawdown);
+
   const equities = points.map((p) => p.equity);
   let minEq = Math.min(...equities);
   let maxEq = Math.max(...equities);
@@ -787,7 +798,7 @@ const EquityCurveCard: React.FC<{
     maxEq += pad;
   }
 
-  let minDrawdown = Math.min(...points.map((p) => p.drawdown));
+  let minDrawdown = Math.min(...points.map(ddOf));
   if (minDrawdown >= 0) {
     minDrawdown = -0.1;
   }
@@ -807,20 +818,28 @@ const EquityCurveCard: React.FC<{
   const ddLinePath = points
     .map((p, i) => {
       const x = 60 + i * bandWidth;
-      const y = 190 + (p.drawdown / minDrawdown) * 80;
+      const y = 190 + (ddOf(p) / minDrawdown) * 80;
       return `${i === 0 ? 'M' : 'L'} ${x} ${y}`;
     })
     .join(' ');
 
   const ddAreaPath = `${ddLinePath} L ${60 + (points.length - 1) * bandWidth} 190 L 60 190 Z`;
 
-  const lastPoint = stats.last ?? { date: '', equity: 0, peak: 0, drawdown: 0, risk_indicator: null };
-  const maxDrawdown = stats.max_drawdown;
-  const maxDrawdownDate = stats.max_drawdown_date;
+  const lastPoint = stats.last ?? {
+    date: '', equity: 0, peak: 0, drawdown: 0, risk_indicator: null,
+    net_flow: 0, twr_index: 1, twr_drawdown: 0,
+  };
 
-  const totalReturn = stats.total_return;
+  const maxDrawdown = adjusted ? stats.max_drawdown_twr : stats.max_drawdown;
+  const maxDrawdownDate = adjusted ? stats.max_drawdown_twr_date : stats.max_drawdown_date;
+
+  const totalReturn = adjusted ? stats.twr_return : stats.total_return;
   const returnCls = totalReturn !== null ? pnlCls(totalReturn) : 'text-zinc-400';
   const returnText = totalReturn !== null ? `${totalReturn > 0 ? '+' : ''}${pct(totalReturn)}` : '—';
+  // 圖上標出有入出金的那幾天：曲線在那裡的跳動不是行情造成的
+  const flowDays = points
+    .map((p, i) => ({ p, i }))
+    .filter(({ p }) => p.net_flow !== 0);
 
   const tooltipStyle: React.CSSProperties = {
     position: 'absolute',
@@ -856,17 +875,21 @@ const EquityCurveCard: React.FC<{
   return (
     <div className="bg-card/70 border border-border rounded-2xl p-5 shadow-sm space-y-4">
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-border/50 pb-4">
-        <div className="grid grid-cols-3 gap-6">
+        <div className="flex flex-wrap gap-x-6 gap-y-3">
           <div>
             <div className="text-[10px] text-zinc-500 font-medium">最新權益數</div>
             <div className="text-base font-bold font-mono mt-0.5 text-zinc-100">{money(lastPoint.equity)}</div>
           </div>
           <div>
-            <div className="text-[10px] text-zinc-500 font-medium">期間報酬</div>
+            <div className="text-[10px] text-zinc-500 font-medium">
+              期間報酬{adjusted && <span className="text-cyan-500">（已扣入出金）</span>}
+            </div>
             <div className={`text-base font-bold font-mono mt-0.5 ${returnCls}`}>{returnText}</div>
           </div>
           <div>
-            <div className="text-[10px] text-zinc-500 font-medium">最大回撤</div>
+            <div className="text-[10px] text-zinc-500 font-medium">
+              最大回撤{adjusted && <span className="text-cyan-500">（已扣入出金）</span>}
+            </div>
             <div className="text-base font-bold font-mono mt-0.5 text-amber-500">
               {maxDrawdown !== 0 ? `${pct(maxDrawdown)}` : '0.0%'}
               {maxDrawdown !== 0 && (
@@ -876,6 +899,17 @@ const EquityCurveCard: React.FC<{
               )}
             </div>
           </div>
+          {adjusted && (
+            <div>
+              <div className="text-[10px] text-zinc-500 font-medium">期間淨入出金</div>
+              <div className="text-base font-bold font-mono mt-0.5 text-cyan-400">
+                {stats.net_flow >= 0 ? '+' : '−'}{money(Math.abs(stats.net_flow)).replace('-', '')}
+                <span className="text-[9px] text-zinc-500 font-normal ml-1 block md:inline">
+                  真正賺賠 {money(stats.pnl_ex_flow)}
+                </span>
+              </div>
+            </div>
+          )}
         </div>
         <div className="flex justify-end">
           <RangeSelector active={rangeType} onChange={setRangeType} />
@@ -950,6 +984,19 @@ const EquityCurveCard: React.FC<{
           <path d={ddAreaPath} fill="url(#drawdownGradient)" />
           <path d={ddLinePath} fill="none" stroke="#f59e0b" strokeWidth={1.5} />
 
+          {/* 入出金那幾天：曲線在這裡的落差是自己匯錢進出造成的，不是行情 */}
+          {flowDays.map(({ p, i }) => {
+            const x = 60 + i * bandWidth;
+            return (
+              <g key={`flow-${p.date}`}>
+                <line x1={x} y1={20} x2={x} y2={170} stroke="#06b6d4" strokeWidth={1} strokeDasharray="3 3" opacity={0.5} />
+                <text x={x} y={16} textAnchor="middle" fill="#06b6d4" className="text-[9px] font-mono font-bold">
+                  {p.net_flow > 0 ? '入' : '出'}
+                </text>
+              </g>
+            );
+          })}
+
           {/* Label Latest Point */}
           <circle cx={lastX} cy={lastY} r={4} fill="#3b82f6" stroke="#18181b" strokeWidth={1.5} />
           <text x={lastX - 8} y={lastY - 8} textAnchor="end" fill="#3b82f6" className="text-[10px] font-bold font-mono">
@@ -1003,9 +1050,16 @@ const EquityCurveCard: React.FC<{
             <div className="mt-1">
               權益數: <span className="font-semibold text-zinc-100">{money(hoveredPoint.equity)}</span>
             </div>
+            {hoveredPoint.net_flow !== 0 && (
+              <div>
+                {hoveredPoint.net_flow > 0 ? '入金' : '出金'}: <span className="font-semibold text-cyan-400">
+                  {money(Math.abs(hoveredPoint.net_flow)).replace('-', '')}
+                </span>
+              </div>
+            )}
             <div>
-              回撤: <span className={`font-semibold ${hoveredPoint.drawdown === 0 ? 'text-zinc-300' : 'text-orange-400'}`}>
-                {pct(hoveredPoint.drawdown)}
+              回撤{adjusted ? '(已扣入出金)' : ''}: <span className={`font-semibold ${ddOf(hoveredPoint) === 0 ? 'text-zinc-300' : 'text-orange-400'}`}>
+                {pct(ddOf(hoveredPoint))}
               </span>
             </div>
             <div>
@@ -1018,7 +1072,17 @@ const EquityCurveCard: React.FC<{
       </div>
 
       <p className="text-[11px] text-zinc-500">
-        權益數會因入出金而跳動，這條線<strong className="text-zinc-400">不是報酬率曲線</strong>。快照取自期交所每日行情（收盤／結算價），盤中不更新。
+        {adjusted ? (
+          <>
+            上面那條線是<strong className="text-zinc-400">原始權益數</strong>（帳戶裡實際有多少），會因入出金而跳動；
+            標了<span className="text-cyan-400">入／出</span>的日子就是你匯錢進出的那幾天。
+            期間報酬與回撤已改用<strong className="text-zinc-400">扣掉入出金</strong>的算法（逐段報酬率連乘，與基金淨值同一個口徑），
+            所以匯錢進出不會被算成賺賠。資料來源是「資金進出（入金／出金）」那本流水帳，漏記的話這兩個數字就會失真。
+          </>
+        ) : (
+          <>權益數會因入出金而跳動，這條線<strong className="text-zinc-400">不是報酬率曲線</strong>——到「部位 &amp; 平倉紀錄」分頁記下入出金後，這裡的報酬與回撤會自動扣掉它們再算。</>
+        )}
+        {' '}快照取自期交所每日行情（收盤／結算價），盤中不更新。
       </p>
     </div>
   );
@@ -1074,6 +1138,7 @@ const OverviewTab: React.FC<{
     data: FuturesEquityHistoryResp | null;
   };
 }> = ({ config, summary, statusMeta, spec, beta, plan, priceInput, quote, historyState }) => {
+  const cashFlowTotals = useMemo(() => summarizeCashFlows(config.cash_flows), [config.cash_flows]);
   const ri = summary.risk_indicator;
   const riPctText = ri === null ? '—' : `${(ri * 100).toFixed(0)}%`;
   const refPrice = summary.reference_price;
@@ -1163,7 +1228,7 @@ const OverviewTab: React.FC<{
         </div>
       </Panel>
 
-      <EquityCurveCard historyState={historyState} />
+      <EquityCurveCard historyState={historyState} flows={config.cash_flows} />
 
       {/* 兩張警戒卡：整張染色，是全頁唯一會被餘光抓到的區塊 */}
       {summary.total_lots === 0 ? (
@@ -1253,6 +1318,22 @@ const OverviewTab: React.FC<{
             cls={summary.excess >= 0 ? 'text-emerald-400' : 'text-rose-400'}
             hint="權益數 − 所需原始保證金。正的部分才是能再開倉或承受回檔的緩衝。"
           />
+          {/* 有記資金進出才顯示：沒有流水帳的話「淨投入」只會是一個假的 0 */}
+          {cashFlowTotals.count > 0 && (
+            <>
+              <Row
+                label={`淨投入資金（入 ${money(cashFlowTotals.deposit)} − 出 ${money(cashFlowTotals.withdraw)}）`}
+                value={money(cashFlowTotals.net)}
+                hint="自己匯進這個帳戶、還沒領回的錢。在「部位 & 平倉紀錄」分頁的資金進出流水帳維護。"
+              />
+              <Row
+                label="相對淨投入的累積損益"
+                value={money(summary.equity - cashFlowTotals.net)}
+                cls={pnlCls(summary.equity - cashFlowTotals.net)}
+                hint="權益數 − 淨投入。只有在「開戶以來每一筆入出金都記進來」時才成立；中途才開始記的話，請當成起記日之後的成績。"
+              />
+            </>
+          )}
         </dl>
       </Panel>
 
@@ -1459,7 +1540,7 @@ const PositionsTab: React.FC<{
         <div className="grid grid-cols-1 gap-4">
           <Field
             label="保證金專戶現金餘額"
-            hint="入金金額 ± 已實現損益（不含未實現）。期貨商軟體上通常叫「保證金餘額」或「前日餘額＋今日存提」。"
+            hint="入金金額 ± 已實現損益（不含未實現）。期貨商軟體上通常叫「保證金餘額」或「前日餘額＋今日存提」。今天有入金／出金請用下面的「資金進出」記一筆，這格會自動加減——直接改這格的話，權益數曲線會把那筆錢當成賺賠。"
           >
             {/* 非受控＋key：平倉會改動 cash，key 變動讓輸入框重新掛載吃到新值，
                 不必用 effect 回寫本地字串（那會造成串聯重繪，也會在打字中途被蓋掉） */}
@@ -1554,6 +1635,8 @@ const PositionsTab: React.FC<{
           );
         })()}
       </div>
+
+      <CashFlowCard config={config} summary={summary} patch={patch} saveToCloud={saveToCloud} />
 
       {/* 新增部位 */}
       <div className="bg-card/70 border border-border rounded-2xl p-5 shadow-sm space-y-4">
@@ -1748,6 +1831,206 @@ const PositionsTab: React.FC<{
           </>
         )}
       </div>
+    </div>
+  );
+};
+
+/**
+ * 帳戶資金進出（入金／出金）流水帳。
+ *
+ * 為什麼不直接改上面那格現金餘額就好：入出金**不是損益**。直接改的話，權益數曲線
+ * 會多出一段憑空的跳升／跳降並被當成賺賠——出金 20 萬會在圖上長出一段從來沒發生過
+ * 的回撤。記成一筆一筆的流水帳後，現金餘額由這裡自動加減，權益曲線那邊也才能把
+ * 外部資金扣掉再算真正的報酬率。
+ *
+ * 出金前會先試算「領走之後的權益數與風險指標」——期貨出金最常見的意外就是領完才
+ * 發現風險指標掉進追繳區，那時候要再匯錢進來已經是隔天的事。
+ */
+const CashFlowCard: React.FC<{
+  config: FuturesConfig;
+  summary: Summary;
+  patch: (u: (c: FuturesConfig) => FuturesConfig) => FuturesConfig;
+  saveToCloud: (cfg?: FuturesConfig) => Promise<void>;
+}> = ({ config, summary, patch, saveToCloud }) => {
+  const [form, setForm] = useState({ date: todayStr(), amount: '', note: '' });
+  const flows = config.cash_flows;
+  const totals = useMemo(() => summarizeCashFlows(flows), [flows]);
+  // 新到舊排：最近的異動最常被回頭確認
+  const sorted = useMemo(() => [...flows].sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0)), [flows]);
+
+  const amt = Math.abs(parseFloat(form.amount));
+  const valid = Number.isFinite(amt) && amt > 0;
+
+  // 出金預覽：領走之後還剩多少、風險指標會掉到哪
+  const equityAfterOut = summary.equity - (valid ? amt : 0);
+  const riAfterOut = summary.required_maintenance > 0 ? equityAfterOut / summary.required_maintenance : null;
+  const outTone = riAfterOut === null ? 'text-zinc-400'
+    : riAfterOut < 1 ? 'text-rose-400'
+    : equityAfterOut < summary.required_initial ? 'text-amber-400'
+    : 'text-emerald-400';
+
+  const add = (type: CashFlow['type']) => {
+    if (!valid) return;
+    const flow: CashFlow = {
+      id: `cf_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+      date: /^\d{4}-\d{2}-\d{2}$/.test(form.date) ? form.date : todayStr(),
+      type,
+      amount: amt,
+      ...(form.note.trim() ? { note: form.note.trim() } : {}),
+    };
+    // 現金餘額跟著動：入金 +、出金 −（未實現損益不受影響，權益數自然跟著變）
+    const next = patch((c) => ({
+      ...c,
+      cash_flows: [...c.cash_flows, flow],
+      cash: c.cash + flowDelta(flow),
+    }));
+    setForm((f) => ({ ...f, amount: '', note: '' }));
+    void saveToCloud(next);
+  };
+
+  const remove = (f: CashFlow) => {
+    const next = patch((c) => ({
+      ...c,
+      cash_flows: c.cash_flows.filter((x) => x.id !== f.id),
+      cash: c.cash - flowDelta(f), // 刪紀錄就把當初加減進去的錢還原
+    }));
+    void saveToCloud(next);
+  };
+
+  return (
+    <div className="bg-card/70 border border-border rounded-2xl p-5 shadow-sm space-y-4">
+      <div className="flex flex-wrap items-center gap-2.5">
+        <span className="w-7 h-7 rounded-lg bg-cyan-400/10 border border-cyan-400/30 grid place-items-center shrink-0">
+          <ArrowLeftRight className="w-4 h-4 text-cyan-400" />
+        </span>
+        <h2 className="text-sm font-bold text-zinc-100 tracking-wide">資金進出（入金／出金）</h2>
+        {totals.count > 0 && (
+          <span className="ml-auto text-[11px] text-zinc-500">
+            淨投入 <span className="font-mono font-semibold text-zinc-300">{money(totals.net)}</span>
+            <span className="text-zinc-600">（入 {money(totals.deposit)}／出 {money(totals.withdraw)}）</span>
+          </span>
+        )}
+      </div>
+
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+        <Field label="日期">
+          <input type="date" value={form.date}
+            onChange={(e) => setForm((f) => ({ ...f, date: e.target.value }))}
+            className="w-full bg-zinc-900 border border-border rounded-lg px-3 py-2 text-sm font-mono text-zinc-100" />
+        </Field>
+        <Field label="金額" hint="填正數就好，方向由下面的按鈕決定。">
+          <input type="number" min="0" step="1000" value={form.amount}
+            onChange={(e) => setForm((f) => ({ ...f, amount: e.target.value }))}
+            placeholder="例：100000"
+            className="w-full bg-zinc-900 border border-border rounded-lg px-3 py-2 text-sm font-mono text-zinc-100" />
+        </Field>
+        <div className="col-span-2">
+          <Field label="備註（選填）">
+            <input type="text" maxLength={100} value={form.note}
+              onChange={(e) => setForm((f) => ({ ...f, note: e.target.value }))}
+              placeholder="例：加碼保證金 / 獲利了結領回"
+              className="w-full bg-zinc-900 border border-border rounded-lg px-3 py-2 text-sm text-zinc-100" />
+          </Field>
+        </div>
+      </div>
+
+      <div className="flex flex-wrap items-center gap-2">
+        <button
+          onClick={() => add('deposit')}
+          disabled={!valid}
+          className="flex items-center gap-1.5 px-4 py-2 bg-emerald-500/90 text-white text-xs font-semibold rounded-lg hover:bg-emerald-500 transition disabled:opacity-40 disabled:cursor-not-allowed"
+        >
+          <ArrowDownCircle className="w-3.5 h-3.5" /> 入金（存進保證金專戶）
+        </button>
+        <button
+          onClick={() => add('withdraw')}
+          disabled={!valid}
+          className="flex items-center gap-1.5 px-4 py-2 bg-zinc-800 border border-border text-zinc-200 text-xs font-semibold rounded-lg hover:bg-zinc-700 transition disabled:opacity-40 disabled:cursor-not-allowed"
+        >
+          <ArrowUpCircle className="w-3.5 h-3.5" /> 出金（領出）
+        </button>
+        {valid && (
+          <span className="text-[11px] text-zinc-500">
+            入金後現金 {money(config.cash + amt)}；
+            出金後權益數 <span className={`font-mono ${outTone}`}>{money(equityAfterOut)}</span>
+            {riAfterOut !== null && <>、風險指標 <span className={`font-mono ${outTone}`}>{pct(riAfterOut, 0)}</span></>}
+          </span>
+        )}
+      </div>
+
+      {valid && riAfterOut !== null && riAfterOut < 1 && (
+        <p className="text-[11px] text-rose-400 font-semibold">
+          ⚠ 這筆出金會讓風險指標掉到 {pct(riAfterOut, 0)}（低於 100%），等於自己走進追繳區。要領這麼多請先減碼。
+        </p>
+      )}
+      {valid && riAfterOut !== null && riAfterOut >= 1 && equityAfterOut < summary.required_initial && (
+        <p className="text-[11px] text-amber-400">
+          出金後權益數會低於所需原始保證金（{money(summary.required_initial)}），還不會被追繳，但不能再開新倉。
+        </p>
+      )}
+
+      {sorted.length === 0 ? (
+        <p className="text-xs text-zinc-500">
+          還沒有資金進出紀錄。在這裡新增，上面的「保證金專戶現金餘額」會自動加減，不用再手動改那一格；
+          權益數走勢也會把入出金扣掉後才算報酬率與回撤。
+        </p>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full min-w-[520px] text-xs">
+            <thead>
+              <tr className="text-zinc-500 border-b border-border">
+                <th className="text-left font-medium py-2 pr-3">日期</th>
+                <th className="text-left font-medium py-2 pr-3">類別</th>
+                <th className="text-right font-medium py-2 pr-3">金額</th>
+                <th className="text-left font-medium py-2 pr-3">備註</th>
+                <th className="py-2" />
+              </tr>
+            </thead>
+            <tbody>
+              {sorted.map((f) => (
+                <tr key={f.id} className="border-b border-border/50 last:border-0">
+                  <td className="py-2 pr-3 font-mono text-zinc-400">{f.date}</td>
+                  <td className="py-2 pr-3">
+                    <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded border text-[11px] font-semibold ${
+                      f.type === 'deposit'
+                        ? 'text-emerald-400 border-emerald-400/30 bg-emerald-400/10'
+                        : 'text-zinc-300 border-zinc-500/30 bg-zinc-500/10'
+                    }`}>
+                      {f.type === 'deposit' ? <ArrowDownCircle className="w-3 h-3" /> : <ArrowUpCircle className="w-3 h-3" />}
+                      {f.type === 'deposit' ? '入金' : '出金'}
+                    </span>
+                  </td>
+                  <td className={`py-2 pr-3 text-right font-mono font-semibold tabular-nums ${f.type === 'deposit' ? 'text-emerald-400' : 'text-zinc-300'}`}>
+                    {f.type === 'deposit' ? '+' : '−'}{money(f.amount).replace('-', '')}
+                  </td>
+                  <td className="py-2 pr-3 text-zinc-500">{f.note || '—'}</td>
+                  <td className="py-2 text-right">
+                    <button
+                      onClick={() => remove(f)}
+                      className="text-zinc-600 hover:text-rose-400"
+                      title="刪除這筆（現金餘額會同步回沖）"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {totals.count > 0 && (
+        <p className="text-[11px] text-zinc-500 pt-1 border-t border-border/50">
+          淨投入 {money(totals.net)}，目前權益數 {money(summary.equity)}
+          {totals.net > 0 && (
+            <>，累積損益 <span className={`font-mono font-semibold ${pnlCls(summary.equity - totals.net)}`}>
+              {money(summary.equity - totals.net)}
+            </span>（{pct((summary.equity - totals.net) / totals.net)}）</>
+          )}
+          。這個數字只有在「開戶以來每一筆入出金都記進來」時才成立，中途才開始記的話請當成起記日之後的淨投入。
+        </p>
+      )}
     </div>
   );
 };
