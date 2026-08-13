@@ -871,6 +871,46 @@ export interface WeightedEntry {
   notional: number;    // 乘上契約單位後的名目金額
 }
 
+/** 目前未平倉部位壓成「一筆」的樣子，給分批試算的第一格用 */
+export interface HoldingSnapshot {
+  lots: number;        // 總口數（不分方向）
+  avg_price: number;   // 依口數加權的平均進場價
+  long_lots: number;
+  short_lots: number;
+  mixed: boolean;      // 多空並存：平均成本沒有單一意義，UI 要標出來
+}
+
+/**
+ * 把現有未平倉部位彙總成一筆「建倉」，讓分批試算的第 1 格能直接吃真實持倉。
+ *
+ * 平均價用**口數加權**（跟 weightedEntry 同一套算法），不是把各筆進場價直接平均——
+ * 20 口 @104.31 與 3 口 @104.50 的平均成本不是 104.405。
+ *
+ * 多空並存時 `mixed` 為 true：兩個方向的成本混在一起算沒有意義（空單的「成本」是
+ * 反向的），數字照給但呼叫端必須講清楚，不能讓人以為那是真的平均成本。
+ */
+export function holdingAsBatch(positions: FuturesPosition[]): HoldingSnapshot {
+  let lots = 0;
+  let cost = 0;
+  let long_lots = 0;
+  let short_lots = 0;
+  for (const p of Array.isArray(positions) ? positions : []) {
+    const l = Math.max(0, safe(p?.lots));
+    const price = Math.max(0, safe(p?.entry_price));
+    if (l <= 0 || price <= 0) continue;
+    lots += l;
+    cost += price * l;
+    if (p.side === 'short') short_lots += l; else long_lots += l;
+  }
+  return {
+    lots,
+    avg_price: lots > 0 ? cost / lots : 0,
+    long_lots,
+    short_lots,
+    mixed: long_lots > 0 && short_lots > 0,
+  };
+}
+
 /** 分批建倉／加碼後的加權平均成本。口數為 0 的批次自動忽略。 */
 export function weightedEntry(batches: EntryBatch[], spec: FuturesSpec): WeightedEntry {
   const unit = Math.max(1, safe(spec.contract_size, 1000));

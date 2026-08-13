@@ -17,7 +17,7 @@ import {
   positionPnl, closedPnl, summarizeAccount, rolloverAlerts, rolloverCost, stopLossRisk,
   indexAtPrice, stressTest, suggestLots, weightedEntry, targetPlan, trailingStopPlan,
   buildRiskReport, priceOf, referenceMonthOf,
-  equityStats, summarizeCashFlows, flowDelta,
+  equityStats, summarizeCashFlows, flowDelta, holdingAsBatch,
   type FuturesPosition, type ClosedTrade, type CashFlow, type Side, type FuturesSpec, type StressRow,
   type PriceInput, type EquityPoint,
 } from '../lib/futures';
@@ -2664,6 +2664,22 @@ const PlannerTab: React.FC<{
     [capital, refPrice, lev, spec],
   );
 
+  /*
+    分批試算的第 1 筆＝真實持倉（唯讀，按「更新」才重抓），第 2、3 筆才是手打的加碼。
+    刻意不自動同步：試算到一半被行情或平倉改掉數字，會讓算出來的東西無法解釋——
+    要不要把新的持倉吃進來是使用者的決定，這裡只負責在漂掉時提醒。
+  */
+  const live = useMemo(() => holdingAsBatch(config.positions), [config.positions]);
+  const b0 = p.batches[0] ?? { price: 0, lots: 0 };
+  // 價格用 0.005 當容差：存進去的是完整精度，顯示只到小數點兩位，硬比會永遠說「不同步」
+  const holdingDrift = b0.lots !== live.lots || Math.abs(b0.price - live.avg_price) > 0.005;
+  const pullHolding = () => {
+    setPlanner((x) => ({
+      ...x,
+      batches: x.batches.map((y, j) => (j === 0 ? { price: live.avg_price, lots: live.lots } : y)),
+    }));
+  };
+
   // 分批進場：用假想部位跑一次總覽的算式，直接看到這個組合的風險長相
   const batch = useMemo(() => weightedEntry(p.batches, spec), [p.batches, spec]);
   const batchSim = useMemo(() => {
@@ -2760,14 +2776,57 @@ const PlannerTab: React.FC<{
         <div>
           <div className="flex items-center gap-2.5"><span className="w-7 h-7 rounded-lg bg-primary/10 border border-primary/30 grid place-items-center shrink-0"><Layers className="w-4 h-4 text-primary" /></span><h2 className="text-sm font-bold text-zinc-100 tracking-wide">分批進場／加碼試算</h2></div>
           <p className="text-[11px] text-zinc-500 mt-1">
-            填入各批的價格與口數，算出加權平均成本，並用這個組合跑一次風險模型。這裡只是試算，不會動到實際部位。
+            第 1 筆是<strong className="text-zinc-400">你目前的真實持倉</strong>（唯讀，部位有異動就按「更新」重抓），
+            第 2、3 筆填想加碼的價格與口數，算出加起來的加權平均成本，並用這個組合跑一次風險模型。
+            這裡只是試算，<strong className="text-zinc-400">不會動到實際部位</strong>。
           </p>
         </div>
         <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
           {p.batches.slice(0, 3).map((b, i) => (
+            i === 0 ? (
+              /* 第 1 筆＝現有持倉，唯讀。手打會跟真實部位漂掉而且不會有人記得回來改，
+                 所以只給一顆「更新」按鈕從未平倉部位重新彙總。 */
+              <div key={i} className="bg-zinc-900/40 border border-primary/30 rounded-lg p-3 space-y-2">
+                <div className="flex items-center justify-between gap-2">
+                  <div className="text-[11px] font-semibold text-zinc-300">
+                    第 1 筆（目前持倉）
+                  </div>
+                  <button
+                    onClick={pullHolding}
+                    className="flex items-center gap-1 px-2 py-1 bg-primary/15 border border-primary/40 text-primary text-[10px] font-semibold rounded-md hover:bg-primary/25 transition"
+                    title="從「部位 & 平倉紀錄」的未平倉部位重新彙總總口數與加權平均成本"
+                  >
+                    <RefreshCw className="w-3 h-3" /> 更新
+                  </button>
+                </div>
+                <Field label="進場價（加權平均成本・唯讀）">
+                  <div className="w-full bg-zinc-900/50 border border-border rounded-lg px-3 py-2 text-sm font-mono text-zinc-400">
+                    {b.price > 0 ? px(b.price) : '—'}
+                  </div>
+                </Field>
+                <Field label="口數（唯讀）">
+                  <div className="w-full bg-zinc-900/50 border border-border rounded-lg px-3 py-2 text-sm font-mono text-zinc-400">
+                    {b.lots > 0 ? `${b.lots}` : '—'}
+                  </div>
+                </Field>
+                {holdingDrift && (
+                  <p className="text-[10px] text-amber-400 leading-relaxed">
+                    {live.lots > 0
+                      ? <>持倉已變動：目前是 {live.lots} 口 @ {px(live.avg_price)}，按「更新」帶入。</>
+                      : <>目前沒有未平倉部位，按「更新」會清成 0。</>}
+                  </p>
+                )}
+                {live.mixed && (
+                  <p className="text-[10px] text-amber-400 leading-relaxed">
+                    你同時有多單 {live.long_lots} 口與空單 {live.short_lots} 口，兩個方向的成本混在一起算沒有意義，
+                    這格的平均成本僅供參考。
+                  </p>
+                )}
+              </div>
+            ) : (
             <div key={i} className="bg-zinc-900/40 border border-border rounded-lg p-3 space-y-2">
               <div className="text-[11px] font-semibold text-zinc-300">
-                第 {i + 1} 筆{i === 0 ? '（建倉）' : '（加碼）'}
+                第 {i + 1} 筆（加碼）
               </div>
               <Field label="進場價">
                 <NumInput value={b.price} step="0.05" min="0"
@@ -2782,6 +2841,7 @@ const PlannerTab: React.FC<{
                   }))} />
               </Field>
             </div>
+            )
           ))}
         </div>
 

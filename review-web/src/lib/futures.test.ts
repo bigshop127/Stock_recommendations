@@ -30,6 +30,7 @@ import {
   SYMBOL_PRESETS,
   equityStats,
   summarizeCashFlows,
+  holdingAsBatch,
   flowDelta,
   type FuturesPosition,
   type FuturesSpec,
@@ -944,6 +945,45 @@ describe('equityStats', () => {
     expect(res.days).toBe(0);
     expect(res.first).toBeNull();
     expect(res.total_return).toBeNull();
+  });
+});
+
+describe('holdingAsBatch：把現有部位壓成分批試算的第 1 筆', () => {
+  it('平均成本是口數加權，不是各筆進場價的算術平均', () => {
+    const h = holdingAsBatch([
+      pos({ id: 'a', lots: 20, entry_price: 104.31 }),
+      pos({ id: 'b', lots: 3, entry_price: 104.5 }),
+    ]);
+    expect(h.lots).toBe(23);
+    // 算術平均會是 104.405，差 0.08 元＝23 口約 1,840 元的成本誤差
+    expect(h.avg_price).toBeCloseTo((104.31 * 20 + 104.5 * 3) / 23, 10);
+    expect(h.avg_price).not.toBeCloseTo(104.405, 3);
+    expect(h.mixed).toBe(false);
+  });
+
+  it('多空並存 → 數字照給但標 mixed（成本混在一起沒有意義）', () => {
+    const h = holdingAsBatch([
+      pos({ id: 'a', lots: 2, side: 'long', entry_price: 100 }),
+      pos({ id: 'b', lots: 1, side: 'short', entry_price: 106 }),
+    ]);
+    expect(h.long_lots).toBe(2);
+    expect(h.short_lots).toBe(1);
+    expect(h.mixed).toBe(true);
+    expect(h.lots).toBe(3);
+  });
+
+  it('沒有部位／口數或價格為 0 的部位 → 全 0，不會生出 NaN', () => {
+    expect(holdingAsBatch([])).toEqual({ lots: 0, avg_price: 0, long_lots: 0, short_lots: 0, mixed: false });
+    const h = holdingAsBatch([pos({ lots: 0 }), pos({ id: 'z', entry_price: 0 })]);
+    expect(h.lots).toBe(0);
+    expect(h.avg_price).toBe(0);
+  });
+
+  it('壓成一筆後的名目金額與逐筆加總相同（這格會被拿去跑風險模型）', () => {
+    const list = [pos({ id: 'a', lots: 20, entry_price: 104.31 }), pos({ id: 'b', lots: 3, entry_price: 104.5 })];
+    const h = holdingAsBatch(list);
+    const each = list.reduce((s, x) => s + x.entry_price * x.lots * spec.contract_size, 0);
+    expect(h.avg_price * h.lots * spec.contract_size).toBeCloseTo(each, 6);
   });
 });
 
