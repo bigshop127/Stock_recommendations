@@ -11,7 +11,8 @@ from PIL import Image
 
 import vision as V
 
-DEFAULT_SHOT = r"C:\CC AI Agent\.claude\image-cache\4db58fa0-88c6-4176-93d2-9a6d827ba0df\1.png"
+# 測資圖放在 repo 裡（見 test_app.py 的說明）。不見了就跑 testdata/make_board.py。
+DEFAULT_SHOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "testdata", "board.png")
 
 # 人工從截圖量出來的真值：格縫中心在 x≈55.5/167/280.5/392.5/505、y≈56/169/283/398.5/508
 TRUE_REGION = V.Region(56, 56, 450, 452)

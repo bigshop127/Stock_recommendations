@@ -14,7 +14,10 @@ import tempfile
 import numpy as np
 from PIL import Image
 
-SHOT = r"C:\CC AI Agent\.claude\image-cache\4db58fa0-88c6-4176-93d2-9a6d827ba0df\1.png"
+# 測資圖放在 repo 裡。以前指向 Claude 的暫存圖片快取，那個檔案每傳一張新圖
+# 就會被覆蓋掉 —— 2026-08-15 真的被蓋掉一次，四個套件一起紅。
+# 檔案不見了就跑 `python testdata/make_board.py` 重新產生。
+SHOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "testdata", "board.png")
 TRUE_REGION = (56, 56, 450, 452)
 TRUE_BOARD = [1, 1, 5, 2, 2, 3, 6, 1, 0, 5, 1, 7, 0, 0, 0, 1]
 
@@ -30,7 +33,7 @@ def check(name, ok, detail=""):
 
 def main():
     if not os.path.exists(SHOT):
-        print(f"找不到測試截圖：{SHOT}")
+        print(f"找不到測試盤面圖：{SHOT}\n跑 `python testdata/make_board.py` 產生一張。")
         return 1
 
     sandbox = tempfile.mkdtemp(prefix="fruit2048_test_")
@@ -345,6 +348,18 @@ def main():
             want = [str(v) if v else "" for v in TRUE_BOARD]
             check("盤面 16 格都顯示正確", shown == want, f"{shown}")
 
+            # 盤面在變的那一兩輪，箭頭還是上一步的建議。要調暗，不然使用者
+            # 分不出「這是新算的」還是「還沒跟上」，會照著過期的方向滑。
+            lit = ui.arrow.cget("fg")
+            ui._render(A.Status("settling", "畫面變動中"))
+            ui.update()
+            check("畫面變動中箭頭會變暗", ui.arrow.cget("fg") == A.FG_DIM,
+                  f"{ui.arrow.cget('fg')}")
+            check("箭頭本身留著，只是變暗", ui.arrow.cget("text") == S.MOVE_ARROW[st2.result.best])
+            ui._render(st2)
+            ui.update()
+            check("算好之後箭頭亮回來", ui.arrow.cget("fg") == lit, f"{ui.arrow.cget('fg')}")
+
             fresh = eng.rec.read(board_img)  # 學過之後的判讀，才會有預填值
             dlg = A.LabelDialog(ui, fresh, focus_unknown=False)
             ui.update()
@@ -380,12 +395,17 @@ def main():
             ui.update()
 
             # 視窗蓋在盤面上時滑動會點到自己，這個偵測是唯一的防線
+            #
+            # 搬完視窗一定要 update() 不能只 update_idletasks()：geometry() 只是
+            # 「跟視窗管理員要一個位置」，winfo_rootx() 要等 ConfigureNotify 進來
+            # 才會更新，而那是真的事件、idletasks 不處理。只等 idletasks 的話，
+            # 這幾項會看心情通過。
             r = ui.engine.region
             ui.geometry(f"+{r.left + 20}+{r.top + 60}")
-            ui.update_idletasks()
+            ui.update()
             check("視窗蓋住盤面時偵測得到", ui._overlaps_board())
             ui.geometry(f"+{r.right + 80}+{r.bottom + 80}")
-            ui.update_idletasks()
+            ui.update()
             check("移開之後不會誤判", not ui._overlaps_board())
 
             print("      · 標記完新水果要自己接回去（使用者回報：標記完就不動了）")
@@ -411,11 +431,11 @@ def main():
             ui.engine.autoplay = True
             ui.engine.stop_autoplay(resumable=True)
             ui.geometry(f"+{r.left + 20}+{r.top + 60}")
-            ui.update_idletasks()
+            ui.update()
             check("視窗蓋住盤面時寧可不接回去",
                   not ui.resume_autoplay_if_interrupted() and not ui.engine.autoplay)
             ui.geometry(f"+{r.right + 80}+{r.bottom + 80}")
-            ui.update_idletasks()
+            ui.update()
 
             # 校準/標記/吸附會自己暫停再恢復，按鈕字樣不能停在「繼續」
             ui.worker.pause()
@@ -512,7 +532,16 @@ def main():
             check("設定視窗擋得住亂填", "不是數字" in settings.hint.cget("text"))
             settings.vars["time_budget"].set("99")
             settings._apply()
-            check("設定視窗擋得住超出範圍", "0.05 到 5" in settings.hint.cget("text"))
+            check("設定視窗擋得住超出範圍", "0.05 到 1.5" in settings.hint.cget("text"),
+                  settings.hint.cget("text"))
+            # 真的踩過的坑：想填 0.5 卻打成 05，float() 收成 5.0 照單全收，
+            # 每步先想 5 秒，整個看起來像當機。上限壓低就是要讓它跳紅字。
+            before = ui.cfg.time_budget
+            settings.vars["time_budget"].set("05")
+            settings._apply()
+            check("少打小數點會被擋下來（05 不是 0.5）",
+                  "0.05 到 1.5" in settings.hint.cget("text") and ui.cfg.time_budget == before,
+                  f"time_budget={ui.cfg.time_budget}")
             settings.vars["time_budget"].set("0.4")
             settings._apply()
             check("合法值套用得進去", ui.cfg.time_budget == 0.4)
