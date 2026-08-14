@@ -16,10 +16,12 @@ from PIL import Image
 
 # 測資圖放在 repo 裡。以前指向 Claude 的暫存圖片快取，那個檔案每傳一張新圖
 # 就會被覆蓋掉 —— 2026-08-15 真的被蓋掉一次，四個套件一起紅。
-# 檔案不見了就跑 `python testdata/make_board.py` 重新產生。
 SHOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "testdata", "board.png")
-TRUE_REGION = (56, 56, 450, 452)
-TRUE_BOARD = [1, 1, 5, 2, 2, 3, 6, 1, 0, 5, 1, 7, 0, 0, 0, 1]
+# 盤面範圍是獨立量出來的（格縫的亮度谷底做最小平方），不是拿 autofit 的輸出當真值，
+# 不然「測 autofit 準不準」就變成自己考自己。細格搜尋得到 x 起點 41.0 格距 186.60、
+# y 起點 35.0 格距 187.60。
+TRUE_REGION = (41, 35, 746, 750)
+TRUE_BOARD = [0, 0, 0, 1, 0, 1, 0, 2, 0, 2, 1, 2, 1, 4, 7, 9]
 
 _failures = []
 
@@ -33,7 +35,7 @@ def check(name, ok, detail=""):
 
 def main():
     if not os.path.exists(SHOT):
-        print(f"找不到測試盤面圖：{SHOT}\n跑 `python testdata/make_board.py` 產生一張。")
+        print(f"找不到測試盤面圖：{SHOT}\n它跟程式一起進版控，用 `git checkout` 就能還原。")
         return 1
 
     sandbox = tempfile.mkdtemp(prefix="fruit2048_test_")
@@ -466,15 +468,27 @@ def main():
                 ov = A.CalibrationOverlay(ui, screen, 4, 4, lambda c: got.setdefault("cal", c))
                 return ov, got
 
+            # 使用者「應該會點在哪」由 TRUE_REGION 推出來。寫死絕對座標的話，
+            # 換一張測資圖就會算出完全不同的範圍，而且錯誤看起來像校準壞掉。
+            px, py = TRUE_REGION[2] / 4, TRUE_REGION[3] / 4
+
+            def cell_center(r, c):
+                return (int(round(TRUE_REGION[0] + (c + 0.5) * px)),
+                        int(round(TRUE_REGION[1] + (r + 0.5) * py)))
+
+            cw = int(round(px * 0.84))   # 使用者框的一格會比格距小一點（格線與間隙不算）
+            tlx, tly = cell_center(0, 0)
+            bx, by = tlx - cw // 2, tly - cw // 2
+
             ov, got = run_overlay()
             check("一開始是第 1 步", ov.phase == 1)
-            ov._press(Ev(65, 65)); ov._drag(Ev(160, 160)); ov._release(Ev(160, 160))
+            ov._press(Ev(bx, by)); ov._drag(Ev(bx + cw, by + cw)); ov._release(Ev(bx + cw, by + cw))
             check("框完左上一格 → 進入第 2 步", ov.phase == 2, f"phase={ov.phase}")
-            check("記下格子大小", tuple(ov.cell_box) == (65, 65, 95, 95), f"{tuple(ov.cell_box)}")
-            ov._press(Ev(450, 112))
-            ov._press(Ev(450, 452))
+            check("記下格子大小", tuple(ov.cell_box) == (bx, by, cw, cw), f"{tuple(ov.cell_box)}")
+            ov._press(Ev(*cell_center(0, 3)))
+            ov._press(Ev(*cell_center(3, 3)))
             check("點兩個角落還不算完成", "cal" not in got and len(ov.points) == 2)
-            ov._press(Ev(112, 452))
+            ov._press(Ev(*cell_center(3, 0)))
             cal = got.get("cal")
             check("點滿三個角落就回報結果", cal is not None)
             if cal:
@@ -485,8 +499,8 @@ def main():
             ui.update()
 
             ov, got = run_overlay()
-            ov._press(Ev(65, 65)); ov._drag(Ev(160, 160)); ov._release(Ev(160, 160))
-            ov._press(Ev(450, 112))
+            ov._press(Ev(bx, by)); ov._drag(Ev(bx + cw, by + cw)); ov._release(Ev(bx + cw, by + cw))
+            ov._press(Ev(*cell_center(0, 3)))
             ov._undo()
             check("Backspace 退掉一個點", len(ov.points) == 0 and ov.phase == 2)
             ov._undo()

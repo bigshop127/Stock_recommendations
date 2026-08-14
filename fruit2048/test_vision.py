@@ -11,19 +11,19 @@ from PIL import Image
 
 import vision as V
 
-# 測資圖放在 repo 裡（見 test_app.py 的說明）。不見了就跑 testdata/make_board.py。
+# 測資圖放在 repo 裡（見 test_app.py 的說明）。
 DEFAULT_SHOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "testdata", "board.png")
 
-# 人工從截圖量出來的真值：格縫中心在 x≈55.5/167/280.5/392.5/505、y≈56/169/283/398.5/508
-TRUE_REGION = V.Region(56, 56, 450, 452)
+# 從截圖量出來的真值：格縫中心在 x≈41/227.6/414.2/600.8/787.4、y≈35/222.6/410.2/597.8/785.4
+TRUE_REGION = V.Region(41, 35, 746, 750)
 TOLERANCE_PX = 8
 
 # 截圖上的實際盤面（水果編號，0=空格）
 TRUE_BOARD = [
-    1, 1, 5, 2,
-    2, 3, 6, 1,
-    0, 5, 1, 7,
     0, 0, 0, 1,
+    0, 1, 0, 2,
+    0, 2, 1, 2,
+    1, 4, 7, 9,
 ]
 
 _failures = []
@@ -79,16 +79,23 @@ def main():
         return got, d
 
     print("1) autofit：從隨便框的範圍吸附到真正的格線")
-    for box in [(25, 30, 500, 505), (40, 40, 480, 490), (52, 50, 462, 466),
-                (35, 45, 495, 480), (48, 52, 470, 468), (30, 35, 490, 500),
-                (20, 25, 505, 510), (45, 48, 475, 472), (10, 20, 515, 520),
-                (50, 44, 466, 480)]:
+    # 模擬「使用者隨手框」：每邊各鬆一點。這些數字必須從 TRUE_REGION 推出來，
+    # 不能寫死絕對座標 —— 換一張測資圖時盤面大小就變了，寫死的話十項全紅，
+    # 而且看起來像 autofit 壞掉（實際上是測試自己的輸入過期）。
+    for ml, mt, mr, mb in [(31, 26, 19, 27), (16, 16, 14, 22), (4, 6, 8, 8),
+                           (21, 11, 24, 17), (8, 4, 12, 12), (26, 21, 14, 27),
+                           (36, 31, 19, 27), (11, 8, 14, 12), (46, 36, 19, 32),
+                           (6, 12, 10, 16)]:
+        box = (TRUE_REGION.left - ml, TRUE_REGION.top - mt,
+               TRUE_REGION.width + ml + mr, TRUE_REGION.height + mt + mb)
         got, d = try_fit(*box)
         check(f"框 {box}", d is not None and d <= TOLERANCE_PX,
               f"→ {tuple(got)} 最大誤差 {d}px" if got else "autofit 回 None")
 
     print("2) autofit：框得比盤面還緊時，靠外擴救回來")
-    tight = (60, 60, 440, 440)  # 比盤面小，正解不在搜尋空間裡
+    # 比盤面小，正解根本不在搜尋空間裡
+    tight = (TRUE_REGION.left + 8, TRUE_REGION.top + 8,
+             TRUE_REGION.width - 18, TRUE_REGION.height - 20)
     _, d_tight = try_fit(*tight)
     check("框太緊確實會吸偏（所以必須外擴）", d_tight is not None and d_tight > TOLERANCE_PX,
           f"誤差 {d_tight}px")
@@ -170,7 +177,8 @@ def main():
     print("9) 新水果：只有一格不認得時不該被當成漂移")
     fake = region.copy()
     boxes = grid.cell_boxes(TRUE_REGION.width, TRUE_REGION.height)
-    dst, src = boxes[8], boxes[2]  # 把葡萄那格搬到空格上，翻面＋換色版當成沒見過的水果
+    # 把西瓜那格搬到空格上，翻面＋換色版當成沒見過的水果
+    dst, src = boxes[8], boxes[13]
     patch = region[src[1]:src[3], src[0]:src[2]][::-1, :, ::-1]
     patch = np.asarray(Image.fromarray(patch).resize(
         (dst[2] - dst[0], dst[3] - dst[1]), Image.BILINEAR))
@@ -179,11 +187,12 @@ def main():
     check("恰好一格不認得", r.unknown_indices == [8], f"{r.unknown_indices}")
     check("不會被誤判成漂移", not r.looks_misaligned)
     n_before = len(db)
-    rec.learn([r.crops[8]], [9])
+    NEW_FRUIT = 11   # 盤面上沒出現過的編號（這遊戲的水果最高到 12）
+    rec.learn([r.crops[8]], [NEW_FRUIT])
     check("學會之後樣板增加", len(db) == n_before + 1)
-    check("再讀就認得了", rec.read(fake).cells[8] == 9)
+    check("再讀就認得了", rec.read(fake).cells[8] == NEW_FRUIT)
     check("其他格不受影響", rec.read(region).cells == TRUE_BOARD)
-    db.remove_label(9)
+    db.remove_label(NEW_FRUIT)
 
     print("10) 存檔 / 讀檔 round-trip")
     tmp = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_debug", "_tpl_test.json")
@@ -223,7 +232,7 @@ def main():
         pts = [(int(round(x)), int(round(y))) for x, y in pts]
         return box, pts
 
-    for target in (V.Region(56, 56, 450, 452), V.Region(0, 0, 400, 400),
+    for target in (TRUE_REGION, V.Region(0, 0, 400, 400),
                    V.Region(317, 88, 612, 613), V.Region(1200, 40, 260, 264)):
         box, pts = corners_of(target)
         cal = V.calibration_from_corners(box, *pts)
@@ -233,7 +242,9 @@ def main():
 
     box, pts = corners_of(TRUE_REGION)
     cal = V.calibration_from_corners(box, *pts)
-    check("格距算得對", abs(cal.pitch_x - 112.5) < 1 and abs(cal.pitch_y - 113) < 1,
+    check("格距算得對",
+          abs(cal.pitch_x - TRUE_REGION.width / 4) < 1
+          and abs(cal.pitch_y - TRUE_REGION.height / 4) < 1,
           f"{cal.pitch_x:.1f} x {cal.pitch_y:.1f}")
     check("點得準時 skew 接近 0", cal.skew < 1.0, f"{cal.skew:.2f}")
     check("inset 由格子大小反推出合理值", 0.04 <= cal.inset <= 0.30, f"{cal.inset:.3f}")
