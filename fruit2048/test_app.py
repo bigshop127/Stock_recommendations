@@ -1,0 +1,479 @@
+"""app.py 的端到端驗證。
+
+把螢幕擷取換成「永遠回傳那張真實遊戲截圖」的假來源，就能在沒有模擬器的情況下
+把「擷取 → 辨識 → 求解 → 顯示」整條路走完，也能檢查各種狀態下 UI 不會炸掉。
+
+    python test_app.py
+"""
+
+import os
+import shutil
+import sys
+import tempfile
+
+import numpy as np
+from PIL import Image
+
+SHOT = r"C:\CC AI Agent\.claude\image-cache\4db58fa0-88c6-4176-93d2-9a6d827ba0df\1.png"
+TRUE_REGION = (56, 56, 450, 452)
+TRUE_BOARD = [1, 1, 5, 2, 2, 3, 6, 1, 0, 5, 1, 7, 0, 0, 0, 1]
+
+_failures = []
+
+
+def check(name, ok, detail=""):
+    print(f"  [{'PASS' if ok else 'FAIL'}] {name}{'  ' + detail if detail else ''}")
+    if not ok:
+        _failures.append(name)
+    return ok
+
+
+def main():
+    if not os.path.exists(SHOT):
+        print(f"找不到測試截圖：{SHOT}")
+        return 1
+
+    sandbox = tempfile.mkdtemp(prefix="fruit2048_test_")
+    try:
+        import app as A
+        import vision as V
+        import solver as S
+
+        # 別動到使用者真正的設定檔與樣板庫
+        A.CONFIG_PATH = os.path.join(sandbox, "config.json")
+        A.TEMPLATES_PATH = os.path.join(sandbox, "templates.json")
+
+        full = np.asarray(Image.open(SHOT).convert("RGB"))
+        l, t, w, h = TRUE_REGION
+        board_img = full[t:t + h, l:l + w]
+
+        class FakeGrabber:
+            """假的擷取來源：不管要哪一塊，都回傳那張截圖裡的盤面。"""
+
+            backend = "fake"
+            calls = 0
+
+            def virtual_screen(self):
+                return V.Region(0, 0, full.shape[1], full.shape[0])
+
+            def grab(self, region):
+                FakeGrabber.calls += 1
+                return board_img.copy()
+
+        print("1) 設定檔存讀")
+        cfg = A.Config()
+        cfg.region = {"left": l, "top": t, "width": w, "height": h}
+        cfg.time_budget = 0.25
+        cfg.save()
+        check("寫得出檔案", os.path.exists(A.CONFIG_PATH))
+        again = A.Config.load()
+        check("讀回來一樣", again.region == cfg.region and again.time_budget == 0.25)
+        check("壞檔案 → 回預設值而不是炸掉",
+              (open(A.CONFIG_PATH, "w").write("{ not json"), A.Config.load().rows)[1] == 4)
+        cfg.save()
+
+        print("2) 沒校準時的狀態")
+        blank = A.Config()
+        eng_blank = A.Engine(blank)
+        eng_blank.grabber = FakeGrabber()
+        st = eng_blank.step()
+        check("回報 waiting", st.kind == "waiting", st.message)
+
+        print("3) 樣板庫是空的時候")
+        eng = A.Engine(A.Config.load())
+        eng.grabber = FakeGrabber()
+        st = eng.step()
+        check("回報 unknown", st.kind == "unknown", st.message)
+        check("附帶 reading 讓 UI 可以開標記視窗", st.reading is not None)
+
+        print("4) 標記之後跑完整條管線")
+        reading = eng.rec.read(eng.snapshot())
+        added = eng.rec.learn(reading.crops, TRUE_BOARD)
+        eng.db.save(A.TEMPLATES_PATH)
+        eng.rebuild()
+        print(f"      學到 {added} 張樣板")
+
+        st1 = eng.step()
+        check("第一次讀到 → settling（等待確認）", st1.kind == "settling", st1.kind)
+        st2 = eng.step()
+        check("第二次讀到同樣盤面 → ok", st2.kind == "ok", f"{st2.kind}: {st2.message}")
+        check("辨識出的盤面正確", st2.cells == TRUE_BOARD, f"{st2.cells}")
+        if st2.result:
+            best = st2.result.best
+            print(f"      建議 {S.MOVE_ARROW[best]}{S.MOVE_NAME[best]}"
+                  f"（深度 {st2.result.depth}, {st2.result.elapsed * 1000:.0f}ms）")
+            check("建議方向合法", best is not None and
+                  S.apply_move(S.from_list(TRUE_BOARD), best) != S.from_list(TRUE_BOARD))
+            check("四個方向都有評分", len(st2.result.scores) == 4)
+
+        print("5) 同一個盤面不重算")
+        before = FakeGrabber.calls
+        t0 = __import__("time").perf_counter()
+        st3 = eng.step()
+        elapsed = __import__("time").perf_counter() - t0
+        check("有再抓一次畫面", FakeGrabber.calls > before)
+        check("但沒有重新求解（快很多）", elapsed < 0.05, f"{elapsed * 1000:.1f}ms")
+        check("結果沿用", st3.result is st2.result)
+
+        print("6) 樣板庫存檔之後，新的 Engine 直接可用")
+        eng2 = A.Engine(A.Config.load())
+        eng2.grabber = FakeGrabber()
+        eng2.step()
+        st = eng2.step()
+        check("不用重新標記就能用", st.kind == "ok", f"{st.kind}: {st.message}")
+
+        print("7) 校準跑掉時的回報")
+        class DriftGrabber(FakeGrabber):
+            def grab(self, region):
+                return full[t + 7:t + 7 + h, l + 7:l + 7 + w].copy()
+
+        eng.grabber = DriftGrabber()
+        st = eng.step()
+        check("回報 misaligned", st.kind == "misaligned", f"{st.kind}: {st.message}")
+        check("訊息有提到重新吸附", "重新吸附" in st.message)
+        check("有帶盤面回去，UI 才畫得出哪幾格認不得", st.cells is not None)
+        eng.grabber = FakeGrabber()
+
+        print("8) 遊戲結束的回報")
+        dead = A.Engine(A.Config.load())
+        dead.grabber = FakeGrabber()
+        dead._confirming = [1, 2, 1, 2, 2, 1, 2, 1, 1, 2, 1, 2, 2, 1, 2, 1]
+
+        class DeadRec:
+            def read(self, img):
+                cells = [1, 2, 1, 2, 2, 1, 2, 1, 1, 2, 1, 2, 2, 1, 2, 1]
+                return V.Reading(cells, [], [], True, [])
+
+        dead.rec = DeadRec()
+        st = dead.step()
+        check("回報 nomove", st.kind == "nomove", f"{st.kind}: {st.message}")
+
+        print("9) 擷取失敗不會讓背景執行緒死掉")
+        class BrokenGrabber(FakeGrabber):
+            def grab(self, region):
+                raise OSError("模擬器關掉了")
+
+        eng.grabber = BrokenGrabber()
+        st = eng.step()
+        check("轉成 error 狀態", st.kind == "error", f"{st.kind}: {st.message}")
+        eng.grabber = FakeGrabber()
+        eng.step()
+        check("恢復之後能繼續", eng.step().kind == "ok")
+
+        print("10) 自動操控的狀態機（用假的 controller，不會真的動滑鼠）")
+
+        class FakeController:
+            def __init__(self):
+                self.calls = []
+                self.raise_next = None
+
+            def play(self, region, move):
+                if self.raise_next:
+                    err, self.raise_next = self.raise_next, None
+                    raise err
+                self.calls.append(move)
+
+        class ScriptedRec:
+            """繞過影像辨識，直接餵指定盤面，好單獨測自動操控的邏輯。"""
+
+            def __init__(self, cells):
+                self.cells = list(cells)
+                self.readable = True
+
+            def read(self, img):
+                if self.readable:
+                    return V.Reading(list(self.cells), [], [], True, [])
+                return V.Reading([None] * 16, [], [], False, list(range(16)))
+
+        def build_auto(**over):
+            c = A.Config.load()
+            c.move_interval = 0.0
+            c.retry_after = 0.0
+            c.max_retries = 2
+            c.animation_grace = 0.0
+            for k, v in over.items():
+                setattr(c, k, v)
+            e = A.Engine(c)
+            e.grabber = FakeGrabber()
+            e.rec = ScriptedRec(TRUE_BOARD)
+            ctl = FakeController()
+            e.controller = ctl
+            return e, ctl
+
+        def pump(e, n=2):
+            last = None
+            for _ in range(n):
+                last = e.step()
+            return last
+
+        DEAD = [1, 2, 1, 2, 2, 1, 2, 1, 1, 2, 1, 2, 2, 1, 2, 1]
+
+        e, ctl = build_auto()
+        pump(e, 4)
+        check("沒開自動時不會動手", ctl.calls == [], f"{ctl.calls}")
+
+        e, ctl = build_auto()
+        e.autoplay = True
+        st = pump(e, 2)
+        check("開了自動 → 走一步", len(ctl.calls) == 1, f"{ctl.calls}")
+        check("走的方向就是建議方向", ctl.calls[0] == st.result.best if st.result else False)
+        check("步數有計數", e.moves_played == 1, f"{e.moves_played}")
+
+        e, ctl = build_auto(retry_after=99.0)
+        e.autoplay = True
+        pump(e, 2)
+        pump(e, 6)     # 盤面完全沒變
+        check("盤面沒變化時不會連續猛滑", len(ctl.calls) == 1, f"{ctl.calls}")
+
+        e, ctl = build_auto()   # retry_after=0，模擬「滑了沒反應」
+        e.autoplay = True
+        st = None
+        for _ in range(20):
+            st = e.step()
+            if st.kind == "stopped":
+                break
+        check("一直沒反應會自動停手", st.kind == "stopped", f"{st.kind}: {st.message}")
+        check("停手後 autoplay 關閉", not e.autoplay)
+        check("重試次數符合設定（1 次首發 + 2 次重試）", len(ctl.calls) == 3, f"{ctl.calls}")
+        check("訊息說得出原因", "沒變化" in st.message, st.message)
+
+        e, ctl = build_auto(retry_after=99.0)
+        e.autoplay = True
+        pump(e, 2)
+        e.rec.cells = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 1, 2]  # 盤面真的變了
+        pump(e, 2)
+        check("盤面變了就繼續下一步", len(ctl.calls) == 2, f"{ctl.calls}")
+        check("重試計數有歸零", e._retry == 0)
+
+        e, ctl = build_auto()
+        e.autoplay = True
+        ctl.raise_next = A.C.InputError("模擬送不進去")
+        st = pump(e, 2)
+        check("送不出去就停手並回報", st.kind == "error" and not e.autoplay,
+              f"{st.kind}: {st.message}")
+
+        e, ctl = build_auto()
+        e.autoplay = True
+        e.rec.cells = DEAD
+        st = pump(e, 2)
+        check("遊戲結束會停手", st.kind == "nomove" and not e.autoplay, f"{st.kind}")
+
+        e, ctl = build_auto(animation_grace=5.0)
+        e.autoplay = True
+        pump(e, 2)                      # 走一步，記下時間
+        e.rec.readable = False          # 動畫中讀不到完整盤面
+        st = e.step()
+        check("剛滑完讀不到 → 當成動畫，不嚇人", st.kind == "settling", f"{st.kind}: {st.message}")
+        check("動畫期間不會關掉自動", e.autoplay)
+
+        e, ctl = build_auto(animation_grace=0.0)
+        e.autoplay = True
+        pump(e, 2)
+        e.rec.readable = False
+        st = e.step()
+        check("動畫期過了還讀不到 → 停手", not e.autoplay, f"{st.kind}: {st.message}")
+        check("訊息有說自動操控停了", "自動操控已停止" in st.message, st.message)
+
+        e, ctl = build_auto()
+        e.autoplay = True
+        original_panic = A.C.panic_pressed
+        A.C.panic_pressed = lambda key=None: True
+        try:
+            st = e.step()
+        finally:
+            A.C.panic_pressed = original_panic
+        check("按下緊急停止鍵就停手", st.kind == "stopped" and not e.autoplay,
+              f"{st.kind}: {st.message}")
+        check("訊息有提到那顆鍵", e.cfg.panic_key in st.message, st.message)
+
+        print("11) UI：建得起來、各種狀態都畫得出來")
+        try:
+            ui = A.AssistApp()
+        except Exception as e:
+            check("AssistApp 建構", False, f"{type(e).__name__}: {e}")
+            return 1
+        try:
+            ui.worker.pause()
+            ui.engine.grabber = FakeGrabber()
+            ui.update()
+            check("AssistApp 建構", True)
+
+            states = [
+                A.Status("waiting", "還沒校準"),
+                A.Status("unknown", "有新水果", reading=reading),
+                A.Status("misaligned", "校準跑掉了", reading=reading),
+                A.Status("settling", "畫面變動中"),
+                A.Status("error", "抓不到畫面"),
+                st2,
+                A.Status("nomove", "結束了", cells=TRUE_BOARD, result=st2.result),
+            ]
+            for s in states:
+                ui._render(s)
+                ui.update()
+            check("七種狀態都渲染成功", True)
+
+            ui.flash("測試訊息")
+            ui.update()
+            check("flash 訊息", ui.status.cget("text") == "測試訊息")
+
+            ui._render(st2)
+            ui.update()
+            check("建議方向有顯示在標題", S.MOVE_NAME[st2.result.best] in ui.move_name.cget("text"),
+                  ui.move_name.cget("text"))
+            shown = [ui.cells[i].cget("text") for i in range(16)]
+            want = [str(v) if v else "" for v in TRUE_BOARD]
+            check("盤面 16 格都顯示正確", shown == want, f"{shown}")
+
+            fresh = eng.rec.read(board_img)  # 學過之後的判讀，才會有預填值
+            dlg = A.LabelDialog(ui, fresh, focus_unknown=False)
+            ui.update()
+            check("標記視窗建得起來", len(dlg.entries) == 16)
+            check("標記視窗有預填目前判讀",
+                  [e.get() for e in dlg.entries] == [str(v) for v in TRUE_BOARD])
+            dlg.destroy()
+            ui.update()
+
+            tuner = A.RegionTuner(ui, V.Region(*TRUE_REGION))
+            ui.update()
+            before_left = tuner.region.left
+            tuner._nudge(-3, 2)
+            ui.update()
+            check("微調視窗建得起來且方向鍵有效果",
+                  tuner.region.left == before_left - 3 and tuner.region.top == TRUE_REGION[1] + 2)
+            # 校準期間背景是暫停的，中途放棄不能讓程式卡在暫停狀態
+            ui.worker.pause()
+            tuner.destroy()
+            ui.update()
+            check("微調視窗中途關掉會恢復背景偵測", not ui.worker.paused)
+
+            check("自動玩按鈕預設是關閉狀態", "開始自動玩" in ui.auto_btn.cget("text"))
+            check("預設不會自己開始", not ui.engine.autoplay)
+            ui.engine.autoplay = True
+            ui._sync_auto_note()
+            ui.update()
+            check("開啟後按鈕變成停止", "停止自動玩" in ui.auto_btn.cget("text"))
+            check("旁邊有寫緊急停止鍵", ui.cfg.panic_key in ui.auto_note.cget("text"),
+                  ui.auto_note.cget("text"))
+            ui.engine.stop_autoplay()
+            ui._sync_auto_note()
+            ui.update()
+
+            # 視窗蓋在盤面上時滑動會點到自己，這個偵測是唯一的防線
+            r = ui.engine.region
+            ui.geometry(f"+{r.left + 20}+{r.top + 60}")
+            ui.update_idletasks()
+            check("視窗蓋住盤面時偵測得到", ui._overlaps_board())
+            ui.geometry(f"+{r.right + 80}+{r.bottom + 80}")
+            ui.update_idletasks()
+            check("移開之後不會誤判", not ui._overlaps_board())
+
+            check("暫停會一併關掉自動操控",
+                  (setattr(ui.engine, "autoplay", True), ui.toggle_pause(),
+                   not ui.engine.autoplay)[2])
+            ui.toggle_pause()   # 恢復
+            check("校準會一併關掉自動操控",
+                  (setattr(ui.engine, "autoplay", True), ui.engine.stop_autoplay(),
+                   not ui.engine.autoplay)[2])
+
+            print("      · 兩段式校準遮罩")
+
+            class Ev:
+                def __init__(self, x, y):
+                    self.x, self.y = x, y
+
+            screen = V.Region(0, 0, 1920, 1080)   # 讓畫布座標＝螢幕座標，好推算
+
+            def run_overlay():
+                got = {}
+                ov = A.CalibrationOverlay(ui, screen, 4, 4, lambda c: got.setdefault("cal", c))
+                return ov, got
+
+            ov, got = run_overlay()
+            check("一開始是第 1 步", ov.phase == 1)
+            ov._press(Ev(65, 65)); ov._drag(Ev(160, 160)); ov._release(Ev(160, 160))
+            check("框完左上一格 → 進入第 2 步", ov.phase == 2, f"phase={ov.phase}")
+            check("記下格子大小", tuple(ov.cell_box) == (65, 65, 95, 95), f"{tuple(ov.cell_box)}")
+            ov._press(Ev(450, 112))
+            ov._press(Ev(450, 452))
+            check("點兩個角落還不算完成", "cal" not in got and len(ov.points) == 2)
+            ov._press(Ev(112, 452))
+            cal = got.get("cal")
+            check("點滿三個角落就回報結果", cal is not None)
+            if cal:
+                d = max(abs(cal.region.left - TRUE_REGION[0]), abs(cal.region.top - TRUE_REGION[1]),
+                        abs(cal.region.width - TRUE_REGION[2]), abs(cal.region.height - TRUE_REGION[3]))
+                check("算出來的範圍對得上真值", d <= 2, f"{tuple(cal.region)} 誤差 {d}px")
+                check("inset 也一起算出來", 0.04 <= cal.inset <= 0.30, f"{cal.inset:.3f}")
+            ui.update()
+
+            ov, got = run_overlay()
+            ov._press(Ev(65, 65)); ov._drag(Ev(160, 160)); ov._release(Ev(160, 160))
+            ov._press(Ev(450, 112))
+            ov._undo()
+            check("Backspace 退掉一個點", len(ov.points) == 0 and ov.phase == 2)
+            ov._undo()
+            check("再退一次回到第 1 步", ov.phase == 1 and ov.cell_box is None)
+            ov._cancel()
+            check("取消回報 None", got.get("cal", "missing") is None)
+            ui.update()
+
+            ov, got = run_overlay()
+            ov._press(Ev(65, 65)); ov._drag(Ev(160, 160)); ov._release(Ev(160, 160))
+            ov._press(Ev(112, 452)); ov._press(Ev(450, 452)); ov._press(Ev(450, 112))  # 順序反了
+            check("順序點反 → 不會關掉視窗，而是就地提示",
+                  "cal" not in got and ov.points == [] and ov.winfo_exists())
+            check("錯誤訊息有顯示出來",
+                  "不合理" in ov.canvas.itemcget(ov.error_id, "text"),
+                  ov.canvas.itemcget(ov.error_id, "text")[:30])
+            ov._cancel()
+            ui.update()
+
+            ov, got = run_overlay()
+            ov._press(Ev(100, 100)); ov._drag(Ev(105, 105)); ov._release(Ev(105, 105))
+            check("框太小不會進下一步", ov.phase == 1)
+            check("有提示框太小", "太小" in ov.canvas.itemcget(ov.error_id, "text"))
+            ov._cancel()
+            ui.update()
+
+            settings = A.SettingsDialog(ui)
+            ui.update()
+            method_var, method_map = settings.vars["autoplay_method"]
+            check("設定視窗有操控方式下拉選單", set(method_map.values()) == set(A.C.Controller.METHODS),
+                  f"{sorted(method_map.values())}")
+            method_var.set(A.METHOD_LABELS["arrows"])
+            settings._apply()
+            check("操控方式改得動", ui.cfg.autoplay_method == "arrows", ui.cfg.autoplay_method)
+            check("引擎的 controller 跟著換", ui.engine.controller.method == "arrows")
+            ui.cfg.autoplay_method = "swipe"
+            ui.apply_config()
+
+            settings = A.SettingsDialog(ui)
+            ui.update()
+            settings.vars["time_budget"].set("abc")
+            settings._apply()
+            check("設定視窗擋得住亂填", "不是數字" in settings.hint.cget("text"))
+            settings.vars["time_budget"].set("99")
+            settings._apply()
+            check("設定視窗擋得住超出範圍", "0.05 到 5" in settings.hint.cget("text"))
+            settings.vars["time_budget"].set("0.4")
+            settings._apply()
+            check("合法值套用得進去", ui.cfg.time_budget == 0.4)
+            ui.update()
+        finally:
+            ui.worker.stop()
+            ui.destroy()
+
+        print()
+        if _failures:
+            print(f"有 {len(_failures)} 項失敗 ❌")
+            for f in _failures:
+                print(f"  - {f}")
+            return 1
+        print("全部通過 ✅")
+        return 0
+    finally:
+        shutil.rmtree(sandbox, ignore_errors=True)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

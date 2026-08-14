@@ -1,0 +1,4 @@
+__pycache__/
+_debug/
+config.json
+templates.json
