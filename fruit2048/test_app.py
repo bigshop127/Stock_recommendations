@@ -272,7 +272,28 @@ def main():
         e.rec.readable = False
         st = e.step()
         check("動畫期過了還讀不到 → 停手", not e.autoplay, f"{st.kind}: {st.message}")
-        check("訊息有說自動操控停了", "自動操控已停止" in st.message, st.message)
+        check("訊息有說自動操控停了", "自動操控先停著" in st.message, st.message)
+        check("認不得停手是『可接回去』的", e.autoplay_resumable)
+        for _ in range(5):
+            e.step()        # 認不得的狀態每輪都會再叫一次 stop_autoplay
+        check("連續幾輪認不得也不會把記號洗掉", e.autoplay_resumable)
+        e.rec.readable = True
+        e.stop_autoplay()   # 使用者自己按停止 → 就不該再自己接回去
+        check("非辨識問題的停手會清掉記號", not e.autoplay_resumable)
+
+        e, ctl = build_auto()
+        e.autoplay = True
+        original_panic = A.C.panic_pressed
+        A.C.panic_pressed = lambda key=None: True
+        try:
+            e.step()
+        finally:
+            A.C.panic_pressed = original_panic
+        check("緊急停止不留可接回去的記號", not e.autoplay_resumable)
+
+        e, ctl = build_auto()
+        e.stop_autoplay(resumable=True)   # 本來就沒在自動玩
+        check("沒在自動玩就不會留下記號", not e.autoplay_resumable)
 
         e, ctl = build_auto()
         e.autoplay = True
@@ -366,6 +387,43 @@ def main():
             ui.geometry(f"+{r.right + 80}+{r.bottom + 80}")
             ui.update_idletasks()
             check("移開之後不會誤判", not ui._overlaps_board())
+
+            print("      · 標記完新水果要自己接回去（使用者回報：標記完就不動了）")
+            ui.engine.autoplay = True
+            ui.engine.stop_autoplay(resumable=True)   # 模擬 step() 撞到沒見過的水果
+            ui.worker.pause()                         # 標記期間背景是停的
+            dlg = A.LabelDialog(ui, fresh, focus_unknown=False)
+            ui.update()
+            dlg._save()
+            ui.update()
+            check("標記完會自己接回自動操控", ui.engine.autoplay)
+            check("接回去之後背景偵測也是開的", not ui.worker.paused)
+            check("接回去之後記號就清掉", not ui.engine.autoplay_resumable)
+            check("按鈕字樣同步成停止自動玩", "停止自動玩" in ui.auto_btn.cget("text"))
+            ui.engine.stop_autoplay()
+
+            dlg = A.LabelDialog(ui, fresh, focus_unknown=False)
+            ui.update()
+            dlg._save()
+            ui.update()
+            check("沒在自動玩的話，標記完不會憑空開始搶滑鼠", not ui.engine.autoplay)
+
+            ui.engine.autoplay = True
+            ui.engine.stop_autoplay(resumable=True)
+            ui.geometry(f"+{r.left + 20}+{r.top + 60}")
+            ui.update_idletasks()
+            check("視窗蓋住盤面時寧可不接回去",
+                  not ui.resume_autoplay_if_interrupted() and not ui.engine.autoplay)
+            ui.geometry(f"+{r.right + 80}+{r.bottom + 80}")
+            ui.update_idletasks()
+
+            # 校準/標記/吸附會自己暫停再恢復，按鈕字樣不能停在「繼續」
+            ui.worker.pause()
+            ui._sync_pause_btn()
+            check("暫停時按鈕寫著繼續", ui.pause_btn.cget("text") == "繼續")
+            ui.worker.resume()
+            ui._sync_pause_btn()
+            check("背景自己恢復後按鈕字樣跟著回來", ui.pause_btn.cget("text") == "暫停")
 
             check("暫停會一併關掉自動操控",
                   (setattr(ui.engine, "autoplay", True), ui.toggle_pause(),

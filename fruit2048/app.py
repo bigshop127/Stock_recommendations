@@ -155,6 +155,9 @@ class Engine:
         self.db = V.TemplateDB.load(TEMPLATES_PATH, cfg.tolerance, cfg.min_margin)
         self.last_image: Optional[np.ndarray] = None
         self.autoplay = False          # 每次啟動都從關閉開始，見 Config 的註解
+        # 「本來在自動玩，只是被沒見過的水果／格線跑掉擋下來」的記號。
+        # 使用者把問題處理掉之後就自己接回去，不用再按一次開始（見 stop_autoplay）。
+        self.autoplay_resumable = False
         self.moves_played = 0
         self.rebuild()
 
@@ -184,7 +187,26 @@ class Engine:
         return Status(kind, message, autoplay=self.autoplay,
                       moves_played=self.moves_played, **kw)
 
-    def stop_autoplay(self) -> None:
+    def start_autoplay(self) -> None:
+        self.autoplay = True
+        self.autoplay_resumable = False
+        self._played_board = None
+        self._retry = 0
+
+    def stop_autoplay(self, resumable: bool = False) -> None:
+        """停下自動操控。
+
+        `resumable=True` 代表「只是被辨識問題擋下來」——使用者標記完新水果、
+        或重新吸附好格線之後，程式就自己接回去繼續玩。其他理由停下來的
+        （按了暫停、按了緊急停止鍵、送不出操作、遊戲結束）一律不接回去，
+        因為那些都是「使用者要它停」或「環境壞掉了」，自己重開會很嚇人。
+        """
+        if not resumable:
+            self.autoplay_resumable = False
+        elif self.autoplay:
+            # 認不得的那幾秒 step() 每一輪都會叫一次，只在真的從「開著」變「關掉」
+            # 的那一次記錄下來，後面幾輪不要把記號洗掉。
+            self.autoplay_resumable = True
         self.autoplay = False
         self._played_board = None
         self._retry = 0
@@ -237,8 +259,8 @@ class Engine:
             if len(self.db) == 0:
                 return self._status("unknown", "樣板庫是空的。按「② 標記水果」教它每一格是幾號。",
                                     reading=reading)
-            stopped = " 自動操控已停止。" if self.autoplay else ""
-            self.stop_autoplay()
+            stopped = " 自動操控先停著，處理好會自己接回去。" if self.autoplay else ""
+            self.stop_autoplay(resumable=True)
             if reading.looks_misaligned:
                 return self._status("misaligned",
                                     f"{len(reading.unknown_indices)} 格認不得 —— 多半是模擬器視窗移動過。"
@@ -775,7 +797,12 @@ class LabelDialog(tk.Toplevel):
 
         added = self.app.learn(self.reading.crops, labels)
         self.destroy()
-        self.app.flash(f"學到 {added} 張新樣板，樣板庫共 {len(self.app.engine.db)} 張")
+        learned = f"學到 {added} 張新樣板，樣板庫共 {len(self.app.engine.db)} 張"
+        if self.app.resume_autoplay_if_interrupted():
+            self.app.flash(f"{learned}；自動操控接回去了 —— "
+                           f"按 {self.app.cfg.panic_key} 可隨時停止", 6)
+        else:
+            self.app.flash(learned)
 
 
 # ---------------------------------------------------------------- 設定
@@ -1047,6 +1074,8 @@ class AssistApp(tk.Tk):
             self._sync_auto_note()
             self.flash(f"已按下 {self.cfg.panic_key}，自動操控停止")
 
+        self._sync_pause_btn()
+
         latest: Optional[Status] = None
         try:
             while True:
@@ -1056,6 +1085,17 @@ class AssistApp(tk.Tk):
         if latest is not None:
             self._render(latest)
         self.after(60, self._pump)
+
+    def _sync_pause_btn(self) -> None:
+        """讓「暫停／繼續」的字樣跟背景執行緒的真實狀態一致。
+
+        校準、標記、重新吸附都會自己暫停再恢復背景偵測。字樣如果只在
+        toggle_pause 裡改，走完那些流程就會對不上 —— 顯示「繼續」但其實在跑，
+        使用者按下去反而把它停掉。每輪 _pump 同步一次最省事。
+        """
+        want = "繼續" if self.worker.paused else "暫停"
+        if self.pause_btn.cget("text") != want:
+            self.pause_btn.config(text=want)
 
     def _sync_auto_note(self) -> None:
         on = self.engine.autoplay
@@ -1199,13 +1239,17 @@ class AssistApp(tk.Tk):
         with self.lock:
             ok = self.engine.refit_region()
         self.worker.resume()
+        if ok and self.resume_autoplay_if_interrupted():
+            self.flash("已重新吸附格線，自動操控接回去了", 6)
+            return
         self.flash("已重新吸附格線" if ok else "吸附失敗，請按「① 校準盤面」重框一次")
 
     def open_labeler(self) -> None:
         if self.engine.region is None:
             self.flash("請先校準盤面")
             return
-        self.engine.stop_autoplay()
+        # 標記期間先停手（不能一邊教一邊滑），但記著「本來在自動玩」，存完檔會接回去
+        self.engine.stop_autoplay(resumable=True)
         self._sync_auto_note()
         self.worker.pause()
         with self.lock:
@@ -1298,13 +1342,34 @@ class AssistApp(tk.Tk):
         ):
             return
 
-        self.engine.autoplay = True
-        self.engine._played_board = None
-        self.engine._retry = 0
+        self.engine.start_autoplay()
         self.worker.resume()
         self.pause_btn.config(text="暫停")
         self._sync_auto_note()
         self.flash(f"自動操控開始 —— 按 {self.cfg.panic_key} 可隨時停止", 6)
+
+    def resume_autoplay_if_interrupted(self) -> bool:
+        """把被辨識問題打斷的自動操控接回去。
+
+        使用者按「② 標記水果」或「重新吸附」，本來就是為了讓它繼續玩；
+        每次都還要再按一次「開始自動玩」＋確認視窗很煩。但只接「被打斷的」，
+        沒在自動玩的時候標記水果不會憑空開始搶滑鼠。
+        """
+        if not self.engine.autoplay_resumable:
+            return False
+        if self.engine.region is None or len(self.engine.db) == 0:
+            self.engine.autoplay_resumable = False
+            return False
+        if self.cfg.autoplay_method == "swipe" and self._overlaps_board():
+            self.engine.autoplay_resumable = False
+            self.flash("輔助器視窗蓋在盤面上，沒有自動接回去。"
+                       "請把視窗挪開再按「▶ 開始自動玩」。", 10)
+            return False
+        self.engine.start_autoplay()
+        self.worker.resume()
+        self.pause_btn.config(text="暫停")
+        self._sync_auto_note()
+        return True
 
     def toggle_pause(self) -> None:
         if self.worker.paused:
