@@ -108,5 +108,7 @@ data/futures_alert_state.json
 # 外部 OpenAPI 的磁碟快取，隨時可重抓，不該進版控
 data/taifex_margins.json
 data/twse_holidays.json
+# opt27 加權指數報價快取（gateway 自抓 TWSE MIS，同樣可重抓）
+data/twse_taiex.json
 # 保留下來的舊 log 樣本（見 ops-local-gateway-autostart.md §4.1b 的 pm2 當機迴圈）
 data/_archive/
