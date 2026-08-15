@@ -968,8 +968,16 @@ class RegionTuner(tk.Toplevel):
 
     def _accept(self) -> None:
         self._accepted = True
-        self.app.apply_region(self.region, self.inset)
+        region, inset = self.region, self.inset
+        # 先關掉自己再偵測視窗：apply_region 會用 WindowFromPoint 認「這個
+        # 位置現在是哪個視窗」，這個確認視窗自己是 topmost 又常常剛好蓋在
+        # 棋盤正中央，順序顛倒的話會把自己的 hwnd 當成模擬器鎖起來——
+        # 一按「確定」這個視窗馬上關掉，之後每次都找不到那個標題的視窗，
+        # 整個輔助器就卡死在「尚未校準」。update_idletasks() 是確保
+        # destroy() 真的先從畫面上消失，不是還沒來得及重繪就被打點。
         self.destroy()
+        self.app.update_idletasks()
+        self.app.apply_region(region, inset)
 
     def _render(self) -> None:
         try:
