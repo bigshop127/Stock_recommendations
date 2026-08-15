@@ -94,7 +94,7 @@ class Config:
     tolerance: float = V.DEFAULT_TOLERANCE
     min_margin: float = V.DEFAULT_MIN_MARGIN
     time_budget: float = 0.30
-    poll_ms: int = 100
+    poll_ms: int = 50
     opacity: float = 0.95
     spawn: List[List[float]] = field(default_factory=lambda: [[1, 1.0]])
 
@@ -105,7 +105,7 @@ class Config:
     swipe_fraction: float = 0.35        # 滑動距離佔盤面短邊的比例
     swipe_ms: int = 140                 # 一次滑動花多久
     swipe_steps: int = 14               # 拆成幾個中間點（太少會被當成瞬移）
-    move_interval: float = 0.35         # 兩步之間至少隔多久
+    move_interval: float = 0.20         # 兩步之間至少隔多久
     retry_after: float = 1.6            # 盤面沒變的話，隔多久重滑一次
     max_retries: int = 3                # 連續重試幾次仍沒反應就停下來
     animation_grace: float = 1.2        # 剛滑完這段時間內認不得都算動畫，不當成錯誤
@@ -842,7 +842,7 @@ DETECT_FIELDS = [
     # 但少打一個小數點（0.5 打成 05）就會變成 5 秒，整個慢到像當機。
     # 寧可跳出「要在 0.05 到 1.5 之間」的紅字，也不要默默收下。
     ("time_budget", "思考時間（秒）", "0.2～0.5 就很夠；記得打小數點", float, 0.05, 1.5),
-    ("poll_ms", "偵測間隔（毫秒）", "多久看一次畫面，100 左右最順", int, 50, 5000),
+    ("poll_ms", "偵測間隔（毫秒）", "多久看一次畫面，全自動可壓到 50", int, 50, 5000),
     ("tolerance", "辨識門檻", "越小越嚴格；認不得的格子變多就調大", float, 4.0, 40.0),
     ("inset", "取樣內縮比例", "每格四邊往內縮多少，0.05～0.20", float, 0.01, 0.45),
     ("opacity", "視窗透明度", "0.2～1.0", float, 0.2, 1.0),
