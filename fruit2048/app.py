@@ -54,6 +54,7 @@ enable_dpi_awareness()
 import tkinter as tk  # noqa: E402
 from tkinter import messagebox, ttk  # noqa: E402
 
+import adb as ADB  # noqa: E402
 import control as C  # noqa: E402
 import solver as S  # noqa: E402
 import vision as V  # noqa: E402
@@ -117,6 +118,10 @@ class Config:
     # 偵測不到（例如模擬器不是一般視窗）就是 None，退回原本寫死畫面座標的行為。
     window_anchor: Optional[dict] = None
 
+    # -- 畫面來源：screen＝PC 模擬器截圖（原本的路），adb＝USB 接實體手機 --
+    capture_source: str = "screen"
+    adb_serial: Optional[str] = None    # 多台裝置時指定序號；留白就自動挑「唯一一台已授權」的
+
     @classmethod
     def load(cls) -> "Config":
         if not os.path.exists(CONFIG_PATH):
@@ -157,8 +162,8 @@ class Engine:
 
     def __init__(self, cfg: Config) -> None:
         self.cfg = cfg
-        self.grabber = V.ScreenGrabber()
         self.db = V.TemplateDB.load(TEMPLATES_PATH, cfg.tolerance, cfg.min_margin)
+        self.grabber = self._build_grabber()
         self.last_image: Optional[np.ndarray] = None
         self.autoplay = False          # 每次啟動都從關閉開始，見 Config 的註解
         # 「本來在自動玩，只是被沒見過的水果／格線跑掉擋下來」的記號。
@@ -166,6 +171,22 @@ class Engine:
         self.autoplay_resumable = False
         self.moves_played = 0
         self.rebuild()
+
+    def _build_grabber(self):
+        if self.cfg.capture_source == "adb":
+            return ADB.AdbGrabber(serial=self.cfg.adb_serial)
+        return V.ScreenGrabber()
+
+    def refresh_capture_backend(self) -> None:
+        """capture_source／adb_serial 換了才需要呼叫，重建擷取來源。
+
+        故意不放進 rebuild()：標記、校準、重新吸附這些小動作都會觸發
+        rebuild()，如果 grabber 也跟著每次重建，測試裡蓋掉的假擷取來源
+        會被無聲換回真的螢幕擷取，而且只有在剛好某個測試序列踩到才會
+        看出來——2026-08-15 加手機支援時就是這樣，隔了好幾個 rebuild()
+        呼叫點才炸出一個看起來毫不相干的失敗。
+        """
+        self.grabber = self._build_grabber()
 
     def rebuild(self) -> None:
         """設定改過之後重建衍生物件，並清掉快取的判斷。"""
@@ -176,12 +197,19 @@ class Engine:
         self.rec = V.Recognizer(self.grid, self.db)
         self.solver = S.Solver(spawn=[tuple(x) for x in cfg.spawn])
         self.region = V.Region.from_dict(cfg.region) if cfg.region else None
-        self.controller = C.Controller(
-            method=cfg.autoplay_method,
-            fraction=cfg.swipe_fraction,
-            duration=cfg.swipe_ms / 1000.0,
-            steps=cfg.swipe_steps,
-        )
+        if cfg.capture_source == "adb":
+            self.controller = ADB.AdbController(
+                serial=cfg.adb_serial,
+                duration=cfg.swipe_ms / 1000.0,
+                fraction=cfg.swipe_fraction,
+            )
+        else:
+            self.controller = C.Controller(
+                method=cfg.autoplay_method,
+                fraction=cfg.swipe_fraction,
+                duration=cfg.swipe_ms / 1000.0,
+                steps=cfg.swipe_steps,
+            )
         self._confirming: Optional[List[int]] = None
         self._solved_board: Optional[int] = None
         self._result: Optional[S.Result] = None
@@ -642,6 +670,179 @@ class CalibrationOverlay(tk.Toplevel):
             pass
 
 
+class AdbCalibrationDialog(tk.Toplevel):
+    """手機版的校準：跟 CalibrationOverlay 做一樣的兩步（框左上角一格、
+    點右上/右下/左下三格中心），但底圖是一張**靜態截圖**而不是即時桌面。
+
+    手機截圖通常比螢幕大，顯示前先縮小到放得下的尺寸，`self.scale` 記住
+    縮放比例，點擊座標一律先換算回原始手機像素再丟給
+    `V.calibration_from_corners()` —— 算出來的範圍才會是手機真正的像素座標，
+    AdbGrabber.grab() 拿去裁切才會準。
+    """
+
+    CORNER_NAMES = ("右上", "右下", "左下")
+    MAX_DISPLAY = (480, 900)   # 顯示視窗的長寬上限，手機截圖動輒 1080x2340
+
+    def __init__(self, master: tk.Misc, image: np.ndarray, rows: int, cols: int, on_done) -> None:
+        super().__init__(master)
+        self.rows = rows
+        self.cols = cols
+        self.on_done = on_done
+        img_h, img_w = image.shape[:2]
+        max_w, max_h = self.MAX_DISPLAY
+        self.scale = min(max_w / img_w, max_h / img_h, 1.0)
+        disp_w = max(1, round(img_w * self.scale))
+        disp_h = max(1, round(img_h * self.scale))
+
+        self.phase = 1
+        self.drag_start: Optional[tuple] = None
+        self.cell_box: Optional[V.Region] = None      # 手機像素座標（未縮放）
+        self.points: List[tuple] = []                 # 手機像素座標（未縮放）
+        self.band_id: Optional[int] = None
+        self.mark_ids: List[int] = []
+
+        self.title("校準盤面（手機截圖）")
+        self.configure(bg="#000000")
+        self.attributes("-topmost", True)
+        self.resizable(False, False)
+
+        self.title_var = tk.StringVar()
+        self.hint_var = tk.StringVar()
+        self.error_var = tk.StringVar()
+        tk.Label(self, textvariable=self.title_var, fg="#ffffff", bg="#000000",
+                font=(UI_FONT, 13, "bold")).pack(pady=(10, 2))
+        tk.Label(self, textvariable=self.hint_var, fg="#c8ccd2", bg="#000000",
+                font=(UI_FONT, 10), wraplength=disp_w, justify="center").pack()
+        tk.Label(self, textvariable=self.error_var, fg="#ff8a8a", bg="#000000",
+                font=(UI_FONT, 10, "bold")).pack(pady=(2, 6))
+
+        self.canvas = tk.Canvas(self, width=disp_w, height=disp_h,
+                                highlightthickness=0, cursor="crosshair", bg="#000000")
+        self.canvas.pack(padx=10, pady=(0, 10))
+        pil_img = Image.fromarray(image).resize((disp_w, disp_h), Image.BILINEAR)
+        self._photo = ImageTk.PhotoImage(pil_img)   # 一定要留住參照，不然畫布會變空白
+        self.canvas.create_image(0, 0, anchor="nw", image=self._photo)
+
+        self.canvas.bind("<ButtonPress-1>", self._press)
+        self.canvas.bind("<B1-Motion>", self._drag)
+        self.canvas.bind("<ButtonRelease-1>", self._release)
+        self.bind("<Escape>", lambda _e: self._cancel())
+        self.bind("<BackSpace>", lambda _e: self._undo())
+        self.protocol("WM_DELETE_WINDOW", self._cancel)
+        try:
+            self.grab_set()
+            self.focus_force()
+        except tk.TclError:
+            pass
+        self._refresh_text()
+
+    # -- 座標換算：畫布是縮小過的，點擊位置要放大回真正的手機像素 --
+    def _to_image(self, x: float, y: float) -> tuple:
+        return int(round(x / self.scale)), int(round(y / self.scale))
+
+    def _to_canvas(self, x: float, y: float) -> tuple:
+        return x * self.scale, y * self.scale
+
+    def _refresh_text(self, error: str = "") -> None:
+        if self.phase == 1:
+            self.title_var.set("第 1 步 / 共 2 步　框出「左上角那一格」")
+            self.hint_var.set("沿著左上角那一顆水果的格子邊框拖曳，量出一格有多大。")
+        else:
+            done = len(self.points)
+            nxt = self.CORNER_NAMES[done] if done < len(self.CORNER_NAMES) else ""
+            self.title_var.set(f"第 2 步 / 共 2 步　點「{nxt}」那一格的中心（{done + 1}/3）")
+            self.hint_var.set("依序點「右上→右下→左下」三格的中心。"
+                              "Backspace 退回上一步　　Esc 取消")
+        self.error_var.set(error)
+
+    def _press(self, ev) -> None:
+        if self.phase == 2:
+            self._click_phase2(ev)
+            return
+        self.drag_start = (ev.x, ev.y)
+        if self.band_id:
+            self.canvas.delete(self.band_id)
+        self.band_id = self.canvas.create_rectangle(ev.x, ev.y, ev.x, ev.y,
+                                                     outline="#5ac36a", width=2)
+
+    def _drag(self, ev) -> None:
+        if self.phase == 1 and self.drag_start and self.band_id:
+            self.canvas.coords(self.band_id, self.drag_start[0], self.drag_start[1], ev.x, ev.y)
+
+    def _release(self, ev) -> None:
+        if self.phase != 1 or not self.drag_start:
+            return
+        x0, y0 = self.drag_start
+        left_d, top_d = min(x0, ev.x), min(y0, ev.y)
+        right_d, bottom_d = max(x0, ev.x), max(y0, ev.y)
+        left, top = self._to_image(left_d, top_d)
+        right, bottom = self._to_image(right_d, bottom_d)
+        w, h = right - left, bottom - top
+        if w < 6 or h < 6:
+            self.drag_start = None
+            self._refresh_text("框太小了，請沿著格子的邊框重新拖一次")
+            return
+        self.cell_box = V.Region(left, top, w, h)
+        self.phase = 2
+        self.drag_start = None
+        self._refresh_text()
+
+    def _click_phase2(self, ev) -> None:
+        self.points.append(self._to_image(ev.x, ev.y))
+        self._draw_marks()
+        if len(self.points) < len(self.CORNER_NAMES):
+            self._refresh_text()
+            return
+        try:
+            cal = V.calibration_from_corners(
+                self.cell_box, self.points[0], self.points[1], self.points[2],
+                self.rows, self.cols)
+        except ValueError as e:
+            self.points.clear()
+            self._draw_marks()
+            self._refresh_text(str(e))
+            return
+        self._finish(cal)
+
+    def _draw_marks(self) -> None:
+        for mid_ in self.mark_ids:
+            self.canvas.delete(mid_)
+        self.mark_ids = []
+        if self.cell_box is None:
+            return
+        hw, hh = self._to_canvas(self.cell_box.width / 2, self.cell_box.height / 2)
+        for i, pt in enumerate(self.points):
+            cx, cy = self._to_canvas(*pt)
+            self.mark_ids.append(self.canvas.create_rectangle(
+                cx - hw, cy - hh, cx + hw, cy + hh, outline="#5ac36a", width=2))
+            self.mark_ids.append(self.canvas.create_text(
+                cx, cy, text=self.CORNER_NAMES[i], fill="#5ac36a",
+                font=(UI_FONT, 11, "bold")))
+
+    def _undo(self) -> None:
+        if self.phase == 2 and self.points:
+            self.points.pop()
+            self._draw_marks()
+        elif self.phase == 2:
+            self.phase = 1
+            self.cell_box = None
+            if self.band_id:
+                self.canvas.delete(self.band_id)
+                self.band_id = None
+        self._refresh_text()
+
+    def _cancel(self) -> None:
+        self._finish(None)
+
+    def _finish(self, cal: Optional[V.Calibration]) -> None:
+        try:
+            self.grab_release()
+        except tk.TclError:
+            pass
+        self.destroy()
+        self.on_done(cal)
+
+
 class RegionTuner(tk.Toplevel):
     """校準完的確認視窗：畫上格線讓使用者看對不對，可用方向鍵微調。"""
 
@@ -875,6 +1076,10 @@ METHOD_LABELS = {
     "arrows": "鍵盤方向鍵",
     "wasd": "鍵盤 W A S D",
 }
+CAPTURE_SOURCE_LABELS = {
+    "screen": "PC 模擬器（螢幕擷取）",
+    "adb": "手機（USB 接 adb）",
+}
 
 # (欄位, 標題, 說明, 型別, 下限, 上限)
 DETECT_FIELDS = [
@@ -924,6 +1129,14 @@ class SettingsDialog(tk.Toplevel):
                          "按下去就立刻停手，不用切視窗")
         for spec in AUTO_FIELDS:
             self._number_row(right, cfg, spec)
+
+        far = self._section(body, "畫面來源")
+        far.grid(row=0, column=2, sticky="n", padx=(24, 0))
+        self._choice_row(far, "來源", "capture_source",
+                         CAPTURE_SOURCE_LABELS, cfg.capture_source,
+                         "改這個之後要重新校準一次")
+        self._text_row(far, "手機序號", "adb_serial", cfg.adb_serial,
+                       "adb devices 看到的那串；留白就自動挑唯一一台")
 
         self.hint = tk.Label(self, bg=BG, fg=ERROR, font=(UI_FONT, 9), wraplength=460)
         self.hint.pack()
@@ -980,6 +1193,23 @@ class SettingsDialog(tk.Toplevel):
         tk.Label(parent, text=hint, bg=BG, fg=FG_DIM, font=(UI_FONT, 8),
                  anchor="w").pack(anchor="w")
 
+    def _text_row(self, section: tk.Frame, label: str, key: str,
+                 current: Optional[str], hint: str) -> None:
+        """自由文字、可以留白的欄位（跟 _number_row 不同，不驗證數字範圍）。"""
+        parent = section.inner  # type: ignore[attr-defined]
+        line = tk.Frame(parent, bg=BG)
+        line.pack(anchor="w", fill="x", pady=(6, 0))
+        tk.Label(line, text=label, bg=BG, fg=FG, font=(UI_FONT, 10), width=15,
+                 anchor="w").pack(side="left")
+        var = tk.StringVar(value=current or "")
+        self.vars[key] = var
+        tk.Entry(line, textvariable=var, width=16, font=(UI_FONT, 10),
+                 bg=BG_PANEL, fg=FG, insertbackground=FG, relief="flat",
+                 highlightthickness=1, highlightbackground="#3a3f47",
+                 highlightcolor=ACCENT).pack(side="left")
+        tk.Label(parent, text=hint, bg=BG, fg=FG_DIM, font=(UI_FONT, 8),
+                 anchor="w").pack(anchor="w")
+
     def _clear_templates(self) -> None:
         if not messagebox.askyesno(
             "清空樣板庫",
@@ -1003,13 +1233,26 @@ class SettingsDialog(tk.Toplevel):
                 return
             parsed[key] = value
 
-        for key in ("autoplay_method", "panic_key"):
+        for key in ("autoplay_method", "panic_key", "capture_source"):
             var, reverse = self.vars[key]
             parsed[key] = reverse[var.get()]
+        parsed["adb_serial"] = self.vars["adb_serial"].get().strip() or None
 
+        source_changed = parsed["capture_source"] != self.app.cfg.capture_source
+        backend_changed = source_changed or parsed["adb_serial"] != self.app.cfg.adb_serial
         for key, value in parsed.items():
             setattr(self.app.cfg, key, value)
+        if source_changed:
+            # 螢幕座標跟手機像素是兩個不相干的座標系，換了來源舊的框選範圍
+            # 完全沒意義，留著只會拿去裁出一塊不知道是哪裡的畫面。
+            self.app.cfg.region = None
+            self.app.cfg.window_anchor = None
+            self.app.engine.stop_autoplay()
         self.app.apply_config()
+        if backend_changed:
+            self.app.engine.refresh_capture_backend()
+        if source_changed:
+            self.app.flash("畫面來源換了，請重新按「① 校準盤面」。", 10)
         self.destroy()
 
 
@@ -1256,6 +1499,11 @@ class AssistApp(tk.Tk):
         self.engine.stop_autoplay()   # 校準期間絕對不能有東西在搶滑鼠
         self._sync_auto_note()
         self.worker.pause()
+
+        if self.cfg.capture_source == "adb":
+            self._start_adb_calibration()
+            return
+
         self.withdraw()
         self.update_idletasks()
         screen = self.engine.grabber.virtual_screen()
@@ -1281,6 +1529,35 @@ class AssistApp(tk.Tk):
         self.after(120, lambda: CalibrationOverlay(
             self, screen, self.cfg.rows, self.cfg.cols, done))
 
+    def _start_adb_calibration(self) -> None:
+        """手機沒有「桌面」可以蓋一層透明遮罩，改成先抓一張截圖、
+        在一個一般視窗裡縮放顯示，讓使用者對著這張靜態圖點兩步。
+        """
+        try:
+            full = self.engine.grabber.virtual_screen()
+            img = self.engine.grabber.grab(full)
+        except (ValueError, OSError) as e:
+            self.worker.resume()
+            self.flash(f"抓不到手機畫面：{e}", 10)
+            return
+
+        def done(cal: Optional[V.Calibration]) -> None:
+            if cal is None:
+                self.worker.resume()
+                self.flash("已取消校準")
+                return
+            if cal.skew > max(4.0, 0.06 * max(cal.pitch_x, cal.pitch_y)):
+                messagebox.showwarning(
+                    "點的位置好像有點歪",
+                    f"從上下兩排量到的格距差了 {cal.skew:.0f} px，通常代表有一個角落點偏了。\n\n"
+                    f"還是會先幫你算出來，請在接下來的預覽視窗確認紫色框有沒有套準；"
+                    f"沒套準就按「重新框選」再來一次。",
+                    parent=self,
+                )
+            RegionTuner(self, cal.region, cal.inset)
+
+        AdbCalibrationDialog(self, img, self.cfg.rows, self.cfg.cols, done)
+
     def _detect_window_anchor(self, region: V.Region) -> Optional[dict]:
         """校準完成時試著記住是哪個視窗，讓之後搬動這個視窗不用重新框。
 
@@ -1300,7 +1577,9 @@ class AssistApp(tk.Tk):
             return None
 
     def apply_region(self, region: V.Region, inset: Optional[float] = None) -> None:
-        anchor = self._detect_window_anchor(region)
+        # 視窗鎖定只在「框選範圍＝真的螢幕座標」時有意義；手機截圖的範圍是
+        # 影像像素，拿去問 WindowFromPoint 只會問到 PC 桌面上某個不相干的視窗。
+        anchor = self._detect_window_anchor(region) if self.cfg.capture_source == "screen" else None
         with self.lock:
             self.cfg.region = region.to_dict()
             if inset is not None:

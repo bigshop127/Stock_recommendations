@@ -46,6 +46,7 @@ def main():
 
     sandbox = tempfile.mkdtemp(prefix="fruit2048_test_")
     try:
+        import adb as ADB
         import app as A
         import vision as V
         import solver as S
@@ -710,6 +711,54 @@ def main():
             ov._cancel()
             ui.update()
 
+            print("      · 手機版校準：靜態截圖＋縮放，兩步點法要跟前面那個一樣準")
+
+            # 用比顯示上限（480x900）大的圖，才會真的走到縮放這條路——這是跟
+            # CalibrationOverlay 最大的差異，縮放算錯全部的點都會歪掉。
+            phone_img = np.zeros((2340, 1080, 3), dtype=np.uint8)
+            phone_region = (120, 300, 800, 800)   # (left, top, width, height)，手機像素座標
+            ppx, ppy = phone_region[2] / 4, phone_region[3] / 4
+
+            def phone_cell_center(r, c):
+                return (phone_region[0] + (c + 0.5) * ppx, phone_region[1] + (r + 0.5) * ppy)
+
+            pcw = ppx * 0.84
+            ptlx, ptly = phone_cell_center(0, 0)
+            pbx, pby = ptlx - pcw / 2, ptly - pcw / 2
+
+            got_adb = {}
+            adb_dlg = A.AdbCalibrationDialog(ui, phone_img, 4, 4, lambda c: got_adb.setdefault("cal", c))
+            ui.update()
+            check("縮放比例真的小於 1（確實吃到了縮小這條路）", adb_dlg.scale < 1.0, f"{adb_dlg.scale}")
+
+            def to_canvas(pt):
+                return Ev(*adb_dlg._to_canvas(*pt))
+
+            adb_dlg._press(to_canvas((pbx, pby)))
+            adb_dlg._drag(to_canvas((pbx + pcw, pby + pcw)))
+            adb_dlg._release(to_canvas((pbx + pcw, pby + pcw)))
+            check("框完左上一格 → 進入第 2 步", adb_dlg.phase == 2, f"phase={adb_dlg.phase}")
+            adb_dlg._press(to_canvas(phone_cell_center(0, 3)))
+            adb_dlg._press(to_canvas(phone_cell_center(3, 3)))
+            adb_dlg._press(to_canvas(phone_cell_center(3, 0)))
+            cal_adb = got_adb.get("cal")
+            check("點滿三個角落就回報結果（手機版）", cal_adb is not None)
+            if cal_adb:
+                d = max(abs(cal_adb.region.left - phone_region[0]),
+                        abs(cal_adb.region.top - phone_region[1]),
+                        abs(cal_adb.region.width - phone_region[2]),
+                        abs(cal_adb.region.height - phone_region[3]))
+                # 縮放再取整數會比 1:1 的桌面版多一點量化誤差，容忍度放寬一點。
+                check("算出來的範圍是手機原始像素座標，不是縮小過的畫布座標",
+                      d <= 6, f"{tuple(cal_adb.region)} 誤差 {d}px")
+            ui.update()
+
+            got_adb2 = {}
+            adb_dlg2 = A.AdbCalibrationDialog(ui, phone_img, 4, 4, lambda c: got_adb2.setdefault("cal", c))
+            ui.update()
+            adb_dlg2._cancel()
+            check("取消回報 None（手機版）", got_adb2.get("cal", "missing") is None)
+
             settings = A.SettingsDialog(ui)
             ui.update()
             method_var, method_map = settings.vars["autoplay_method"]
@@ -742,6 +791,40 @@ def main():
             settings.vars["time_budget"].set("0.4")
             settings._apply()
             check("合法值套用得進去", ui.cfg.time_budget == 0.4)
+            ui.update()
+
+            print("      · 畫面來源切換：screen ⟷ adb")
+            ui.worker.pause()   # 換來源不該真的去戳一台可能根本不存在的手機
+            ui.cfg.region = {"left": l, "top": t, "width": w, "height": h}
+            ui.cfg.save()
+            ui.engine.rebuild()
+            check("預設是 screen 來源", ui.cfg.capture_source == "screen")
+
+            settings = A.SettingsDialog(ui)
+            ui.update()
+            source_var, source_map = settings.vars["capture_source"]
+            check("設定視窗有畫面來源下拉選單",
+                  set(source_map.values()) == {"screen", "adb"}, f"{sorted(source_map.values())}")
+            source_var.set(A.CAPTURE_SOURCE_LABELS["adb"])
+            settings.vars["adb_serial"].set("ABC123")
+            settings._apply()
+            check("來源改得動", ui.cfg.capture_source == "adb", ui.cfg.capture_source)
+            check("手機序號也存進去了", ui.cfg.adb_serial == "ABC123", ui.cfg.adb_serial)
+            check("引擎的擷取物件真的換成 AdbGrabber", isinstance(ui.engine.grabber, ADB.AdbGrabber))
+            check("換來源會清掉舊的框選範圍（螢幕座標跟手機像素不是同一回事）",
+                  ui.cfg.region is None)
+            check("換來源會停掉自動操控", not ui.engine.autoplay)
+            check("有提示要重新校準", "校準盤面" in ui.status.cget("text"), ui.status.cget("text"))
+
+            settings = A.SettingsDialog(ui)
+            ui.update()
+            source_var2, _ = settings.vars["capture_source"]
+            check("再打開設定視窗，來源欄位有記住剛剛的選擇",
+                  source_var2.get() == A.CAPTURE_SOURCE_LABELS["adb"])
+            source_var2.set(A.CAPTURE_SOURCE_LABELS["screen"])
+            settings._apply()
+            check("換回 screen 來源", ui.cfg.capture_source == "screen")
+            check("引擎的擷取物件換回 ScreenGrabber", isinstance(ui.engine.grabber, V.ScreenGrabber))
             ui.update()
         finally:
             ui.worker.stop()
