@@ -24,7 +24,9 @@ MOVE_NAME = {UP: "上", DOWN: "下", LEFT: "左", RIGHT: "右"}
 MOVE_ARROW = {UP: "↑", DOWN: "↓", LEFT: "←", RIGHT: "→"}
 MOVE_KEY = {UP: "W / ↑", DOWN: "S / ↓", LEFT: "A / ←", RIGHT: "D / →"}
 
-MAX_RANK = 0xF  # 一格最多存到指數 15
+MAX_RANK = 0xF  # 一格最多存到指數 15（nibble 位元寬度上限，跟遊戲規則無關）
+MAX_FRUIT = 12  # 這款遊戲的水果鏈封頂在「奇異果」（12號）：兩顆疊在一起不會再合成，
+                # 使用者 2026-08-16 實測確認過。跟上面 MAX_RANK 是兩回事，別搞混。
 
 # 評估權重（nneonneo, 2048-ai）
 W_LOST_PENALTY = 200000.0
@@ -100,9 +102,8 @@ def _build_tables() -> Tuple[List[int], List[int], List[float]]:
                 res[i] = res[j]
                 res[j] = 0
                 continue  # 同一個 i 再試一次
-            if res[i] == res[j]:
-                if res[i] != MAX_RANK:
-                    res[i] += 1
+            if res[i] == res[j] and res[i] < MAX_FRUIT:
+                res[i] += 1
                 res[j] = 0
             i += 1
 

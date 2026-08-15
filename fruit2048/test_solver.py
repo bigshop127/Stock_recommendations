@@ -24,8 +24,8 @@ def naive_move_left(cells):
         merged = []
         i = 0
         while i < len(row):
-            if i + 1 < len(row) and row[i] == row[i + 1]:
-                merged.append(min(row[i] + 1, S.MAX_RANK))
+            if i + 1 < len(row) and row[i] == row[i + 1] and row[i] < S.MAX_FRUIT:
+                merged.append(row[i] + 1)
                 i += 2
             else:
                 merged.append(row[i])
@@ -93,9 +93,10 @@ def main():
             print(f"      輸入 {bad[0]}\n      得到 {bad[1]}\n      應為 {bad[2]}")
         all_ok &= check(f"move {S.MOVE_NAME[move]}", ok)
 
-    print("4) 15 是天花板（不會再合成）")
-    b = S.from_list([15, 15, 0, 0] + [0] * 12)
-    all_ok &= check("15+15 仍是 15", S.to_list(S.move_left(b))[:2] == [15, 0])
+    print("4) MAX_FRUIT 是天花板（兩顆封頂水果疊在一起完全不會動，不是合成不加值）")
+    b = S.from_list([S.MAX_FRUIT, S.MAX_FRUIT, 0, 0] + [0] * 12)
+    all_ok &= check(f"{S.MAX_FRUIT}+{S.MAX_FRUIT} 盤面完全不動（不能動）",
+                    S.to_list(S.move_left(b))[:4] == [S.MAX_FRUIT, S.MAX_FRUIT, 0, 0])
 
     print("5) 遊戲結束偵測")
     dead = S.from_list([1, 2, 1, 2, 2, 1, 2, 1, 1, 2, 1, 2, 2, 1, 2, 1])
