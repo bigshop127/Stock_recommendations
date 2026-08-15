@@ -113,6 +113,14 @@ def pick_device(adb_path: Optional[str] = None, serial: Optional[str] = None) ->
 
 
 def screen_size(adb_path: str, serial: str) -> Tuple[int, int]:
+    """回傳 `wm size` 報的「Physical size」。
+
+    注意：這是面板的**原生（直向）**尺寸，手機轉成橫向玩遊戲時這個數字
+    不會跟著轉，會跟 screencap 實際吐出來的畫面方向對不上——AdbGrabber
+    因此故意不用這個函式決定擷取範圍，改成直接量一張真的截圖（見
+    `AdbGrabber.virtual_screen`）。這裡留著純粹是給想知道面板原生解析度
+    的呼叫端用，不要拿它的回傳值去算裁切範圍。
+    """
     out = _run(adb_path, "-s", serial, "shell", "wm", "size").stdout.decode("utf-8", "replace")
     m = _SIZE_LINE.search(out)
     if not m:
@@ -142,14 +150,7 @@ class AdbGrabber:
             self._resolved_serial = pick_device(path, self._serial)
         return path, self._resolved_serial
 
-    def virtual_screen(self) -> V.Region:
-        path, serial = self._resolve()
-        w, h = screen_size(path, serial)
-        return V.Region(0, 0, w, h)
-
-    def grab(self, region: V.Region) -> np.ndarray:
-        if region.width <= 0 or region.height <= 0:
-            raise ValueError(f"擷取範圍不合法：{region}")
+    def _screencap(self) -> np.ndarray:
         path, serial = self._resolve()
         proc = _run(path, "-s", serial, "exec-out", "screencap", "-p", timeout=8.0)
         if proc.returncode != 0 or not proc.stdout:
@@ -158,7 +159,22 @@ class AdbGrabber:
             img = Image.open(io.BytesIO(proc.stdout)).convert("RGB")
         except Exception as e:
             raise AdbError(f"screencap 回傳的資料不是有效圖片：{e}") from e
-        full = np.asarray(img)
+        return np.asarray(img)
+
+    def virtual_screen(self) -> V.Region:
+        """回傳目前這張截圖實際的寬高。
+
+        故意不用 `wm size`（見 `screen_size` 的說明）——那個數字是面板原生
+        方向，手機轉成橫向玩的話會跟真正截出來的畫面對不上，裁切範圍就會
+        「超出畫面」。抓一張真的截圖來量，保證跟等一下 grab() 看到的一致。
+        """
+        h, w = self._screencap().shape[:2]
+        return V.Region(0, 0, w, h)
+
+    def grab(self, region: V.Region) -> np.ndarray:
+        if region.width <= 0 or region.height <= 0:
+            raise ValueError(f"擷取範圍不合法：{region}")
+        full = self._screencap()
         h, w = full.shape[:2]
         # 故意不夾住裁切範圍——手機解析度跟校準當下不一樣時（例如換了台裝置、
         # 螢幕轉向），裁出一塊尺寸不對的畫面丟給後面的格線辨識，只會產生一個

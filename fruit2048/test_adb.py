@@ -157,6 +157,20 @@ def main():
         check("整張抓下來大小對", full.shape[:2] == (150, 200), f"{full.shape}")
         check("紅色標記在左上角，裁切方向沒錯", tuple(full[0, 0]) == (255, 0, 0), f"{full[0,0]}")
 
+        # 手機轉成橫向玩遊戲時，wm size 報的「面板原生尺寸」是直向的，
+        # 跟這時候 screencap 實際吐出來的橫向畫面對不上——這正是使用者
+        # 第一次校準就撞到的真實案例（wm size 說 1080x2340，screencap
+        # 卻是 2340x1080）。virtual_screen() 一定要用真的截圖量，不能問
+        # wm size，這裡就是回歸測試。
+        landscape = png_bytes(2340, 1080)
+        ADB._run = FakeRun([(0, landscape, b"")])
+        vs = g.virtual_screen()
+        check("virtual_screen 用真的截圖量尺寸，不是問 wm size",
+              (vs.width, vs.height) == (2340, 1080), f"{vs}")
+        check("virtual_screen 只需要一次呼叫（截圖本身），沒有多打 wm size",
+              len(ADB._run.calls) == 1 and ADB._run.calls[0][2:5] == ("exec-out", "screencap", "-p"),
+              f"{ADB._run.calls}")
+
         ADB._run = FakeRun([(0, png, b"")])   # 序號已經快取了，這次不用再問一次裝置清單
         cropped = g.grab(V.Region(50, 40, 60, 30))
         check("裁切出來的大小對", cropped.shape[:2] == (30, 60), f"{cropped.shape}")
