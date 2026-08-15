@@ -37,12 +37,26 @@ REGION = V.Region(0, 0, CELL * COLS, CELL * ROWS)
 
 
 def make_board_image(cells: List[int]) -> np.ndarray:
-    """畫一張跟 cells 對應、顏色不同代表不同數字的假盤面（每格純色）。"""
+    """畫一張跟 cells 對應的假盤面：0 是純色空格，其餘每個數字各自一種花紋。
+
+    不能像空格一樣純色平塗——vision.normalize() 會把每張縮圖各自減掉自己的
+    色版平均值（用來去掉整體亮度／色偏），純色格子減掉平均值後全部變成
+    (0,0,0)，不管原本填的是什麼顏色，會讓所有「水果」格跟空格互相認不出來。
+    真實水果圖示本來就有花紋所以沒這問題，這裡用跟座標相關的花紋來模擬。
+    """
     img = np.zeros((REGION.height, REGION.width, 3), dtype=np.uint8)
+    yy, xx = np.mgrid[0:CELL, 0:CELL]
     for i, v in enumerate(cells):
         r, c = divmod(i, COLS)
-        color = (20, 20, 20) if v == 0 else (10 * v % 250 + 5, 30, 60)
-        img[r * CELL:(r + 1) * CELL, c * CELL:(c + 1) * CELL] = color
+        y0, x0 = r * CELL, c * CELL
+        if v == 0:
+            block = np.full((CELL, CELL, 3), (20, 20, 20), dtype=np.uint8)
+        else:
+            ch0 = (xx * (v * 7 + 3) + yy * (v * 5 + 11)) % 256
+            ch1 = (255 - ch0) % 256
+            ch2 = (ch0 // 2 + v * 13) % 256
+            block = np.stack([ch0, ch1, ch2], axis=-1).astype(np.uint8)
+        img[y0:y0 + CELL, x0:x0 + CELL] = block
     return img
 
 
@@ -77,12 +91,31 @@ def learned_engine(cells: List[int], labels: Optional[List[int]] = None) -> M.Mo
     grid = V.Grid(ROWS, COLS, cfg.inset)
     for i, crop in enumerate(grid.crops(img)):
         label = cells[i] if labels is None else labels[i]
-        if label:
+        # 連 0（空格）也要教，不然只要樣板庫非空，沒教過的空格就會被判定「認不得」。
+        if label is not None:
             eng.db.add(label, V.raw_feature(crop))
     return eng, img
 
 
 def main():
+    """把 M.TEMPLATES_PATH 換成暫存路徑再跑全部測試——不然 MobileEngine 建構子
+    會直接讀（_learn_from_badges 還會寫回）使用者手機上真正在用的 templates.json，
+    測試會被裡面已經練出來的上千張真樣板汙染，學新水果那段甚至會把測試用的
+    假樣板存回真正的檔案，汙染使用者的辨識庫。
+    """
+    import os
+    import tempfile
+
+    real_templates_path = M.TEMPLATES_PATH
+    with tempfile.TemporaryDirectory() as td:
+        M.TEMPLATES_PATH = os.path.join(td, "templates.json")
+        try:
+            return _run_tests()
+        finally:
+            M.TEMPLATES_PATH = real_templates_path
+
+
+def _run_tests():
     print("1) MobileConfig.load()：只吃自己認得的欄位，PC 專用欄位靜靜略過")
     import json
     import tempfile

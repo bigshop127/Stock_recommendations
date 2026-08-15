@@ -16,6 +16,7 @@ screencap／input，不用再跨 USB 呼叫 PC 上的 adb.exe。
 
 from __future__ import annotations
 
+import base64
 import io
 import os
 import subprocess
@@ -68,11 +69,18 @@ class RishGrabber:
         self.backend = "rish"
 
     def _screencap(self) -> np.ndarray:
-        proc = _run("screencap", "-p", timeout=8.0)
+        # rish 的殼層跟 adb shell（不加 exec-out）一樣，binary 資料在原始 stdout
+        # 裡經過會被當文字轉行尾（\n -> \r\n）弄壞——所以在裝置那頭先包一層
+        # base64（純文字，不會被轉行尾波及），回來這裡再解回二進位。
+        proc = _run("screencap -p | base64", timeout=8.0)
         if proc.returncode != 0 or not proc.stdout:
             raise RishError(f"screencap 失敗：{proc.stderr.decode('utf-8', 'replace').strip()}")
         try:
-            img = Image.open(io.BytesIO(proc.stdout)).convert("RGB")
+            data = base64.b64decode(proc.stdout, validate=False)
+        except Exception as e:
+            raise RishError(f"screencap 回傳的資料不是有效的 base64：{e}") from e
+        try:
+            img = Image.open(io.BytesIO(data)).convert("RGB")
         except Exception as e:
             raise RishError(f"screencap 回傳的資料不是有效圖片：{e}") from e
         return np.asarray(img)

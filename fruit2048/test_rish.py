@@ -9,6 +9,7 @@ Termux/Shizuku 就能測邏輯本身（指令組得對不對、截圖裁切、�
 
 from __future__ import annotations
 
+import base64
 import io
 import subprocess
 import sys
@@ -71,24 +72,27 @@ def main():
     finally:
         subprocess.run = real_run
 
-    print("2) RishGrabber：擷取＋裁切")
+    print("2) RishGrabber：擷取＋裁切（畫面經 base64 包一層，避開殼層把 binary 當文字轉行尾的雷）")
     try:
         png = png_bytes(200, 150)
         g = R.RishGrabber()
 
-        subprocess.run = FakeRun([(0, png, b"")])
+        runner = FakeRun([(0, base64.b64encode(png), b"")])
+        subprocess.run = runner
         full = g.grab(V.Region(0, 0, 200, 150))
         check("整張抓下來大小對", full.shape[:2] == (150, 200), f"{full.shape}")
         check("紅色標記在左上角，裁切方向沒錯", tuple(full[0, 0]) == (255, 0, 0), f"{full[0,0]}")
+        check("指令有透過 base64 包一層，不是直接抓 binary stdout",
+              "| base64" in runner.calls[-1][2], f"{runner.calls[-1]}")
 
         # 跟 adb.py 一樣的坑：手機橫向玩遊戲時，wm size 報的是面板原生方向，
         # 會跟真正截出來的畫面對不上，所以 virtual_screen() 得直接量截圖。
         landscape = png_bytes(2340, 1080)
-        subprocess.run = FakeRun([(0, landscape, b"")])
+        subprocess.run = FakeRun([(0, base64.b64encode(landscape), b"")])
         vs = g.virtual_screen()
         check("virtual_screen 用真的截圖量尺寸", (vs.width, vs.height) == (2340, 1080), f"{vs}")
 
-        subprocess.run = FakeRun([(0, png, b"")])
+        subprocess.run = FakeRun([(0, base64.b64encode(png), b"")])
         cropped = g.grab(V.Region(50, 40, 60, 30))
         check("裁切出來的大小對", cropped.shape[:2] == (30, 60), f"{cropped.shape}")
         check("裁切出來的內容對得上原圖同一個位置",
@@ -115,7 +119,7 @@ def main():
         except R.RishError:
             check("回傳的不是圖片要講清楚，不要整個炸掉", True)
 
-        subprocess.run = FakeRun([(0, png_bytes(50, 50), b"")])
+        subprocess.run = FakeRun([(0, base64.b64encode(png_bytes(50, 50)), b"")])
         try:
             g.grab(V.Region(0, 0, 999, 999))
             check("要求的範圍超出手機畫面要擋下來", False)
