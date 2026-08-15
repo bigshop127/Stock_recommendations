@@ -178,7 +178,84 @@ PC 模擬器那條路用 `mss` 截桌面，幾乎瞬間完成。手機這條路�
 也不會有感覺，因為真正花時間的是這一步，不是等待間隔。
 
 有更快的做法（在手機上常駐一個擷取服務、透過 socket 連續傳畫面，概念上跟
-scrcpy 那類工具一樣），但實作複雜得多，這版先不做。
+scrcpy 那類工具一樣）——見下一節，這版已經做了。
+
+---
+
+## 手機本地版（Termux + Shizuku，不用 PC 也能跑）
+
+上一節「USB 接 adb」是 PC 端遙控手機，每一幀都要跨 USB 呼叫一次 adb，延遲
+400~460ms。這個版本把整個「擷取→辨識→求解→滑動」搬進手機的 **Termux**
+裡直接跑 Python，screencap／滑動改叫 **Shizuku** 給的本機殼層（`rish`），
+不用再跨 USB，延遲降到本機等級。PC 版的 app.py 完全沒動、還是拿來做校準
+跟標記水果用；手機這邊只有一支不帶 UI 的 `mobile_main.py`，純文字輸出到
+終端機，Ctrl+C 停止。
+
+**不用 root**：Shizuku 是透過 Android 內建的「無線偵錯」或「USB 接電腦」
+兩種方式之一取得 adb 等級權限（不是完整 root），跟一般的 root 教學是兩回事，
+手機的保固、Samsung Pay 等功能不受影響。
+
+### 一次性環境設定（在手機的 Termux 裡）
+
+1. 裝 [Termux](https://github.com/termux/termux-app/releases)（GitHub 最新版，
+   Play 商店那個已經停更）跟 [Shizuku](https://github.com/RikkaApps/Shizuku/releases)。
+2. 啟動 Shizuku：手機連 Wi-Fi 的話，開發人員選項打開「無線偵錯」，照 Shizuku
+   App 裡的引導配對一次；**沒有 Wi-Fi 的話**改用「透過電腦（需要 adb）」那個
+   選項，接 USB 用 adb shell 跑 Shizuku 給的啟動指令即可，效果一樣。
+3. Termux 裡跑 `termux-setup-storage`，把 Shizuku「透過無線偵錯啟動」頁面
+   「Export files」匯出的 `rish`、`rish_shizuku.dex` 兩個檔搬進
+   `$PREFIX/bin/`，`chmod +x rish`。
+4. 建一個不受 `$0` 路徑影響的啟動腳本 `$PREFIX/bin/rish_auto`（內容見
+   `rish.py` 的模組說明或直接抄下面這段），`chmod +x`：
+   ```sh
+   #!/system/bin/sh
+   BASEDIR=$PREFIX/bin
+   DEX="$BASEDIR"/rish_shizuku.dex
+   if [ "$(getprop ro.build.version.sdk)" -ge 34 ] && [ -w "$DEX" ]; then
+     chmod 400 "$DEX"   # Android 14+ app_process 拒絕載入還能被寫入的 dex
+   fi
+   [ -z "$RISH_APPLICATION_ID" ] && export RISH_APPLICATION_ID="com.termux"
+   /system/bin/app_process -Djava.class.path="$DEX" /system/bin --nice-name=rish rikka.shizuku.shell.ShizukuShellLoader "$@"
+   ```
+5. `rish_auto -c id` 測試，第一次會跳出「Termux 要求使用 Shizuku」的權限
+   視窗，按允許。成功會印出 `uid=2000(shell)...`。
+6. `pkg install -y python python-numpy python-pillow git`。
+
+### 把程式跟資料搬過去
+
+```
+git clone --depth 1 --filter=blob:none --sparse https://github.com/bigshop127/Stock_recommendations.git
+cd Stock_recommendations && git sparse-checkout set fruit2048
+```
+
+`config.json`／`templates.json` 兩個檔案是 `.gitignore` 排除的，`git clone`
+不會帶過來，要另外用 `adb push` 從 PC 傳過去（放進手機的
+`~/storage/shared/`，再 `cp` 進 Termux clone 下來的 `fruit2048/` 資料夾）。
+**注意座標系統**：`config.json` 裡的校準範圍（`region`）是「手機螢幕像素」，
+不是「PC 螢幕像素」——一定要先在 PC 版 app.py 把〈畫面來源〉切成「手機
+（USB 接 adb）」、重新做過一次〈① 校準盤面〉跟〈② 標記水果〉，存出來的
+`config.json`／`templates.json` 才能直接搬去手機這邊用；PC 模擬器那份校準
+座標系完全不相干，直接拿去用只會抓錯位置。
+
+### 執行
+
+```
+python mobile_main.py
+```
+
+沒有視窗，狀態直接印在終端機（`第 N 步：往 X 滑`、`結束了`、認不得的提示…）。
+Ctrl+C 隨時停止。
+
+### 已知落差
+
+* **沒有「讀格子上號碼」自動認新水果的能力。** 那個機制是拿 Windows 內建
+  字型現場畫數字樣板比對（見〈辨識調校紀錄〉），Termux 找不到那些字型，
+  這一層會安靜地什麼都認不出來——退回「認不得就等你標記」的行為，不會
+  誤判也不會崩潰，只是新水果冒出來時手機端不會自己學，要回 PC 版標記一次
+  再把 `templates.json` 複製過來。
+* **Shizuku 用「電腦啟動」的話，拔 USB 線或手機重開機會讓伺服器停掉**
+  （用「無線偵錯」啟動的比較持久）。重新接上 USB、在 PC 這邊重跑一次
+  Shizuku 的啟動指令即可，Termux 這邊完全不用重設。
 
 ---
 
@@ -273,13 +350,15 @@ python debug_grid.py 你的截圖.png 56 56 450 452   # 指定範圍
 | `solver.py` | 求解引擎：bitboard + expectimax |
 | `vision.py` | 螢幕擷取、格線自動吸附、樣板比對辨識、讀格子上的號碼 |
 | `control.py` | 輸入模擬：SendInput 滑動 / 按鍵、緊急停止鍵偵測、視窗追蹤用的 win32 helper |
-| `adb.py` | 手機版擷取／操控：透過 `adb` 截圖、送滑動手勢 |
+| `adb.py` | 手機版（PC 遙控）擷取／操控：透過 `adb` 截圖、送滑動手勢 |
+| `rish.py` | 手機本地版擷取／操控：透過 Shizuku 的 `rish` 本機殼層執行 screencap／滑動，只給跑在 Termux 上的 Python 用 |
+| `mobile_main.py` | 手機本地版主迴圈：沒有 UI，純文字輸出，`python mobile_main.py` 直接在 Termux 裡執行 |
 | `debug_grid.py` | 切格對位除錯工具 |
 | `tools/launch.ps1` | 桌面捷徑指向這支 |
 | `config.json` | 你的設定（校準範圍等），自動產生 |
 | `templates.json` | 學過的水果外觀，自動產生 |
-| `test_*.py` | 驗證用，`python test_solver.py` 等五支 |
-| `testdata/board.png` | 測試用的真實盤面截圖，四支測試都吃這張 |
+| `test_*.py` | 驗證用，`python test_solver.py` 等七支 |
+| `testdata/board.png` | 測試用的真實盤面截圖，多支測試都吃這張 |
 | `testdata/shop_*.png` | 商店介面的水果圖，8～12 號長什麼樣、兩位數徽章長什麼樣 |
 
 ### 重建桌面捷徑
