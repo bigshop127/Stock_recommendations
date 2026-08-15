@@ -14,6 +14,11 @@ import control as C
 import solver as S
 from vision import Region
 
+# 中文版 Windows 的主控台預設是 cp950，印不出結尾那個 ✅/❌ 就會整支噴
+# UnicodeEncodeError —— 測試明明全過，看起來卻像壞了。
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
 _failures = []
 
 

@@ -1,8 +1,17 @@
 """螢幕擷取 + 盤面辨識。
 
-辨識刻意不用 OCR。模擬器每次把同一顆水果畫出來的像素幾乎完全一樣，
-所以「把每格縮成小圖跟已標記過的樣板比最近鄰」比 OCR 準得多、也不用裝 Tesseract。
-代價是第一次要人工標一輪（約 10 次點擊），之後樣板存在 templates.json 裡永久沿用。
+辨識分兩層：
+
+  1. **樣板比對**（主力）。模擬器每次把同一顆水果畫出來的像素幾乎完全一樣，
+     「把每格縮成小圖跟已標記過的樣板比最近鄰」又快又準。樣板存在 templates.json
+     裡永久沿用。
+  2. **讀格子上的號碼**（後援）。第一層認不得時 —— 也就是升級出沒見過的水果 ——
+     就去讀徽章裡的白色數字。讀得出來就當場採用，使用者不必為了每一種新水果
+     停下來標一輪。兩層都不確定才說「認不得」。
+
+第二層不掛現成的 OCR 套件：那要多幾十 MB 的相依，而這裡的問題窄得多（固定字型、
+固定位置、只有 0~9、最多兩位數），自己做更準也更快，「不確定就棄權」的行為
+也完全在自己手上。
 
 特徵設計是拿使用者的真實截圖實測調出來的（見 README 的「辨識調校紀錄」）：
 
@@ -21,7 +30,7 @@ import os
 from typing import Dict, List, NamedTuple, Optional, Sequence, Tuple
 
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont
 
 # 縮圖邊長。整格與徽章各一塊，所以原始特徵長度是 THUMB*THUMB*3*2。
 THUMB = 16
@@ -352,6 +361,15 @@ def _resize_block(crop: np.ndarray) -> np.ndarray:
     return np.asarray(small, dtype=np.uint8).reshape(-1)
 
 
+def badge_of(crop: np.ndarray) -> np.ndarray:
+    """從一格裡切出號碼徽章那一塊。"""
+    h, w = crop.shape[:2] if crop.ndim >= 2 else (0, 0)
+    if h < 2 or w < 2:
+        return crop
+    bl, bt, br, bb = BADGE_BOX
+    return crop[int(h * bt):int(h * bb), int(w * bl):int(w * br)]
+
+
 def raw_feature(crop: np.ndarray) -> np.ndarray:
     """一格 → uint8 原始特徵（前半是整格縮圖，後半是號碼徽章縮圖）。
 
@@ -360,9 +378,7 @@ def raw_feature(crop: np.ndarray) -> np.ndarray:
     h, w = crop.shape[:2] if crop.ndim >= 2 else (0, 0)
     if h < 2 or w < 2:
         return np.zeros(RAW_LEN, dtype=np.uint8)
-    bl, bt, br, bb = BADGE_BOX
-    badge = crop[int(h * bt):int(h * bb), int(w * bl):int(w * br)]
-    return np.concatenate([_resize_block(crop), _resize_block(badge)])
+    return np.concatenate([_resize_block(crop), _resize_block(badge_of(crop))])
 
 
 def normalize(raw: np.ndarray) -> np.ndarray:
@@ -375,6 +391,164 @@ def normalize(raw: np.ndarray) -> np.ndarray:
     return a.reshape(-1)
 
 
+# ---------------------------------------------------------------- 徽章號碼辨識
+#
+# 每顆水果的格子底邊中間都有一塊鑽石徽章，裡面用白字寫著它的號碼。樣板比對認不得
+# 的時候（升級出沒見過的水果），就去讀那個數字，讀得出來就不用麻煩使用者標。
+#
+# 為什麼不用現成的 OCR：要多一個幾十 MB 的相依（tesseract / easyocr），而這裡的
+# 問題比通用 OCR 窄得多 —— 固定字型、固定位置、只有 0~9、最多兩位數。自己做
+# 反而更準也更快，而且「不確定就棄權」的行為完全在自己手上。
+
+BADGE_WHITE_AT = 0.62       # 白字門檻落在徽章亮度範圍的哪個位置（比例，不是絕對值）
+BADGE_MIN_CONTRAST = 25.0   # 徽章亮暗差不到這個就是整片死板，沒有白字
+BADGE_MIN_AREA = 0.004      # 一個字至少要佔徽章面積的多少
+BADGE_MIN_HEIGHT = 0.20     # 一個字至少要佔徽章高度的多少
+BADGE_MIN_RATIO = 1.05      # 字的高比寬。果肉亮部通常是扁的
+BADGE_BASELINE_TOL = 0.12   # 底部差多少以內算同一排字
+BADGE_MIN_MARGIN = 0.030    # 跟第二像的數字差距不到這個就別猜
+BADGE_MIN_GLYPH_PX = 10     # 字比這麼矮就別猜，筆畫會黏在一起
+MAX_FRUIT = 12              # 這個遊戲的水果最高到 12（獼猴桃）
+DIGIT_W, DIGIT_H = 12, 16   # 字符正規化後的大小
+
+# 拿系統字型算數字樣板。遊戲的字型不在裡面也沒關係 —— 用一大票粗體字型湊出
+# 「數字大致長什麼樣」的共識，比賭中某一個字型可靠。
+DIGIT_FONTS = (
+    "calibrib.ttf", "consolab.ttf", "courbd.ttf", "framdit.ttf", "tahomabd.ttf",
+    "verdanab.ttf", "arialbd.ttf", "ariblk.ttf", "bahnschrift.ttf", "impact.ttf",
+    "segoeuib.ttf", "seguibl.ttf", "trebucbd.ttf", "georgiab.ttf",
+)
+_FONT_DIR = os.path.join(os.environ.get("WINDIR", r"C:\Windows"), "Fonts")
+_digit_bank: Optional[List[Tuple[int, np.ndarray]]] = None
+
+
+def _components(mask: np.ndarray) -> List[List[Tuple[int, int]]]:
+    """四連通元件。自己寫 BFS，不為了這個拉進 scipy。"""
+    h, w = mask.shape
+    seen = np.zeros((h, w), dtype=bool)
+    out: List[List[Tuple[int, int]]] = []
+    for sy in range(h):
+        for sx in range(w):
+            if not mask[sy, sx] or seen[sy, sx]:
+                continue
+            stack = [(sy, sx)]
+            pts: List[Tuple[int, int]] = []
+            seen[sy, sx] = True
+            while stack:
+                y, x = stack.pop()
+                pts.append((y, x))
+                for dy, dx in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                    ny, nx = y + dy, x + dx
+                    if 0 <= ny < h and 0 <= nx < w and mask[ny, nx] and not seen[ny, nx]:
+                        seen[ny, nx] = True
+                        stack.append((ny, nx))
+            out.append(pts)
+    return out
+
+
+def badge_glyphs(badge: np.ndarray) -> List[np.ndarray]:
+    """徽章 → 由左至右的字符點陣。認不出字就回空 list。
+
+    只留「最底下那一排」。徽章貼在格子的底邊，水果的圖一定在它上面，所以拿
+    底部位置分群、取最低的那群，比把形狀濾網調嚴穩得多 —— 實測畫面調亮之後，
+    桃子的果肉亮部會長成 16x18（高比寬 1.12）鑽過形狀濾網，但它的底部在
+    徽章的 52% 處，數字在 85% 處，位置永遠分得開。
+    """
+    if badge.ndim != 3 or badge.shape[0] < 8 or badge.shape[1] < 8:
+        return []
+    mn = badge.astype(np.float32).min(axis=2)   # 白 = 三個色版都亮
+    lo = float(np.percentile(mn, 5))
+    hi = float(np.percentile(mn, 99.5))
+    if hi - lo < BADGE_MIN_CONTRAST:
+        return []
+    mask = mn >= lo + BADGE_WHITE_AT * (hi - lo)
+    bh, bw = mask.shape
+
+    keep = []
+    for c in _components(mask):
+        ys = [p[0] for p in c]
+        xs = [p[1] for p in c]
+        y0, y1, x0, x1 = min(ys), max(ys), min(xs), max(xs)
+        h, w = y1 - y0 + 1, x1 - x0 + 1
+        if (len(c) < BADGE_MIN_AREA * bh * bw or h < BADGE_MIN_HEIGHT * bh
+                or h / w < BADGE_MIN_RATIO):
+            continue
+        keep.append((y1, x0, mask[y0:y1 + 1, x0:x1 + 1]))
+    if not keep:
+        return []
+
+    lowest = max(k[0] for k in keep)
+    row = [k for k in keep if lowest - k[0] <= BADGE_BASELINE_TOL * bh]
+    row.sort(key=lambda k: k[1])
+    return [g for _, _, g in row]
+
+
+def _norm_glyph(sub: np.ndarray) -> np.ndarray:
+    """把字符拉伸成固定大小。拉伸（不保留長寬比）實測比等比置中的區隔度好一倍。"""
+    im = Image.fromarray((sub * 255).astype(np.uint8)).resize(
+        (DIGIT_W, DIGIT_H), Image.BILINEAR)
+    return np.asarray(im, dtype=np.float32) / 255.0
+
+
+def digit_bank() -> List[Tuple[int, np.ndarray]]:
+    """數字樣板庫（算一次就快取）。字型載不到就少一個，不會炸。"""
+    global _digit_bank
+    if _digit_bank is not None:
+        return _digit_bank
+    size = 64
+    bank: List[Tuple[int, np.ndarray]] = []
+    for name in DIGIT_FONTS:
+        try:
+            font = ImageFont.truetype(os.path.join(_FONT_DIR, name), size)
+        except (OSError, ValueError):
+            continue
+        for d in range(10):
+            im = Image.new("L", (size * 2, size * 2), 0)
+            ImageDraw.Draw(im).text((size // 2, size // 2), str(d), fill=255, font=font)
+            a = np.asarray(im) > 128
+            ys, xs = np.nonzero(a)
+            if len(ys) == 0:
+                continue
+            bank.append((d, _norm_glyph(a[ys.min():ys.max() + 1, xs.min():xs.max() + 1])))
+    _digit_bank = bank
+    return bank
+
+
+def read_badge_number(badge: np.ndarray, max_fruit: int = MAX_FRUIT) -> Tuple[Optional[int], float]:
+    """讀徽章上的號碼。回傳 (號碼, 信心差距)；不確定一律回 (None, ...)。
+
+    只回 1~max_fruit。讀不到任何數字時也回 None —— 「沒有徽章」有兩種可能
+    （空格、或動畫播到一半的格子），分不出來就別猜，跟整支程式「寧可說認不得」
+    的原則一致。
+    """
+    glyphs = badge_glyphs(badge)
+    if not glyphs or len(glyphs) > 2:
+        return None, 0.0
+    if min(g.shape[0] for g in glyphs) < BADGE_MIN_GLYPH_PX:
+        # 太小不是「不確定」而是「一定分不出來」：實測縮到 40% 時 2 會被讀成 1，
+        # 而且信心差距還有 0.067（比正常值還漂亮），光靠門檻擋不住。
+        return None, 0.0
+
+    bank = digit_bank()
+    if not bank:
+        return None, 0.0
+    digits = []
+    worst = float("inf")
+    for g in glyphs:
+        target = _norm_glyph(g)
+        ds = sorted((float(np.abs(t - target).mean()), lbl) for lbl, t in bank)
+        best_d, best_l = ds[0]
+        margin = next((d - best_d for d, l in ds if l != best_l), float("inf"))
+        digits.append(str(best_l))
+        worst = min(worst, margin)
+    if worst < BADGE_MIN_MARGIN:
+        return None, worst
+    value = int("".join(digits))
+    if not 1 <= value <= max_fruit:
+        return None, worst
+    return value, worst
+
+
 # ---------------------------------------------------------------- 樣板庫
 
 class Match(NamedTuple):
@@ -382,6 +556,7 @@ class Match(NamedTuple):
     distance: float        # 與最近樣板的平均通道差異
     margin: float          # 與「最接近的不同標籤」差多少，越大越有把握
     rejected: str = ""     # 認不得的原因："" / "distance" / "margin" / "empty"
+    source: str = "template"   # "template" = 樣板比對；"badge" = 讀格子上的號碼
 
 
 class TemplateDB:
@@ -525,6 +700,7 @@ class Reading(NamedTuple):
     crops: List[np.ndarray]
     ok: bool                        # 全部格子都認得
     unknown_indices: List[int]
+    badge_indices: List[int] = []   # 靠讀格子上的號碼認出來的，樣板庫還沒有它
 
     @property
     def board_cells(self) -> List[int]:
@@ -534,7 +710,12 @@ class Reading(NamedTuple):
     @property
     def looks_misaligned(self) -> bool:
         """一次冒出一大票不認得 → 多半是校準漂掉，而不是同時出現好幾種新水果。"""
-        return len(self.unknown_indices) >= max(3, len(self.cells) // 2)
+        return len(self.unknown_indices) >= misaligned_threshold(len(self.cells))
+
+
+def misaligned_threshold(n_cells: int) -> int:
+    """幾格認不得就該當成「校準漂掉」而不是「出現新水果」。"""
+    return max(3, n_cells // 2)
 
 
 class Recognizer:
@@ -542,18 +723,34 @@ class Recognizer:
         self.grid = grid
         self.db = db
 
-    def read(self, img: np.ndarray) -> Reading:
+    def read(self, img: np.ndarray, use_badge: bool = True) -> Reading:
+        """讀一張盤面。
+
+        樣板比對認不得的格子，會再去讀格子上印的號碼（`use_badge`）。讀得出來
+        就當場採用，使用者不必為了每一種新水果停下來標一輪。讀不出來才維持
+        「認不得」—— 兩層都不確定的時候寧可停手問人，也不要猜。
+        """
         crops = self.grid.crops(img)
-        cells: List[Optional[int]] = []
-        matches: List[Match] = []
-        unknown: List[int] = []
-        for i, crop in enumerate(crops):
-            m = self.db.match(raw_feature(crop))
-            matches.append(m)
-            cells.append(m.label)
-            if m.label is None:
-                unknown.append(i)
-        return Reading(cells, matches, crops, not unknown, unknown)
+        matches = [self.db.match(raw_feature(crop)) for crop in crops]
+        unknown = [i for i, m in enumerate(matches) if m.label is None]
+        from_badge: List[int] = []
+
+        # 認不得的格子太多 = 校準漂掉，不是同時冒出好幾種新水果。這種時候絕對
+        # 不能讓「讀號碼」把問題蓋過去：格線偏掉的時候徽章框也跟著偏，硬讀出來
+        # 的數字會讓「該重新吸附」看起來像沒事，還會把歪掉的樣板學進樣板庫。
+        # 樣板庫還是空的時候例外 —— 那是第一次使用，沒有「漂掉」可言，而且
+        # 讀出來的號碼只是拿去預填標記視窗，使用者還會再確認一次。
+        drifted = len(self.db) > 0 and len(unknown) >= misaligned_threshold(len(crops))
+        if use_badge and not drifted:
+            for i in unknown:
+                value, margin = read_badge_number(badge_of(crops[i]))
+                if value is not None:
+                    matches[i] = Match(value, matches[i].distance, margin, "", "badge")
+                    from_badge.append(i)
+            unknown = [i for i, m in enumerate(matches) if m.label is None]
+
+        cells = [m.label for m in matches]
+        return Reading(cells, matches, crops, not unknown, unknown, from_badge)
 
     def learn(self, crops: Sequence[np.ndarray], labels: Sequence[Optional[int]]) -> int:
         """把使用者標好的格子收進樣板庫，回傳實際新增的張數。"""
@@ -578,6 +775,7 @@ __all__ = [
     "Match", "Reading", "raw_feature", "normalize", "frame_difference",
     "autofit", "autofit_screen", "AUTOFIT_PAD",
     "Calibration", "calibration_from_corners",
-    "THUMB", "RAW_LEN", "BADGE_BOX",
+    "badge_of", "badge_glyphs", "read_badge_number", "misaligned_threshold",
+    "THUMB", "RAW_LEN", "BADGE_BOX", "MAX_FRUIT",
     "DEFAULT_TOLERANCE", "DEFAULT_MIN_MARGIN", "STABLE_TOLERANCE",
 ]

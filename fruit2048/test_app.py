@@ -14,6 +14,11 @@ import tempfile
 import numpy as np
 from PIL import Image
 
+# 中文版 Windows 的主控台預設是 cp950，印不出結尾那個 ✅/❌ 就會整支噴
+# UnicodeEncodeError —— 測試明明全過，看起來卻像壞了。
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
 # 測資圖放在 repo 裡。以前指向 Claude 的暫存圖片快取，那個檔案每傳一張新圖
 # 就會被覆蓋掉 —— 2026-08-15 真的被蓋掉一次，四個套件一起紅。
 SHOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "testdata", "board.png")
@@ -165,7 +170,37 @@ def main():
         eng.step()
         check("恢復之後能繼續", eng.step().kind == "ok")
 
-        print("10) 自動操控的狀態機（用假的 controller，不會真的動滑鼠）")
+        print("10) 看格子上的號碼自動學會新水果")
+        # 把一個空格換成商店圖裡的 11 號水果：樣板庫沒見過它，但它的號碼就印在
+        # 格子上。讀得出來就當場採用，不必停下來叫使用者標一輪。
+        NEW = 11
+        boxes = eng.grid.cell_boxes(w, h)
+        tile = np.asarray(Image.open(os.path.join(
+            os.path.dirname(SHOT), "shop_11_12.png")).convert("RGB"))[30:195, 25:190]
+        x0, y0, x1, y1 = boxes[8]          # 8 本來是空格，換掉不會蓋到別的水果
+        grown = board_img.copy()
+        grown[y0:y1, x0:x1] = np.asarray(
+            Image.fromarray(tile).resize((x1 - x0, y1 - y0), Image.BILINEAR))
+
+        class GrowGrabber(FakeGrabber):
+            def grab(self, region):
+                return grown.copy()
+
+        eng.grabber = GrowGrabber()
+        n_before = len(eng.db)
+        eng.step()                        # 第一次讀到 → settling（等下一輪確認）
+        st = eng.step()
+        check("整盤讀得出來，不用開標記視窗", st.kind == "ok", f"{st.kind}: {st.message}")
+        check("新水果認成 11 號", st.cells is not None and st.cells[8] == NEW, f"{st.cells}")
+        check("樣板庫真的多一張", len(eng.db) == n_before + 1, f"{n_before} → {len(eng.db)}")
+        check("訊息告訴使用者學到什麼", str(NEW) in st.message, st.message)
+        check("順手存檔，下次開起來就有", NEW in V.TemplateDB.load(A.TEMPLATES_PATH).labels)
+        check("學會之後不再重複報一次", not eng.step().message)
+        eng.grabber = FakeGrabber()
+        eng.db.remove_label(NEW)
+        eng.db.save(A.TEMPLATES_PATH)
+
+        print("11) 自動操控的狀態機（用假的 controller，不會真的動滑鼠）")
 
         class FakeController:
             def __init__(self):
@@ -312,7 +347,7 @@ def main():
               f"{st.kind}: {st.message}")
         check("訊息有提到那顆鍵", e.cfg.panic_key in st.message, st.message)
 
-        print("11) UI：建得起來、各種狀態都畫得出來")
+        print("12) UI：建得起來、各種狀態都畫得出來")
         try:
             ui = A.AssistApp()
         except Exception as e:

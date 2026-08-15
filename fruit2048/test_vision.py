@@ -11,6 +11,11 @@ from PIL import Image
 
 import vision as V
 
+# 中文版 Windows 的主控台預設是 cp950，印不出結尾那個 ✅/❌ 就會整支噴
+# UnicodeEncodeError —— 測試明明全過，看起來卻像壞了。
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
 # 測資圖放在 repo 裡（見 test_app.py 的說明）。
 DEFAULT_SHOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "testdata", "board.png")
 
@@ -50,6 +55,42 @@ def distort(full, region, dx=0, dy=0, noise=0, bright=0, gamma=1.0, scale=1.0):
         rng = np.random.default_rng(7)
         img = np.clip(img.astype(np.int16) + rng.integers(-noise, noise + 1, img.shape), 0, 255).astype(np.uint8)
     return img
+
+
+# 商店截圖裡每個水果磚塊的位置（左, 上, 右, 下）。盤面截圖最高只到 9，
+# 兩位數的徽章只有商店圖有 —— 而那正是讀號碼最容易翻車的地方。
+SHOP_TILES = [
+    ("shop_8_9.png", 8, (30, 30, 195, 195)),
+    ("shop_8_9.png", 9, (30, 255, 195, 420)),
+    ("shop_10.png", 10, (45, 45, 205, 205)),
+    ("shop_11_12.png", 11, (25, 30, 190, 195)),
+    ("shop_11_12.png", 12, (25, 255, 190, 420)),
+]
+
+
+def shop_badges():
+    """商店截圖 → [(真值, 徽章圖)]，補齊盤面沒有的 8~12。"""
+    here = os.path.dirname(os.path.abspath(__file__))
+    out = []
+    for name, label, (x0, y0, x1, y1) in SHOP_TILES:
+        img = np.asarray(Image.open(os.path.join(here, "testdata", name)).convert("RGB"))
+        out.append((label, V.badge_of(img[y0:y1, x0:x1])))
+    return out
+
+
+def stress(badge, scale=1.0, bright=0, noise=0):
+    """把徽章弄小、弄亮暗、加雜訊，用來測「讀不準的時候會不會亂猜」。"""
+    if scale != 1.0:
+        h, w = badge.shape[:2]
+        badge = np.asarray(Image.fromarray(badge).resize(
+            (max(6, int(w * scale)), max(6, int(h * scale))), Image.BILINEAR))
+    if bright:
+        badge = np.clip(badge.astype(np.int16) + bright, 0, 255).astype(np.uint8)
+    if noise:
+        rng = np.random.default_rng(5)
+        badge = np.clip(badge.astype(np.int16)
+                        + rng.integers(-noise, noise + 1, badge.shape), 0, 255).astype(np.uint8)
+    return badge
 
 
 def main():
@@ -114,7 +155,20 @@ def main():
     print("4) 樣板比對：學一次之後能認出整盤")
     db = V.TemplateDB()
     rec = V.Recognizer(grid, db)
-    check("空樣板庫 → 16 格全部不認得", len(rec.read(region).unknown_indices) == 16)
+    fruit_at = [i for i, v in enumerate(TRUE_BOARD) if v]
+    empty_at = [i for i, v in enumerate(TRUE_BOARD) if not v]
+    # 樣板庫全空 = 第一次使用。第一層沒東西可比，整盤都靠讀格子上的號碼撐著：
+    # 有水果的格子讀得出來，空格沒有數字可讀，照規矩留成「不認得」。
+    fresh = rec.read(region)
+    check("空樣板庫 → 有水果的格子靠號碼讀出來", fresh.badge_indices == fruit_at,
+          f"{fresh.badge_indices}")
+    check("空樣板庫 → 讀出來的號碼全對",
+          [fresh.cells[i] for i in fruit_at] == [TRUE_BOARD[i] for i in fruit_at],
+          f"{fresh.cells}")
+    check("空樣板庫 → 空格照樣說不認得", fresh.unknown_indices == empty_at,
+          f"{fresh.unknown_indices}")
+    check("關掉讀號碼 → 16 格全部不認得",
+          len(rec.read(region, use_badge=False).unknown_indices) == 16)
 
     added = rec.learn(crops, TRUE_BOARD)
     print(f"      學到 {added} 張樣板（16 格去重後剩下的不重複外觀）")
@@ -160,6 +214,9 @@ def main():
     drifted = rec.read(distort(full, TRUE_REGION, dx=6, dy=6))
     check("大量未知 → looks_misaligned=True", drifted.looks_misaligned)
     check("正常畫面 → looks_misaligned=False", not rec.read(region).looks_misaligned)
+    # 格線偏掉的時候徽章框也跟著偏。這時候要是讓「讀號碼」去救場，未知格數會
+    # 掉下來，該重新吸附的畫面就會看起來像沒事，還會把歪掉的樣板學進樣板庫。
+    check("漂掉時不啟用讀號碼", drifted.badge_indices == [], f"{drifted.badge_indices}")
 
     print("8) 自我修復：漂掉之後重新吸附能救回來")
     drift = V.Region(TRUE_REGION.left + 6, TRUE_REGION.top + 6,
@@ -194,7 +251,46 @@ def main():
     check("其他格不受影響", rec.read(region).cells == TRUE_BOARD)
     db.remove_label(NEW_FRUIT)
 
-    print("10) 存檔 / 讀檔 round-trip")
+    print("10) 讀格子上的號碼：新水果不必停下來問人")
+    samples = [(TRUE_BOARD[i], V.badge_of(crops[i])) for i in fruit_at] + shop_badges()
+    got = [V.read_badge_number(b)[0] for _, b in samples]
+    want = [v for v, _ in samples]
+    check(f"盤面 + 商店共 {len(samples)} 個徽章全部讀對", got == want, f"{got}")
+    check("兩位數（10/11/12）也讀得出來",
+          [V.read_badge_number(b)[0] for v, b in samples if v >= 10] == [10, 11, 12])
+    empty_reads = [V.read_badge_number(V.badge_of(crops[i]))[0] for i in empty_at]
+    check("空格不會生出號碼", empty_reads == [None] * len(empty_at), f"{empty_reads}")
+    nine = next(b for v, b in samples if v == 9)
+    check("超出水果上限的號碼不採用（假裝最高只到 3）",
+          V.read_badge_number(nine, max_fruit=3)[0] is None)
+    check("徽章切太小 → 棄權而不是硬讀",
+          V.read_badge_number(V.badge_of(crops[15])[:6])[0] is None)
+
+    print("11) 讀號碼的底線：可以說不知道，不可以讀錯")
+    # 讀錯比讀不到嚴重得多：讀不到只是回去問使用者，讀錯會把假水果學進樣板庫，
+    # 之後每一幀都用錯的號碼去解，而且沒有任何跡象。所以這裡只驗「零讀錯」，
+    # 棄權多少都算過。
+    for name, kw in [("原圖", {}), ("縮到 70%", dict(scale=0.7)), ("縮到 55%", dict(scale=0.55)),
+                     ("縮到 40%", dict(scale=0.4)), ("縮到 30%", dict(scale=0.3)),
+                     ("放大 150%", dict(scale=1.5)), ("亮度 +70", dict(bright=70)),
+                     ("亮度 -60", dict(bright=-60)), ("雜訊 ±35", dict(noise=35)),
+                     ("又小又亮又髒", dict(scale=0.6, bright=40, noise=20))]:
+        wrong, abstain = [], 0
+        for v, b in samples:
+            r = V.read_badge_number(stress(b, **kw))[0]
+            if r is None:
+                abstain += 1
+            elif r != v:
+                wrong.append(f"{v}→{r}")
+        check(f"{name}：沒有讀錯", not wrong,
+              f"棄權 {abstain}/{len(samples)}" + (f"、讀錯 {wrong}" if wrong else ""))
+    # 空格更不能冒出數字 —— 那會讓求解器以為那格有東西，整盤都跟著算錯。
+    for name, kw in [("縮到 55%", dict(scale=0.55)), ("亮度 +70", dict(bright=70)),
+                     ("雜訊 ±35", dict(noise=35))]:
+        vals = {V.read_badge_number(stress(V.badge_of(crops[i]), **kw))[0] for i in empty_at}
+        check(f"{name}：空格還是空的", vals == {None}, f"{sorted(str(v) for v in vals)}")
+
+    print("12) 存檔 / 讀檔 round-trip")
     tmp = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_debug", "_tpl_test.json")
     os.makedirs(os.path.dirname(tmp), exist_ok=True)
     db.save(tmp)
@@ -204,13 +300,13 @@ def main():
     check("壞掉的檔案 → 回空樣板庫而不是炸掉", len(V.TemplateDB.load(__file__)) == 0)
     os.remove(tmp)
 
-    print("11) 畫面穩定偵測")
+    print("13) 畫面穩定偵測")
     check("同一張畫面 → 差異 0", V.frame_difference(region, region) == 0.0)
     check("動畫中的畫面 → 差異大",
           V.frame_difference(region, np.roll(region, 40, axis=1)) > V.STABLE_TOLERANCE)
     check("尺寸不同 → 視為不穩定", V.frame_difference(region, region[:-5]) == float("inf"))
 
-    print("12) 兩段式校準：左上一格的框 + 其餘三角落的中心")
+    print("14) 兩段式校準：左上一格的框 + 其餘三角落的中心")
 
     def corners_of(reg, rows=4, cols=4, cell=None, jitter=None):
         """由一個已知的盤面範圍，倒推使用者「應該會點在哪」。"""

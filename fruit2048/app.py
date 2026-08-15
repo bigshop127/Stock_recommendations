@@ -279,6 +279,8 @@ class Engine:
             self._confirming = cells
             return self._status("settling", "畫面變動中…", cells=cells, reading=reading)
 
+        learned = self._learn_from_badges(reading)
+
         board = S.from_list(cells)
         if board != self._solved_board or self._result is None:
             self._solved_board = board
@@ -294,7 +296,28 @@ class Engine:
             if failure is not None:
                 return failure
 
-        return self._status("ok", "", cells=cells, result=self._result, reading=reading)
+        return self._status("ok", learned, cells=cells, result=self._result, reading=reading)
+
+    def _learn_from_badges(self, reading: V.Reading) -> str:
+        """把「靠格子上的號碼認出來」的新水果收進樣板庫，回傳要顯示的訊息。
+
+        等盤面連續兩次讀到一樣才做，借用上面那個穩定判斷 —— 動畫播到一半的格子
+        本來就不該被學進去。學起來之後這顆水果就走第一層樣板比對，不必每一幀
+        都重讀一次數字。
+        """
+        if not reading.badge_indices:
+            return ""
+        crops = [reading.crops[i] for i in reading.badge_indices]
+        labels = [reading.cells[i] for i in reading.badge_indices]
+        added = self.rec.learn(crops, labels)
+        if not added:
+            return ""
+        self.db.save(TEMPLATES_PATH)
+        # 這裡不呼叫 rebuild()：db.add() 自己會把比對矩陣設成 None，而 rebuild()
+        # 會順手把 _played_at 歸零 —— 那正好會在新水果冒出來的那一刻打亂自動
+        # 操控的節奏（下一步立刻滑出去，不等 move_interval）。
+        names = "、".join(str(n) for n in sorted({int(l) for l in labels if l}))
+        return f"看格子上的數字認出 {names} 號水果，已經記起來了"
 
     def _play(self, board: int, move: int) -> Optional[Status]:
         """自動操控：真的把這一步滑出去。回傳非 None 代表出事了、要顯示給使用者。"""
@@ -1121,6 +1144,11 @@ class AssistApp(tk.Tk):
         if st.reading is not None:
             self.last_reading = st.reading
         self._sync_auto_note()
+
+        # 正常狀態帶訊息 = 剛剛自動學會了新水果。那只會出現一幀，不 flash 住的話
+        # 下一輪就被空字串蓋掉，使用者根本來不及看到。
+        if st.kind == "ok" and st.message:
+            self.flash(st.message, 8)
 
         if st.cells:
             for i, value in enumerate(st.cells[:16]):
