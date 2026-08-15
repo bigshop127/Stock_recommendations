@@ -678,18 +678,30 @@ class AdbCalibrationDialog(tk.Toplevel):
     縮放比例，點擊座標一律先換算回原始手機像素再丟給
     `V.calibration_from_corners()` —— 算出來的範圍才會是手機真正的像素座標，
     AdbGrabber.grab() 拿去裁切才會準。
+
+    顯示上限預設用「使用者電腦的實際螢幕大小」（扣掉標題文字跟邊距），
+    不是寫死的小尺寸——不然截圖在大螢幕上只會佔一小角，點起來很不準。
+    `max_display` 開放外部指定，是為了讓測試能固定用一個跟真實螢幕大小
+    無關的小尺寸，穩定驗證「確實有縮放」這條路，不會因為跑測試那台機器
+    螢幕夠大就使不上力。
     """
 
     CORNER_NAMES = ("右上", "右下", "左下")
-    MAX_DISPLAY = (480, 900)   # 顯示視窗的長寬上限，手機截圖動輒 1080x2340
+    SCREEN_MARGIN = (100, 220)   # 螢幕寬高各要扣掉多少給邊距跟上方文字
 
-    def __init__(self, master: tk.Misc, image: np.ndarray, rows: int, cols: int, on_done) -> None:
+    def __init__(self, master: tk.Misc, image: np.ndarray, rows: int, cols: int, on_done,
+                 max_display: Optional[Tuple[int, int]] = None) -> None:
         super().__init__(master)
         self.rows = rows
         self.cols = cols
         self.on_done = on_done
         img_h, img_w = image.shape[:2]
-        max_w, max_h = self.MAX_DISPLAY
+        if max_display is None:
+            master.update_idletasks()
+            margin_w, margin_h = self.SCREEN_MARGIN
+            max_display = (max(240, master.winfo_screenwidth() - margin_w),
+                          max(240, master.winfo_screenheight() - margin_h))
+        max_w, max_h = max_display
         self.scale = min(max_w / img_w, max_h / img_h, 1.0)
         disp_w = max(1, round(img_w * self.scale))
         disp_h = max(1, round(img_h * self.scale))
@@ -700,6 +712,7 @@ class AdbCalibrationDialog(tk.Toplevel):
         self.points: List[tuple] = []                 # 手機像素座標（未縮放）
         self.band_id: Optional[int] = None
         self.mark_ids: List[int] = []
+        self.ghost_ids: List[int] = []
 
         self.title("校準盤面（手機截圖）")
         self.configure(bg="#000000")
@@ -726,15 +739,24 @@ class AdbCalibrationDialog(tk.Toplevel):
         self.canvas.bind("<ButtonPress-1>", self._press)
         self.canvas.bind("<B1-Motion>", self._drag)
         self.canvas.bind("<ButtonRelease-1>", self._release)
+        self.canvas.bind("<Motion>", self._motion)
         self.bind("<Escape>", lambda _e: self._cancel())
         self.bind("<BackSpace>", lambda _e: self._undo())
         self.protocol("WM_DELETE_WINDOW", self._cancel)
+        self.update_idletasks()
+        self._center_on_screen()
         try:
             self.grab_set()
             self.focus_force()
         except tk.TclError:
             pass
         self._refresh_text()
+
+    def _center_on_screen(self) -> None:
+        w, h = self.winfo_reqwidth(), self.winfo_reqheight()
+        x = max(0, (self.winfo_screenwidth() - w) // 2)
+        y = max(0, (self.winfo_screenheight() - h) // 2)
+        self.geometry(f"+{x}+{y}")
 
     # -- 座標換算：畫布是縮小過的，點擊位置要放大回真正的手機像素 --
     def _to_image(self, x: float, y: float) -> tuple:
@@ -787,6 +809,21 @@ class AdbCalibrationDialog(tk.Toplevel):
         self.drag_start = None
         self._refresh_text()
 
+    def _motion(self, ev) -> None:
+        """第 2 步時讓游標帶著一格大小的白框走，跟桌面版校準一樣的預覽提示。"""
+        if self.phase != 2 or self.cell_box is None:
+            return
+        for gid in self.ghost_ids:
+            self.canvas.delete(gid)
+        self.ghost_ids = []
+        hw, hh = self._to_canvas(self.cell_box.width / 2, self.cell_box.height / 2)
+        self.ghost_ids.append(self.canvas.create_rectangle(
+            ev.x - hw, ev.y - hh, ev.x + hw, ev.y + hh, outline="#ffffff", width=2))
+        self.ghost_ids.append(self.canvas.create_line(
+            ev.x - 10, ev.y, ev.x + 10, ev.y, fill="#ffffff", width=1))
+        self.ghost_ids.append(self.canvas.create_line(
+            ev.x, ev.y - 10, ev.x, ev.y + 10, fill="#ffffff", width=1))
+
     def _click_phase2(self, ev) -> None:
         self.points.append(self._to_image(ev.x, ev.y))
         self._draw_marks()
@@ -829,6 +866,9 @@ class AdbCalibrationDialog(tk.Toplevel):
             if self.band_id:
                 self.canvas.delete(self.band_id)
                 self.band_id = None
+            for gid in self.ghost_ids:
+                self.canvas.delete(gid)
+            self.ghost_ids = []
         self._refresh_text()
 
     def _cancel(self) -> None:

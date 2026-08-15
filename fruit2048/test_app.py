@@ -713,8 +713,11 @@ def main():
 
             print("      · 手機版校準：靜態截圖＋縮放，兩步點法要跟前面那個一樣準")
 
-            # 用比顯示上限（480x900）大的圖，才會真的走到縮放這條路——這是跟
-            # CalibrationOverlay 最大的差異，縮放算錯全部的點都會歪掉。
+            # 用比顯示上限（這裡固定傳 480x900，不吃這台機器真正的螢幕大小）大的圖，
+            # 才會真的走到縮放這條路——這是跟 CalibrationOverlay 最大的差異，
+            # 縮放算錯全部的點都會歪掉。正式程式預設會改用使用者實際的螢幕尺寸
+            # （見 AdbCalibrationDialog 的 max_display 參數說明），但那樣測試結果
+            # 會隨著跑測試那台機器的螢幕大小變來變去，所以這裡明確固定一個值。
             phone_img = np.zeros((2340, 1080, 3), dtype=np.uint8)
             phone_region = (120, 300, 800, 800)   # (left, top, width, height)，手機像素座標
             ppx, ppy = phone_region[2] / 4, phone_region[3] / 4
@@ -727,7 +730,8 @@ def main():
             pbx, pby = ptlx - pcw / 2, ptly - pcw / 2
 
             got_adb = {}
-            adb_dlg = A.AdbCalibrationDialog(ui, phone_img, 4, 4, lambda c: got_adb.setdefault("cal", c))
+            adb_dlg = A.AdbCalibrationDialog(ui, phone_img, 4, 4, lambda c: got_adb.setdefault("cal", c),
+                                             max_display=(480, 900))
             ui.update()
             check("縮放比例真的小於 1（確實吃到了縮小這條路）", adb_dlg.scale < 1.0, f"{adb_dlg.scale}")
 
@@ -738,6 +742,23 @@ def main():
             adb_dlg._drag(to_canvas((pbx + pcw, pby + pcw)))
             adb_dlg._release(to_canvas((pbx + pcw, pby + pcw)))
             check("框完左上一格 → 進入第 2 步", adb_dlg.phase == 2, f"phase={adb_dlg.phase}")
+
+            # 第 2 步游標移動要帶著一格大小的白框走（跟桌面版 CalibrationOverlay
+            # 一樣的預覽提示）——這支手機版原本漏了這塊，點右上/右下/左下時
+            # 完全看不到參考範圍。
+            adb_dlg._motion(to_canvas(phone_cell_center(0, 3)))
+            check("移到第 2 步會畫出跟著游標的預覽框", len(adb_dlg.ghost_ids) > 0)
+            ghost_box = adb_dlg.canvas.coords(adb_dlg.ghost_ids[0])
+            ghost_w = ghost_box[2] - ghost_box[0]
+            expect_w, _ = adb_dlg._to_canvas(adb_dlg.cell_box.width, adb_dlg.cell_box.height)
+            check("預覽框大小對應框出來的那一格（縮放後）",
+                  abs(ghost_w - expect_w) < 1.0, f"{ghost_w} vs {expect_w}")
+            adb_dlg._undo()
+            check("退回第 1 步後預覽框要清掉，不留殘影", adb_dlg.ghost_ids == [])
+
+            adb_dlg._press(to_canvas((pbx, pby)))
+            adb_dlg._drag(to_canvas((pbx + pcw, pby + pcw)))
+            adb_dlg._release(to_canvas((pbx + pcw, pby + pcw)))
             adb_dlg._press(to_canvas(phone_cell_center(0, 3)))
             adb_dlg._press(to_canvas(phone_cell_center(3, 3)))
             adb_dlg._press(to_canvas(phone_cell_center(3, 0)))
