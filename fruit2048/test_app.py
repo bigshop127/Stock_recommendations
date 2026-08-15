@@ -10,6 +10,7 @@ import os
 import shutil
 import sys
 import tempfile
+import time
 
 import numpy as np
 from PIL import Image
@@ -205,6 +206,7 @@ def main():
         class FakeController:
             def __init__(self):
                 self.calls = []
+                self.regions = []
                 self.raise_next = None
 
             def play(self, region, move):
@@ -212,6 +214,7 @@ def main():
                     err, self.raise_next = self.raise_next, None
                     raise err
                 self.calls.append(move)
+                self.regions.append(region)
 
         class ScriptedRec:
             """繞過影像辨識，直接餵指定盤面，好單獨測自動操控的邏輯。"""
@@ -347,7 +350,152 @@ def main():
               f"{st.kind}: {st.message}")
         check("訊息有提到那顆鍵", e.cfg.panic_key in st.message, st.message)
 
-        print("12) UI：建得起來、各種狀態都畫得出來")
+        print("12) 視窗追蹤：模擬器視窗被搬走也不用重新校準")
+        try:
+            import tkinter as _tk
+
+            class TrackedGrabber(FakeGrabber):
+                """記住最後一次被要求擷取的範圍，好檢查追蹤有沒有真的生效。"""
+
+                def __init__(self):
+                    self.last_region = None
+
+                def grab(self, region):
+                    self.last_region = region
+                    return board_img.copy()
+
+            win_title = f"fruit2048_test_emulator_{os.getpid()}"
+            win = _tk.Tk()
+            try:
+                win.title(win_title)
+                win.geometry("300x200+150+120")
+                win.attributes("-topmost", True)
+                win.lift()
+                win.focus_force()
+                win.update()
+                time.sleep(0.2)
+                win.update()
+
+                original_region = V.Region(*TRUE_REGION)
+                hwnd = A.C.find_window(win_title)
+                rect = A.C.window_rect(hwnd) if hwnd else None
+                check("測試視窗找得到、量得到位置", rect is not None, f"{rect}")
+
+                e, ctl = build_auto()
+                e.grabber = TrackedGrabber()
+                e.cfg.window_anchor = {
+                    "title": win_title,
+                    "dx": original_region.left - rect[0],
+                    "dy": original_region.top - rect[1],
+                }
+                e.autoplay = True
+
+                pump(e, 2)
+                check("視窗還沒動時，擷取範圍跟校準當下一樣",
+                      e.grabber.last_region == original_region, f"{e.grabber.last_region}")
+                check("也真的滑了一步", len(ctl.calls) == 1, f"{ctl.calls}")
+                check("滑動目標用的也是同一個範圍",
+                      ctl.regions[-1] == original_region, f"{ctl.regions[-1]}")
+
+                win.geometry("300x200+270+210")
+                win.update()
+                time.sleep(0.15)
+                win.update()
+
+                # retry_after=0：盤面沒變 → 重新確認穩定之後立刻視為「重試」再滑一次，
+                # 正好可以用來檢查追蹤後的範圍有沒有跟著套進滑動目標。要 pump 兩次是
+                # 因為剛滑完那一下 _confirming 被重置了，得先重新確認一輪穩定的盤面。
+                pump(e, 2)
+                shifted = V.Region(original_region.left + 120, original_region.top + 90,
+                                    original_region.width, original_region.height)
+                check("視窗搬走之後，擷取範圍跟著移動",
+                      e.grabber.last_region == shifted, f"{e.grabber.last_region}")
+                check("滑動目標也跟著移動（不會對著視窗搬走前的舊位置滑）",
+                      ctl.regions[-1] == shifted, f"{ctl.regions[-1]}")
+
+                win.iconify()
+                win.update()
+                time.sleep(0.15)
+                st = e.step()
+                check("視窗縮到最小 → 安靜等待，不會報錯嚇人",
+                      st.kind == "waiting" and win_title in st.message, f"{st.kind}: {st.message}")
+                check("等待視窗回來時不會把自動操控關掉", e.autoplay)
+
+                win.deiconify()
+                win.lift()
+                win.focus_force()
+                win.update()
+                time.sleep(0.15)
+                win.update()
+                st = e.step()
+                check("視窗還原之後自己接回去，不用使用者按任何按鈕",
+                      st.kind != "waiting", f"{st.kind}: {st.message}")
+
+                win.destroy()
+                win = None
+                st = e.step()
+                check("視窗被關掉時一樣安靜等待，不會整個炸掉",
+                      st.kind == "waiting" and e.autoplay, f"{st.kind}: {st.message}")
+            finally:
+                if win is not None:
+                    win.destroy()
+
+            print("      · 重新吸附之後，追蹤的位移量也要跟著校正")
+            win2_title = f"fruit2048_test_emulator2_{os.getpid()}"
+            win2 = _tk.Tk()
+            # refit_region() 內部會 cfg.save() 寫回共用的沙盒設定檔，這裡用的是
+            # A.Engine(A.Config.load())（不是 build_auto，它把 move_interval 等
+            # 欄位刻意壓到 0.0 方便測節奏，一旦存回磁碟就會讓後面的設定視窗測試
+            # 讀到超出 UI 合法範圍的值而悄悄擋下所有套用）。就算這樣，refit_region
+            # 仍然會把假造的吸附範圍存進沙盒檔，所以額外備份/還原整個檔案，
+            # 不讓這個子測試留下任何看得到的痕跡。
+            config_backup = None
+            if os.path.exists(A.CONFIG_PATH):
+                with open(A.CONFIG_PATH, "r", encoding="utf-8") as f:
+                    config_backup = f.read()
+            try:
+                win2.title(win2_title)
+                win2.geometry("300x200+500+80")
+                win2.attributes("-topmost", True)
+                win2.lift()
+                win2.focus_force()
+                win2.update()
+                time.sleep(0.2)
+                win2.update()
+
+                rect2 = A.C.window_rect(A.C.find_window(win2_title))
+                e2 = A.Engine(A.Config.load())
+                e2.grabber = FakeGrabber()
+                e2.cfg.window_anchor = {
+                    "title": win2_title,
+                    "dx": e2.region.left - rect2[0],
+                    "dy": e2.region.top - rect2[1],
+                }
+
+                fitted = V.Region(e2.region.left + 5, e2.region.top - 3,
+                                   e2.region.width, e2.region.height)
+                original_autofit = A.V.autofit_screen
+                A.V.autofit_screen = lambda *a, **kw: fitted
+                try:
+                    ok = e2.refit_region()
+                finally:
+                    A.V.autofit_screen = original_autofit
+
+                check("重新吸附成功", ok)
+                check("鎖定的視窗標題沒變", e2.cfg.window_anchor["title"] == win2_title)
+                check("位移量重新對齊吸附後的位置",
+                      e2.cfg.window_anchor["dx"] == fitted.left - rect2[0] and
+                      e2.cfg.window_anchor["dy"] == fitted.top - rect2[1],
+                      f"{e2.cfg.window_anchor}")
+            finally:
+                win2.destroy()
+                if config_backup is not None:
+                    with open(A.CONFIG_PATH, "w", encoding="utf-8") as f:
+                        f.write(config_backup)
+        except _tk.TclError as e:
+            check("視窗追蹤（需要能開視窗的環境）", False, str(e))
+
+        print("13) UI：建得起來、各種狀態都畫得出來")
         try:
             ui = A.AssistApp()
         except Exception as e:

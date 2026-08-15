@@ -53,6 +53,8 @@ PANIC_KEYS: Dict[str, int] = {
 }
 DEFAULT_PANIC_KEY = "F8"
 
+GA_ROOT = 2  # GetAncestor 用：一路往上找到最上層的視窗
+
 
 class MOUSEINPUT(ctypes.Structure):
     _fields_ = [("dx", wintypes.LONG), ("dy", wintypes.LONG),
@@ -81,6 +83,18 @@ class POINT(ctypes.Structure):
 
 class InputError(RuntimeError):
     """SendInput 被擋下來了（多半是遊戲以系統管理員身分執行）。"""
+
+
+user32.WindowFromPoint.restype = wintypes.HWND
+user32.WindowFromPoint.argtypes = [POINT]
+user32.GetAncestor.restype = wintypes.HWND
+user32.GetAncestor.argtypes = [wintypes.HWND, wintypes.UINT]
+user32.FindWindowW.restype = wintypes.HWND
+user32.FindWindowW.argtypes = [wintypes.LPCWSTR, wintypes.LPCWSTR]
+user32.GetWindowRect.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.RECT)]
+user32.GetWindowTextW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
+user32.GetWindowTextLengthW.argtypes = [wintypes.HWND]
+user32.IsIconic.argtypes = [wintypes.HWND]
 
 
 def _send(*inputs: INPUT) -> None:
@@ -115,6 +129,52 @@ def cursor_position() -> Tuple[int, int]:
     pt = POINT()
     user32.GetCursorPos(ctypes.byref(pt))
     return pt.x, pt.y
+
+
+# ---------------------------------------------------------------- 視窗追蹤
+# 給「校準之後把模擬器視窗挪走／換位置也不用重新框」用：校準當下記住是哪個
+# 視窗、框選範圍跟那個視窗左上角差多少，之後每次擷取前用標題重新找一次
+# 視窗現在的位置，位移量套回去就好。
+
+def window_at(x: int, y: int) -> Optional[int]:
+    """畫面上這個點屬於哪個「最上層」視窗，回傳 handle；沒有就回 None。
+
+    WindowFromPoint 找到的常常是子控制項（例如模擬器畫面本身的子視窗），
+    用 GetAncestor(GA_ROOT) 一路往上走到真正的頂層視窗，標題跟位置才穩定。
+    """
+    hwnd = user32.WindowFromPoint(POINT(x, y))
+    if not hwnd:
+        return None
+    root = user32.GetAncestor(hwnd, GA_ROOT)
+    return int(root or hwnd)
+
+
+def window_title(hwnd: int) -> str:
+    length = user32.GetWindowTextLengthW(hwnd)
+    if length <= 0:
+        return ""
+    buf = ctypes.create_unicode_buffer(length + 1)
+    user32.GetWindowTextW(hwnd, buf, length + 1)
+    return buf.value
+
+
+def window_is_minimized(hwnd: int) -> bool:
+    return bool(user32.IsIconic(hwnd))
+
+
+def window_rect(hwnd: int) -> Optional[Tuple[int, int, int, int]]:
+    """(left, top, right, bottom)；視窗代碼失效就回 None。"""
+    rect = wintypes.RECT()
+    if not user32.GetWindowRect(hwnd, ctypes.byref(rect)):
+        return None
+    return rect.left, rect.top, rect.right, rect.bottom
+
+
+def find_window(title: str) -> Optional[int]:
+    """依標題找現在的視窗代碼。同標題有好幾個視窗時抓到哪個算哪個——
+    模擬器通常只會開一份，這裡不特別處理多開的情況。"""
+    hwnd = user32.FindWindowW(None, title)
+    return int(hwnd) if hwnd else None
 
 
 def _mouse(flags: int, x: Optional[int] = None, y: Optional[int] = None) -> INPUT:
@@ -242,5 +302,6 @@ class Controller:
 __all__ = [
     "Controller", "InputError", "swipe", "swipe_points", "tap_key", "move_to",
     "cursor_position", "panic_pressed", "virtual_screen",
+    "window_at", "window_title", "window_is_minimized", "window_rect", "find_window",
     "PANIC_KEYS", "DEFAULT_PANIC_KEY", "VK_ARROW", "VK_WASD",
 ]

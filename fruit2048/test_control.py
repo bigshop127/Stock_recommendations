@@ -7,12 +7,25 @@
     python test_control.py
 """
 
+import ctypes
+import os
 import sys
 import time
 
 import control as C
 import solver as S
 from vision import Region
+
+# 視窗座標測試對 DPI 縮放很敏感，跟 app.py 開頭做一樣的宣告，否則副螢幕
+# 或非 100% 縮放時 GetWindowRect 量到的位置會跟 tkinter 自己回報的對不起來。
+if sys.platform == "win32":
+    try:
+        ctypes.windll.shcore.SetProcessDpiAwareness(2)
+    except (AttributeError, OSError):
+        try:
+            ctypes.windll.user32.SetProcessDPIAware()
+        except (AttributeError, OSError):
+            pass
 
 # 中文版 Windows 的主控台預設是 cp950，印不出結尾那個 ✅/❌ 就會整支噴
 # UnicodeEncodeError —— 測試明明全過，看起來卻像壞了。
@@ -142,6 +155,58 @@ def main():
             C.move_to(*origin)
         except C.InputError:
             pass
+
+    print("8) 視窗追蹤（校準完鎖定模擬器視窗用）")
+    try:
+        import tkinter as tk
+
+        title = f"fruit2048_test_probe_{os.getpid()}"
+        win = tk.Tk()
+        win.title(title)
+        win.geometry("300x200+150+120")
+        win.attributes("-topmost", True)
+        win.lift()
+        win.focus_force()
+        win.update()
+        time.sleep(0.2)
+        win.update()
+
+        cx, cy = win.winfo_rootx() + 50, win.winfo_rooty() + 50
+        hwnd = C.window_at(cx, cy)
+        check("點在視窗裡面找得到 handle", hwnd is not None, f"{hwnd}")
+
+        found = C.find_window(title)
+        check("依標題找到的跟依座標找到的是同一個視窗", found == hwnd, f"{found} vs {hwnd}")
+        check("標題讀得對", hwnd is not None and C.window_title(hwnd) == title,
+              repr(C.window_title(hwnd)) if hwnd else "")
+
+        rect = C.window_rect(hwnd) if hwnd else None
+        check("位置量得出來、涵蓋剛剛點的那個點",
+              rect is not None and rect[0] <= cx <= rect[2] and rect[1] <= cy <= rect[3],
+              f"{rect}")
+        check("視窗沒被縮到最小", hwnd is not None and not C.window_is_minimized(hwnd))
+
+        win.geometry("300x200+400+350")
+        win.update()
+        time.sleep(0.15)
+        win.update()
+        moved_rect = C.window_rect(hwnd)
+        check("視窗搬動之後，重新量到的位置真的跟著變",
+              moved_rect is not None and rect is not None and moved_rect[0] != rect[0],
+              f"{rect} → {moved_rect}")
+
+        win.iconify()
+        win.update()
+        time.sleep(0.15)
+        check("縮到最小偵測得到", C.window_is_minimized(hwnd))
+
+        win.destroy()
+        check("關掉之後依標題找不到（不會回傳殘留的舊 handle）",
+              C.find_window(title) is None)
+    except tk.TclError as e:
+        check("視窗追蹤（需要能開視窗的環境）", False, str(e))
+
+    check("標題不存在時回 None，不會炸掉", C.find_window("不存在的視窗標題_xyz123") is None)
 
     print()
     if _failures:

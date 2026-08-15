@@ -20,7 +20,7 @@ import sys
 import threading
 import time
 from dataclasses import asdict, dataclass, field
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 import numpy as np
 from PIL import Image, ImageTk
@@ -110,6 +110,12 @@ class Config:
     max_retries: int = 3                # 連續重試幾次仍沒反應就停下來
     animation_grace: float = 1.2        # 剛滑完這段時間內認不得都算動畫，不當成錯誤
     panic_key: str = C.DEFAULT_PANIC_KEY
+
+    # 校準時如果偵測得到模擬器視窗，記住「框選範圍相對那個視窗左上角差多少」
+    # （title / dx / dy）。之後每次擷取前用標題重新找一次視窗現在的位置，
+    # 把位移套回去 —— 這樣挪動或換螢幕擺放視窗都不用重新校準。
+    # 偵測不到（例如模擬器不是一般視窗）就是 None，退回原本寫死畫面座標的行為。
+    window_anchor: Optional[dict] = None
 
     @classmethod
     def load(cls) -> "Config":
@@ -228,9 +234,38 @@ class Engine:
         if fitted is None:
             return False
         self.cfg.region = fitted.to_dict()
+        if self.cfg.window_anchor:
+            # 微調過的位置也要記得跟視窗的相對關係，不然視窗一移動又會退回
+            # 校準當下那個沒吸附過的位置。
+            hwnd = C.find_window(self.cfg.window_anchor["title"])
+            rect = C.window_rect(hwnd) if hwnd else None
+            if rect is not None:
+                self.cfg.window_anchor = {
+                    "title": self.cfg.window_anchor["title"],
+                    "dx": fitted.left - rect[0],
+                    "dy": fitted.top - rect[1],
+                }
         self.cfg.save()
         self.rebuild()
         return True
+
+    def _track_region(self) -> Tuple[Optional[V.Region], Optional[str]]:
+        """視窗有被鎖定的話，把 self.region 校正到那個視窗現在的位置。
+
+        沒鎖定（window_anchor 是 None）就原封不動回傳 self.region ——
+        這是舊行為，畫面座標校準完就固定死。
+        """
+        anchor = self.cfg.window_anchor
+        if not anchor:
+            return self.region, None
+        hwnd = C.find_window(anchor["title"])
+        rect = C.window_rect(hwnd) if hwnd else None
+        if rect is None or C.window_is_minimized(hwnd):
+            return None, (f"找不到視窗「{anchor['title']}」——可能被關掉或縮到最小了。"
+                          f"還原視窗就會自動接回去繼續玩。")
+        base = self.region or V.Region.from_dict(self.cfg.region)
+        left, top, _, _ = rect
+        return V.Region(left + anchor["dx"], top + anchor["dy"], base.width, base.height), None
 
     def step(self) -> Status:
         if self.autoplay and C.panic_pressed(self.cfg.panic_key):
@@ -239,6 +274,11 @@ class Engine:
 
         if self.region is None:
             return self._status("waiting", "還沒校準。按下方的「① 校準盤面」框出遊戲的 4x4 區域。")
+
+        live_region, track_err = self._track_region()
+        if track_err:
+            return self._status("waiting", track_err)
+        self.region = live_region
 
         try:
             img = self.grabber.grab(self.region)
@@ -1241,11 +1281,31 @@ class AssistApp(tk.Tk):
         self.after(120, lambda: CalibrationOverlay(
             self, screen, self.cfg.rows, self.cfg.cols, done))
 
+    def _detect_window_anchor(self, region: V.Region) -> Optional[dict]:
+        """校準完成時試著記住是哪個視窗，讓之後搬動這個視窗不用重新框。
+
+        抓不到（例如底下根本不是一般的 Win32 視窗）就靜靜放棄，退回原本
+        畫面座標寫死的行為 —— 這是錦上添花，不該讓校準本身因此失敗。
+        """
+        try:
+            hwnd = C.window_at(region.left + region.width // 2, region.top + region.height // 2)
+            if not hwnd:
+                return None
+            title = C.window_title(hwnd)
+            rect = C.window_rect(hwnd)
+            if not title or rect is None:
+                return None
+            return {"title": title, "dx": region.left - rect[0], "dy": region.top - rect[1]}
+        except OSError:
+            return None
+
     def apply_region(self, region: V.Region, inset: Optional[float] = None) -> None:
+        anchor = self._detect_window_anchor(region)
         with self.lock:
             self.cfg.region = region.to_dict()
             if inset is not None:
                 self.cfg.inset = float(inset)
+            self.cfg.window_anchor = anchor
             self.cfg.save()
             self.engine.rebuild()
             # 立刻試讀一次，直接告訴使用者這次校準到底成不成立，
@@ -1257,14 +1317,16 @@ class AssistApp(tk.Tk):
                 reading = None
         self.worker.resume()
 
+        note = (f" 順便鎖定了視窗「{anchor['title']}」，之後搬動這個視窗不用重新校準。"
+                if anchor else "")
         if len(self.engine.db) == 0:
-            self.flash("範圍存好了。接著按「② 標記水果」教它每格是幾號。", 10)
+            self.flash(f"範圍存好了。接著按「② 標記水果」教它每格是幾號。{note}", 10)
         elif reading is not None and reading.ok:
-            self.flash("範圍存好了，而且馬上就讀得懂盤面 —— 可以開始用了。", 8)
+            self.flash(f"範圍存好了，而且馬上就讀得懂盤面 —— 可以開始用了。{note}", 8)
         else:
             unknown = len(reading.unknown_indices) if reading else self.cfg.rows * self.cfg.cols
             self.flash(f"範圍存好了，但有 {unknown} 格對不上之前學過的樣板"
-                       f"（切格位置變了就會這樣）。請按「② 標記水果」重新教一次。", 12)
+                       f"（切格位置變了就會這樣）。請按「② 標記水果」重新教一次。{note}", 12)
 
     def refit(self) -> None:
         if self.engine.region is None:
