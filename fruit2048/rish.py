@@ -12,11 +12,18 @@ screencap／input，不用再跨 USB 呼叫 PC 上的 adb.exe。
 不 import control.py：那支模組在載入時就直接 `ctypes.WinDLL("user32")`，
 在 Linux/Android 上一 import 就會炸掉（WinDLL 不存在）。所以 InputError
 跟 swipe_points() 這兩個小東西在這裡各自留一份，不是偷懶而是唯一選項。
+
+截圖不走 rish 的 stdout relay：一張全解析度截圖 base64 編碼後動輒 1MB+，
+實測這個管道扛不住這個量——不是常常逾時（8 秒），就是回傳的資料在中途被
+截斷（跟 base64 字元數對不上 4 的倍數，明顯是傳輸中斷不是編碼錯誤）。改成
+請 rish（shell 權限，寫哪都不受一般 App 的儲存空間限制）把截圖直接存成
+檔案到共用儲存空間，這邊直接用 Python 的檔案 I/O 讀那個檔案——完全不經過
+rish 的指令輸出通道，只有「執行 screencap 這個動作」本身還是靠 rish。
+前提是使用者在 Termux 執行過一次 `termux-setup-storage` 並同意權限。
 """
 
 from __future__ import annotations
 
-import base64
 import io
 import os
 import subprocess
@@ -28,6 +35,12 @@ from PIL import Image
 import vision as V
 
 RISH_BIN = os.environ.get("RISH_BIN", "rish_auto")
+
+# 同一張截圖的兩個視角：DEVICE_SHOT_PATH 是 rish（shell 權限）眼中的路徑，
+# TERMUX_SHOT_PATH 是 Termux 這邊讀同一個檔案要用的路徑（走 termux-setup-storage
+# 建出來的 ~/storage/shared 符號連結）。
+DEVICE_SHOT_PATH = "/sdcard/.fruit2048_shot.png"
+TERMUX_SHOT_PATH = os.path.expanduser("~/storage/shared/.fruit2048_shot.png")
 
 
 class RishError(OSError):
@@ -69,20 +82,21 @@ class RishGrabber:
         self.backend = "rish"
 
     def _screencap(self) -> np.ndarray:
-        # rish 的殼層跟 adb shell（不加 exec-out）一樣，binary 資料在原始 stdout
-        # 裡經過會被當文字轉行尾（\n -> \r\n）弄壞——所以在裝置那頭先包一層
-        # base64（純文字，不會被轉行尾波及），回來這裡再解回二進位。
-        proc = _run("screencap -p | base64", timeout=8.0)
-        if proc.returncode != 0 or not proc.stdout:
+        proc = _run("screencap", "-p", DEVICE_SHOT_PATH, timeout=8.0)
+        if proc.returncode != 0:
             raise RishError(f"screencap 失敗：{proc.stderr.decode('utf-8', 'replace').strip()}")
         try:
-            data = base64.b64decode(proc.stdout, validate=False)
-        except Exception as e:
-            raise RishError(f"screencap 回傳的資料不是有效的 base64：{e}") from e
+            with open(TERMUX_SHOT_PATH, "rb") as f:
+                data = f.read()
+        except OSError as e:
+            raise RishError(
+                f"screencap 存檔了，但讀不到（{TERMUX_SHOT_PATH}）：{e}"
+                "。是不是還沒在 Termux 執行過 termux-setup-storage 並同意存取權限？"
+            ) from e
         try:
             img = Image.open(io.BytesIO(data)).convert("RGB")
         except Exception as e:
-            raise RishError(f"screencap 回傳的資料不是有效圖片：{e}") from e
+            raise RishError(f"screencap 存的檔案不是有效圖片：{e}") from e
         return np.asarray(img)
 
     def virtual_screen(self) -> V.Region:
@@ -117,4 +131,7 @@ class RishController:
             raise InputError(f"rish 送滑動失敗：{proc.stderr.decode('utf-8', 'replace').strip()}")
 
 
-__all__ = ["RishError", "InputError", "RishGrabber", "RishController", "swipe_points", "RISH_BIN"]
+__all__ = [
+    "RishError", "InputError", "RishGrabber", "RishController", "swipe_points",
+    "RISH_BIN", "DEVICE_SHOT_PATH", "TERMUX_SHOT_PATH",
+]

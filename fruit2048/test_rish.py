@@ -9,10 +9,11 @@ Termux/Shizuku 就能測邏輯本身（指令組得對不對、截圖裁切、�
 
 from __future__ import annotations
 
-import base64
 import io
+import os
 import subprocess
 import sys
+import tempfile
 from typing import List
 
 import numpy as np
@@ -72,61 +73,85 @@ def main():
     finally:
         subprocess.run = real_run
 
-    print("2) RishGrabber：擷取＋裁切（畫面經 base64 包一層，避開殼層把 binary 當文字轉行尾的雷）")
+    print("2) RishGrabber：擷取＋裁切（screencap 存成檔案直接讀，不再靠 rish 的 stdout 傳大量資料）")
+    real_termux_shot_path = R.TERMUX_SHOT_PATH
     try:
-        png = png_bytes(200, 150)
-        g = R.RishGrabber()
+        with tempfile.TemporaryDirectory() as d:
+            shot_path = os.path.join(d, "shot.png")
+            R.TERMUX_SHOT_PATH = shot_path
 
-        runner = FakeRun([(0, base64.b64encode(png), b"")])
-        subprocess.run = runner
-        full = g.grab(V.Region(0, 0, 200, 150))
-        check("整張抓下來大小對", full.shape[:2] == (150, 200), f"{full.shape}")
-        check("紅色標記在左上角，裁切方向沒錯", tuple(full[0, 0]) == (255, 0, 0), f"{full[0,0]}")
-        check("指令有透過 base64 包一層，不是直接抓 binary stdout",
-              "| base64" in runner.calls[-1][2], f"{runner.calls[-1]}")
+            def write_shot(data: bytes) -> None:
+                with open(shot_path, "wb") as f:
+                    f.write(data)
 
-        # 跟 adb.py 一樣的坑：手機橫向玩遊戲時，wm size 報的是面板原生方向，
-        # 會跟真正截出來的畫面對不上，所以 virtual_screen() 得直接量截圖。
-        landscape = png_bytes(2340, 1080)
-        subprocess.run = FakeRun([(0, base64.b64encode(landscape), b"")])
-        vs = g.virtual_screen()
-        check("virtual_screen 用真的截圖量尺寸", (vs.width, vs.height) == (2340, 1080), f"{vs}")
+            png = png_bytes(200, 150)
+            g = R.RishGrabber()
 
-        subprocess.run = FakeRun([(0, base64.b64encode(png), b"")])
-        cropped = g.grab(V.Region(50, 40, 60, 30))
-        check("裁切出來的大小對", cropped.shape[:2] == (30, 60), f"{cropped.shape}")
-        check("裁切出來的內容對得上原圖同一個位置",
-              np.array_equal(cropped, full[40:70, 50:110]))
+            write_shot(png)
+            runner = FakeRun([(0, b"", b"")])
+            subprocess.run = runner
+            full = g.grab(V.Region(0, 0, 200, 150))
+            check("整張抓下來大小對", full.shape[:2] == (150, 200), f"{full.shape}")
+            check("紅色標記在左上角，裁切方向沒錯", tuple(full[0, 0]) == (255, 0, 0), f"{full[0,0]}")
+            check("指令是請 screencap 直接存成檔案，不是硬抓 stdout",
+                  runner.calls[-1] == [R.RISH_BIN, "-c", f"screencap -p {R.DEVICE_SHOT_PATH}"],
+                  f"{runner.calls[-1]}")
 
-        try:
-            g.grab(V.Region(0, 0, -5, 10))
-            check("非法範圍（負寬）擋下來", False)
-        except ValueError:
-            check("非法範圍（負寬）擋下來", True)
+            # 跟 adb.py 一樣的坑：手機橫向玩遊戲時，wm size 報的是面板原生方向，
+            # 會跟真正截出來的畫面對不上，所以 virtual_screen() 得直接量截圖。
+            write_shot(png_bytes(2340, 1080))
+            subprocess.run = FakeRun([(0, b"", b"")])
+            vs = g.virtual_screen()
+            check("virtual_screen 用真的截圖量尺寸", (vs.width, vs.height) == (2340, 1080), f"{vs}")
 
-        subprocess.run = FakeRun([(1, b"", b"Error: something broke")])
-        try:
-            g.grab(V.Region(0, 0, 10, 10))
-            check("screencap 失敗要轉成清楚的錯誤", False)
-        except R.RishError as e:
-            check("screencap 失敗要轉成清楚的錯誤", "something broke" in str(e), str(e))
-            check("RishError 是 OSError，跟呼叫端既有的例外處理相容", isinstance(e, OSError))
+            write_shot(png)
+            subprocess.run = FakeRun([(0, b"", b"")])
+            cropped = g.grab(V.Region(50, 40, 60, 30))
+            check("裁切出來的大小對", cropped.shape[:2] == (30, 60), f"{cropped.shape}")
+            check("裁切出來的內容對得上原圖同一個位置",
+                  np.array_equal(cropped, full[40:70, 50:110]))
 
-        subprocess.run = FakeRun([(0, b"not a png at all", b"")])
-        try:
-            g.grab(V.Region(0, 0, 10, 10))
-            check("回傳的不是圖片要講清楚，不要整個炸掉", False)
-        except R.RishError:
-            check("回傳的不是圖片要講清楚，不要整個炸掉", True)
+            try:
+                g.grab(V.Region(0, 0, -5, 10))
+                check("非法範圍（負寬）擋下來", False)
+            except ValueError:
+                check("非法範圍（負寬）擋下來", True)
 
-        subprocess.run = FakeRun([(0, base64.b64encode(png_bytes(50, 50)), b"")])
-        try:
-            g.grab(V.Region(0, 0, 999, 999))
-            check("要求的範圍超出手機畫面要擋下來", False)
-        except ValueError as e:
-            check("要求的範圍超出手機畫面要擋下來", "超出" in str(e), str(e))
+            subprocess.run = FakeRun([(1, b"", b"Error: something broke")])
+            try:
+                g.grab(V.Region(0, 0, 10, 10))
+                check("screencap 失敗要轉成清楚的錯誤", False)
+            except R.RishError as e:
+                check("screencap 失敗要轉成清楚的錯誤", "something broke" in str(e), str(e))
+                check("RishError 是 OSError，跟呼叫端既有的例外處理相容", isinstance(e, OSError))
+
+            os.remove(shot_path)
+            subprocess.run = FakeRun([(0, b"", b"")])
+            try:
+                g.grab(V.Region(0, 0, 10, 10))
+                check("存了檔但讀不到要講清楚，還要提示可能是權限沒設", False)
+            except R.RishError as e:
+                check("存了檔但讀不到要講清楚，還要提示可能是權限沒設",
+                      "termux-setup-storage" in str(e), str(e))
+
+            write_shot(b"not a png at all")
+            subprocess.run = FakeRun([(0, b"", b"")])
+            try:
+                g.grab(V.Region(0, 0, 10, 10))
+                check("檔案內容不是圖片要講清楚，不要整個炸掉", False)
+            except R.RishError:
+                check("檔案內容不是圖片要講清楚，不要整個炸掉", True)
+
+            write_shot(png_bytes(50, 50))
+            subprocess.run = FakeRun([(0, b"", b"")])
+            try:
+                g.grab(V.Region(0, 0, 999, 999))
+                check("要求的範圍超出手機畫面要擋下來", False)
+            except ValueError as e:
+                check("要求的範圍超出手機畫面要擋下來", "超出" in str(e), str(e))
     finally:
         subprocess.run = real_run
+        R.TERMUX_SHOT_PATH = real_termux_shot_path
 
     print("3) swipe_points：跟 control.swipe_points 邏輯一致")
     import solver as S
