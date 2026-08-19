@@ -8,17 +8,19 @@ import {
   LineChart, Flame, Ruler, ArrowDownCircle, ArrowUpCircle, ArrowLeftRight,
 } from 'lucide-react';
 import { Panel, StatTile, RiskMeter, ThreatCard, LevelCard, Row, Chip, type Tone } from '../components/futures/ui';
+import { ScreenshotImport } from '../components/futures/ScreenshotImport';
+import type { ImportState } from '../lib/futuresImport';
 import { api } from '../lib/api';
 import type { FuturesMonthQuote, FuturesEquityHistoryResp, FuturesMarginsResp, TaiexResp } from '../lib/api';
 import {
   CONTRACT_CODE, CONTRACT_NAME, UNDERLYING_CODE,
   DEFAULT_SPEC, SYMBOL_PRESETS, findPreset,
   tickValue, lastTradingDay, tradingDaysBetween,
-  positionPnl, closedPnl, summarizeAccount, rolloverAlerts, rolloverCost, stopLossRisk,
+  positionPnl, closedPnl, closeLots, summarizeAccount, rolloverAlerts, rolloverCost, stopLossRisk,
   indexAtPrice, stressTest, suggestLots, weightedEntry, targetPlan, trailingStopPlan,
   buildRiskReport, priceOf, referenceMonthOf,
   equityStats, summarizeCashFlows, flowDelta, holdingAsBatch,
-  type FuturesPosition, type ClosedTrade, type CashFlow, type Side, type FuturesSpec, type StressRow,
+  type FuturesPosition, type ClosedTrade, type CashFlow, type FuturesSpec, type StressRow,
   type PriceInput, type EquityPoint,
 } from '../lib/futures';
 import {
@@ -1469,14 +1471,38 @@ const PositionsTab: React.FC<{
   patch: (u: (c: FuturesConfig) => FuturesConfig) => FuturesConfig;
   saveToCloud: (cfg?: FuturesConfig) => Promise<void>;
 }> = ({ config, spec, summary, priceInput, quote, holidays, patch, saveToCloud }) => {
-  const [form, setForm] = useState({ month: '', side: 'long' as Side, lots: '', entry_price: '', entry_date: todayStr() });
-  const [closeForm, setCloseForm] = useState<{ id: string; exit_price: string; exit_date: string } | null>(null);
+  // mode 把「新倉買進／新倉賣出／平倉」收成一個選項——券商的「倉別」就是這個概念，
+  // 原本只有多單／空單，做完一筆平倉得先刪部位再手打一筆平倉紀錄，漏一步帳就歪了。
+  const [form, setForm] = useState({
+    mode: 'long' as 'long' | 'short' | 'close',
+    month: '',
+    lots: '',
+    entry_price: '',
+    entry_date: todayStr(),
+    close_id: '',
+  });
+  const [closeForm, setCloseForm] = useState<{ id: string; lots: string; exit_price: string; exit_date: string } | null>(null);
 
   const monthOptions = useMemo(() => {
     const fromQuote = quote.months.map((m) => m.month);
     const fromPositions = config.positions.map((p) => p.month);
     return [...new Set([...fromQuote, ...fromPositions])].sort();
   }, [quote.months, config.positions]);
+
+  const closeTarget = useMemo(
+    () => config.positions.find((p) => p.id === form.close_id) ?? null,
+    [config.positions, form.close_id],
+  );
+
+  // 截圖匯入只會動到這幾樣東西，切一份出來給它算，順便讓那支元件不必認識整包 config
+  const importState = useMemo<ImportState>(() => ({
+    positions: config.positions,
+    closed: config.closed,
+    prices: config.prices,
+    stop_loss: config.stop_loss,
+    cash: config.cash,
+    imported_refs: config.imported_refs,
+  }), [config.positions, config.closed, config.prices, config.stop_loss, config.cash, config.imported_refs]);
 
   const addPosition = () => {
     const lots = parseFloat(form.lots);
@@ -1487,7 +1513,7 @@ const PositionsTab: React.FC<{
       positions: [...c.positions, {
         id: `f_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
         month: form.month,
-        side: form.side,
+        side: form.mode === 'short' ? 'short' : 'long',
         lots,
         entry_price: entry,
         entry_date: form.entry_date || todayStr(),
@@ -1497,28 +1523,42 @@ const PositionsTab: React.FC<{
     void saveToCloud(next);
   };
 
+  /** 表單上的「平倉」：選一筆部位、填口數與價格，走跟列內平倉同一條路 */
+  const submitClose = () => {
+    const target = config.positions.find((p) => p.id === form.close_id);
+    const lots = parseFloat(form.lots);
+    const price = parseFloat(form.entry_price);
+    if (!target || !(lots > 0) || !(price > 0)) return;
+    closePosition(target, lots, price, form.entry_date);
+    setForm((f) => ({ ...f, lots: '', entry_price: '', close_id: '' }));
+  };
+
   const removePosition = (id: string) => {
     const next = patch((c) => ({ ...c, positions: c.positions.filter((p) => p.id !== id) }));
     void saveToCloud(next);
   };
 
-  // 平倉：把未平倉部位搬進平倉紀錄，並把損益結算進保證金專戶現金
-  const closePosition = (pos: FuturesPosition, exitPrice: number, exitDate: string) => {
-    const closed: ClosedTrade = {
-      id: `c_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
-      month: pos.month,
-      side: pos.side,
-      lots: pos.lots,
-      entry_price: pos.entry_price,
-      exit_price: exitPrice,
-      exit_date: exitDate || todayStr(),
-    };
+  /**
+   * 平倉：把未平倉部位搬進平倉紀錄，並把損益結算進保證金專戶現金。
+   *
+   * 支援**部分平倉**（lots 少於這筆的口數時只平一部分，剩下的沿用同一個 id，
+   * 掛在 id 上的停損價才不會因為減碼而不見）——真實出場本來就常常是分批的。
+   */
+  const closePosition = (pos: FuturesPosition, lots: number, exitPrice: number, exitDate: string) => {
+    const res = closeLots(pos, lots, exitPrice, exitDate || todayStr());
+    if (!res) return;
     const next = patch((c) => ({
       ...c,
-      positions: c.positions.filter((p) => p.id !== pos.id),
-      closed: [...c.closed, closed],
+      positions: c.positions
+        .map((p) => (p.id === pos.id ? res.remaining : p))
+        .filter((p): p is FuturesPosition => p !== null),
+      closed: [...c.closed, res.closed],
       // 期貨平倉當下損益就結算進專戶，故現金餘額同步加上這筆損益
-      cash: c.cash + closedPnl(closed, spec),
+      cash: c.cash + closedPnl(res.closed, spec),
+      // 整筆平掉才把停損價一起清掉；部分平倉留著（部位還在）
+      stop_loss: res.remaining
+        ? c.stop_loss
+        : Object.fromEntries(Object.entries(c.stop_loss).filter(([k]) => k !== pos.id)),
     }));
     setCloseForm(null);
     void saveToCloud(next);
@@ -1534,6 +1574,25 @@ const PositionsTab: React.FC<{
 
   return (
     <div className="space-y-5">
+      {/* 截圖匯入：擺在最前面，因為它是「今天做了什麼」最快的入口（手機尤其） */}
+      <ScreenshotImport
+        state={importState}
+        spec={spec}
+        today={todayStr()}
+        onApply={(plan) => {
+          const next = patch((c) => ({
+            ...c,
+            positions: plan.next.positions,
+            closed: plan.next.closed,
+            prices: plan.next.prices,
+            stop_loss: plan.next.stop_loss,
+            cash: plan.next.cash,
+            imported_refs: plan.next.imported_refs,
+          }));
+          void saveToCloud(next);
+        }}
+      />
+
       {/* 帳戶輸入 */}
       <div className="bg-card/70 border border-border rounded-2xl p-5 shadow-sm space-y-4">
         <div className="flex items-center gap-2.5"><span className="w-7 h-7 rounded-lg bg-primary/10 border border-primary/30 grid place-items-center shrink-0"><Wallet className="w-4 h-4 text-primary" /></span><h2 className="text-sm font-bold text-zinc-100 tracking-wide">帳戶</h2></div>
@@ -1638,59 +1697,144 @@ const PositionsTab: React.FC<{
 
       <CashFlowCard config={config} summary={summary} patch={patch} saveToCloud={saveToCloud} />
 
-      {/* 新增部位 */}
+      {/* 記一筆交易：新倉買進／新倉賣出／平倉，對齊券商下單的「買賣別 × 倉別」 */}
       <div className="bg-card/70 border border-border rounded-2xl p-5 shadow-sm space-y-4">
-        <div className="flex items-center gap-2.5"><span className="w-7 h-7 rounded-lg bg-emerald-400/10 border border-emerald-400/30 grid place-items-center shrink-0"><Plus className="w-4 h-4 text-emerald-400" /></span><h2 className="text-sm font-bold text-zinc-100 tracking-wide">新增部位</h2></div>
-        <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
-          <Field label="到期月份">
+        <div className="flex items-center gap-2.5"><span className="w-7 h-7 rounded-lg bg-emerald-400/10 border border-emerald-400/30 grid place-items-center shrink-0"><Plus className="w-4 h-4 text-emerald-400" /></span><h2 className="text-sm font-bold text-zinc-100 tracking-wide">記一筆交易</h2></div>
+
+        <div className="sm:max-w-xs">
+          <Field label="動作" hint="就是券商下單畫面的「倉別」：新倉是開新部位，平倉是結清已經有的部位（可以只平一部分）。">
             <select
-              value={form.month}
-              onChange={(e) => setForm((f) => ({ ...f, month: e.target.value }))}
-              className="w-full bg-zinc-900 border border-border rounded-lg px-3 py-2 text-sm font-mono text-zinc-100"
-            >
-              <option value="">選擇…</option>
-              {monthOptions.map((m) => <option key={m} value={m}>{monthLabel(m)}</option>)}
-            </select>
-          </Field>
-          <Field label="方向">
-            <select
-              value={form.side}
-              onChange={(e) => setForm((f) => ({ ...f, side: e.target.value as Side }))}
+              value={form.mode}
+              onChange={(e) => setForm((f) => ({ ...f, mode: e.target.value as 'long' | 'short' | 'close', lots: '', entry_price: '' }))}
               className="w-full bg-zinc-900 border border-border rounded-lg px-3 py-2 text-sm text-zinc-100"
             >
-              <option value="long">多單</option>
-              <option value="short">空單</option>
+              <option value="long">新倉買進（多單）</option>
+              <option value="short">新倉賣出（空單）</option>
+              <option value="close">平倉（結清已有部位）</option>
             </select>
           </Field>
-          <Field label="口數">
-            <input type="number" min="1" step="1" value={form.lots}
-              onChange={(e) => setForm((f) => ({ ...f, lots: e.target.value }))}
-              className="w-full bg-zinc-900 border border-border rounded-lg px-3 py-2 text-sm font-mono text-zinc-100" />
-          </Field>
-          <Field label="進場價">
-            <input type="number" step="0.05" value={form.entry_price}
-              onChange={(e) => setForm((f) => ({ ...f, entry_price: e.target.value }))}
-              className="w-full bg-zinc-900 border border-border rounded-lg px-3 py-2 text-sm font-mono text-zinc-100" />
-          </Field>
-          <Field label="進場日期">
-            <input type="date" value={form.entry_date}
-              onChange={(e) => setForm((f) => ({ ...f, entry_date: e.target.value }))}
-              className="w-full bg-zinc-900 border border-border rounded-lg px-3 py-2 text-sm font-mono text-zinc-100" />
-          </Field>
         </div>
-        <button
-          onClick={addPosition}
-          className="flex items-center gap-1.5 px-4 py-2 bg-primary text-white text-xs font-semibold rounded-lg hover:bg-primary/90 transition"
-        >
-          <Plus className="w-3.5 h-3.5" /> 新增部位
-        </button>
-        {form.month && (
-          <p className="text-[11px] text-zinc-500">
-            {monthLabel(form.month)} 最後交易日 {lastTradingDay(form.month, holidays) ?? '—'}；
-            {form.lots && Number(form.lots) > 0 && (
-              <> 這筆需要原始保證金 {money(spec.initial_margin * Number(form.lots))}。</>
+
+        {form.mode === 'close' ? (
+          config.positions.length === 0 ? (
+            <p className="text-xs text-zinc-500">目前沒有未平倉部位可以平。</p>
+          ) : (
+            <>
+              <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
+                <div className="col-span-2">
+                  <Field label="要平的部位">
+                    <select
+                      value={form.close_id}
+                      onChange={(e) => {
+                        const id = e.target.value;
+                        const t = config.positions.find((x) => x.id === id);
+                        // 選好部位就把口數帶成「全平」、價格帶成現價——最常見的情況免手打
+                        setForm((f) => ({
+                          ...f,
+                          close_id: id,
+                          lots: t ? String(t.lots) : '',
+                          entry_price: t ? String(priceOf(priceInput, t.month) || '') : '',
+                        }));
+                      }}
+                      className="w-full bg-zinc-900 border border-border rounded-lg px-3 py-2 text-sm text-zinc-100"
+                    >
+                      <option value="">選擇…</option>
+                      {config.positions.map((p) => (
+                        <option key={p.id} value={p.id}>
+                          {monthLabel(p.month)} {p.side === 'long' ? '多' : '空'} {p.lots} 口 @{px(p.entry_price)}
+                        </option>
+                      ))}
+                    </select>
+                  </Field>
+                </div>
+                <Field label="平倉口數" hint="可以只平一部分，剩下的留在原部位（停損價會跟著留著）。">
+                  <input type="number" min="1" step="1" max={closeTarget?.lots} value={form.lots}
+                    onChange={(e) => setForm((f) => ({ ...f, lots: e.target.value }))}
+                    className="w-full bg-zinc-900 border border-border rounded-lg px-3 py-2 text-sm font-mono text-zinc-100" />
+                </Field>
+                <Field label="平倉價">
+                  <input type="number" step="0.05" value={form.entry_price}
+                    onChange={(e) => setForm((f) => ({ ...f, entry_price: e.target.value }))}
+                    className="w-full bg-zinc-900 border border-border rounded-lg px-3 py-2 text-sm font-mono text-zinc-100" />
+                </Field>
+                <Field label="平倉日期">
+                  <input type="date" value={form.entry_date}
+                    onChange={(e) => setForm((f) => ({ ...f, entry_date: e.target.value }))}
+                    className="w-full bg-zinc-900 border border-border rounded-lg px-3 py-2 text-sm font-mono text-zinc-100" />
+                </Field>
+              </div>
+              <button
+                onClick={submitClose}
+                disabled={!closeTarget || !(Number(form.lots) > 0) || !(Number(form.entry_price) > 0)}
+                className="flex items-center gap-1.5 px-4 py-2 bg-primary text-white text-xs font-semibold rounded-lg hover:bg-primary/90 transition disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                <ArrowLeftRight className="w-3.5 h-3.5" /> 確認平倉
+              </button>
+              {(() => {
+                if (!closeTarget) return null;
+                const n = Number(form.lots);
+                const v = Number(form.entry_price);
+                const res = closeLots(closeTarget, n, v, form.entry_date || todayStr());
+                if (!res) {
+                  return n > closeTarget.lots
+                    ? <p className="text-[11px] text-amber-400">這筆只有 {closeTarget.lots} 口，平不了 {n} 口。</p>
+                    : null;
+                }
+                const pnl = closedPnl(res.closed, spec);
+                return (
+                  <p className="text-[11px] text-zinc-500">
+                    平掉 {n} 口 @{px(v)}：已實現損益約 <span className={`font-mono font-semibold ${pnlCls(pnl)}`}>{money(pnl)}</span>
+                    （含來回手續費與期交稅），會結算進保證金專戶現金餘額。
+                    {res.remaining && <>{'　'}這筆還會剩 {res.remaining.lots} 口。</>}
+                  </p>
+                );
+              })()}
+            </>
+          )
+        ) : (
+          <>
+            <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+              <Field label="到期月份">
+                <select
+                  value={form.month}
+                  onChange={(e) => setForm((f) => ({ ...f, month: e.target.value }))}
+                  className="w-full bg-zinc-900 border border-border rounded-lg px-3 py-2 text-sm font-mono text-zinc-100"
+                >
+                  <option value="">選擇…</option>
+                  {monthOptions.map((m) => <option key={m} value={m}>{monthLabel(m)}</option>)}
+                </select>
+              </Field>
+              <Field label="口數">
+                <input type="number" min="1" step="1" value={form.lots}
+                  onChange={(e) => setForm((f) => ({ ...f, lots: e.target.value }))}
+                  className="w-full bg-zinc-900 border border-border rounded-lg px-3 py-2 text-sm font-mono text-zinc-100" />
+              </Field>
+              <Field label="進場價">
+                <input type="number" step="0.05" value={form.entry_price}
+                  onChange={(e) => setForm((f) => ({ ...f, entry_price: e.target.value }))}
+                  className="w-full bg-zinc-900 border border-border rounded-lg px-3 py-2 text-sm font-mono text-zinc-100" />
+              </Field>
+              <Field label="進場日期">
+                <input type="date" value={form.entry_date}
+                  onChange={(e) => setForm((f) => ({ ...f, entry_date: e.target.value }))}
+                  className="w-full bg-zinc-900 border border-border rounded-lg px-3 py-2 text-sm font-mono text-zinc-100" />
+              </Field>
+            </div>
+            <button
+              onClick={addPosition}
+              className="flex items-center gap-1.5 px-4 py-2 bg-primary text-white text-xs font-semibold rounded-lg hover:bg-primary/90 transition"
+            >
+              <Plus className="w-3.5 h-3.5" /> 新增{form.mode === 'short' ? '空單' : '多單'}部位
+            </button>
+            {form.month && (
+              <p className="text-[11px] text-zinc-500">
+                {monthLabel(form.month)} 最後交易日 {lastTradingDay(form.month, holidays) ?? '—'}；
+                {form.lots && Number(form.lots) > 0 && (
+                  <> 這筆需要原始保證金 {money(spec.initial_margin * Number(form.lots))}。</>
+                )}
+              </p>
             )}
-          </p>
+          </>
         )}
       </div>
 
@@ -1713,7 +1857,7 @@ const PositionsTab: React.FC<{
                 <span className={`font-mono font-semibold ${pnlCls(r.net_pnl)}`}>{money(r.net_pnl)}</span>
                 <div className="ml-auto flex items-center gap-2">
                   <button
-                    onClick={() => setCloseForm({ id: p.id, exit_price: String(mp || ''), exit_date: todayStr() })}
+                    onClick={() => setCloseForm({ id: p.id, lots: String(p.lots), exit_price: String(mp || ''), exit_date: todayStr() })}
                     className="text-[11px] text-cyan-400 hover:text-cyan-300"
                   >
                     平倉
@@ -1746,6 +1890,12 @@ const PositionsTab: React.FC<{
               {closeForm?.id === p.id && (
                 <div className="flex flex-wrap items-end gap-2 pt-2 border-t border-border/50">
                   <div>
+                    <div className="text-[10px] text-zinc-500 mb-1">口數（共 {p.lots}）</div>
+                    <input type="number" min="1" step="1" max={p.lots} value={closeForm.lots}
+                      onChange={(e) => setCloseForm({ ...closeForm, lots: e.target.value })}
+                      className="w-16 bg-zinc-900 border border-border rounded px-2 py-1 text-xs font-mono text-zinc-100" />
+                  </div>
+                  <div>
                     <div className="text-[10px] text-zinc-500 mb-1">平倉價</div>
                     <input type="number" step="0.05" value={closeForm.exit_price}
                       onChange={(e) => setCloseForm({ ...closeForm, exit_price: e.target.value })}
@@ -1760,7 +1910,8 @@ const PositionsTab: React.FC<{
                   <button
                     onClick={() => {
                       const v = parseFloat(closeForm.exit_price);
-                      if (Number.isFinite(v) && v > 0) closePosition(p, v, closeForm.exit_date);
+                      const n = parseFloat(closeForm.lots);
+                      if (Number.isFinite(v) && v > 0 && n > 0) closePosition(p, n, v, closeForm.exit_date);
                     }}
                     className="px-3 py-1.5 bg-primary text-white text-[11px] font-semibold rounded"
                   >

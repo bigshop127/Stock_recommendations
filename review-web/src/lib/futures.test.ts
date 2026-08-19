@@ -10,6 +10,7 @@ import {
   tradingDaysBetween,
   positionPnl,
   closedPnl,
+  closeLots,
   summarizeAccount,
   rolloverAlerts,
   rolloverCost,
@@ -157,6 +158,56 @@ describe('closedPnl', () => {
       spec,
     );
     expect(v).toBeCloseTo(6_000 - 120 - (100 + 103) * 1000 * 2 * 0.00002, 6);
+  });
+
+  it('紀錄上有券商實收費用時以它為準，不用 spec 推估', () => {
+    const t = {
+      id: 'c1', month: '202607', side: 'long' as const, lots: 3,
+      entry_price: 103.8, exit_price: 104.15, exit_date: '2026-08-11',
+      fee: 240, tax: 12,
+    };
+    // 券商對帳單上的淨損益就是 798；用 spec 的 30 元/口會算成 857.5
+    expect(closedPnl(t, spec)).toBeCloseTo(798, 6);
+    expect(closedPnl({ ...t, fee: undefined, tax: undefined }, spec)).toBeCloseTo(857.5, 1);
+  });
+
+  it('只認得出手續費、認不出交易稅時，兩個欄位各自獨立退回推估', () => {
+    const t = {
+      id: 'c1', month: '202607', side: 'long' as const, lots: 3,
+      entry_price: 103.8, exit_price: 104.15, exit_date: '2026-08-11',
+      fee: 240,
+    };
+    const estTax = (103.8 + 104.15) * 1000 * 3 * 0.00002;
+    expect(closedPnl(t, spec)).toBeCloseTo(1050 - 240 - estTax, 6);
+  });
+});
+
+describe('closeLots：部分平倉', () => {
+  const p = pos({ id: 'p1', month: '202609', side: 'long', lots: 14, entry_price: 104, entry_date: '2026-08-11' });
+
+  it('平一部分：產生平倉紀錄，剩餘部位沿用同一個 id（停損價才不會掉）', () => {
+    const res = closeLots(p, 6, 105.55, '2026-08-18');
+    expect(res).not.toBeNull();
+    expect(res!.closed).toMatchObject({ month: '202609', side: 'long', lots: 6, entry_price: 104, exit_price: 105.55 });
+    expect(res!.closed.entry_date).toBe('2026-08-11');
+    expect(res!.remaining).toMatchObject({ id: 'p1', lots: 8 });
+  });
+
+  it('全平：remaining 為 null', () => {
+    expect(closeLots(p, 14, 105, '2026-08-18')!.remaining).toBeNull();
+  });
+
+  it('口數超過、口數為 0、價格為 0 一律拒絕（回 null，不會做半套）', () => {
+    expect(closeLots(p, 15, 105, '2026-08-18')).toBeNull();
+    expect(closeLots(p, 0, 105, '2026-08-18')).toBeNull();
+    expect(closeLots(p, 3, 0, '2026-08-18')).toBeNull();
+  });
+
+  it('分兩次平掉的損益總和，等於一次平掉', () => {
+    const once = closedPnl(closeLots(p, 14, 105.55, '2026-08-18')!.closed, spec);
+    const a = closeLots(p, 6, 105.55, '2026-08-18')!;
+    const b = closeLots(a.remaining!, 8, 105.55, '2026-08-18')!;
+    expect(closedPnl(a.closed, spec) + closedPnl(b.closed, spec)).toBeCloseTo(once, 6);
   });
 });
 
@@ -1231,6 +1282,44 @@ describe('期交所 MIS 即時報價解析與轉換測試', () => {
     expect(CONTRACT_TO_MIS['XYZ']).toBeUndefined();
 
     expect(monthToSymbol('XYZ', '202608')).toBeNull();
+  });
+});
+
+describe('gateway sanitize：截圖匯入新增的欄位必須在白名單裡', () => {
+  const { sanitizeClosed, sanitizePositions, sanitizeRefs } = futuresRouter;
+
+  // opt29 踩過同一個坑：sanitizeFutures 是白名單，漏加欄位會在存雲端時被靜靜吃掉。
+  // 這裡掉的是 fee/tax（已實現損益變推估值）與 ref（同一張截圖會被重複匯入）。
+  it('平倉紀錄保留 fee / tax / ref / entry_date', () => {
+    const out = sanitizeClosed([{
+      id: 'c1', month: '202609', side: 'long', lots: 3,
+      entry_price: 104.5, exit_price: 105.55, exit_date: '2026-08-18',
+      entry_date: '2026-08-11', fee: 240, tax: 12, ref: 'c|2026-08-18|61469|61632|3',
+    }]);
+    expect(out[0]).toMatchObject({ fee: 240, tax: 12, ref: 'c|2026-08-18|61469|61632|3', entry_date: '2026-08-11' });
+  });
+
+  it('費用是負數或不是數字就當作沒有（退回 spec 推估，不會變成負費用）', () => {
+    const out = sanitizeClosed([{
+      id: 'c1', month: '202609', side: 'long', lots: 1,
+      entry_price: 100, exit_price: 101, exit_date: '2026-08-18', fee: -5, tax: 'abc',
+    }]);
+    expect(out[0].fee).toBeUndefined();
+    expect(out[0].tax).toBeUndefined();
+  });
+
+  it('部位保留 ref', () => {
+    const out = sanitizePositions([{
+      id: 'p1', month: '202609', side: 'long', lots: 5, entry_price: 103.5,
+      entry_date: '2026-08-19', ref: 'f|2026-08-19 09:12:03|61166',
+    }]);
+    expect(out[0].ref).toBe('f|2026-08-19 09:12:03|61166');
+  });
+
+  it('匯入指紋帳本去重、丟掉空值、只留最近 300 筆', () => {
+    expect(sanitizeRefs(['a', 'a', '', 'b'])).toEqual(['a', 'b']);
+    expect(sanitizeRefs(Array.from({ length: 350 }, (_, i) => `r${i}`))).toHaveLength(300);
+    expect(sanitizeRefs('nope')).toEqual([]);
   });
 });
 

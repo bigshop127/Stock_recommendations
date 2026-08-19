@@ -56,6 +56,13 @@ export interface FuturesPosition {
   entry_price: number;  // 進場價
   entry_date: string;   // 'YYYY-MM-DD'
   note?: string;
+  /**
+   * 券商成交回報的來源指紋（`成交時間|委託書號|…`）。只有截圖匯入會填。
+   * 用途單一：**同一筆成交不要被匯入兩次**。使用者一天可能截好幾次圖，
+   * 內容比對（月份/口數/價格）在「同價分兩筆成交」時會誤判成重複，
+   * 有這個欄位才問得出「這筆是不是我上次已經吃過的那一筆」。
+   */
+  ref?: string;
 }
 
 /** 已平倉紀錄（用來累算已實現損益，並讓權益數對得起來） */
@@ -67,7 +74,19 @@ export interface ClosedTrade {
   entry_price: number;
   exit_price: number;
   exit_date: string;
+  entry_date?: string;  // 建倉日（券商平倉查詢有給；手動平倉時從部位帶過來）
   note?: string;
+  /**
+   * 券商實收的來回手續費與期交稅（元）。**有填就以它為準**，沒填才用 spec 推估。
+   *
+   * Why：spec 的 `fee_per_lot` 是「設定值」，券商實收未必一樣（實測玉山是 40 元/口，
+   * 專案預設 30），一趟 3 口就差 60 元。已實現損益是會結算進保證金餘額的真金白銀，
+   * 推估值會讓「帳戶現金」跟券商對不起來，而那正是這頁最不該說謊的數字。
+   */
+  fee?: number;
+  tax?: number;
+  /** 券商平倉查詢那一列的來源指紋（`平倉日|委託書號|…`），用於匯入去重 */
+  ref?: string;
 }
 
 /**
@@ -251,16 +270,70 @@ export function positionPnl(pos: FuturesPosition, price: number, spec: FuturesSp
   return { contract_value, cost_value, gross_pnl, fees, tax, net_pnl, return_on_margin, break_even, margin_required };
 }
 
-/** 已平倉損益（含來回費用）——用來累算已實現損益 */
+/**
+ * 已平倉損益（含來回費用）——用來累算已實現損益。
+ *
+ * 費用優先吃紀錄上券商實收的 `fee`／`tax`，沒有才用 spec 推估（見 ClosedTrade 的註解）。
+ * 兩個欄位各自獨立判斷：截圖只認得出手續費、認不出交易稅時，至少手續費是真的。
+ */
 export function closedPnl(t: ClosedTrade, spec: FuturesSpec): number {
   const lots = Math.max(0, safe(t.lots));
   const unit = Math.max(1, safe(spec.contract_size, 1000));
   const entry = Math.max(0, safe(t.entry_price));
   const exit = Math.max(0, safe(t.exit_price));
   const gross = sign(t.side) * (exit - entry) * unit * lots;
-  const fees = Math.max(0, safe(spec.fee_per_lot)) * lots * 2;
-  const tax = (entry + exit) * unit * lots * Math.max(0, safe(spec.tax_rate));
+  const fees = Number.isFinite(t.fee as number) && (t.fee as number) >= 0
+    ? (t.fee as number)
+    : Math.max(0, safe(spec.fee_per_lot)) * lots * 2;
+  const tax = Number.isFinite(t.tax as number) && (t.tax as number) >= 0
+    ? (t.tax as number)
+    : (entry + exit) * unit * lots * Math.max(0, safe(spec.tax_rate));
   return gross - fees - tax;
+}
+
+/** closeLots() 的結果：一筆平倉紀錄，以及沒平完剩下的部位（全平＝null） */
+export interface CloseLotsResult {
+  closed: ClosedTrade;
+  remaining: FuturesPosition | null;
+}
+
+/**
+ * 把一筆部位平掉指定口數（**允許部分平倉**）。
+ *
+ * Why 要能部分平：原本只有「整筆平掉」一種操作，但真實交易 14 口是分 2/6/3 口出場的
+ * （券商平倉查詢就是這樣一列一列給），只能整筆平的話使用者得先刪部位再手打兩筆，
+ * 中間任何一步漏掉，已實現損益與保證金餘額就一起歪掉。
+ *
+ * 沒平完的剩餘部位**沿用同一個 id**，這樣掛在 id 上的停損價才不會因為減碼而不見。
+ */
+export function closeLots(
+  pos: FuturesPosition,
+  lots: number,
+  exitPrice: number,
+  exitDate: string,
+  extra?: { id?: string; fee?: number; tax?: number; ref?: string; note?: string },
+): CloseLotsResult | null {
+  const have = Math.max(0, safe(pos?.lots));
+  const want = Math.max(0, safe(lots));
+  const price = Math.max(0, safe(exitPrice));
+  if (!(have > 0) || !(want > 0) || want > have || !(price > 0)) return null;
+
+  const closed: ClosedTrade = {
+    id: extra?.id || `c_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+    month: pos.month,
+    side: pos.side,
+    lots: want,
+    entry_price: pos.entry_price,
+    exit_price: price,
+    exit_date: exitDate,
+    ...(pos.entry_date ? { entry_date: pos.entry_date } : {}),
+    ...(Number.isFinite(extra?.fee as number) ? { fee: extra!.fee } : {}),
+    ...(Number.isFinite(extra?.tax as number) ? { tax: extra!.tax } : {}),
+    ...(extra?.ref ? { ref: extra.ref } : {}),
+    ...(extra?.note ? { note: extra.note } : {}),
+  };
+  const remaining: FuturesPosition | null = want < have ? { ...pos, lots: have - want } : null;
+  return { closed, remaining };
 }
 
 // ── 帳戶資金進出 ────────────────────────────────────────────────────────────

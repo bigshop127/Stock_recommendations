@@ -5,6 +5,7 @@
  * 型別不對就 clamp，避免舊資料或手改的雲端檔把頁面弄爆。雲端那份（gateway 的
  * data/futures_positions.json）為事實來源，本機這份是離線快取。
  */
+import { MAX_IMPORTED_REFS } from './futuresImport';
 import {
   DEFAULT_SPEC,
   CONTRACT_CODE,
@@ -48,6 +49,8 @@ export interface FuturesConfig {
   cash_flows: CashFlow[];    // 帳戶資金進出流水帳（入金／出金），現金餘額的異動來源之一
   stop_loss: Record<string, number>; // 每筆部位的停損價（key＝position id）
   planner: PlannerConfig;
+  /** 截圖匯入已經吃過的成交指紋（見 futuresImport.ts 的 ImportState.imported_refs） */
+  imported_refs: string[];
 }
 
 export const DEFAULT_PLANNER: PlannerConfig = {
@@ -77,6 +80,7 @@ const SEED: FuturesConfig = {
   cash_flows: [],
   stop_loss: {},
   planner: { ...DEFAULT_PLANNER },
+  imported_refs: [],
 };
 
 export function seedFuturesConfig(): FuturesConfig {
@@ -88,6 +92,7 @@ export function seedFuturesConfig(): FuturesConfig {
     cash_flows: [],
     stop_loss: {},
     planner: { ...DEFAULT_PLANNER, batches: DEFAULT_PLANNER.batches.map((b) => ({ ...b })), stress_drops: [...DEFAULT_PLANNER.stress_drops] },
+    imported_refs: [],
   };
 }
 
@@ -133,6 +138,20 @@ function sanitizeSpec(v: unknown): FuturesSpec {
   };
 }
 
+/**
+ * 截圖匯入的來源指紋。存下來才問得出「這筆成交上次已經吃過了」——
+ * 掉了的話同一張截圖匯第二次會重複計帳（gateway 那份白名單也要有，見 routes/futures.js）。
+ */
+function safeRef(v: unknown): string {
+  return str(v).slice(0, 160);
+}
+
+/** 券商實收費用：非負有限數才留，其餘 null＝沒這個資料、請用 spec 推估 */
+function feeOrNull(v: unknown): number | null {
+  const n = num(v, NaN);
+  return Number.isFinite(n) && n >= 0 ? n : null;
+}
+
 function sanitizePosition(v: unknown, i: number): FuturesPosition | null {
   if (!v || typeof v !== 'object') return null;
   const o = v as Record<string, unknown>;
@@ -144,7 +163,12 @@ function sanitizePosition(v: unknown, i: number): FuturesPosition | null {
   const side = safeSide(o.side);
   const id = str(o.id) || `f_${month}_${side}_${i}_${lots}_${entry_price}`;
   const note = str(o.note);
-  return { id, month, side, lots, entry_price, entry_date, ...(note ? { note } : {}) };
+  const ref = safeRef(o.ref);
+  return {
+    id, month, side, lots, entry_price, entry_date,
+    ...(note ? { note } : {}),
+    ...(ref ? { ref } : {}),
+  };
 }
 
 function sanitizeClosed(v: unknown, i: number): ClosedTrade | null {
@@ -156,10 +180,21 @@ function sanitizeClosed(v: unknown, i: number): ClosedTrade | null {
   const entry_price = Math.max(0, num(o.entry_price, 0));
   const exit_price = Math.max(0, num(o.exit_price, 0));
   const exit_date = safeDate(o.exit_date);
+  const entry_date = safeDate(o.entry_date);
   const side = safeSide(o.side);
   const id = str(o.id) || `c_${month}_${side}_${i}_${lots}_${exit_price}`;
   const note = str(o.note);
-  return { id, month, side, lots, entry_price, exit_price, exit_date, ...(note ? { note } : {}) };
+  const ref = safeRef(o.ref);
+  const fee = feeOrNull(o.fee);
+  const tax = feeOrNull(o.tax);
+  return {
+    id, month, side, lots, entry_price, exit_price, exit_date,
+    ...(entry_date ? { entry_date } : {}),
+    ...(note ? { note } : {}),
+    ...(ref ? { ref } : {}),
+    ...(fee !== null ? { fee } : {}),
+    ...(tax !== null ? { tax } : {}),
+  };
 }
 
 /**
@@ -221,6 +256,13 @@ function sanitizePrices(v: unknown): Record<string, number> {
   return out;
 }
 
+/** 匯入指紋帳本：字串、去重、只留最近 MAX_IMPORTED_REFS 筆，免得雲端檔無限長大 */
+function sanitizeRefs(v: unknown): string[] {
+  const arr = Array.isArray(v) ? v : [];
+  const out = arr.map((x) => str(x).slice(0, 160)).filter(Boolean);
+  return [...new Set(out)].slice(-MAX_IMPORTED_REFS);
+}
+
 function sanitizePlanner(v: unknown): PlannerConfig {
   const o = (v && typeof v === 'object' ? v : {}) as Record<string, unknown>;
   return {
@@ -270,6 +312,7 @@ export function normalizeFutures(parsed: Record<string, unknown>): FuturesConfig
     cash_flows: sanitizeFlows(parsed.cash_flows),
     stop_loss,
     planner: sanitizePlanner(parsed.planner),
+    imported_refs: sanitizeRefs(parsed.imported_refs),
   };
 }
 

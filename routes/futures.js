@@ -64,6 +64,20 @@ function sanitizeSpec(v) {
   };
 }
 
+/**
+ * 截圖匯入用的來源指紋。**這是白名單，漏加欄位會被安靜吃掉**（opt29 踩過），
+ * 而 ref 一旦掉了，下次匯入同一張截圖就會認不出「這筆吃過了」而重複計帳。
+ */
+function safeRef(v) {
+  return str(v).slice(0, 160);
+}
+
+/** 券商實收費用：非負有限數才留，其餘回 null 代表「沒這個資料，請用 spec 推估」 */
+function feeOrNull(v) {
+  const n = num(v, NaN);
+  return Number.isFinite(n) && n >= 0 ? n : null;
+}
+
 function sanitizePositions(val) {
   if (!Array.isArray(val)) return [];
   const out = [];
@@ -77,7 +91,12 @@ function sanitizePositions(val) {
     const entry_date = safeDate(p.entry_date);
     const id = str(p.id) || `f_${month}_${side}_${i}_${lots}_${entry_price}`;
     const note = str(p.note);
-    out.push({ id, month, side, lots, entry_price, entry_date, ...(note ? { note } : {}) });
+    const ref = safeRef(p.ref);
+    out.push({
+      id, month, side, lots, entry_price, entry_date,
+      ...(note ? { note } : {}),
+      ...(ref ? { ref } : {}),
+    });
   });
   return out;
 }
@@ -94,9 +113,20 @@ function sanitizeClosed(val) {
     const entry_price = Math.max(0, num(t.entry_price, 0));
     const exit_price = Math.max(0, num(t.exit_price, 0));
     const exit_date = safeDate(t.exit_date);
+    const entry_date = safeDate(t.entry_date);
     const id = str(t.id) || `c_${month}_${side}_${i}_${lots}_${exit_price}`;
     const note = str(t.note);
-    out.push({ id, month, side, lots, entry_price, exit_price, exit_date, ...(note ? { note } : {}) });
+    const ref = safeRef(t.ref);
+    const fee = feeOrNull(t.fee);
+    const tax = feeOrNull(t.tax);
+    out.push({
+      id, month, side, lots, entry_price, exit_price, exit_date,
+      ...(entry_date ? { entry_date } : {}),
+      ...(note ? { note } : {}),
+      ...(ref ? { ref } : {}),
+      ...(fee !== null ? { fee } : {}),
+      ...(tax !== null ? { tax } : {}),
+    });
   });
   return out;
 }
@@ -186,6 +216,17 @@ function sanitizePlanner(v) {
 }
 
 
+/**
+ * 截圖匯入已經吃過的成交指紋。只留最近 300 筆，免得這個檔案被無限追加撐大。
+ * 這欄位掉了不會壞畫面，但同一張截圖會被重複匯入一次——所以它必須在白名單裡。
+ */
+const MAX_IMPORTED_REFS = 300;
+function sanitizeRefs(val) {
+  if (!Array.isArray(val)) return [];
+  const out = val.map((x) => str(x).slice(0, 160)).filter(Boolean);
+  return [...new Set(out)].slice(-MAX_IMPORTED_REFS);
+}
+
 function sanitizeFutures(body) {
   const b = body && typeof body === 'object' ? body : {};
   const positions = sanitizePositions(b.positions);
@@ -214,6 +255,7 @@ function sanitizeFutures(body) {
     cash_flows: sanitizeCashFlows(b.cash_flows),
     stop_loss,
     planner: sanitizePlanner(b.planner),
+    imported_refs: sanitizeRefs(b.imported_refs),
   };
 }
 
@@ -900,6 +942,9 @@ router.liveTimeFromClock = liveTimeFromClock;
 router.cacheTtlFor = cacheTtlFor;
 router.isFresh = isFresh;
 router.sanitizeCashFlows = sanitizeCashFlows;
+router.sanitizeClosed = sanitizeClosed;
+router.sanitizeRefs = sanitizeRefs;
+router.sanitizePositions = sanitizePositions;
 router.CONTRACT_TO_MIS = CONTRACT_TO_MIS;
 router.MONTH_CODES = MONTH_CODES;
 

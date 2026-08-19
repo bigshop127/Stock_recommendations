@@ -1,6 +1,7 @@
 // 前端 API 資料接口：只對接 Node gateway /api，絕對不直連 Python engine
 // 統一錯誤格式 { error: { code, message, detail? } }
 import type { FuturesEquityRow } from './futures';
+import type { ScanScreen } from './futuresImport';
 
 const BASE = '/api';
 
@@ -596,6 +597,16 @@ export const api = {
   // 台股休市日曆（證交所 OpenAPI，只涵蓋當年度）——期貨最後交易日遇假日要順延
   getMarketHolidays: () => req<MarketHolidaysResp>('/market/holidays'),
   getFuturesEquityHistory: () => req<FuturesEquityHistoryResp>('/futures/equity-history'),
+  /**
+   * 券商 App 截圖辨識（opt30）。圖片以 base64 送給 gateway，由它呼叫視覺模型，
+   * key 不進前端 bundle。回來的只是「畫面上有哪些列」，怎麼併帳在 lib/futuresImport.ts。
+   */
+  scanFuturesScreens: (images: { mime: string; data: string }[]) =>
+    req<FuturesOcrResp>('/futures/ocr', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ images }),
+    }),
   // 加權指數：gateway 自己抓 TWSE（盤中走 MIS 即時、收盤後退每日 OpenAPI），不經 engine
   getTaiex: () => req<TaiexResp>('/market/taiex'),
 };
@@ -622,6 +633,14 @@ export interface MarketHolidaysResp {
 }
 
 // ── 期貨損益總覽 ────────────────────────────────────────────────────────────
+export interface FuturesOcrResp {
+  ok: boolean;
+  screens: ScanScreen[];
+  warnings: string[];
+  model: string;
+  scanned_at: string;
+}
+
 export interface FuturesPositionsResp {
   exists: boolean;
   futures: Record<string, unknown> | null;
