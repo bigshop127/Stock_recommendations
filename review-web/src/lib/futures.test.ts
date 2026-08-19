@@ -10,6 +10,7 @@ import {
   tradingDaysBetween,
   positionPnl,
   closedPnl,
+  closedBreakdown,
   closeLots,
   summarizeAccount,
   rolloverAlerts,
@@ -179,6 +180,35 @@ describe('closedPnl', () => {
     };
     const estTax = (103.8 + 104.15) * 1000 * 3 * 0.00002;
     expect(closedPnl(t, spec)).toBeCloseTo(1050 - 240 - estTax, 6);
+  });
+});
+
+describe('closedBreakdown：已實現明細用的拆解', () => {
+  const t = {
+    id: 'c1', month: '202608', side: 'long' as const, lots: 3,
+    entry_price: 103.8, exit_price: 104.15, exit_date: '2026-08-11',
+    fee: 240, tax: 12,
+  };
+
+  it('毛損益 − 費用 = 淨損益，且 net 與 closedPnl 一致', () => {
+    const b = closedBreakdown(t, spec);
+    expect(b.gross).toBeCloseTo(1050, 6);
+    expect(b.fees).toBe(240);
+    expect(b.tax).toBe(12);
+    expect(b.net).toBeCloseTo(b.gross - b.fees - b.tax, 6);
+    expect(b.net).toBeCloseTo(closedPnl(t, spec), 6);
+  });
+
+  it('兩個費用欄位都是券商實收才算 actual_cost（明細要標「估」與否靠它）', () => {
+    expect(closedBreakdown(t, spec).actual_cost).toBe(true);
+    expect(closedBreakdown({ ...t, tax: undefined }, spec).actual_cost).toBe(false);
+    expect(closedBreakdown({ ...t, fee: undefined }, spec).actual_cost).toBe(false);
+    expect(closedBreakdown({ ...t, fee: undefined, tax: undefined }, spec).actual_cost).toBe(false);
+  });
+
+  it('空單的毛損益方向相反', () => {
+    const b = closedBreakdown({ ...t, side: 'short' }, spec);
+    expect(b.gross).toBeCloseTo(-1050, 6);
   });
 });
 

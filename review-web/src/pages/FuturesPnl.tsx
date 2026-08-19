@@ -6,6 +6,7 @@ import {
   ClipboardCopy, Check, Target, Layers,
   ShieldCheck, Wallet, ListOrdered, CalendarSync, SlidersHorizontal, BookOpen,
   LineChart, Flame, Ruler, ArrowDownCircle, ArrowUpCircle, ArrowLeftRight,
+  ChevronDown, ChevronUp, Eraser,
 } from 'lucide-react';
 import { Panel, StatTile, RiskMeter, ThreatCard, LevelCard, Row, Chip, type Tone } from '../components/futures/ui';
 import { ScreenshotImport } from '../components/futures/ScreenshotImport';
@@ -16,7 +17,7 @@ import {
   CONTRACT_CODE, CONTRACT_NAME, UNDERLYING_CODE,
   DEFAULT_SPEC, SYMBOL_PRESETS, findPreset,
   tickValue, lastTradingDay, tradingDaysBetween,
-  positionPnl, closedPnl, closeLots, summarizeAccount, rolloverAlerts, rolloverCost, stopLossRisk,
+  positionPnl, closedPnl, closedBreakdown, closeLots, summarizeAccount, rolloverAlerts, rolloverCost, stopLossRisk,
   indexAtPrice, stressTest, suggestLots, weightedEntry, targetPlan, trailingStopPlan,
   buildRiskReport, priceOf, referenceMonthOf,
   equityStats, summarizeCashFlows, flowDelta, holdingAsBatch,
@@ -1125,6 +1126,124 @@ function priceOrigin(month: string, quote: QuoteState, hasOwnPrice: boolean) {
   return null;
 }
 
+/**
+ * 已實現損益明細。**預設收合**：這頁開場要回答的是「我現在安不安全」，已經落袋的
+ * 損益是回顧用的，一攤開就把警戒卡推到摺線以下。收合時標題列仍然帶著合計與筆數，
+ * 所以不展開也知道值不值得展開。
+ *
+ * 費用那欄會標示是券商實收（截圖匯入帶進來的）還是用設定值推估的——兩者可能差一截
+ * （實收 40 元/口 vs 設定預設 30），看到「估」就知道這筆的淨額只是近似。
+ */
+const RealizedPanel: React.FC<{ closed: ClosedTrade[]; spec: FuturesSpec }> = ({ closed, spec }) => {
+  const [open, setOpen] = useState(false);
+  const rows = useMemo(
+    () => closed
+      .map((t) => ({ t, b: closedBreakdown(t, spec) }))
+      // 平倉日新的排前面；同日的維持原本的輸入順序
+      .sort((a, b) => (b.t.exit_date || '').localeCompare(a.t.exit_date || '')),
+    [closed, spec],
+  );
+  const total = rows.reduce((s, r) => s + r.b.net, 0);
+  const gross = rows.reduce((s, r) => s + r.b.gross, 0);
+  const cost = rows.reduce((s, r) => s + r.b.fees + r.b.tax, 0);
+  const lots = rows.reduce((s, r) => s + Math.max(0, r.t.lots), 0);
+  const wins = rows.filter((r) => r.b.net > 0).length;
+
+  return (
+    <Panel
+      title="已實現損益"
+      icon={<ListOrdered className="w-4 h-4" />}
+      tone="zinc"
+      right={
+        <>
+          <Chip tone={total >= 0 ? 'rose' : 'emerald'} title="所有平倉紀錄的淨損益合計">
+            {money(total)}
+          </Chip>
+          <button
+            onClick={() => setOpen((v) => !v)}
+            disabled={rows.length === 0}
+            className="flex items-center gap-1 px-2.5 py-1 rounded-lg border border-border text-[11px] font-semibold text-zinc-300 hover:text-zinc-100 hover:border-zinc-600 transition disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            {open ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+            {open ? '收合明細' : `展開明細（${rows.length}）`}
+          </button>
+        </>
+      }
+      desc={rows.length === 0
+        ? '還沒有平倉紀錄。到「部位 & 平倉紀錄」分頁平倉、或用券商截圖匯入之後，這裡會列出每一筆。'
+        : <>已結算進保證金專戶現金餘額的損益，不會再隨行情變動。共 {rows.length} 筆 / {lots} 口，獲利 {wins} 筆。</>}
+    >
+      {rows.length > 0 && (
+        <>
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+            <StatTile label="淨已實現損益" value={money(total)} valueCls={pnlCls(total)} tone="zinc"
+              sub={`毛損益 ${money(gross)} － 費用 ${money(cost)}`} />
+            <StatTile label="交易費用合計" value={money(cost)} tone="zinc"
+              sub={lots > 0 ? `平均 ${money(cost / lots)} / 口（來回）` : ''}
+              hint="手續費 + 期交稅。有券商實收金額就用實收的，否則用「契約規格 & 設定」的費率推估。" />
+            <StatTile label="勝率" value={rows.length > 0 ? pct(wins / rows.length, 0) : '—'} tone="zinc"
+              sub={`${wins} 勝 / ${rows.length - wins} 敗`}
+              hint="以每一筆平倉紀錄的淨損益是否為正計算，不是以口數加權。" />
+            <StatTile label="平均每筆" value={money(total / rows.length)} valueCls={pnlCls(total)} tone="zinc"
+              sub={lots > 0 ? `每口平均 ${money(total / lots)}` : ''} />
+          </div>
+
+          {open && (
+            <div className="mt-4 overflow-x-auto">
+              <table className="w-full text-xs min-w-[640px]">
+                <thead>
+                  <tr className="text-zinc-500 border-b border-border">
+                    <th className="text-left font-medium py-2 pr-3">平倉日</th>
+                    <th className="text-left font-medium py-2 pr-3">月份</th>
+                    <th className="text-left font-medium py-2 pr-3">方向</th>
+                    <th className="text-right font-medium py-2 pr-3">口數</th>
+                    <th className="text-right font-medium py-2 pr-3">進場</th>
+                    <th className="text-right font-medium py-2 pr-3">出場</th>
+                    <th className="text-right font-medium py-2 pr-3">毛損益</th>
+                    <th className="text-right font-medium py-2 pr-3">費用</th>
+                    <th className="text-right font-medium py-2">淨損益</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {rows.map(({ t, b }) => (
+                    <tr key={t.id} className="border-b border-border/50 last:border-0">
+                      <td className="py-2 pr-3 font-mono text-zinc-400">{t.exit_date || '—'}</td>
+                      <td className="py-2 pr-3 font-mono text-zinc-300">{monthLabel(t.month)}</td>
+                      <td className={`py-2 pr-3 ${t.side === 'long' ? 'text-bull' : 'text-bear'}`}>{t.side === 'long' ? '多' : '空'}</td>
+                      <td className="py-2 pr-3 text-right font-mono text-zinc-300">{t.lots}</td>
+                      <td className="py-2 pr-3 text-right font-mono text-zinc-500">{px(t.entry_price)}</td>
+                      <td className="py-2 pr-3 text-right font-mono text-zinc-500">{px(t.exit_price)}</td>
+                      <td className={`py-2 pr-3 text-right font-mono ${pnlCls(b.gross)}`}>{money(b.gross)}</td>
+                      <td className="py-2 pr-3 text-right font-mono text-zinc-500"
+                        title={b.actual_cost ? '券商實收金額' : '依「契約規格 & 設定」的費率推估'}>
+                        {money(b.fees + b.tax)}{b.actual_cost ? '' : ' 估'}
+                      </td>
+                      <td className={`py-2 text-right font-mono font-semibold ${pnlCls(b.net)}`}>{money(b.net)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+                <tfoot>
+                  <tr className="border-t border-border">
+                    <td className="py-2 pr-3 text-zinc-400 font-medium" colSpan={3}>合計</td>
+                    <td className="py-2 pr-3 text-right font-mono text-zinc-300">{lots}</td>
+                    <td className="py-2 pr-3" colSpan={2} />
+                    <td className={`py-2 pr-3 text-right font-mono ${pnlCls(gross)}`}>{money(gross)}</td>
+                    <td className="py-2 pr-3 text-right font-mono text-zinc-500">{money(cost)}</td>
+                    <td className={`py-2 text-right font-mono font-bold ${pnlCls(total)}`}>{money(total)}</td>
+                  </tr>
+                </tfoot>
+              </table>
+              <p className="text-[10px] text-zinc-600 mt-2">
+                要刪除或修改某一筆，到「部位 &amp; 平倉紀錄」分頁的平倉紀錄表（刪除會把當初結算的損益從現金餘額回沖）。
+              </p>
+            </div>
+          )}
+        </>
+      )}
+    </Panel>
+  );
+};
+
 const OverviewTab: React.FC<{
   config: FuturesConfig;
   summary: Summary;
@@ -1186,7 +1305,8 @@ const OverviewTab: React.FC<{
         right={<Chip tone={statusMeta.tone} title={statusMeta.desc}>{statusMeta.label}</Chip>}
         desc={statusMeta.desc}
       >
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+        {/* 五塊：xl 以下排不下五欄，退成三欄（2+3）而不是硬擠 */}
+        <div className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-3">
           <StatTile
             label="保證金權益數"
             value={money(summary.equity)}
@@ -1206,6 +1326,15 @@ const OverviewTab: React.FC<{
             tone="zinc"
             icon={<LineChart className="w-3 h-3" />}
             hint="已扣掉來回手續費與期交稅的淨額。"
+          />
+          <StatTile
+            label="已實現損益"
+            value={money(summary.realized)}
+            sub={config.closed.length > 0 ? `${config.closed.length} 筆平倉・已入帳` : '尚無平倉紀錄'}
+            valueCls={pnlCls(summary.realized)}
+            tone="zinc"
+            icon={<ListOrdered className="w-3 h-3" />}
+            hint="所有平倉紀錄的淨損益合計（已扣費用）。這筆錢已經結算進保證金專戶現金餘額，不會再隨行情變動。"
           />
           <StatTile
             label="風險指標"
@@ -1229,6 +1358,8 @@ const OverviewTab: React.FC<{
           <RiskMeter value={ri} tone={statusMeta.tone} liquidationRatio={spec.liquidation_ratio} />
         </div>
       </Panel>
+
+      <RealizedPanel closed={config.closed} spec={spec} />
 
       <EquityCurveCard historyState={historyState} flows={config.cash_flows} />
 
@@ -2824,12 +2955,49 @@ const PlannerTab: React.FC<{
   const b0 = p.batches[0] ?? { price: 0, lots: 0 };
   // 價格用 0.005 當容差：存進去的是完整精度，顯示只到小數點兩位，硬比會永遠說「不同步」
   const holdingDrift = b0.lots !== live.lots || Math.abs(b0.price - live.avg_price) > 0.005;
+
+  /*
+    按「更新」時，如果第 1 筆本來就等於現在的持倉，畫面上不會有任何變化——那看起來
+    跟按鈕壞掉一模一樣（實際回報過的問題）。所以按下去一定要有回饋：真的有帶入新數字
+    就說「已更新」，本來就是最新的就說「已是最新」，1.6 秒後復原。
+  */
+  const [pullMsg, setPullMsg] = useState<'updated' | 'same' | null>(null);
+  const pullTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const flashPull = (m: 'updated' | 'same') => {
+    setPullMsg(m);
+    if (pullTimer.current) clearTimeout(pullTimer.current);
+    pullTimer.current = setTimeout(() => setPullMsg(null), 1600);
+  };
+  useEffect(() => () => { if (pullTimer.current) clearTimeout(pullTimer.current); }, []);
+
   const pullHolding = () => {
+    if (!holdingDrift) { flashPull('same'); return; }
     setPlanner((x) => ({
       ...x,
       batches: x.batches.map((y, j) => (j === 0 ? { price: live.avg_price, lots: live.lots } : y)),
     }));
+    flashPull('updated');
   };
+
+  // 清空只動這張卡的試算欄位，實際部位不受影響（第 1 筆隨時可以按「更新」重抓回來）
+  const clearBatch = (i: number) => setPlanner((x) => ({
+    ...x, batches: x.batches.map((y, j) => (j === i ? { price: 0, lots: 0 } : y)),
+  }));
+  // 兩段式：第一下先變成「確定清空？」，3 秒內沒再按就自己縮回去。不用 confirm 彈窗。
+  const [armClearAll, setArmClearAll] = useState(false);
+  const armTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => { if (armTimer.current) clearTimeout(armTimer.current); }, []);
+  const clearAll = () => {
+    if (armTimer.current) clearTimeout(armTimer.current);
+    if (!armClearAll) {
+      setArmClearAll(true);
+      armTimer.current = setTimeout(() => setArmClearAll(false), 3000);
+      return;
+    }
+    setArmClearAll(false);
+    setPlanner((x) => ({ ...x, batches: x.batches.map(() => ({ price: 0, lots: 0 })) }));
+  };
+  const allEmpty = p.batches.every((b) => !(b.price > 0) && !(b.lots > 0));
 
   // 分批進場：用假想部位跑一次總覽的算式，直接看到這個組合的風險長相
   const batch = useMemo(() => weightedEntry(p.batches, spec), [p.batches, spec]);
@@ -2925,7 +3093,22 @@ const PlannerTab: React.FC<{
       {/* 分批進場 */}
       <div className="bg-card/70 border border-border rounded-2xl p-5 shadow-sm space-y-4">
         <div>
-          <div className="flex items-center gap-2.5"><span className="w-7 h-7 rounded-lg bg-primary/10 border border-primary/30 grid place-items-center shrink-0"><Layers className="w-4 h-4 text-primary" /></span><h2 className="text-sm font-bold text-zinc-100 tracking-wide">分批進場／加碼試算</h2></div>
+          <div className="flex items-center gap-2.5">
+            <span className="w-7 h-7 rounded-lg bg-primary/10 border border-primary/30 grid place-items-center shrink-0"><Layers className="w-4 h-4 text-primary" /></span>
+            <h2 className="text-sm font-bold text-zinc-100 tracking-wide">分批進場／加碼試算</h2>
+            <button
+              onClick={clearAll}
+              disabled={allEmpty}
+              className={`ml-auto flex items-center gap-1 px-2.5 py-1 rounded-md border text-[10px] font-semibold transition disabled:opacity-40 disabled:cursor-not-allowed ${
+                armClearAll
+                  ? 'bg-rose-500/15 border-rose-500/40 text-rose-300'
+                  : 'bg-zinc-800/60 border-border text-zinc-400 hover:text-zinc-200 hover:border-zinc-600'
+              }`}
+              title="把三筆試算欄位全部歸零。只清這張卡的輸入，不會動到實際部位；第 1 筆按「更新」就能重抓回來。"
+            >
+              <Eraser className="w-3 h-3" /> {armClearAll ? '再按一次確定清空' : '全部清空'}
+            </button>
+          </div>
           <p className="text-[11px] text-zinc-500 mt-1">
             第 1 筆是<strong className="text-zinc-400">你目前的真實持倉</strong>（唯讀，部位有異動就按「更新」重抓），
             第 2、3 筆填想加碼的價格與口數，算出加起來的加權平均成本，並用這個組合跑一次風險模型。
@@ -2942,13 +3125,29 @@ const PlannerTab: React.FC<{
                   <div className="text-[11px] font-semibold text-zinc-300">
                     第 1 筆（目前持倉）
                   </div>
-                  <button
-                    onClick={pullHolding}
-                    className="flex items-center gap-1 px-2 py-1 bg-primary/15 border border-primary/40 text-primary text-[10px] font-semibold rounded-md hover:bg-primary/25 transition"
-                    title="從「部位 & 平倉紀錄」的未平倉部位重新彙總總口數與加權平均成本"
-                  >
-                    <RefreshCw className="w-3 h-3" /> 更新
-                  </button>
+                  <div className="flex items-center gap-1">
+                    <button
+                      onClick={pullHolding}
+                      className={`flex items-center gap-1 px-2 py-1 border text-[10px] font-semibold rounded-md transition ${
+                        pullMsg
+                          ? 'bg-emerald-500/15 border-emerald-500/40 text-emerald-300'
+                          : 'bg-primary/15 border-primary/40 text-primary hover:bg-primary/25'
+                      }`}
+                      title="從「部位 & 平倉紀錄」的未平倉部位重新彙總總口數與加權平均成本"
+                    >
+                      {pullMsg
+                        ? <><Check className="w-3 h-3" /> {pullMsg === 'updated' ? '已更新' : '已是最新'}</>
+                        : <><RefreshCw className="w-3 h-3" /> 更新</>}
+                    </button>
+                    <button
+                      onClick={() => clearBatch(0)}
+                      disabled={!(b.price > 0) && !(b.lots > 0)}
+                      className="flex items-center gap-1 px-2 py-1 bg-zinc-800/60 border border-border text-zinc-400 text-[10px] font-semibold rounded-md hover:text-zinc-200 hover:border-zinc-600 transition disabled:opacity-40 disabled:cursor-not-allowed"
+                      title="把這一筆歸零（不會動到實際部位，按「更新」可重抓回來）"
+                    >
+                      <Eraser className="w-3 h-3" /> 清空
+                    </button>
+                  </div>
                 </div>
                 <Field label="進場價（加權平均成本・唯讀）">
                   <div className="w-full bg-zinc-900/50 border border-border rounded-lg px-3 py-2 text-sm font-mono text-zinc-400">
@@ -2976,8 +3175,18 @@ const PlannerTab: React.FC<{
               </div>
             ) : (
             <div key={i} className="bg-zinc-900/40 border border-border rounded-lg p-3 space-y-2">
-              <div className="text-[11px] font-semibold text-zinc-300">
-                第 {i + 1} 筆（加碼）
+              <div className="flex items-center justify-between gap-2">
+                <div className="text-[11px] font-semibold text-zinc-300">
+                  第 {i + 1} 筆（加碼）
+                </div>
+                <button
+                  onClick={() => clearBatch(i)}
+                  disabled={!(b.price > 0) && !(b.lots > 0)}
+                  className="flex items-center gap-1 px-2 py-1 bg-zinc-800/60 border border-border text-zinc-400 text-[10px] font-semibold rounded-md hover:text-zinc-200 hover:border-zinc-600 transition disabled:opacity-40 disabled:cursor-not-allowed"
+                  title="把這一筆的價格與口數歸零"
+                >
+                  <Eraser className="w-3 h-3" /> 清空
+                </button>
               </div>
               <Field label="進場價">
                 <NumInput value={b.price} step="0.05" min="0"

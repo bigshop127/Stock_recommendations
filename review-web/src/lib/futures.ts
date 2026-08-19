@@ -270,25 +270,43 @@ export function positionPnl(pos: FuturesPosition, price: number, spec: FuturesSp
   return { contract_value, cost_value, gross_pnl, fees, tax, net_pnl, return_on_margin, break_even, margin_required };
 }
 
+/** 已平倉損益的拆解：毛損益、手續費、交易稅、淨額 */
+export interface ClosedBreakdown {
+  gross: number;
+  fees: number;
+  tax: number;
+  net: number;
+  /** 費用是券商實收（截圖匯入帶進來的）還是用 spec 推估的 */
+  actual_cost: boolean;
+}
+
 /**
- * 已平倉損益（含來回費用）——用來累算已實現損益。
+ * 已平倉損益的拆解——已實現明細要分別顯示毛損益與費用，而費用該用哪個數字是有規則的
+ * （見下），那規則只能有一份。`closedPnl` 只是取這裡的 net。
  *
  * 費用優先吃紀錄上券商實收的 `fee`／`tax`，沒有才用 spec 推估（見 ClosedTrade 的註解）。
  * 兩個欄位各自獨立判斷：截圖只認得出手續費、認不出交易稅時，至少手續費是真的。
  */
-export function closedPnl(t: ClosedTrade, spec: FuturesSpec): number {
+export function closedBreakdown(t: ClosedTrade, spec: FuturesSpec): ClosedBreakdown {
   const lots = Math.max(0, safe(t.lots));
   const unit = Math.max(1, safe(spec.contract_size, 1000));
   const entry = Math.max(0, safe(t.entry_price));
   const exit = Math.max(0, safe(t.exit_price));
   const gross = sign(t.side) * (exit - entry) * unit * lots;
-  const fees = Number.isFinite(t.fee as number) && (t.fee as number) >= 0
+  const feeGiven = Number.isFinite(t.fee as number) && (t.fee as number) >= 0;
+  const taxGiven = Number.isFinite(t.tax as number) && (t.tax as number) >= 0;
+  const fees = feeGiven
     ? (t.fee as number)
     : Math.max(0, safe(spec.fee_per_lot)) * lots * 2;
-  const tax = Number.isFinite(t.tax as number) && (t.tax as number) >= 0
+  const tax = taxGiven
     ? (t.tax as number)
     : (entry + exit) * unit * lots * Math.max(0, safe(spec.tax_rate));
-  return gross - fees - tax;
+  return { gross, fees, tax, net: gross - fees - tax, actual_cost: feeGiven && taxGiven };
+}
+
+/** 已平倉損益（含來回費用）——用來累算已實現損益 */
+export function closedPnl(t: ClosedTrade, spec: FuturesSpec): number {
+  return closedBreakdown(t, spec).net;
 }
 
 /** closeLots() 的結果：一筆平倉紀錄，以及沒平完剩下的部位（全平＝null） */
