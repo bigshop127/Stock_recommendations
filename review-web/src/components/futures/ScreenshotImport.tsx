@@ -77,6 +77,7 @@ export const ScreenshotImport: React.FC<{
   const [applied, setApplied] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
 
+
   const addFiles = async (files: FileList | File[] | null) => {
     if (!files) return;
     const list = [...files].filter((f) => f.type.startsWith('image/')).slice(0, 4);
@@ -165,7 +166,7 @@ export const ScreenshotImport: React.FC<{
         >
           <ImagePlus className="w-3.5 h-3.5" /> 選擇截圖
         </button>
-        <p className="text-[10px] text-zinc-600 mt-2">也可以直接拖曳或貼上（最多 4 張）；辨識一張約需 10–30 秒</p>
+        <p className="text-[10px] text-zinc-600 mt-2">也可以直接拖曳或貼上（最多 4 張）；辨識一張約需 20–40 秒（多張是並行的）</p>
       </div>
 
       {picked.length > 0 && (
@@ -396,11 +397,11 @@ export const ScreenshotImport: React.FC<{
 
           <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-[11px] text-zinc-400">
             <label className="flex items-center gap-1.5 cursor-pointer">
-              <input type="checkbox" checked={adoptSnapshot} onChange={(e) => setAdoptSnapshot(e.target.checked)} className="accent-cyan-500" />
+              <input type="checkbox" checked={adoptSnapshot} onChange={(e) => { setAdoptSnapshot(e.target.checked); setApplied(false); }} className="accent-cyan-500" />
               對不起來時以未平倉截圖為準覆寫
             </label>
             <label className="flex items-center gap-1.5 cursor-pointer">
-              <input type="checkbox" checked={applyPrices} onChange={(e) => setApplyPrices(e.target.checked)} className="accent-cyan-500" />
+              <input type="checkbox" checked={applyPrices} onChange={(e) => { setApplyPrices(e.target.checked); setApplied(false); }} className="accent-cyan-500" />
               同時把截圖上的市價當現價
             </label>
           </div>
