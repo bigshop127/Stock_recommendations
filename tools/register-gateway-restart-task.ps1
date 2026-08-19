@@ -29,7 +29,7 @@ $cmd = 'Get-NetTCPConnection -LocalPort 3000 -State Listen | Select-Object -Expa
 $arg = '-NoProfile -WindowStyle Hidden -Command "' + $cmd + '"'
 
 $action    = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument $arg
-$principal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" -LogonType InteractiveToken -RunLevel Highest
+$principal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" -LogonType Interactive -RunLevel Highest
 $settings  = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
                                           -ExecutionTimeLimit (New-TimeSpan -Minutes 2) -MultipleInstances IgnoreNew
 
