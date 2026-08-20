@@ -139,8 +139,9 @@ Path: %APPDATA%\npm\node_modules\@anthropic-ai\claude-code\bin\claude.exe
 
 1. 偵測還有 `claude.exe` 在跑就中止並列出 PID/Path（不會硬幹）
 2. 校正 `installMethod`（冪等，改前自動備份 `.claude.json.bak-<timestamp>`，改後驗證仍是合法 JSON）
-3. `npm install -g @anthropic-ai/claude-code@latest`
-4. 印出版本前後對照
+3. 清掉更新失敗留下的 `.claude-code-<亂碼>` 目錄與 `.claude<亂碼>` shim 殘留 —— **只有正式檔還在時才刪**，否則殘留就是唯一還原來源（見第一層故障）
+4. `npm install -g @anthropic-ai/claude-code@latest`
+5. 驗收：以 **binary 自報版本**（`claude.exe --version`）為準，並比對 exe 檔案時間有無變動；wrapper 與 binary 版本不一致時發警告
 
 腳本用 `$env:USERPROFILE` / `$env:APPDATA`，沒有寫死個人路徑（本 repo 是公開的）。`.ps1` 存成 **UTF-8 with BOM**、`.cmd` 內含 `chcp 65001`，否則中文輸出會變亂碼。
 
@@ -151,3 +152,24 @@ CLI 內建自我診斷，印出安裝方式／版本／更新管道狀態，**�
 ### 避坑（這次踩到的）
 
 用 `python - <<'EOF'` heredoc 寫含 Windows 路徑的 markdown 時，反斜線會被吃掉一層，`\n` 直接變成換行、`\b` 變成 0x08 控制字元，檔案靜靜壞掉。改用編輯工具直接寫，或先驗 `ord(c) < 32` 有沒有異常字元。
+
+### 事後查證：紅字是真的，「已是最新」才是假的
+
+同日 19:16 關掉全部 session 跑完腳本，腳本印「本來就是最新，沒有可更新的版本」。查證後發現**腳本報錯了，更新其實成功**：
+
+| 證據 | 內容 |
+|---|---|
+| `~/.claude/.last-update-result.json` | `{"path":"npm-global","outcome":"failed","status":"install_failed","version_from":"2.1.235","version_to":"2.1.237","error_code":"update_apply_exe_locked"}` |
+| npm log 18:21 | `npm install --global @anthropic-ai/claude-code@2.1.237` → cleanup 階段 `EPERM: operation not permitted, unlink` |
+| npm log 18:48 | 同一指令 → `EBUSY: resource busy or locked, copyfile` 來源就是 `claude-code-win32-x64\claude.exe` |
+| 19:16 手動那次 npm log | 無任何 error |
+| `bin\claude.exe` | 19:16:17 重寫，330,167,456 bytes；`--version` 自報 `2.1.237` |
+
+所以當時**真的有 2.1.235 → 2.1.237 待更新**，紅字不是誤報；腳本之所以說「已是最新」，是因為它比對的是 wrapper 的 `package.json`——那個檔在失敗的那兩次就已經被 npm 寫成 `2.1.237`，而真正的 `claude.exe` 還停在 `2.1.235`。**wrapper `package.json` 會超前 binary，不能拿來判斷版本**（跟 8/12 收尾時 `2.1.228` vs `2.1.221` 是同一個現象）。腳本已於同日改成以 `claude.exe --version` 為準。
+
+要點：
+
+- **自動更新走的就是 npm**，不是另一條原生通道 —— log 裡是 `npm install --global @anthropic-ai/claude-code@<版本>`。所以它跟手動 `npm i -g` 會撞上完全相同的 EBUSY。
+- `~/.claude/.last-update-result.json` 是**判斷「到底有沒有東西要更新」的權威檔**，一行 JSON 有來源版本、目標版本、錯誤碼。卡更新時先看這個。
+- `.claude.json` 的 `autoUpdates: false` **並沒有擋掉**這次自動更新（18:21 和 18:48 各跑了一次），這個欄位的實際語意不明，別依賴它。
+- npm 失敗那兩次留下的 `.claude-code-2SpwgW7L` 暫存目錄，已被 19:16 成功那次自行清掉；但 8/12 的經驗是**不一定清得掉**，所以腳本加了第 3 步主動掃。
