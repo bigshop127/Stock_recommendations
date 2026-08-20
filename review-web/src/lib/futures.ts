@@ -441,12 +441,24 @@ export interface AccountSummary {
   short_lots: number;
   contract_value: number;        // 名目曝險總額
   unrealized: number;            // 未實現損益（含來回費用）
+  /**
+   * 未實現損益的**毛額**（只有價差，不扣任何費用）。
+   *
+   * 存在的理由只有一個：跟期貨商對帳。期貨商 App 上的「未平倉損益」是毛額——出場那趟
+   * 的手續費與期交稅還沒發生，他們不會先扣。本頁的 `unrealized` 則是刻意扣掉來回費用
+   * 的淨額（那才是真正的損益平衡點）。兩個口徑都對，但拿去比對帳會差出一趟費用。
+   */
+  unrealized_gross: number;
   realized: number;              // 已實現損益（含費用）
   equity: number;                // 權益數＝保證金專戶現金 ＋ 未實現損益
+  /** 期貨商口徑的權益數＝現金 ＋ **毛**未實現損益。只用於對帳顯示，不參與任何風控判斷。 */
+  equity_broker: number;
   required_initial: number;      // 所需原始保證金
   required_maintenance: number;  // 所需維持保證金
   excess: number;                // 超額保證金＝權益數 − 所需原始保證金（負值代表已低於原始）
-  risk_indicator: number | null; // 風險指標＝權益數 / 所需維持保證金（無部位時 null）
+  risk_indicator: number | null; // 風險指標＝權益數 / 所需**原始**保證金（無部位時 null）
+  /** 追繳線落在風險指標尺規上的位置＝維持保證金 ÷ 原始保證金（例：6,700/8,700＝77%） */
+  margin_call_ratio: number | null;
   leverage: number | null;       // 槓桿＝名目曝險 / 權益數
   months: string[];              // 有未平倉口數的月份（排序後）
   reference_month: string;       // 口數最多的月份——追繳價／斷頭價以它的價格表示
@@ -461,8 +473,17 @@ export interface AccountSummary {
 /**
  * 帳戶彙總。cash＝保證金專戶的現金餘額（入金 ± 已實現損益，不含未實現）。
  *
- * 風險指標定義照期交所/期貨商慣例：權益數 ÷ 未沖銷部位所需**維持**保證金。
- * 低於 100% → 期貨商發追繳通知（要補到原始保證金）；盤中低於 25% → 強制平倉。
+ * ⚠️ 風險指標的分母是**原始**保證金，不是維持保證金——這兩件事很容易混在一起，
+ * 但它們是不同的門檻，各自對應不同的後果：
+ *
+ *   風險指標 ＝ 權益數 ÷ 未沖銷部位所需**原始**保證金（期交所定義，期貨商 App 顯示的就是它）
+ *     ├ ＜ 25%  → 盤中代為沖銷（斷頭）。所以斷頭線是 25% × 原始保證金。
+ *     └ ＜ 100% → 只是不能再開新倉，還不會被追繳。
+ *
+ *   追繳 ＝ 權益數 ＜ 所需**維持**保證金（另一條線，跟風險指標的 100% 不同一件事）
+ *
+ * 用維持保證金當分母會算出一個比實際大 原始/維持 倍的數字（SRF 約 1.3 倍），
+ * 對不上期貨商 App，而且會把斷頭價算得比真的低——等於告訴你還有不存在的緩衝。
  */
 export function summarizeAccount(
   positions: FuturesPosition[],
@@ -480,6 +501,7 @@ export function summarizeAccount(
   let short_lots = 0;
   let contract_value = 0;
   let unrealized = 0;
+  let unrealized_gross = 0;
   const lotsByMonth = new Map<string, number>();
 
   for (const pos of list) {
@@ -492,6 +514,7 @@ export function summarizeAccount(
     const pnl = positionPnl(pos, priceOf(price, pos.month), spec);
     contract_value += pnl.contract_value;
     unrealized += pnl.net_pnl;
+    unrealized_gross += pnl.gross_pnl;
     lotsByMonth.set(pos.month, (lotsByMonth.get(pos.month) ?? 0) + lots);
   }
 
@@ -508,10 +531,12 @@ export function summarizeAccount(
   const realized = (Array.isArray(closed) ? closed : []).reduce((sum, t) => sum + closedPnl(t, spec), 0);
   const cashBal = safe(cash);
   const equity = cashBal + unrealized;
+  const equity_broker = cashBal + unrealized_gross;
   const required_initial = Math.max(0, safe(spec.initial_margin)) * total_lots;
   const required_maintenance = Math.max(0, safe(spec.maintenance_margin)) * total_lots;
   const excess = equity - required_initial;
-  const risk_indicator = required_maintenance > 0 ? equity / required_maintenance : null;
+  const risk_indicator = required_initial > 0 ? equity / required_initial : null;
+  const margin_call_ratio = required_initial > 0 ? required_maintenance / required_initial : null;
   const leverage = equity > 0 && contract_value > 0 ? contract_value / equity : null;
 
   // 追繳價／斷頭價：解「所有月份一起移動 δ 時，權益數 ＝ 門檻」。
@@ -529,22 +554,24 @@ export function summarizeAccount(
   };
 
   const margin_call_shift = shiftToEquity(required_maintenance);
-  const liquidation_shift = shiftToEquity(required_maintenance * Math.max(0, safe(spec.liquidation_ratio, 0.25)));
+  const liquidation_shift = shiftToEquity(required_initial * Math.max(0, safe(spec.liquidation_ratio, 0.25)));
   const priceAt = (shift: number | null) => (shift === null ? null : Math.max(0, reference_price + shift));
 
+  // 三條線各自獨立，不能靠同一個比值分級：斷頭看風險指標（÷原始）、
+  // 追繳看權益數有沒有掉到維持保證金以下、warn 只是「不能再開新倉」。
   let status: AccountSummary['status'] = 'flat';
   if (total_lots > 0 && risk_indicator !== null) {
-    if (risk_indicator < spec.liquidation_ratio) status = 'danger';
-    else if (risk_indicator < 1) status = 'call';
+    if (risk_indicator < Math.max(0, safe(spec.liquidation_ratio, 0.25))) status = 'danger';
+    else if (equity < required_maintenance) status = 'call';
     else if (equity < required_initial) status = 'warn';
     else status = 'ok';
   }
 
   return {
     total_lots, net_lots, long_lots, short_lots,
-    contract_value, unrealized, realized, equity,
+    contract_value, unrealized, unrealized_gross, realized, equity, equity_broker,
     required_initial, required_maintenance, excess,
-    risk_indicator, leverage,
+    risk_indicator, margin_call_ratio, leverage,
     months, reference_month, reference_price,
     margin_call_shift, liquidation_shift,
     margin_call_price: priceAt(margin_call_shift),
@@ -1166,7 +1193,7 @@ export function buildRiskReport(input: RiskReportInput): string {
   L.push(`權益數：${nt(s.equity)}`);
   L.push(`所需原始／維持保證金：${nt(s.required_initial)} ／ ${nt(s.required_maintenance)}`);
   L.push(`超額保證金：${nt(s.excess)}`);
-  L.push(`風險指標：${pctText(s.risk_indicator)}`);
+  L.push(`風險指標：${pctText(s.risk_indicator)}（權益數 ÷ 原始保證金；＜25% 盤中代為沖銷）`);
   const cf = summarizeCashFlows(flows);
   if (cf.count > 0) {
     L.push(`淨投入資金：${nt(cf.net)}（入金 ${nt(cf.deposit)} − 出金 ${nt(cf.withdraw)}，共 ${cf.count} 筆）`);
@@ -1281,6 +1308,15 @@ export function equityStats(
   rows: FuturesEquityRow[],
   range?: { from?: string; to?: string },
   flows?: CashFlow[],
+  /**
+   * 目前設定的每口原始保證金。有給就用它把每一列的風險指標**重算**，不吃快照裡存的值。
+   *
+   * Why：快照的 `risk_indicator` 是寫入當天用當天的公式與當天的保證金算的。公式改過
+   * （曾經誤用維持保證金當分母）、或期貨商調整保證金之後，同一條曲線上就會混著兩種
+   * 口徑的數字，而看曲線的人無從分辨。重算的代價是「歷史點會隨現行保證金變動」，
+   * 但那正是使用者要問的問題：以現在的保證金看，那天有多接近斷頭。
+   */
+  initialMarginPerLot?: number,
 ): EquityStats {
   // Sort rows in ascending order by date
   const sorted = [...rows].sort((a, b) => a.date.localeCompare(b.date));
@@ -1349,12 +1385,18 @@ export function equityStats(
     if (twrIndex > twrPeak) twrPeak = twrIndex;
     const twrDrawdown = twrPeak > 0 ? (twrIndex - twrPeak) / twrPeak : 0;
 
+    const im = safe(initialMarginPerLot, 0);
+    const lots = Math.max(0, safe(row.total_lots));
+    const risk_indicator = im > 0 && lots > 0
+      ? equity / (im * lots)
+      : (im > 0 && lots === 0 ? null : row.risk_indicator);
+
     points.push({
       date: row.date,
       equity,
       peak: runningPeak,
       drawdown,
-      risk_indicator: row.risk_indicator,
+      risk_indicator,
       net_flow: netFlow,
       twr_index: twrIndex,
       twr_drawdown: twrDrawdown,

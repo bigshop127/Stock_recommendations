@@ -60,8 +60,8 @@ const GOOGLE_REFRESH_TOKEN = process.env.GOOGLE_REFRESH_TOKEN;
 const NOTIFY_EMAIL = process.env.NOTIFY_EMAIL || 'a4980678@gmail.com';
 const GATEWAY_BASE = process.env.REVIEW_GATEWAY_BASE || 'http://localhost:3000';
 
-// 風險指標的預警門檻：期交所只管 100%（追繳）與 25%（斷頭），但那時候才知道已經太晚。
-// 150% 這一層是自己加的緩衝——還有時間決定要補錢還是減碼。
+// 自訂預警門檻，以**維持**保證金為基準：權益數低於維持保證金的 1.5 倍就先講一聲。
+// 期交所管的兩條線（權益數＜維持＝追繳、風險指標＜25%＝斷頭）觸發時都已經太晚。
 const WARN_RATIO = Math.max(1, Number(process.env.FUTURES_WARN_RATIO) || 1.5);
 
 const DATA_DIR = path.join(__dirname, '..', 'data');
@@ -183,7 +183,8 @@ function positionPnl(pos, price, spec) {
 /**
  * 帳戶彙總。與前端 summarizeAccount 同一套定義：
  *   權益數 ＝ 保證金專戶現金 ＋ 未實現損益（已扣來回費用與期交稅）
- *   風險指標 ＝ 權益數 ÷ 所需維持保證金
+ *   風險指標 ＝ 權益數 ÷ 所需**原始**保證金（期交所定義；期貨商 App 顯示的就是它）
+ * 追繳則是另一條線：權益數 ＜ 所需維持保證金。兩者不同門檻，不能用同一個比值分級。
  * 追繳／斷頭價解的是「各月份一起平移多少」，多月份持倉才不會算錯。
  */
 function summarize(futures, prices) {
@@ -220,20 +221,22 @@ function summarize(futures, prices) {
   const equity = cash + unrealized;
   const required_initial = Math.max(0, safeNum(spec.initial_margin, 0)) * total_lots;
   const required_maintenance = Math.max(0, safeNum(spec.maintenance_margin, 0)) * total_lots;
-  const risk_indicator = required_maintenance > 0 ? equity / required_maintenance : null;
+  const risk_indicator = required_initial > 0 ? equity / required_initial : null;
   const liquidation_ratio = Math.max(0, safeNum(spec.liquidation_ratio, 0.25));
 
   const taxRate = Math.max(0, safeNum(spec.tax_rate, 0));
   const denom = unit * (net_lots - taxRate * total_lots);
   const shiftTo = (target) => (net_lots === 0 || denom === 0 ? null : (target - equity) / denom);
   const call_shift = shiftTo(required_maintenance);
-  const cut_shift = shiftTo(required_maintenance * liquidation_ratio);
+  const cut_shift = shiftTo(required_initial * liquidation_ratio);
 
+  // 三條線各自獨立：斷頭看風險指標（÷原始）、追繳看權益數是否低於維持保證金、
+  // warn 是自訂的預警緩衝，仍以維持保證金為基準（改成 ÷原始 會讓告警提早近一倍而變吵）。
   let status = 'flat';
   if (total_lots > 0 && risk_indicator !== null) {
     if (risk_indicator < liquidation_ratio) status = 'danger';
-    else if (risk_indicator < 1) status = 'call';
-    else if (risk_indicator < WARN_RATIO) status = 'warn';
+    else if (equity < required_maintenance) status = 'call';
+    else if (equity < required_maintenance * WARN_RATIO) status = 'warn';
     else status = 'ok';
   }
 
@@ -287,7 +290,7 @@ const fmtPx = (n) => (n === null || !Number.isFinite(n) ? '—' : n.toFixed(2));
 const LEVEL_META = {
   danger: { zh: '🟥 斷頭風險', color: '#c62828', urgency: '盤中觸價會被期貨商直接代為沖銷，不會等你補錢。' },
   call: { zh: '🟨 已進追繳區', color: '#ef6c00', urgency: '權益數已低於維持保證金，期貨商會發追繳通知，要補到原始保證金水準。' },
-  warn: { zh: '⚠️ 接近追繳', color: '#f9a825', urgency: `風險指標低於 ${Math.round(WARN_RATIO * 100)}%（自訂預警線，非期交所規定）。還有時間決定補錢還是減碼。` },
+  warn: { zh: '⚠️ 接近追繳', color: '#f9a825', urgency: `權益數低於維持保證金的 ${Math.round(WARN_RATIO * 100)}%（自訂預警線，非期交所規定）。還有時間決定補錢還是減碼。` },
 };
 
 function buildEmail(s, contract, quoteDate, rollovers, marginNotice, notes = {}) {
@@ -343,7 +346,7 @@ function buildEmail(s, contract, quoteDate, rollovers, marginNotice, notes = {})
     '',
     ...(meta ? [meta.urgency, ''] : []),
     '── 帳戶 ──',
-    `● 風險指標：${fmtPct(s.risk_indicator)}（追繳 100%、斷頭 ${fmtPct(s.liquidation_ratio)}）`,
+    `● 風險指標：${fmtPct(s.risk_indicator)}＝權益數÷原始保證金（斷頭 ${fmtPct(s.liquidation_ratio)}）`,
     `● 權益數：${fmtMoney(s.equity)}＝現金 ${fmtMoney(s.cash)} ＋ 未實現 ${fmtMoney(s.unrealized)}`,
     `● 所需原始／維持保證金：${fmtMoney(s.required_initial)} ／ ${fmtMoney(s.required_maintenance)}`,
     `● 超額保證金：${fmtMoney(s.equity - s.required_initial)}`,
@@ -375,7 +378,7 @@ function buildEmail(s, contract, quoteDate, rollovers, marginNotice, notes = {})
   <div style="background:${color}11;border:1px solid ${color}33;border-radius:6px;padding:14px;text-align:center;margin-bottom:14px;">
     <div style="font-size:13px;color:#555;">風險指標</div>
     <div style="font-size:32px;font-weight:800;color:${color};">${fmtPct(s.risk_indicator)}</div>
-    <div style="font-size:12px;color:#777;">追繳 100%｜斷頭 ${fmtPct(s.liquidation_ratio)}</div>
+    <div style="font-size:12px;color:#777;">權益數÷原始保證金｜斷頭 ${fmtPct(s.liquidation_ratio)}</div>
   </div>
   ${meta ? `<p style="font-size:13px;color:#444;background:#fafafa;border-left:3px solid ${color};padding:8px 12px;margin:0 0 14px;">${meta.urgency}</p>` : ''}
   <table style="width:100%;border-collapse:collapse;font-size:14px;">

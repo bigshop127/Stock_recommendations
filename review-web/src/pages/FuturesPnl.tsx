@@ -674,6 +674,16 @@ const RangeSelector: React.FC<{
   );
 };
 
+/**
+ * 快照列的風險指標。跟 equityStats 用同一套規則重算——只有一天資料時走的是另一條
+ * 顯示路徑（還沒進 equityStats），忘了重算的話那一天會是舊公式算的數字。
+ */
+const riOfRow = (row: { equity: number; total_lots: number; risk_indicator: number | null }, initialMargin: number) => {
+  const need = Math.max(0, initialMargin) * Math.max(0, row.total_lots);
+  if (need > 0) return row.equity / need;
+  return Math.max(0, initialMargin) > 0 ? null : row.risk_indicator;
+};
+
 const EquityCurveCard: React.FC<{
   historyState: {
     loading: boolean;
@@ -681,7 +691,9 @@ const EquityCurveCard: React.FC<{
     data: FuturesEquityHistoryResp | null;
   };
   flows: CashFlow[];
-}> = ({ historyState, flows }) => {
+  /** 目前設定的每口原始保證金：歷史列的風險指標用它重算，整條曲線才是同一個口徑 */
+  initialMargin: number;
+}> = ({ historyState, flows, initialMargin }) => {
   const [rangeType, setRangeType] = useState<'1m' | '3m' | '1y' | 'all'>('all');
   const [hoveredPoint, setHoveredPoint] = useState<EquityPoint | null>(null);
   const [hoverX, setHoverX] = useState<number | null>(null);
@@ -731,7 +743,7 @@ const EquityCurveCard: React.FC<{
             權益數：<span className="font-mono text-zinc-100 font-semibold">{money(singlePoint.equity)}</span>
           </p>
           <p className="text-xs text-zinc-400 mt-1">
-            風險指標：<span className="font-mono text-zinc-100 font-semibold">{singlePoint.risk_indicator !== null ? pct(singlePoint.risk_indicator, 0) : '—'}</span>
+            風險指標：<span className="font-mono text-zinc-100 font-semibold">{riOfRow(singlePoint, initialMargin) !== null ? pct(riOfRow(singlePoint, initialMargin) as number, 0) : '—'}</span>
           </p>
           <p className="text-[11px] text-amber-500 mt-3 font-semibold">累積中，需要至少兩天</p>
         </div>
@@ -744,7 +756,7 @@ const EquityCurveCard: React.FC<{
 
   const lastDateStr = rows[rows.length - 1]?.date;
   const startDate = getStartDateForRange(rangeType, lastDateStr);
-  const stats = equityStats(rows, { from: startDate }, flows);
+  const stats = equityStats(rows, { from: startDate }, flows, initialMargin);
   const points = stats.points;
 
   if (points.length === 0) {
@@ -1343,7 +1355,7 @@ const OverviewTab: React.FC<{
             valueCls={statusMeta.cls}
             tone={statusMeta.tone}
             icon={<Gauge className="w-3 h-3" />}
-            hint="權益數 ÷ 所需維持保證金。低於 100% 會收到追繳通知，盤中低於 25% 會被強制平倉。"
+            hint="權益數 ÷ 所需原始保證金——期交所定義，期貨商 App 顯示的就是這個數字。盤中低於 25% 會被強制平倉；低於 100% 只是不能再開新倉，追繳看的是另一條線（權益數低於維持保證金）。"
           />
           <StatTile
             label="名目曝險"
@@ -1355,13 +1367,18 @@ const OverviewTab: React.FC<{
           />
         </div>
         <div className="mt-3">
-          <RiskMeter value={ri} tone={statusMeta.tone} liquidationRatio={spec.liquidation_ratio} />
+          <RiskMeter
+            value={ri}
+            tone={statusMeta.tone}
+            liquidationRatio={spec.liquidation_ratio}
+            marginCallRatio={summary.margin_call_ratio}
+          />
         </div>
       </Panel>
 
       <RealizedPanel closed={config.closed} spec={spec} />
 
-      <EquityCurveCard historyState={historyState} flows={config.cash_flows} />
+      <EquityCurveCard historyState={historyState} flows={config.cash_flows} initialMargin={spec.initial_margin} />
 
       {/* 兩張警戒卡：整張染色，是全頁唯一會被餘光抓到的區塊 */}
       {summary.total_lots === 0 ? (
@@ -1446,10 +1463,16 @@ const OverviewTab: React.FC<{
           <Row label={`所需原始保證金（${summary.total_lots} 口 × ${money(spec.initial_margin)}）`} value={money(summary.required_initial)} />
           <Row label={`所需維持保證金（${summary.total_lots} 口 × ${money(spec.maintenance_margin)}）`} value={money(summary.required_maintenance)} />
           <Row
-            label="超額保證金"
+            label="超額保證金（＝期貨商的「可動用保證金」）"
             value={money(summary.excess)}
             cls={summary.excess >= 0 ? 'text-emerald-400' : 'text-rose-400'}
-            hint="權益數 − 所需原始保證金。正的部分才是能再開倉或承受回檔的緩衝。"
+            hint="權益數 − 所需原始保證金。正的部分才是能再開倉或承受回檔的緩衝。期貨商 App 上叫「可動用保證金」，同一個東西。"
+          />
+          <Row
+            label="風險指標（權益數 ÷ 所需原始保證金）"
+            value={riPctText}
+            cls={statusMeta.cls}
+            hint="期交所定義，期貨商 App 顯示的就是這個。分母是原始保證金不是維持保證金——用維持保證金會算出大約 1.3 倍的數字，對不上期貨商。"
           />
           {/* 有記資金進出才顯示：沒有流水帳的話「淨投入」只會是一個假的 0 */}
           {cashFlowTotals.count > 0 && (
@@ -1748,7 +1771,7 @@ const PositionsTab: React.FC<{
           </Field>
         </div>
 
-        <CashReconcile config={config} summary={summary} patch={patch} saveToCloud={saveToCloud} />
+        <CashReconcile config={config} spec={spec} summary={summary} patch={patch} saveToCloud={saveToCloud} />
 
         {/* 各月份現價：抓到行情的月份一覽，也可以手動覆寫某個月 */}
         {config.positions.length > 0 && (
@@ -2145,9 +2168,11 @@ const CashFlowCard: React.FC<{
 
   // 出金預覽：領走之後還剩多少、風險指標會掉到哪
   const equityAfterOut = summary.equity - (valid ? amt : 0);
-  const riAfterOut = summary.required_maintenance > 0 ? equityAfterOut / summary.required_maintenance : null;
+  const riAfterOut = summary.required_initial > 0 ? equityAfterOut / summary.required_initial : null;
+  // 顏色看的是「會不會被追繳」（權益數 vs 維持保證金），不是風險指標的 100%——
+  // 風險指標 100% 只代表不能再開新倉，那是黃燈不是紅燈。
   const outTone = riAfterOut === null ? 'text-zinc-400'
-    : riAfterOut < 1 ? 'text-rose-400'
+    : equityAfterOut < summary.required_maintenance ? 'text-rose-400'
     : equityAfterOut < summary.required_initial ? 'text-amber-400'
     : 'text-emerald-400';
 
@@ -2242,7 +2267,7 @@ const CashFlowCard: React.FC<{
 
       {valid && riAfterOut !== null && riAfterOut < 1 && (
         <p className="text-[11px] text-rose-400 font-semibold">
-          ⚠ 這筆出金會讓風險指標掉到 {pct(riAfterOut, 0)}（低於 100%），等於自己走進追繳區。要領這麼多請先減碼。
+          ⚠ 這筆出金會讓權益數掉到維持保證金（{money(summary.required_maintenance)}）以下，風險指標剩 {pct(riAfterOut, 0)}，等於自己走進追繳區。要領這麼多請先減碼。
         </p>
       )}
       {valid && riAfterOut !== null && riAfterOut >= 1 && equityAfterOut < summary.required_initial && (
@@ -2318,25 +2343,37 @@ const CashFlowCard: React.FC<{
 };
 
 /**
- * 保證金專戶餘額對帳。
+ * 跟期貨商對帳。
  *
- * `cash` 全靠手動維護，久了一定會跟期貨商對不起來（手續費尾差、利息、忘了記的入出金）。
- * 期貨商 App 上看得到「權益數」，這裡讓你把它填進來反推 cash 應該是多少：
- *   cash = 期貨商權益數 − 本頁算出來的未實現損益
- * 差額就是漂掉的量，按一下就校正。
+ * 兩件事：
+ *
+ * 1. **逐欄對照**——把期貨商 App「期貨資產總覽」那五格，跟本頁的對應值並排。
+ *    對不上的時候要能一眼看出是哪一格，而不是只知道「總之不一樣」。
+ *
+ * 2. **反推現金餘額**——`cash` 全靠手動維護，久了一定會漂（手續費尾差、利息、
+ *    忘了記的入出金）。填進期貨商的權益總值就能反推 cash 該是多少。
+ *
+ * ⚠️ 反推時用的是**毛**未平倉損益（`unrealized_gross`），不是本頁預設顯示的淨額。
+ * 期貨商的權益總值裡沒有扣「出場那趟還沒發生的手續費與期交稅」，用淨額反推會把
+ * 那一趟費用（14 口 × 30 元來回 ≈ 900 元）永久灌進 cash，而且每次對帳灌一次。
  */
 const CashReconcile: React.FC<{
   config: FuturesConfig;
+  spec: FuturesSpec;
   summary: Summary;
   patch: (u: (c: FuturesConfig) => FuturesConfig) => FuturesConfig;
   saveToCloud: (cfg?: FuturesConfig) => Promise<void>;
-}> = ({ config, summary, patch, saveToCloud }) => {
+}> = ({ config, spec, summary, patch, saveToCloud }) => {
   const [open, setOpen] = useState(false);
   const [raw, setRaw] = useState('');
   const actual = parseFloat(raw);
   const valid = Number.isFinite(actual);
-  const impliedCash = valid ? actual - summary.unrealized : 0;
+  const impliedCash = valid ? actual - summary.unrealized_gross : 0;
   const diff = valid ? impliedCash - config.cash : 0;
+
+  // 期貨商口徑：權益總值用毛損益，可動用＝權益總值 − 原始保證金，風險指標分母是原始保證金
+  const brokerAvailable = summary.equity_broker - summary.required_initial;
+  const brokerRi = summary.required_initial > 0 ? summary.equity_broker / summary.required_initial : null;
 
   if (!open) {
     return (
@@ -2353,23 +2390,41 @@ const CashReconcile: React.FC<{
         <button onClick={() => { setOpen(false); setRaw(''); }} className="text-[11px] text-zinc-500 hover:text-zinc-300">收起</button>
       </div>
       <p className="text-[11px] text-zinc-500">
-        打開期貨商 App 看「權益數」（不是「保證金餘額」），填進來反推本頁的現金餘額該是多少。
-        手續費尾差、利息、忘了記的入出金都會在這裡現形。
+        打開期貨商 App 的「期貨資產總覽」，把下表六格逐欄比對。
+        {summary.total_lots > 0 && ' 全部對得上就代表口數、進場價、保證金設定與現金餘額都是對的。'}
+      </p>
+      {summary.total_lots > 0 && (
+        <dl className="text-xs space-y-1.5 bg-zinc-900/50 border border-border rounded-lg p-3">
+          <Row label="權益總值" value={money(summary.equity_broker)} cls="text-zinc-100"
+            hint="現金餘額 ＋ 毛未平倉損益。期貨商不會先扣還沒發生的出場費用，所以這裡用毛額——跟本頁上方那個「保證金權益數」差一趟來回手續費與期交稅，兩個都對，只是口徑不同。" />
+          <Row label="未平倉損益" value={money(summary.unrealized_gross)} cls={pnlCls(summary.unrealized_gross)}
+            hint="純價差，不扣費用。本頁上方顯示的是扣掉來回費用的淨額。" />
+          <Row label={`原始保證金（${summary.total_lots} 口 × ${money(spec.initial_margin)}）`} value={money(summary.required_initial)} />
+          <Row label={`維持率保證金（${summary.total_lots} 口 × ${money(spec.maintenance_margin)}）`} value={money(summary.required_maintenance)}
+            hint="這兩格對不上，就是「契約規格與費用」裡的保證金填錯了——期貨商調整保證金時要回來改。" />
+          <Row label="可動用保證金" value={money(brokerAvailable)} cls={brokerAvailable >= 0 ? 'text-emerald-400' : 'text-rose-400'}
+            hint="權益總值 − 原始保證金。" />
+          <Row label="風險指標(%)" value={brokerRi === null ? '—' : pct(brokerRi, 1)} cls="text-zinc-100"
+            hint="權益總值 ÷ 原始保證金。低於 25% 盤中代為沖銷。" />
+        </dl>
+      )}
+      <p className="text-[11px] text-zinc-500">
+        權益總值對不上的話，填進來反推本頁的現金餘額該是多少——手續費尾差、利息、忘了記的入出金都會在這裡現形。
       </p>
       <div className="flex flex-wrap items-end gap-3">
-        <Field label="期貨商顯示的權益數">
+        <Field label="期貨商顯示的權益總值">
           <input
             type="number"
             value={raw}
             onChange={(e) => setRaw(e.target.value)}
-            placeholder={String(Math.round(summary.equity))}
+            placeholder={String(Math.round(summary.equity_broker))}
             className="w-36 bg-zinc-900 border border-border rounded-lg px-3 py-2 text-sm font-mono text-zinc-100"
           />
         </Field>
         {valid && (
           <>
             <dl className="text-xs space-y-1 min-w-[220px]">
-              <Row label="本頁未實現損益" value={money(summary.unrealized)} cls={pnlCls(summary.unrealized)} />
+              <Row label="本頁毛未平倉損益" value={money(summary.unrealized_gross)} cls={pnlCls(summary.unrealized_gross)} />
               <Row label="反推現金餘額應為" value={money(impliedCash)} cls="text-zinc-100" />
               <Row label="與目前設定的差額" value={money(diff)}
                 cls={Math.abs(diff) < 1 ? 'text-emerald-400' : 'text-amber-400'} />
@@ -3444,12 +3499,37 @@ const SettingsTab: React.FC<{
     };
   })();
 
+  /**
+   * 剛套用哪一格。改保證金最容易產生的懷疑是「我改了但好像沒有生效」——雲端狀態
+   * 在頁首，手機上早就滑出畫面外了，所以回饋要出現在手指剛離開的那一格旁邊。
+   */
+  const [justSaved, setJustSaved] = useState<keyof FuturesSpec | null>(null);
+  useEffect(() => {
+    if (justSaved === null) return;
+    const t = setTimeout(() => setJustSaved(null), 2500);
+    return () => clearTimeout(t);
+  }, [justSaved]);
+
   // 非受控＋key：按「還原預設值」時 key 跟著變，輸入框重掛載吃到新值
   const commit = (key: keyof FuturesSpec, raw: string) => {
     const v = parseFloat(raw);
     if (!Number.isFinite(v)) return;
+    if (v === config.spec[key]) return; // 沒改就不要假裝存了一次
+    setJustSaved(key);
     void saveToCloud(patch((c) => ({ ...c, spec: { ...c.spec, [key]: v } })));
   };
+
+  // 目前這組規格套用到現有部位會長什麼樣。放在輸入框正下方，改完馬上看得到差別。
+  const specPreview = useMemo(
+    () => summarizeAccount(
+      config.positions,
+      { byMonth: config.prices, fallback: config.price },
+      config.spec,
+      config.cash,
+      config.closed,
+    ),
+    [config.positions, config.prices, config.price, config.spec, config.cash, config.closed],
+  );
 
   /**
    * 換商品＝連契約規格一起換。既有部位不動（口數與進場價還在），但它們的意義會變，
@@ -3550,12 +3630,42 @@ const SettingsTab: React.FC<{
                 step={f.step}
                 defaultValue={config.spec[f.key]}
                 onBlur={(e) => commit(f.key, e.target.value)}
-                className="w-full bg-zinc-900 border border-border rounded-lg px-3 py-2 text-sm font-mono text-zinc-100"
+                className={`w-full bg-zinc-900 border rounded-lg px-3 py-2 text-sm font-mono text-zinc-100 transition-colors ${
+                  justSaved === f.key ? 'border-emerald-500' : 'border-border'
+                }`}
               />
-              <p className="text-[10px] text-zinc-600 mt-1">{f.hint}</p>
+              <p className="text-[10px] text-zinc-600 mt-1">
+                {justSaved === f.key
+                  ? <span className="text-emerald-400 flex items-center gap-1"><Check className="w-3 h-3" />已套用，下方數字與各分頁已重算</span>
+                  : f.hint}
+              </p>
             </Field>
           ))}
         </div>
+        {specPreview.total_lots > 0 && (
+          <div className="rounded-xl border border-border bg-zinc-900/40 p-4">
+            <div className="text-[11px] text-zinc-400 font-medium mb-2.5">
+              套用到目前 {specPreview.total_lots} 口部位（改上面任何一格，這裡立刻跟著變）
+            </div>
+            <dl className="grid grid-cols-2 lg:grid-cols-3 gap-x-6 gap-y-2 text-xs">
+              <Row label="所需原始保證金" value={money(specPreview.required_initial)} />
+              <Row label="所需維持保證金" value={money(specPreview.required_maintenance)} />
+              <Row label="權益數" value={money(specPreview.equity)} cls={pnlCls(specPreview.equity)} />
+              <Row
+                label="風險指標"
+                value={specPreview.risk_indicator === null ? '—' : pct(specPreview.risk_indicator, 1)}
+                cls={(STATUS_META[specPreview.status] ?? STATUS_META.flat).cls}
+                hint="權益數 ÷ 所需原始保證金——期貨商 App 顯示的就是這個口徑。"
+              />
+              <Row label="追繳價" value={specPreview.margin_call_price === null ? '—' : px(specPreview.margin_call_price)} cls="text-amber-400" />
+              <Row label="斷頭價" value={specPreview.liquidation_price === null ? '—' : px(specPreview.liquidation_price)} cls="text-rose-400" />
+            </dl>
+            <p className="text-[10px] text-zinc-600 mt-2.5">
+              期貨商 App 的「原始保證金」「維持率保證金」兩格應該跟這裡完全一致；對不上就是上面的每口金額填錯。
+              要逐欄核對整組數字，到「部位 &amp; 平倉紀錄」分頁按「跟期貨商對帳」。
+            </p>
+          </div>
+        )}
         <div className="flex flex-wrap items-center gap-4 pt-2 border-t border-border/50">
           <button
             onClick={() => void saveToCloud(patch((c) => ({ ...c, spec: { ...(preset?.spec ?? DEFAULT_SPEC) } })))}
@@ -3700,8 +3810,10 @@ const LogicTab: React.FC<{ spec: FuturesSpec }> = ({ spec }) => (
           期貨每日結算（逐日洗價），未實現損益每天真的在專戶進出，所以權益數才是你真正的餘額。
         </li>
         <li>
-          <strong className="text-zinc-100">風險指標</strong>＝權益數 ÷ 未沖銷部位所需維持保證金。
-          低於 100% 期貨商發追繳通知（要補到原始保證金）；盤中低於 {pct(spec.liquidation_ratio, 0)} 直接強制平倉。
+          <strong className="text-zinc-100">風險指標</strong>＝權益數 ÷ 未沖銷部位所需<strong className="text-zinc-100">原始</strong>保證金
+          （期交所定義，期貨商 App 顯示的就是它）。盤中低於 {pct(spec.liquidation_ratio, 0)} 直接強制平倉；
+          低於 100% 只是不能再開新倉。<strong className="text-zinc-100">追繳是另一條線</strong>：權益數低於
+          <strong className="text-zinc-100">維持</strong>保證金才會收到追繳通知，要補到原始保證金水準。
         </li>
         <li>
           <strong className="text-zinc-100">損益平衡價</strong>含來回費用，所以多單的平衡價會略高於進場價——

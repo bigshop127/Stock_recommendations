@@ -258,7 +258,9 @@ describe('summarizeAccount：保證金與風險指標', () => {
     expect(s.equity).toBeCloseTo(cash + pnl, 6);
     expect(s.required_initial).toBe(7_900 * 2);
     expect(s.required_maintenance).toBe(6_100 * 2);
-    expect(s.risk_indicator).toBeCloseTo((cash + pnl) / (6_100 * 2), 10);
+    // 分母是原始保證金（期交所定義），不是維持保證金
+    expect(s.risk_indicator).toBeCloseTo((cash + pnl) / (7_900 * 2), 10);
+    expect(s.margin_call_ratio).toBeCloseTo(6_100 / 7_900, 10);
     expect(s.leverage).toBeCloseTo(204_000 / (cash + pnl), 6);
     expect(s.status).toBe('ok');
   });
@@ -316,6 +318,42 @@ describe('summarizeAccount：保證金與風險指標', () => {
     expect(s.net_lots).toBe(0);
     expect(s.margin_call_price).toBeNull();
     expect(s.liquidation_price).toBeNull();
+  });
+
+  /**
+   * 口徑回歸：2026-08-20 玉山證券 App 的實際畫面。
+   *
+   * 曾經把分母寫成維持保證金，算出 531% 而 App 顯示 409.5%——使用者以為是保證金設定
+   * 沒生效，其實是公式錯的。這組數字是唯一能證明「跟期貨商對得起來」的證據，別動。
+   */
+  it('風險指標與期貨商 App 對得起來（2026-08-20 實帳）', () => {
+    const real: FuturesSpec = { ...spec, initial_margin: 8_700, maintenance_margin: 6_700 };
+    const held = [
+      pos({ id: 'a', lots: 1, entry_price: 104.45 }),
+      pos({ id: 'b', lots: 8, entry_price: 107 }),
+      pos({ id: 'c', lots: 5, entry_price: 103.5 }),
+    ];
+    const s = summarizeAccount(held, 103.95, real, 522_012);
+    expect(s.total_lots).toBe(14);
+    expect(s.required_initial).toBe(121_800);      // App：原始保證金
+    expect(s.required_maintenance).toBe(93_800);   // App：維持率保證金
+    expect(s.unrealized_gross).toBeCloseTo(-22_650, 6);
+    // App 的權益總值／可動用保證金／風險指標都是毛額口徑
+    expect(s.equity_broker).toBeCloseTo(499_362, 0);
+    expect(s.equity_broker - s.required_initial).toBeCloseTo(377_562, 0);
+    expect((s.equity_broker / s.required_initial) * 100).toBeCloseTo(410, 0);
+    // 本頁的淨額口徑差一趟來回費用，風險指標仍在同一個量級（不是舊公式的 531%）
+    expect((s.risk_indicator as number) * 100).toBeCloseTo(409.2, 1);
+  });
+
+  it('追繳看維持保證金、斷頭看原始保證金 × 25%（兩條線不同）', () => {
+    const positions = [pos({ lots: 2 })]; // 原始 15,800 / 維持 12,200
+    const s = summarizeAccount(positions, 102, spec, 50_000);
+    const atCall = summarizeAccount(positions, s.margin_call_price as number, spec, 50_000);
+    expect(atCall.equity).toBeCloseTo(atCall.required_maintenance, 6);
+    const atCut = summarizeAccount(positions, s.liquidation_price as number, spec, 50_000);
+    expect(atCut.equity).toBeCloseTo(atCut.required_initial * 0.25, 6);
+    expect(atCut.risk_indicator as number).toBeCloseTo(0.25, 8);
   });
 
   it('狀態分級：低於原始保證金→warn、低於維持→call、低於 25%→danger', () => {
@@ -582,10 +620,10 @@ describe('summarizeAccount：多月份逐一計價', () => {
     expect(s.margin_call_price).toBeCloseTo(102 + shift, 8); // 用參考月份表示
   });
 
-  it('斷頭價同樣命中維持保證金 × 25%', () => {
+  it('斷頭價命中原始保證金 × 25%', () => {
     const s = summarizeAccount(positions, book, spec, 100_000);
     const atCut = summarizeAccount(positions, shiftPrices(book, s.liquidation_shift as number), spec, 100_000);
-    expect(atCut.equity).toBeCloseTo(s.required_maintenance * spec.liquidation_ratio, 4);
+    expect(atCut.equity).toBeCloseTo(s.required_initial * spec.liquidation_ratio, 4);
   });
 
   it('單一月份時與舊版的解析解完全相同（回歸保護）', () => {

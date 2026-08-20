@@ -131,20 +131,35 @@ export const StatTile: React.FC<{
  * 200% 以上壓縮進剩下的 25%，兩條刻度線才不會全擠在最左邊變成沒有資訊量的裝飾。
  */
 export const RiskMeter: React.FC<{
-  /** 權益數 ÷ 所需維持保證金；無部位傳 null */
+  /** 風險指標＝權益數 ÷ 所需**原始**保證金；無部位傳 null */
   value: number | null;
   tone: Tone;
   label?: string;
   liquidationRatio?: number;
-}> = ({ value, tone, label = '當前風險指標（維持率）', liquidationRatio = 0.25 }) => {
+  /**
+   * 追繳線在這把尺上的位置＝維持保證金 ÷ 原始保證金（SRF 現值約 0.77）。
+   *
+   * 不是固定的 100%：追繳看的是「權益數 ＜ 維持保證金」，而這把尺的 100% 是
+   * 「權益數 ＝ 原始保證金」。兩者只有在原始＝維持時才重合，而那不會發生。
+   */
+  marginCallRatio?: number | null;
+}> = ({ value, tone, label = '當前風險指標（權益數 ÷ 原始保證金）', liquidationRatio = 0.25, marginCallRatio = null }) => {
   const scale = (v: number) => {
     const p = Math.max(0, v);
     return p <= 2 ? (p / 2) * 75 : 75 + Math.min(25, ((p - 2) / 6) * 25);
   };
   const width = value === null ? 0 : Math.min(100, scale(value));
+  const callAt = marginCallRatio !== null && Number.isFinite(marginCallRatio) && marginCallRatio > 0
+    ? marginCallRatio
+    : null;
+  // 追繳（≈77%）與原始（100%）在尺上只差 8% 寬度，兩個標籤同一行會疊在一起，
+  // 所以追繳排到第二行。row 是「第幾行」不是裝飾。
   const marks = [
-    { at: scale(liquidationRatio), label: `斷頭 ${(liquidationRatio * 100).toFixed(0)}%`, cls: 'bg-rose-500' },
-    { at: scale(1), label: '追繳 100%', cls: 'bg-orange-400' },
+    { at: scale(liquidationRatio), label: `斷頭 ${(liquidationRatio * 100).toFixed(0)}%`, cls: 'bg-rose-500', row: 0 },
+    ...(callAt !== null
+      ? [{ at: scale(callAt), label: `追繳 ${(callAt * 100).toFixed(0)}%`, cls: 'bg-orange-400', row: 1 }]
+      : []),
+    { at: scale(1), label: '原始 100%', cls: 'bg-amber-400/70', row: 0 },
   ];
 
   return (
@@ -169,11 +184,11 @@ export const RiskMeter: React.FC<{
           />
         ))}
       </div>
-      <div className="relative h-3.5 mt-1">
+      <div className="relative h-6 mt-1">
         {marks.map((m) => (
           <span
             key={m.label}
-            className="absolute top-0 text-[9px] text-zinc-600 -translate-x-1/2 whitespace-nowrap"
+            className={`absolute text-[9px] text-zinc-600 -translate-x-1/2 whitespace-nowrap ${m.row === 0 ? 'top-0' : 'top-[11px]'}`}
             style={{ left: `${m.at}%` }}
           >
             {m.label}
