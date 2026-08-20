@@ -95,5 +95,59 @@ npm i -g @anthropic-ai/claude-code
 | `'claude' is not recognized` | shim 被改名 | 還原三個 shim |
 | `not a valid application for this OS platform` | 原生 binary 是 500 bytes stub | 重裝補 optional 依賴 |
 | `EBUSY: resource busy or locked` | 有程序鎖住 exe | 關掉所有 claude 視窗／暫停防毒即時掃描後再裝 |
+| `Auto-update failed: claude.exe in use` | **不是故障**，是自動更新撞到 Windows 檔案鎖 | 見下方 §2026-08-20，跑 `runbooks\claude_update.cmd` |
 
 **預防重點**：`npm i -g @anthropic-ai/claude-code` 執行時不要有任何 claude 程序在跑。一旦被 EBUSY 打斷，就會留下第一層那種改名殘留，下次開終端機才發現指令不見了——中間可能已經隔了一週（本次就是 8/05 壞、8/12 才發現）。
+
+---
+
+## 2026-08-20 — 後續：`Auto-update failed: claude.exe in use`
+
+### 症狀
+
+CLI 右下角持續跳紅字：
+
+```
+Auto-update failed: claude.exe in use (close other Claude Code sessions, including VS Code) - Run claude doctor
+```
+
+### 判定：不是故障
+
+Claude Code 背景下載新版後要覆蓋 `claude.exe`，但 **Windows 會鎖住執行中的 .exe**。當天查證：
+
+```
+claude.exe  PID 5260  （全機只有這一個）
+Path: %APPDATA%\npm\node_modules\@anthropic-ai\claude-code\bin\claude.exe
+```
+
+**擋住更新的就是當下正在用的那個 session 本身** —— 它執行的檔案正是更新程式要覆寫的目標。訊息叫人「關掉其他 session」是通用提示，實際上這台沒有其他 session，是自己鎖自己。功能完全不受影響，只是版本停著不往上跳。
+
+### 順帶清掉 8/12 修復留下的兩個殘留
+
+| 項目 | 修前 | 修後 |
+|---|---|---|
+| `~/.claude.json` 的 `installMethod` | `"native"`（5/20 寫入時確實是原生安裝） | `"npm-global"`（實際已改由 npm 管理） |
+| `~/.local/share/claude/versions/` | 2.1.140（5/13）、2.1.173（6/11）兩顆舊 binary，450 MB | 丟回收桶（可還原） |
+
+判定依據：`npm ls -g` 有 `@anthropic-ai/claude-code@2.1.237`、prefix = `%APPDATA%\npm`，且執行中的 exe 就在該 npm 目錄下 → 更新管道是 npm，`installMethod` 應為 `npm-global`。合法值從 binary 撈出來確認過：`native` / `npm-global` / `npm-local` / `global` / `local` / `brew` / `homebrew` / `unknown`。
+
+`autoUpdates: false` 與 `autoUpdatesProtectedForNative: true` **刻意不動** —— 在 binary 裡只看得到欄位名、看不出實際邏輯，對 npm 安裝本來就是失效欄位，亂改風險大於效益。
+
+### 處置腳本
+
+`runbooks\claude_update.cmd`（雙擊執行，包 `claude_update.ps1`）。**先關閉所有 Claude Code 視窗再跑**，腳本本身也會擋：
+
+1. 偵測還有 `claude.exe` 在跑就中止並列出 PID/Path（不會硬幹）
+2. 校正 `installMethod`（冪等，改前自動備份 `.claude.json.bak-<timestamp>`，改後驗證仍是合法 JSON）
+3. `npm install -g @anthropic-ai/claude-code@latest`
+4. 印出版本前後對照
+
+腳本用 `$env:USERPROFILE` / `$env:APPDATA`，沒有寫死個人路徑（本 repo 是公開的）。`.ps1` 存成 **UTF-8 with BOM**、`.cmd` 內含 `chcp 65001`，否則中文輸出會變亂碼。
+
+### `claude doctor`
+
+CLI 內建自我診斷，印出安裝方式／版本／更新管道狀態，**只讀不改**，卡更新時官方建議先跑這個。
+
+### 避坑（這次踩到的）
+
+用 `python - <<'EOF'` heredoc 寫含 Windows 路徑的 markdown 時，反斜線會被吃掉一層，`\n` 直接變成換行、`\b` 變成 0x08 控制字元，檔案靜靜壞掉。改用編輯工具直接寫，或先驗 `ord(c) < 32` 有沒有異常字元。
