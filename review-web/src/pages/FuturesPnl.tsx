@@ -6,7 +6,7 @@ import {
   ClipboardCopy, Check, Target, Layers,
   ShieldCheck, Wallet, ListOrdered, CalendarSync, SlidersHorizontal, BookOpen,
   LineChart, Flame, Ruler, ArrowDownCircle, ArrowUpCircle, ArrowLeftRight,
-  ChevronDown, ChevronUp, Eraser,
+  ChevronDown, ChevronUp, Eraser, History, Compass,
 } from 'lucide-react';
 import { Panel, StatTile, RiskMeter, ThreatCard, LevelCard, Row, Chip, type Tone } from '../components/futures/ui';
 import { ScreenshotImport } from '../components/futures/ScreenshotImport';
@@ -21,6 +21,7 @@ import {
   indexAtPrice, stressTest, suggestLots, weightedEntry, targetPlan, trailingStopPlan,
   buildRiskReport, priceOf, referenceMonthOf,
   equityStats, summarizeCashFlows, flowDelta, holdingAsBatch,
+  leverageLadder, entryPlan, rollCostEstimate, CALIBRATED_PLAN,
   type FuturesPosition, type ClosedTrade, type CashFlow, type FuturesSpec, type StressRow,
   type PriceInput, type EquityPoint,
 } from '../lib/futures';
@@ -3071,8 +3072,249 @@ const PlannerTab: React.FC<{
     [config.positions, spec, priceInput, peak, p.trailing_dist],
   );
 
+  /*
+    歷史校準區塊。三個純函式全部吃「本金 + 現價 + spec」，跟頁面其他地方共用同一組
+    風控算式（leverageLadder 內部就是呼叫 summarizeAccount），所以這裡的追繳價／斷頭價
+    跟總覽頁不會出現兩套數字。
+  */
+  const [baseLev, setBaseLev] = useState(p.plan_base_leverage);
+  const [syncedBase, setSyncedBase] = useState(p.plan_base_leverage);
+  if (syncedBase !== p.plan_base_leverage) {
+    setSyncedBase(p.plan_base_leverage);
+    setBaseLev(p.plan_base_leverage);
+  }
+
+  const ladder = useMemo(() => leverageLadder(capital, refPrice, spec), [capital, refPrice, spec]);
+  const calPlan = useMemo(
+    () => entryPlan(capital, refPrice, spec, { base_leverage: baseLev, peak_price: p.plan_peak }),
+    [capital, refPrice, spec, baseLev, p.plan_peak],
+  );
+  // 加滿碼之後的斷頭價：借一格 ladder 來算，參數同一套
+  const maxRow = useMemo(
+    () => leverageLadder(capital, refPrice, spec, [calPlan.max_leverage])[0] ?? null,
+    [capital, refPrice, spec, calPlan.max_leverage],
+  );
+  const roll = useMemo(
+    () => rollCostEstimate(refPrice, spec, 12, 1, summary.contract_value),
+    [refPrice, spec, summary.contract_value],
+  );
+  // 「你在這」的定位用實際部位的槓桿，沒部位就不標
+  const liveLev = summary.total_lots > 0 ? summary.leverage : null;
+
   return (
     <div className="space-y-5">
+      {/* 歷史校準：槓桿體檢 */}
+      <div className="bg-card/70 border border-border rounded-2xl p-5 shadow-sm space-y-4">
+        <div>
+          <div className="flex items-center gap-2.5">
+            <span className="w-7 h-7 rounded-lg bg-amber-400/10 border border-amber-400/30 grid place-items-center shrink-0"><History className="w-4 h-4 text-amber-400" /></span>
+            <h2 className="text-sm font-bold text-zinc-100 tracking-wide">槓桿體檢：這筆本金撐得住幾倍</h2>
+          </div>
+          <p className="text-[11px] text-zinc-500 mt-1 leading-relaxed">
+            右邊三欄是<strong className="text-zinc-400">回測結果</strong>（{UNDERLYING_CODE} 2000-01→2026-08，
+            2009 年前用加權指數代理；400 條 × 20 年區塊自助抽樣，已扣月轉倉成本）。
+            「歷史崩盤」欄位是照這個口數<strong className="text-zinc-400">不減碼硬撐</strong>會被代沖銷的那幾次——
+            會減碼的話沒那麼慘，但那要你當下真的砍得下手。
+          </p>
+        </div>
+
+        <div className="overflow-x-auto -mx-1 px-1">
+          <table className="w-full text-[11px] min-w-[720px]">
+            <thead>
+              <tr className="text-zinc-500 border-b border-border/60">
+                <th className="text-left font-medium py-1.5 pr-2">槓桿</th>
+                <th className="text-right font-medium py-1.5 px-2">口數</th>
+                <th className="text-right font-medium py-1.5 px-2">風險指標</th>
+                <th className="text-right font-medium py-1.5 px-2">追繳價</th>
+                <th className="text-right font-medium py-1.5 px-2">斷頭價</th>
+                <th className="text-right font-medium py-1.5 px-2" title="區塊自助抽樣 400 條 20 年路徑的中位數年化報酬">中位年化</th>
+                <th className="text-right font-medium py-1.5 px-2" title="20 年下來本金實質歸零的路徑比例">歸零機率</th>
+                <th className="text-left font-medium py-1.5 pl-2">歷史崩盤會斷頭</th>
+              </tr>
+            </thead>
+            <tbody className="font-mono">
+              {ladder.map((r) => {
+                const here = liveLev !== null && Math.abs(liveLev - r.leverage) < 0.125;
+                const dead = r.killed_by.length;
+                return (
+                  <tr key={r.leverage}
+                    className={`border-b border-border/30 ${here ? 'bg-amber-500/10' : ''}`}>
+                    <td className={`py-1.5 pr-2 font-bold ${dead === 0 ? 'text-emerald-400' : dead <= 2 ? 'text-amber-400' : 'text-rose-400'}`}>
+                      {r.leverage}x{here && <span className="ml-1.5 text-[9px] font-sans font-semibold text-amber-300">你在這</span>}
+                    </td>
+                    <td className="text-right px-2 text-zinc-300">{r.lots}</td>
+                    <td className="text-right px-2 text-zinc-400">{r.risk_indicator === null ? '—' : pct(r.risk_indicator, 0)}</td>
+                    <td className="text-right px-2 text-orange-400/90">
+                      {r.margin_call_price === null ? '—' : px(r.margin_call_price)}
+                      <span className="text-zinc-600 ml-1">{r.margin_call_drop === null ? '' : pct(r.margin_call_drop, 0)}</span>
+                    </td>
+                    <td className="text-right px-2 text-rose-400/90">
+                      {r.liquidation_price === null ? '—' : px(r.liquidation_price)}
+                      <span className="text-zinc-600 ml-1">{r.liquidation_drop === null ? '' : pct(r.liquidation_drop, 0)}</span>
+                    </td>
+                    <td className={`text-right px-2 ${!r.stat ? 'text-zinc-600' : r.stat.median_cagr > 0.05 ? 'text-emerald-400' : r.stat.median_cagr > 0 ? 'text-zinc-300' : 'text-rose-400'}`}>
+                      {r.stat ? pct(r.stat.median_cagr, 1) : '—'}
+                    </td>
+                    <td className={`text-right px-2 ${!r.stat ? 'text-zinc-600' : r.stat.ruin_prob > 0.05 ? 'text-rose-400 font-bold' : r.stat.ruin_prob > 0 ? 'text-amber-400' : 'text-zinc-500'}`}>
+                      {r.stat ? pct(r.stat.ruin_prob, 0) : '—'}
+                    </td>
+                    <td className="pl-2 font-sans text-[10px] text-zinc-500">
+                      {dead === 0
+                        ? <span className="text-emerald-500/80">八次全撐得住</span>
+                        : <span className="text-rose-400/90">{r.killed_by.map((c) => c.name).join('、')}</span>}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+
+        <div className={`rounded-lg border px-3 py-2.5 text-[11px] leading-relaxed ${
+          roll.verdict === 'bad' ? 'bg-rose-500/10 border-rose-500/30 text-rose-300'
+            : roll.verdict === 'tight' ? 'bg-amber-500/10 border-amber-500/30 text-amber-300'
+              : 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300'}`}>
+          <div className="flex items-start gap-1.5">
+            <CalendarSync className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+            <div>
+              <strong>轉倉成本：{pct(roll.per_year_pct, 2)}／年</strong>
+              （單邊 {pct(roll.per_side_pct, 3)} × 2 邊 × {roll.rolls_per_year} 次；含手續費、期交稅與 1 檔滑價）。
+              打平「直接持有 {UNDERLYING_CODE}」的臨界值是 {pct(roll.breakeven_pct, 1)}／年。
+              {roll.verdict === 'bad' && (
+                <> 目前<strong>已經超過</strong>——照這個成本，加槓桿多賺的全被轉倉吃掉，回測裡怎麼調槓桿都贏不了直接抱 {UNDERLYING_CODE}。
+                  最有效的一招是<strong>改用季月合約</strong>，一年 12 次轉倉降到 4 次，成本直接砍成三分之一。</>
+              )}
+              {roll.verdict !== 'bad' && <> 目前在安全區。</>}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* 歷史校準：加碼／減碼計畫 */}
+      <div className="bg-card/70 border border-border rounded-2xl p-5 shadow-sm space-y-4">
+        <div>
+          <div className="flex items-center gap-2.5">
+            <span className="w-7 h-7 rounded-lg bg-emerald-400/10 border border-emerald-400/30 grid place-items-center shrink-0"><Compass className="w-4 h-4 text-emerald-400" /></span>
+            <h2 className="text-sm font-bold text-zinc-100 tracking-wide">回測校準的加碼／減碼計畫</h2>
+          </div>
+          <p className="text-[11px] text-zinc-500 mt-1 leading-relaxed">
+            回測裡表現最穩的一組：底倉 {CALIBRATED_PLAN.base_leverage} 倍——<strong className="text-zinc-400">距高點每跌 {pct(CALIBRATED_PLAN.dip_step, 0)} 加 {CALIBRATED_PLAN.dip_add} 倍槓桿</strong>，最多三級；
+            <strong className="text-zinc-400">從加碼成本起漲 {pct(CALIBRATED_PLAN.trim_step, 0)} 減碼三成</strong>，最多兩級。
+            跌幅一律<strong className="text-zinc-400">從高點算，不是從你的成本算</strong>——從成本算會愈跌愈密集，在半山腰就把子彈打完。
+          </p>
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <div className="space-y-2">
+            <div className="flex flex-wrap items-baseline justify-between gap-2 text-xs">
+              <span className="text-zinc-400">底倉槓桿</span>
+              <span className="font-mono">
+                <span className="text-emerald-400 font-bold text-sm">{baseLev.toFixed(2)} 倍</span>
+                <span className="text-zinc-500 ml-2">加滿 <span className="text-amber-400 font-bold">{calPlan.max_leverage.toFixed(2)}</span> 倍</span>
+              </span>
+            </div>
+            <input
+              type="range" min="0.5" max="3" step="0.05" value={baseLev}
+              onChange={(e) => setBaseLev(parseFloat(e.target.value))}
+              onMouseUp={() => setPlanner((x) => ({ ...x, plan_base_leverage: baseLev }))}
+              onTouchEnd={() => setPlanner((x) => ({ ...x, plan_base_leverage: baseLev }))}
+              onKeyUp={() => setPlanner((x) => ({ ...x, plan_base_leverage: baseLev }))}
+              className="w-full h-2 bg-zinc-900 rounded-lg appearance-none cursor-pointer accent-emerald-500"
+            />
+            <div className="flex justify-between text-[10px] text-zinc-600 font-mono">
+              <span>0.5x</span>
+              <span className="text-emerald-500">1.2x 回測建議</span>
+              <span>2x</span><span>3x</span>
+            </div>
+          </div>
+          <Field label="基準高點" hint="加碼跌幅從這個價位往下算。空著或填 0 就用現價當高點（＝現在就在高點附近）。">
+            <NumInput value={p.plan_peak} step="0.05" min="0" placeholder={`未填＝用現價 ${refPrice > 0 ? px(refPrice) : ''}`}
+              onCommit={(v) => setPlanner((x) => ({ ...x, plan_peak: Math.max(0, v) }))} />
+          </Field>
+        </div>
+
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+          <StatCard label="底倉口數" value={`${calPlan.base_lots} 口`} sub={`名目 ${money(calPlan.base_notional)}`} cls="text-emerald-400" />
+          <StatCard label="佔用原始保證金" value={money(calPlan.base_margin)}
+            sub={capital > 0 ? `佔本金 ${pct(calPlan.base_margin / capital)}` : ''} />
+          <StatCard label="預留加碼額度" value={money(calPlan.reserve_notional)}
+            sub={`≈ ${calPlan.reserve_lots} 口・本金的 ${pct(calPlan.reserve_pct, 0)}`} cls="text-amber-400"
+            hint="期貨的「閒置資金」不是現金，是槓桿的空間：底倉到上限之間的名目差額。錢本來就都在保證金專戶裡。" />
+          <StatCard label="加滿後的斷頭價"
+            value={maxRow?.liquidation_price != null ? px(maxRow.liquidation_price) : '—'}
+            sub={maxRow?.liquidation_drop != null ? `距現價 ${pct(maxRow.liquidation_drop, 0)}` : ''}
+            cls="text-rose-400" />
+        </div>
+
+        {calPlan.base_lots > 0 ? (
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 pt-2 border-t border-border/50">
+            <div className="space-y-2">
+              <div className="flex items-center gap-1.5 text-[11px] font-semibold text-zinc-300">
+                <ArrowDownCircle className="w-3.5 h-3.5 text-sky-400" /> 跌下去這樣加
+              </div>
+              {calPlan.steps.map((s) => (
+                <div key={s.level} className="flex items-center gap-2 bg-zinc-900/40 border border-border rounded-lg px-3 py-2">
+                  <span className="text-[10px] font-semibold text-zinc-500 w-11 shrink-0">第 {s.level} 階</span>
+                  <span className="font-mono text-xs text-sky-300 w-16 shrink-0">{pct(s.drop, 0)}</span>
+                  <span className="font-mono text-xs text-zinc-200 w-16 shrink-0">{px(s.price)}</span>
+                  <span className="text-[11px] text-zinc-400 flex-1">
+                    {s.add_lots > 0
+                      ? <>加 <strong className="text-emerald-400">{s.add_lots}</strong> 口 → 共 {s.target_lots} 口</>
+                      : s.capped
+                        ? <span className="text-rose-400/80">押不起（屆時保證金只夠 {s.target_lots} 口）</span>
+                        : <span className="text-zinc-500">不用加——跌到這裡時虧損已經把權益打薄，手上的口數本來就到 {s.target_leverage.toFixed(2)}x 了</span>}
+                  </span>
+                  <span className="text-[10px] text-zinc-600 font-mono shrink-0 hidden sm:inline">
+                    {s.target_leverage.toFixed(2)}x・權益 {money(s.equity_then)}
+                  </span>
+                </div>
+              ))}
+              <p className="text-[10px] text-zinc-600 leading-relaxed">
+                每一階的口數是用<strong className="text-zinc-500">到價當下的權益數</strong>重算的。跌 20% 時帳上已經虧了一輪，
+                同樣的槓桿對應的口數會變少——用現在的權益去排表，會排出一張到時候押不起的單。
+              </p>
+            </div>
+
+            <div className="space-y-2">
+              <div className="flex items-center gap-1.5 text-[11px] font-semibold text-zinc-300">
+                <ArrowUpCircle className="w-3.5 h-3.5 text-bull" /> 漲上去這樣減
+              </div>
+              {calPlan.trims.map((t) => (
+                <div key={t.level} className="flex items-center gap-2 bg-zinc-900/40 border border-border rounded-lg px-3 py-2">
+                  <span className="text-[10px] font-semibold text-zinc-500 w-11 shrink-0">第 {t.level} 階</span>
+                  <span className="font-mono text-xs text-bull w-16 shrink-0">+{pct(t.gain, 0)}</span>
+                  <span className="font-mono text-xs text-zinc-200 w-16 shrink-0">{px(t.price)}</span>
+                  <span className="text-[11px] text-zinc-400 flex-1">
+                    平 <strong className="text-bull">{t.close_lots}</strong> 口，剩 {t.remain_lots} 口
+                  </span>
+                  <span className="text-[10px] text-zinc-500 font-mono shrink-0">落袋 {money(t.locked)}</span>
+                </div>
+              ))}
+              <p className="text-[10px] text-zinc-600 leading-relaxed">
+                回測裡分批減碼<strong className="text-zinc-500">不會提高報酬</strong>（單一歷史路徑上還少賺），
+                它買的是「不押身家在多頭會不會繼續」——20 年滾動中位報酬從 3.8% 升到 4.7%，倒楣路徑的結果也變好。
+                想要更高報酬就別減碼，想睡得著就照表減。
+              </p>
+            </div>
+          </div>
+        ) : (
+          <p className="text-[11px] text-zinc-500 pt-2 border-t border-border/50">
+            填入「帳戶可用本金」並取得現在價格，才排得出計畫。
+          </p>
+        )}
+
+        {liveLev !== null && liveLev > calPlan.max_leverage * 1.1 && (
+          <div className="text-[11px] text-rose-400 flex items-start gap-1.5">
+            <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+            <span>
+              你目前的實際槓桿是 <strong>{liveLev.toFixed(2)} 倍</strong>，已經高過這個計畫「加滿碼」的
+              {calPlan.max_leverage.toFixed(2)} 倍——也就是說行情還沒跌，子彈就已經打完了。
+              真的跌下來時沒有加碼空間，只剩被追繳的選項。
+            </span>
+          </div>
+        )}
+      </div>
+
       {/* 槓桿 → 口數 */}
       <div className="bg-card/70 border border-border rounded-2xl p-5 shadow-sm space-y-4">
         <div className="flex items-center gap-2">
@@ -3104,7 +3346,7 @@ const PlannerTab: React.FC<{
             </span>
           </div>
           <input
-            type="range" min="1" max="10" step="0.1" value={lev}
+            type="range" min="0.5" max="10" step="0.1" value={lev}
             onChange={(e) => setLev(parseFloat(e.target.value))}
             onMouseUp={() => setPlanner((x) => ({ ...x, target_leverage: lev }))}
             onTouchEnd={() => setPlanner((x) => ({ ...x, target_leverage: lev }))}
@@ -3112,7 +3354,11 @@ const PlannerTab: React.FC<{
             className="w-full h-2 bg-zinc-900 rounded-lg appearance-none cursor-pointer accent-primary"
           />
           <div className="flex justify-between text-[10px] text-zinc-600 font-mono">
-            <span>1x 無槓桿</span><span>3x 平衡</span><span>5x 高槓桿</span><span>10x 極限</span>
+            <span>1x 無槓桿</span>
+            <span className="text-emerald-500">1.2x 回測建議</span>
+            <span className="text-amber-500">2x 上限</span>
+            <span className="text-rose-500">3x 歸零率 30%</span>
+            <span>10x</span>
           </div>
         </div>
 

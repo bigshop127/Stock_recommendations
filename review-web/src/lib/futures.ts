@@ -1438,3 +1438,358 @@ export function equityStats(
     has_flows: flowCount > 0,
   };
 }
+
+// ── 歷史校準：這個標的撐得住幾倍槓桿 ────────────────────────────────────────
+/*
+  這一段的數字全部來自一次回測，不是拍腦袋的預設值。資料與方法：
+
+  價格序列（2000-01-05 → 2026-08-21，6,537 個交易日）
+    · 2009-01 之後＝0050 還原權息收盤價（Yahoo；含 2014-01 的 1:4 分割修正）
+    · 2000-01～2009-01＝0050 還沒上市，用加權指數當代理，波動用重疊期實測 beta
+      （1.00，相關 0.83）校正，配息用 3.0%/年 補上，**不外加任何 alpha**——不把
+      2009 年後台積電的後見之明搬回過去。
+    · 再逐日扣掉台灣短期利率，把「現貨總報酬」轉成「期貨超額報酬」：
+      F = S·e^((r−q)T)，配息由基差吸收，多單不領息但也不付息，淨效果就是少賺一個 r。
+
+  模擬：逐日洗價、盤中用當日最低價檢查風險指標、追繳補錢／補不足就砍倉、
+       月轉倉成本、±20% 帶狀再平衡。保證金用「佔契約價值的百分比」而非固定元數，
+       因為期交所會隨標的價位調整級距，拿今天的 7,900 元去套 2000 年會失真。
+
+  兩種讀法都做了，因為它們回答不同的問題：
+    · 歷史單一路徑 → 「那 26 年實際會怎樣」。缺點是答案被「剛好從 2000 年泡沫頂點
+      起算」綁架，而且結尾那段大多頭會讓高槓桿看起來很聰明。
+    · 區塊自助抽樣（40 日區塊、400 條 20 年路徑）→ 「換一段歷史還成不成立」。
+      缺點是打散了長期均值回歸，對「逢低加碼」不利，所以它給的是保守下限。
+  下面的常數取自後者，因為做部位大小要看尾端風險，不是看中位數。
+*/
+
+/** 回測期間真的發生過的崩盤（合成 SRF 序列的高點→谷底跌幅） */
+export interface HistoricalCrash {
+  name: string;
+  from: string;
+  to: string;
+  drop: number;      // 負數
+  proxied: boolean;  // true＝這段用加權指數代理（0050 當時還沒上市）
+}
+
+export const HISTORICAL_CRASHES: HistoricalCrash[] = [
+  { name: '網科泡沫', from: '2000-02-18', to: '2001-10-03', drop: -0.666, proxied: true },
+  { name: '金融海嘯', from: '2007-10-29', to: '2008-11-20', drop: -0.585, proxied: true },
+  { name: '2022 升息熊市', from: '2022-01-18', to: '2022-10-25', drop: -0.337, proxied: false },
+  { name: 'COVID 崩盤', from: '2020-01-15', to: '2020-03-19', drop: -0.276, proxied: false },
+  { name: '2025 關稅衝擊', from: '2025-01-08', to: '2025-04-09', drop: -0.267, proxied: false },
+  { name: '2011 歐債', from: '2011-02-08', to: '2011-12-19', drop: -0.265, proxied: true },
+  { name: '2015 中國股災', from: '2015-04-28', to: '2015-08-24', drop: -0.213, proxied: false },
+  { name: '2024 日圓套利平倉', from: '2024-07-12', to: '2024-08-05', drop: -0.188, proxied: false },
+];
+
+/**
+ * 各槓桿的回測體檢表（400 條 × 20 年區塊自助抽樣，已扣月轉倉成本，保證金專戶不計息）。
+ *
+ * 對照組：同一批路徑下「直接抱 0050 現貨、不用期貨」的中位 CAGR 是 **9.1%**。
+ * 期貨 1 倍只有 5.0%，差的 4.1 個百分點就是融資成本(≈1.9%)＋轉倉成本(≈2.2%)——
+ * 這就是為什麼「用期貨做 1 倍」永遠是虧的：你付了槓桿的錢卻沒有用到槓桿。
+ */
+export interface LeverageStat {
+  leverage: number;
+  median_cagr: number;   // 20 年 CAGR 中位數
+  p05_cagr: number;      // 第 5 百分位（倒楣路徑）
+  loss_prob: number;     // 20 年下來還是賠錢的機率
+  median_mdd: number;    // 最大回撤中位數
+  ruin_prob: number;     // 本金實質歸零的機率
+}
+
+export const LEVERAGE_CALIBRATION: LeverageStat[] = [
+  { leverage: 0.50, median_cagr: 0.0306, p05_cagr: -0.010, loss_prob: 0.10, median_mdd: -0.36, ruin_prob: 0 },
+  { leverage: 0.75, median_cagr: 0.0439, p05_cagr: -0.021, loss_prob: 0.14, median_mdd: -0.52, ruin_prob: 0 },
+  { leverage: 1.00, median_cagr: 0.0499, p05_cagr: -0.037, loss_prob: 0.18, median_mdd: -0.64, ruin_prob: 0 },
+  { leverage: 1.25, median_cagr: 0.0529, p05_cagr: -0.048, loss_prob: 0.21, median_mdd: -0.72, ruin_prob: 0 },
+  { leverage: 1.50, median_cagr: 0.0518, p05_cagr: -0.068, loss_prob: 0.25, median_mdd: -0.77, ruin_prob: 0 },
+  { leverage: 1.75, median_cagr: 0.0467, p05_cagr: -0.093, loss_prob: 0.30, median_mdd: -0.84, ruin_prob: 0 },
+  { leverage: 2.00, median_cagr: 0.0376, p05_cagr: -0.115, loss_prob: 0.34, median_mdd: -0.88, ruin_prob: 0.020 },
+  { leverage: 2.50, median_cagr: 0.0153, p05_cagr: -0.179, loss_prob: 0.46, median_mdd: -0.95, ruin_prob: 0.115 },
+  { leverage: 3.00, median_cagr: -0.0362, p05_cagr: -0.182, loss_prob: 0.59, median_mdd: -0.98, ruin_prob: 0.303 },
+];
+
+/** 回測建議的預設參數。想改就改，這裡只是「歷史上表現最穩的那一組」。 */
+export const CALIBRATED_PLAN = {
+  base_leverage: 1.2,
+  dip_step: 0.20,     // 距高點每跌 20% 加一級
+  dip_add: 0.25,      // 每級加 0.25 倍槓桿
+  dip_levels: 3,      // 最多加三級 → 上限 1.95 倍
+  trim_step: 0.40,    // 從加碼成本起漲 40% 減一級
+  trim_frac: 0.30,    // 每級減掉當時部位的三成
+  trim_levels: 2,
+  /** 轉倉成本超過這條線，加槓桿在數學上就打不贏直接持有 0050（回測解出來的臨界值） */
+  roll_cost_breakeven: 0.015,
+};
+
+/** 在給定本金下，某個槓桿長什麼樣 */
+export interface LeverageRow {
+  leverage: number;
+  lots: number;
+  notional: number;
+  margin_used: number;
+  risk_indicator: number | null;
+  margin_call_price: number | null;
+  margin_call_drop: number | null;    // 負數，離追繳還有多少跌幅
+  liquidation_price: number | null;
+  liquidation_drop: number | null;
+  killed_by: HistoricalCrash[];       // 這個槓桿會被哪幾次歷史崩盤斷頭
+  stat: LeverageStat | null;          // 回測體檢（只有整齊的檔位才有）
+}
+
+function statFor(lv: number): LeverageStat | null {
+  return LEVERAGE_CALIBRATION.find((s) => Math.abs(s.leverage - lv) < 1e-9) ?? null;
+}
+
+/**
+ * 槓桿階梯表：同一筆本金在各種槓桿下的口數、風險指標、追繳／斷頭價，
+ * 以及「歷史上哪幾次崩盤會直接把這個部位掃掉」。
+ *
+ * 追繳價與斷頭價不自己重算，一律借道 summarizeAccount()——那是全站唯一的風控算式
+ * （含期交稅那一項），複製一份出來遲早會漂掉。
+ */
+export function leverageLadder(
+  capital: number,
+  price: number,
+  spec: FuturesSpec,
+  levels: number[] = [0.5, 0.75, 1, 1.25, 1.5, 1.75, 2, 2.5, 3, 4, 5],
+): LeverageRow[] {
+  const cap = Math.max(0, safe(capital));
+  const p = Math.max(0, safe(price));
+  const unit = Math.max(1, safe(spec.contract_size, 1000));
+  if (cap <= 0 || p <= 0) return [];
+
+  return levels.map((lv) => {
+    const lots = Math.max(0, Math.round((cap * lv) / (p * unit)));
+    if (lots <= 0) {
+      return {
+        leverage: lv, lots: 0, notional: 0, margin_used: 0, risk_indicator: null,
+        margin_call_price: null, margin_call_drop: null,
+        liquidation_price: null, liquidation_drop: null, killed_by: [], stat: statFor(lv),
+      };
+    }
+    const pos: FuturesPosition[] = [{
+      id: 'lev-' + lv, month: '000000', side: 'long', lots,
+      entry_price: p, entry_date: '',
+    }];
+    const s = summarizeAccount(pos, p, spec, cap);
+    const liqDrop = s.liquidation_shift !== null ? s.liquidation_shift / p : null;
+    return {
+      leverage: lv,
+      lots,
+      notional: s.contract_value,
+      margin_used: s.required_initial,
+      risk_indicator: s.risk_indicator,
+      margin_call_price: s.margin_call_price,
+      margin_call_drop: s.margin_call_shift !== null ? s.margin_call_shift / p : null,
+      liquidation_price: s.liquidation_price,
+      liquidation_drop: liqDrop,
+      // 崩盤跌幅比斷頭跌幅還深＝這個部位在那一次會被代沖銷
+      killed_by: liqDrop === null ? [] : HISTORICAL_CRASHES.filter((c) => c.drop <= liqDrop),
+      stat: statFor(lv),
+    };
+  });
+}
+
+/** 加碼階梯的一階 */
+export interface DipStep {
+  level: number;
+  drop: number;            // 相對基準高點的跌幅（負數）
+  price: number;           // 觸發價
+  target_leverage: number; // 到價後想維持的槓桿
+  target_lots: number;     // 到價時**帳上總共**該有幾口
+  add_lots: number;        // 相對上一階要再加幾口
+  equity_then: number;     // 到價時的權益數（部位已依前面各階加過碼）
+  /**
+   * true＝這一階的口數是被原始保證金上限壓下來的，不是策略想要的數字。
+   * add_lots 為 0 時，這個旗標是「押不起」與「本來就不用加」的唯一分界——
+   * 兩者在畫面上要講不同的話，講錯會讓人以為自己還有加碼空間。
+   */
+  capped: boolean;
+}
+
+/** 獲利減碼階梯的一階 */
+export interface TrimStep {
+  level: number;
+  gain: number;        // 相對加碼成本的漲幅
+  price: number;       // 觸發價
+  close_lots: number;  // 這一階要平掉幾口
+  remain_lots: number; // 平完剩幾口
+  locked: number;      // 這一階平倉實現的損益（淨額）
+}
+
+export interface EntryPlan {
+  peak_price: number;
+  base_price: number;
+  base_leverage: number;
+  base_lots: number;
+  base_notional: number;
+  base_margin: number;
+  /** 底倉之外預留的「加碼額度」，以名目金額表示＝(上限槓桿 − 底倉槓桿) × 本金 */
+  reserve_notional: number;
+  reserve_pct: number;      // 佔本金幾成
+  reserve_lots: number;     // 還能再加幾口
+  max_leverage: number;
+  steps: DipStep[];
+  trims: TrimStep[];
+}
+
+export interface EntryPlanOptions {
+  base_leverage?: number;
+  dip_step?: number;
+  dip_add?: number;
+  dip_levels?: number;
+  trim_step?: number;
+  trim_frac?: number;
+  trim_levels?: number;
+  peak_price?: number;
+}
+
+/**
+ * 「平常放幾口、跌到哪裡加、漲到哪裡減」的完整計畫書。
+ *
+ * 兩個容易搞錯的地方，這裡刻意寫死：
+ *
+ * 1. **加碼的跌幅是從「高點」算，不是從「你的成本」算。** 從成本算會有一個致命的
+ *    自我強化：每加一次碼成本就下移，於是「再跌 20%」的門檻也跟著下移，愈跌愈密集，
+ *    最後在半山腰就把子彈打完。回測裡這正是把帳戶打到 −95% 的那組參數。
+ *
+ * 2. **每一階的口數是用「到價當下的權益數」重算，不是現在的權益數。** 跌 20% 時
+ *    帳上已經虧了一輪，權益數變小，同樣的槓桿對應的口數也變少。用現在的權益去排
+ *    加碼表，會排出一張到時候根本押不起的單。
+ */
+export function entryPlan(
+  capital: number,
+  price: number,
+  spec: FuturesSpec,
+  opts: EntryPlanOptions = {},
+): EntryPlan {
+  const o = { ...CALIBRATED_PLAN, ...opts };
+  const cap = Math.max(0, safe(capital));
+  const p = Math.max(0, safe(price));
+  const unit = Math.max(1, safe(spec.contract_size, 1000));
+  const im = Math.max(0, safe(spec.initial_margin));
+  const peak = safe(opts.peak_price) > 0 ? safe(opts.peak_price) : p;
+
+  const baseLev = Math.max(0, safe(o.base_leverage));
+  const dipStep = Math.max(0.01, safe(o.dip_step, 0.2));
+  const dipAdd = Math.max(0, safe(o.dip_add));
+  const dipLevels = Math.max(0, Math.round(safe(o.dip_levels)));
+  const maxLev = baseLev + dipAdd * dipLevels;
+
+  const lotsAt = (equity: number, lv: number, px: number) =>
+    px > 0 ? Math.max(0, Math.round((equity * lv) / (px * unit))) : 0;
+
+  const base_lots = cap > 0 && p > 0 ? lotsAt(cap, baseLev, p) : 0;
+
+  const steps: DipStep[] = [];
+  let prevLots = base_lots;
+  for (let i = 1; i <= dipLevels; i++) {
+    const drop = -dipStep * i;
+    const stepPrice = peak * (1 + drop);
+    if (!(stepPrice > 0)) break;
+    // 到價時的權益數：底倉先跌一段，之前各階加的碼也各自跌了一段
+    let equity = cap;
+    if (p > 0) {
+      equity -= base_lots * unit * (p - stepPrice);
+      for (const s of steps) equity -= s.add_lots * unit * (s.price - stepPrice);
+    }
+    const lv = baseLev + dipAdd * i;
+    const affordable = im > 0 ? Math.floor(equity / im) : Number.MAX_SAFE_INTEGER;
+    const wanted = lotsAt(equity, lv, stepPrice);
+    const target = Math.max(0, Math.min(wanted, affordable));
+    steps.push({
+      level: i,
+      drop,
+      price: stepPrice,
+      target_leverage: lv,
+      target_lots: target,
+      add_lots: Math.max(0, target - prevLots),
+      equity_then: equity,
+      capped: wanted > affordable,
+    });
+    prevLots = Math.max(prevLots, target);
+  }
+
+  // 減碼階梯：從現價（＝這一輪的加碼成本）起算
+  const trims: TrimStep[] = [];
+  const trimStep = Math.max(0, safe(o.trim_step));
+  const trimFrac = Math.min(0.9, Math.max(0, safe(o.trim_frac)));
+  const trimLevels = Math.max(0, Math.round(safe(o.trim_levels)));
+  let remain = base_lots;
+  for (let i = 1; i <= trimLevels && trimStep > 0 && base_lots > 0; i++) {
+    const gain = trimStep * i;
+    const tp = p * (1 + gain);
+    const close = Math.min(remain, Math.max(1, Math.round(remain * trimFrac)));
+    if (close <= 0) break;
+    const gross = close * unit * (tp - p);
+    const fees = close * 2 * Math.max(0, safe(spec.fee_per_lot))
+      + Math.max(0, safe(spec.tax_rate)) * unit * close * (p + tp);
+    remain -= close;
+    trims.push({ level: i, gain, price: tp, close_lots: close, remain_lots: remain, locked: gross - fees });
+    if (remain <= 0) break;
+  }
+
+  const reserve_notional = Math.max(0, (maxLev - baseLev) * cap);
+  return {
+    peak_price: peak,
+    base_price: p,
+    base_leverage: baseLev,
+    base_lots,
+    base_notional: base_lots * unit * p,
+    base_margin: base_lots * im,
+    reserve_notional,
+    reserve_pct: cap > 0 ? reserve_notional / cap : 0,
+    reserve_lots: p > 0 ? Math.round(reserve_notional / (p * unit)) : 0,
+    max_leverage: maxLev,
+    steps,
+    trims,
+  };
+}
+
+export interface RollCostEstimate {
+  rolls_per_year: number;
+  per_side_pct: number;   // 單邊成本佔名目金額
+  per_year_pct: number;   // 一年轉倉成本佔名目金額
+  per_year_cash: number;  // 換算成錢（依目前名目曝險）
+  breakeven_pct: number;
+  verdict: 'ok' | 'tight' | 'bad';
+}
+
+/**
+ * 轉倉成本估算——這頁最被低估的一項。
+ *
+ * 一次轉倉＝平掉近月 ＋ 開次月，兩邊都要付手續費、期交稅與滑價。月轉倉一年 12 次
+ * 就是 24 邊。以現行費率與 1 檔滑價估，那是名目金額的 **2.1%/年**；回測解出來的
+ * 臨界值是 1.5%/年——超過這條線，加槓桿賺到的東西全部被轉倉吃掉，還不如直接抱 0050。
+ * 解法是用季月合約把 12 次降到 4 次，不是去凹手續費。
+ */
+export function rollCostEstimate(
+  price: number,
+  spec: FuturesSpec,
+  rollsPerYear = 12,
+  slippageTicks = 1,
+  notional = 0,
+): RollCostEstimate {
+  const p = Math.max(0, safe(price));
+  const unit = Math.max(1, safe(spec.contract_size, 1000));
+  const lotValue = p * unit;
+  const rolls = Math.max(0, safe(rollsPerYear));
+  const perSide = lotValue > 0
+    ? Math.max(0, safe(spec.fee_per_lot)) / lotValue
+      + Math.max(0, safe(spec.tax_rate))
+      + (Math.max(0, safe(slippageTicks)) * Math.max(0, safe(spec.tick_size))) / p
+    : 0;
+  const perYear = perSide * 2 * rolls;
+  const be = CALIBRATED_PLAN.roll_cost_breakeven;
+  return {
+    rolls_per_year: rolls,
+    per_side_pct: perSide,
+    per_year_pct: perYear,
+    per_year_cash: perYear * Math.max(0, safe(notional)),
+    breakeven_pct: be,
+    verdict: perYear > be ? 'bad' : perYear > be * 0.7 ? 'tight' : 'ok',
+  };
+}

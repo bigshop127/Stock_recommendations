@@ -34,6 +34,9 @@ import {
   summarizeCashFlows,
   holdingAsBatch,
   flowDelta,
+  leverageLadder,
+  entryPlan,
+  rollCostEstimate,
   type FuturesPosition,
   type FuturesSpec,
   type CashFlow,
@@ -1421,5 +1424,174 @@ describe('gateway sanitizeCashFlows（伺服端也要擋壞資料，前端不是
   it('非陣列 → 空陣列（舊檔案沒有這個欄位也不會爆）', () => {
     expect(sanitizeCashFlows(undefined)).toEqual([]);
     expect(sanitizeCashFlows({})).toEqual([]);
+  });
+});
+
+describe('leverageLadder — 槓桿階梯', () => {
+  const cap = 1_000_000;
+  const price = 104.65;
+
+  it('口數＝本金×槓桿÷契約價值，風險指標＝權益數÷原始保證金', () => {
+    const rows = leverageLadder(cap, price, DEFAULT_SPEC, [1, 2]);
+    const one = rows[0];
+    // 100 萬 × 1 倍 ÷ (104.65 × 1000) ≈ 9.56 → 10 口
+    expect(one.lots).toBe(10);
+    expect(one.margin_used).toBe(10 * DEFAULT_SPEC.initial_margin);
+    // 風險指標與 summarizeAccount 同一口徑：權益數 ÷ 原始保證金。
+    // 權益數會比本金**略低**——建倉價＝現價時未實現損益不是 0 而是「負的來回費用」，
+    // 那正是本頁刻意採用的淨額口徑（券商 App 顯示的毛額會剛好等於本金）。
+    const naive = cap / (10 * DEFAULT_SPEC.initial_margin);
+    expect(one.risk_indicator!).toBeLessThan(naive);
+    expect(one.risk_indicator!).toBeCloseTo(naive, 1);
+    // 口數是四捨五入到整數口，所以 2 倍不會剛好等於 2 × 1 倍的口數
+    // （1,000,000/104,650 ＝ 9.56→10；2,000,000/104,650 ＝ 19.11→19）
+    expect(rows[1].lots).toBe(19);
+    expect(rows[1].notional).toBeCloseTo(19 * 104.65 * 1000, 6);
+  });
+
+  it('槓桿愈高，撐得住的跌幅愈淺（追繳價與斷頭價往上跑）', () => {
+    const rows = leverageLadder(cap, price, DEFAULT_SPEC, [1, 2, 3, 5]);
+    for (let i = 1; i < rows.length; i++) {
+      expect(rows[i].liquidation_price!).toBeGreaterThan(rows[i - 1].liquidation_price!);
+      expect(rows[i].liquidation_drop!).toBeGreaterThan(rows[i - 1].liquidation_drop!);
+    }
+    // 斷頭一定發生在追繳之後（價格更低），兩條線不能顛倒
+    for (const r of rows) expect(r.liquidation_price!).toBeLessThan(r.margin_call_price!);
+  });
+
+  it('1 倍槓桿歷史上任何一次崩盤都撐得住，槓桿愈高被掃掉的次數愈多', () => {
+    const [one, two, three] = leverageLadder(cap, price, DEFAULT_SPEC, [1, 2, 3]);
+    // 1 倍的斷頭跌幅接近 −98%，比史上最深的網科泡沫 −66.6% 還深
+    expect(one.killed_by).toHaveLength(0);
+    // 2 倍斷頭在 −48%：網科泡沫 −66.6% 與金融海嘯 −58.5% 會掃到，2022 的 −33.7% 還不會
+    expect(two.killed_by.map((c) => c.name)).toEqual(['網科泡沫', '金融海嘯']);
+    // 3 倍斷頭在 −31%：連 2022 升息熊市那種「普通」空頭都會被代沖銷
+    expect(three.killed_by.map((c) => c.name)).toEqual(['網科泡沫', '金融海嘯', '2022 升息熊市']);
+    // 被掃掉的次數只會隨槓桿單調增加
+    expect(three.killed_by.length).toBeGreaterThan(two.killed_by.length);
+  });
+
+  it('本金或價格為 0 時回空陣列，不吐 NaN', () => {
+    expect(leverageLadder(0, price, DEFAULT_SPEC)).toEqual([]);
+    expect(leverageLadder(cap, 0, DEFAULT_SPEC)).toEqual([]);
+  });
+
+  it('整齊檔位帶得出回測體檢，非整齊檔位是 null', () => {
+    const [a, b] = leverageLadder(cap, price, DEFAULT_SPEC, [1.5, 1.6]);
+    expect(a.stat?.ruin_prob).toBe(0);
+    expect(b.stat).toBeNull();
+  });
+});
+
+describe('entryPlan — 建倉／加碼／減碼計畫', () => {
+  const cap = 1_000_000;
+  const price = 100;
+
+  it('底倉照 base_leverage 排，加碼階梯從「高點」往下算而不是從現價', () => {
+    const plan = entryPlan(cap, price, DEFAULT_SPEC, { peak_price: 120, base_leverage: 1.2, dip_step: 0.2, dip_add: 0.25, dip_levels: 3 });
+    expect(plan.base_lots).toBe(12);                 // 100萬×1.2÷(100×1000)
+    expect(plan.peak_price).toBe(120);
+    // 第一階＝高點的 −20% ＝ 96，不是現價的 −20%（80）
+    expect(plan.steps[0].price).toBeCloseTo(96, 6);
+    expect(plan.steps.map((s) => s.level)).toEqual([1, 2, 3]);
+    expect(plan.max_leverage).toBeCloseTo(1.95, 6);
+  });
+
+  it('沒給高點就用現價當高點', () => {
+    const plan = entryPlan(cap, price, DEFAULT_SPEC);
+    expect(plan.peak_price).toBe(price);
+    expect(plan.steps[0].price).toBeCloseTo(price * 0.8, 6);
+  });
+
+  it('每一階的口數用「到價當下的權益數」重算，所以會比用現在權益算的少', () => {
+    const plan = entryPlan(cap, price, DEFAULT_SPEC, { base_leverage: 1.2, dip_step: 0.2, dip_add: 0.25, dip_levels: 1 });
+    const s = plan.steps[0];
+    // 跌 20%：底倉 12 口先虧 12×1000×20 ＝ 24 萬，權益剩 76 萬
+    expect(s.equity_then).toBeCloseTo(760_000, 6);
+    // 76 萬 × 1.45 ÷ (80×1000) ＝ 13.775 → 14 口（若用 100 萬去算會排到 18 口）
+    expect(s.target_lots).toBe(14);
+    expect(s.add_lots).toBe(2);
+    expect(Math.round((cap * 1.45) / (80 * 1000))).toBe(18);
+  });
+
+  it('加碼口數受原始保證金上限壓制，不會排出押不起的單', () => {
+    // 底倉 2 倍、跌一階就想跳到 14 倍：槓桿算出來的口數遠超過屆時權益押得起的量
+    const plan = entryPlan(cap, price, DEFAULT_SPEC, { base_leverage: 2, dip_step: 0.2, dip_add: 12, dip_levels: 1 });
+    const s = plan.steps[0];
+    const affordable = Math.floor(s.equity_then / DEFAULT_SPEC.initial_margin);
+    expect(s.equity_then).toBeGreaterThan(0);
+    expect(Math.round((s.equity_then * 14) / (s.price * 1000))).toBeGreaterThan(affordable);
+    expect(s.target_lots).toBe(affordable);
+    expect(s.capped).toBe(true);
+  });
+
+  it('槓桿高到「跌完就沒錢」時，加碼階梯排 0 口而不是負數', () => {
+    const plan = entryPlan(cap, price, DEFAULT_SPEC, { base_leverage: 6, dip_step: 0.2, dip_add: 4, dip_levels: 1 });
+    const s = plan.steps[0];
+    expect(s.equity_then).toBeLessThan(0);   // 6 倍跌 20% ＝ 賠掉 120% 本金
+    expect(s.target_lots).toBe(0);
+    expect(s.add_lots).toBe(0);
+  });
+
+  it('跌深時目標口數低於現有口數＝不用加，且不可誤標成「押不起」', () => {
+    const plan = entryPlan(cap, 104.65, DEFAULT_SPEC, { peak_price: 112, base_leverage: 1.2, dip_step: 0.2, dip_add: 0.25, dip_levels: 3 });
+    const deep = plan.steps[1];                    // 距高點 −40%
+    expect(deep.add_lots).toBe(0);
+    // 權益被虧損打薄，1.70x 對應的口數反而比第一階加完後還少——這不是保證金不夠
+    expect(deep.capped).toBe(false);
+    expect(deep.target_lots).toBeLessThan(plan.steps[0].target_lots);
+    expect(deep.target_lots).toBeLessThan(Math.floor(deep.equity_then / DEFAULT_SPEC.initial_margin));
+  });
+
+  it('預留額度＝(上限槓桿 − 底倉槓桿) × 本金', () => {
+    const plan = entryPlan(cap, price, DEFAULT_SPEC, { base_leverage: 1.2, dip_add: 0.25, dip_levels: 3 });
+    expect(plan.reserve_notional).toBeCloseTo(0.75 * cap, 6);
+    expect(plan.reserve_pct).toBeCloseTo(0.75, 6);
+  });
+
+  it('減碼階梯逐級平倉、口數遞減，落袋金額已扣來回費用', () => {
+    const plan = entryPlan(cap, price, DEFAULT_SPEC, { base_leverage: 1.2, trim_step: 0.4, trim_frac: 0.3, trim_levels: 2 });
+    expect(plan.trims).toHaveLength(2);
+    const [t1, t2] = plan.trims;
+    expect(t1.price).toBeCloseTo(140, 6);
+    expect(t1.close_lots).toBe(4);            // 12 口的三成
+    expect(t1.remain_lots).toBe(8);
+    expect(t2.close_lots).toBe(2);            // 剩 8 口的三成
+    expect(t2.remain_lots).toBe(6);
+    // 毛利 4 口 × 1000 × 40 ＝ 16 萬，扣掉來回費用後一定更少
+    expect(t1.locked).toBeLessThan(160_000);
+    expect(t1.locked).toBeGreaterThan(155_000);
+  });
+
+  it('沒有底倉就沒有減碼階梯', () => {
+    expect(entryPlan(0, price, DEFAULT_SPEC).trims).toEqual([]);
+    expect(entryPlan(cap, price, DEFAULT_SPEC, { trim_step: 0 }).trims).toEqual([]);
+  });
+});
+
+describe('rollCostEstimate — 轉倉成本', () => {
+  it('月轉倉超過打平線、季轉倉在安全區', () => {
+    const monthly = rollCostEstimate(104.65, DEFAULT_SPEC, 12, 1);
+    const quarterly = rollCostEstimate(104.65, DEFAULT_SPEC, 4, 1);
+    expect(monthly.per_year_pct).toBeGreaterThan(monthly.breakeven_pct);
+    expect(monthly.verdict).toBe('bad');
+    expect(quarterly.per_year_pct).toBeLessThan(quarterly.breakeven_pct);
+    expect(quarterly.verdict).toBe('ok');
+    // 次數減三分之一，成本就是三分之一
+    expect(quarterly.per_year_pct).toBeCloseTo(monthly.per_year_pct / 3, 10);
+  });
+
+  it('一年成本＝單邊成本 × 2 邊 × 轉倉次數，換算現金依名目曝險', () => {
+    const r = rollCostEstimate(100, DEFAULT_SPEC, 12, 1, 1_000_000);
+    const perSide = DEFAULT_SPEC.fee_per_lot / (100 * 1000) + DEFAULT_SPEC.tax_rate + DEFAULT_SPEC.tick_size / 100;
+    expect(r.per_side_pct).toBeCloseTo(perSide, 12);
+    expect(r.per_year_pct).toBeCloseTo(perSide * 24, 12);
+    expect(r.per_year_cash).toBeCloseTo(perSide * 24 * 1_000_000, 6);
+  });
+
+  it('價格為 0 時不吐 NaN', () => {
+    const r = rollCostEstimate(0, DEFAULT_SPEC, 12, 1);
+    expect(Number.isFinite(r.per_year_pct)).toBe(true);
+    expect(r.per_year_pct).toBe(0);
   });
 });

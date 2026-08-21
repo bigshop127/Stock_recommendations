@@ -160,11 +160,13 @@ function sanitizeCashFlows(val) {
 // 每個欄位都 clamp 在合理區間，手改壞檔案也不會讓前端算出 NaN。
 const DEFAULT_PLANNER = {
   capital: 0,
-  target_leverage: 3,
+  target_leverage: 1.2,
   gain_pct: 0.2,
   reserve_multiple: 2.5,
   trailing_peak: 0,
   trailing_dist: 2,
+  plan_base_leverage: 1.2,
+  plan_peak: 0,
   stress_drops: [-0.05, 0.03, 0.05, 0.08, 0.1, 0.15, 0.2, 0.25, 0.3],
 };
 
@@ -210,6 +212,8 @@ function sanitizePlanner(v) {
     reserve_multiple: clamp(o.reserve_multiple, 1, 10, DEFAULT_PLANNER.reserve_multiple),
     trailing_peak: Math.max(0, num(o.trailing_peak, DEFAULT_PLANNER.trailing_peak)),
     trailing_dist: Math.max(0, num(o.trailing_dist, DEFAULT_PLANNER.trailing_dist)),
+    plan_base_leverage: clamp(o.plan_base_leverage, 0.1, 5, DEFAULT_PLANNER.plan_base_leverage),
+    plan_peak: Math.max(0, num(o.plan_peak, DEFAULT_PLANNER.plan_peak)),
     batches: sanitizeBatches(o.batches),
     stress_drops: drops.length ? drops : [...DEFAULT_PLANNER.stress_drops],
   };

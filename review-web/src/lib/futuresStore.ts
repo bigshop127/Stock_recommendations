@@ -29,6 +29,8 @@ export interface PlannerConfig {
   reserve_multiple: number;  // 出金時要留下的原始保證金倍數
   trailing_peak: number;     // 移動停損的參考最高價（0＝用目標價）
   trailing_dist: number;     // 回檔多少就出場（元／點）
+  plan_base_leverage: number; // 歷史校準計畫的底倉槓桿
+  plan_peak: number;         // 加碼跌幅的基準高點（0＝用現價）
   batches: EntryBatch[];     // 分批進場的價格與口數
   stress_drops: number[];    // 壓力測試的情境
 }
@@ -55,11 +57,15 @@ export interface FuturesConfig {
 
 export const DEFAULT_PLANNER: PlannerConfig = {
   capital: 0,
-  target_leverage: 3,
+  target_leverage: 1.2,
   gain_pct: 0.2,
   reserve_multiple: 2.5,
   trailing_peak: 0,
   trailing_dist: 2,
+  // 歷史校準計畫的兩個輸入。底倉槓桿預設 1.2 是回測結論（見 futures.ts 的
+  // CALIBRATED_PLAN），不是隨手填的；基準高點 0 代表「用現價當高點」。
+  plan_base_leverage: 1.2,
+  plan_peak: 0,
   batches: [{ price: 0, lots: 0 }, { price: 0, lots: 0 }, { price: 0, lots: 0 }],
   stress_drops: [...DEFAULT_STRESS_DROPS],
 };
@@ -272,6 +278,8 @@ function sanitizePlanner(v: unknown): PlannerConfig {
     reserve_multiple: Math.min(10, Math.max(1, num(o.reserve_multiple, DEFAULT_PLANNER.reserve_multiple))),
     trailing_peak: Math.max(0, num(o.trailing_peak, DEFAULT_PLANNER.trailing_peak)),
     trailing_dist: Math.max(0, num(o.trailing_dist, DEFAULT_PLANNER.trailing_dist)),
+    plan_base_leverage: Math.min(5, Math.max(0.1, num(o.plan_base_leverage, DEFAULT_PLANNER.plan_base_leverage))),
+    plan_peak: Math.max(0, num(o.plan_peak, DEFAULT_PLANNER.plan_peak)),
     batches: sanitizeBatches(o.batches),
     stress_drops: sanitizeDrops(o.stress_drops),
   };
