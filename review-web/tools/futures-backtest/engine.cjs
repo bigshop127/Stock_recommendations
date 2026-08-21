@@ -36,6 +36,12 @@ const DEFAULTS = {
   costMult: 1.0,
   carry: 0,          // 每年額外的基差紅利（台指期長年逆價差→多單轉倉會賺）
   rebalance: true, // false＝只在開場建倉，之後不再平衡（買了就放著）
+  holdUntilAth: false, // true＝加碼上去之後鎖住，等創新高才收回（對齊正二策略的「創新高才退出」）
+  idleRate: 0,      // 保證金專戶裡「超過原始保證金」的閒錢有多少比例拿得到無風險利率
+                    // （現實＝那筆錢可以擺貨幣基金，但要接受 T+1 才調得回來）
+  bandAbs: 0,       // >0 時改用「槓桿絕對偏離」判斷再平衡，對齊正二策略的 β±0.1 口徑
+  noAdd: false,     // true＝再平衡只准減倉，不准加倉（漲上去就讓槓桿自己稀釋掉）
+  noCut: false,     // true＝再平衡只准加倉，不准減倉（跌下去不砍，只有追繳才被迫砍）
 };
 
 function simulate(opts) {
@@ -48,7 +54,7 @@ function simulate(opts) {
   let acct = p.capital0 * p.inAcct;        // 保證金專戶權益數（含已結算損益）
   let ext = p.capital0 * (1 - p.inAcct);   // 帳戶外閒置資金（生息，但盤中救不了你）
   let lots = 0, basis = rows[0].close;
-  let trimCut = 0, trimLvl = 0, dipLvlHeld = 0;
+  let trimCut = 0, trimLvl = 0, dipLvlHeld = 0, athLatch = 0;
   let liquidations = 0, marginCalls = 0, forcedCuts = 0, totalCost = 0, rollCost = 0;
   let peak = rows[0].close;
   const equity = [];
@@ -71,6 +77,11 @@ function simulate(opts) {
     // 1) 逐日洗價：未實現損益每天真的進出保證金專戶
     if (i > 0 && lots > 0) acct += lots * 1000 * (r.close - prev) + (p.carry ? lots * 1000 * r.close * p.carry / 252 : 0);
     ext *= 1 + rf / 252;
+    // 專戶裡超出原始保證金的閒錢生息：實務上那筆錢擺得進貨幣基金，只是調回來要 T+1
+    if (i > 0 && p.idleRate > 0) {
+      const idle = Math.max(0, acct - lots * IM_PCT * r.close * 1000);
+      acct += idle * p.idleRate * rf / 252;
+    }
 
     // 2) 盤中強制平倉檢查（用當日最低價，這是唯一救不回來的事件）
     if (lots > 0) {
@@ -79,7 +90,7 @@ function simulate(opts) {
       if (acctAtLow < LIQ * lots * IM_PCT * low * 1000) {
         const c = lots * low * 1000 * cost;
         acct = acctAtLow - c; totalCost += c;
-        lots = 0; basis = r.close; liquidations++; trimCut = 0; trimLvl = 0; dipLvlHeld = 0;
+        lots = 0; basis = r.close; liquidations++; trimCut = 0; trimLvl = 0; dipLvlHeld = 0; athLatch = 0;
       }
     }
 
@@ -101,7 +112,7 @@ function simulate(opts) {
       }
     }
 
-    const capital = acct + ext;
+    const capital = Math.max(0, acct + ext);   // 斷頭後專戶可能是負的，權益曲線夾在 0，別讓 CAGR 變 NaN
     equity.push({ date: r.date, cap: capital, lots: lots, px: r.close });
     if (capital <= p.capital0 * 0.02) {                 // 實質歸零，後面補平
       for (let k = i + 1; k < rows.length; k++) equity.push({ date: rows[k].date, cap: capital, lots: 0, px: rows[k].close });
@@ -112,7 +123,11 @@ function simulate(opts) {
     if (peakWin > 0) { peak = 0; for (let k = Math.max(0, i - peakWin); k <= i; k++) peak = Math.max(peak, rows[k].close); }
     else peak = Math.max(peak, r.close);
     const dd = r.close / peak - 1;
-    const dipLvl = Math.min(p.dipLevels, Math.floor(-dd / p.dipStep));
+    let dipLvl = Math.min(p.dipLevels, Math.floor(-dd / p.dipStep));
+    // holdUntilAth：加碼級數只進不退，直到價格創新高才歸零。
+    // 正二策略的崩盤對策就是這個出場規則（「等大盤創新高再平衡回目標 β」），
+    // 不鎖的話跌幅一收窄就先減碼，等於在反彈初期自己把部位賣掉。
+    if (p.holdUntilAth) { if (r.close >= peak) athLatch = 0; else if (dipLvl > athLatch) athLatch = dipLvl; dipLvl = athLatch; }
 
     // 跌破新的一級 → 新的一輪加碼：把減碼過的部位放回來，獲利階梯歸零、成本重設
     if (dipLvl > dipLvlHeld) { trimCut = 0; trimLvl = 0; basis = r.close; }
@@ -134,7 +149,12 @@ function simulate(opts) {
     // 6) 帶狀再平衡：偏離目標超過 band 才動手（省成本，也避免每天亂動）
     const curL = (lots * lotValue) / Math.max(1, capital);
     const off = targetL > 0 ? Math.abs(curL - targetL) / targetL : (lots > 0 ? 1 : 0);
-    const may = lots === 0 ? true : (p.rebalance && off > p.band);
+    const hit = p.bandAbs > 0 ? Math.abs(curL - targetL) > p.bandAbs : off > p.band;
+    let may = lots === 0 ? true : (p.rebalance && hit);
+    if (may && lots > 0) {
+      if (p.noAdd && want > lots) may = false;
+      if (p.noCut && want < lots) may = false;
+    }
     if (want !== lots && may) trade(want - lots, r.close);
   }
   return summarize(equity, { liquidations, marginCalls, forcedCuts, totalCost, rollCost, ruined: false }, p);
@@ -143,7 +163,7 @@ function simulate(opts) {
 function summarize(eq, ev, p) {
   const n = eq.length;
   const years = (new Date(eq[n - 1].date) - new Date(eq[0].date)) / 31557600000;
-  const cagr = years > 0 ? Math.pow(eq[n - 1].cap / p.capital0, 1 / years) - 1 : 0;
+  const cagr = years > 0 ? Math.pow(Math.max(0, eq[n - 1].cap) / p.capital0, 1 / years) - 1 : 0;
   let pk = 0, mdd = 0, mddDate = '', uwDays = 0, cur = 0;
   for (const e of eq) {
     if (e.cap > pk) { pk = e.cap; cur = 0; } else { cur++; }
@@ -158,11 +178,15 @@ function summarize(eq, ev, p) {
   const m = rets.reduce(function (a, b) { return a + b; }, 0) / rets.length;
   const sd = Math.sqrt(rets.reduce(function (s, r) { return s + Math.pow(r - m, 2); }, 0) / rets.length) * Math.sqrt(252);
   const avgLev = eq.reduce(function (s, e) { return s + (e.lots * e.px * 1000) / Math.max(1, e.cap); }, 0) / n;
+  // 成本佔比要除以「平均權益」而不是期初本金：權益在 26 年裡漲了幾十倍，
+  // 拿累計成本去除期初本金會把成本誇大成好幾倍。
+  const avgCap = eq.reduce(function (s, e) { return s + e.cap; }, 0) / n;
   return Object.assign({}, p, ev, {
     years: years, final: eq[n - 1].cap, cagr: cagr, mdd: mdd, mddDate: mddDate,
     maxUnderwaterYrs: uwDays / 252, worst1y: worst1y, vol: sd,
     calmar: mdd < 0 ? cagr / -mdd : Infinity, avgLev: avgLev,
-    costPctPerYr: ev.totalCost / p.capital0 / Math.max(0.1, years), eq: p.keepEq ? eq : null,
+    costPctPerYr: ev.totalCost / Math.max(1, avgCap) / Math.max(0.1, years), avgCap: avgCap,
+    eq: p.keepEq ? eq : null,
   });
 }
 
