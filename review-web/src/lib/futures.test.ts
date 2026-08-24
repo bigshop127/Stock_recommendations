@@ -13,6 +13,7 @@ import {
   closedBreakdown,
   closeLots,
   summarizeAccount,
+  summarizeAccountAll,
   rolloverAlerts,
   rolloverCost,
   stopLossRisk,
@@ -40,6 +41,8 @@ import {
   type FuturesPosition,
   type FuturesSpec,
   type CashFlow,
+  type PriceInput,
+  type ProductPriceSpec,
 } from './futures';
 
 const spec: FuturesSpec = { ...DEFAULT_SPEC };
@@ -47,6 +50,7 @@ const spec: FuturesSpec = { ...DEFAULT_SPEC };
 function pos(over: Partial<FuturesPosition> = {}): FuturesPosition {
   return {
     id: 'p1',
+    product: 'SRF',
     month: '202608',
     side: 'long',
     lots: 1,
@@ -54,6 +58,11 @@ function pos(over: Partial<FuturesPosition> = {}): FuturesPosition {
     entry_date: '2026-07-01',
     ...over,
   };
+}
+
+/** stressTest/summarizeAccountAll 的單商品 products 表：跟舊版「一個 spec、一個價」等價 */
+function oneProduct(price: PriceInput, over: Partial<ProductPriceSpec> = {}): Record<string, ProductPriceSpec> {
+  return { SRF: { spec, price, beta: 1, index_ref: 0, ...over } };
 }
 
 describe('契約規格', () => {
@@ -158,7 +167,7 @@ describe('positionPnl', () => {
 describe('closedPnl', () => {
   it('已平倉多單損益＝價差 × 乘數 − 來回費用', () => {
     const v = closedPnl(
-      { id: 'c1', month: '202607', side: 'long', lots: 2, entry_price: 100, exit_price: 103, exit_date: '2026-07-10' },
+      { id: 'c1', product: 'SRF', month: '202607', side: 'long', lots: 2, entry_price: 100, exit_price: 103, exit_date: '2026-07-10' },
       spec,
     );
     expect(v).toBeCloseTo(6_000 - 120 - (100 + 103) * 1000 * 2 * 0.00002, 6);
@@ -166,7 +175,7 @@ describe('closedPnl', () => {
 
   it('紀錄上有券商實收費用時以它為準，不用 spec 推估', () => {
     const t = {
-      id: 'c1', month: '202607', side: 'long' as const, lots: 3,
+      id: 'c1', product: 'SRF', month: '202607', side: 'long' as const, lots: 3,
       entry_price: 103.8, exit_price: 104.15, exit_date: '2026-08-11',
       fee: 240, tax: 12,
     };
@@ -177,7 +186,7 @@ describe('closedPnl', () => {
 
   it('只認得出手續費、認不出交易稅時，兩個欄位各自獨立退回推估', () => {
     const t = {
-      id: 'c1', month: '202607', side: 'long' as const, lots: 3,
+      id: 'c1', product: 'SRF', month: '202607', side: 'long' as const, lots: 3,
       entry_price: 103.8, exit_price: 104.15, exit_date: '2026-08-11',
       fee: 240,
     };
@@ -188,7 +197,7 @@ describe('closedPnl', () => {
 
 describe('closedBreakdown：已實現明細用的拆解', () => {
   const t = {
-    id: 'c1', month: '202608', side: 'long' as const, lots: 3,
+    id: 'c1', product: 'SRF', month: '202608', side: 'long' as const, lots: 3,
     entry_price: 103.8, exit_price: 104.15, exit_date: '2026-08-11',
     fee: 240, tax: 12,
   };
@@ -369,7 +378,7 @@ describe('summarizeAccount：保證金與風險指標', () => {
 
   it('已實現損益由平倉紀錄累算，不影響權益數（現金餘額已含）', () => {
     const closed = [
-      { id: 'c1', month: '202607', side: 'long' as const, lots: 1, entry_price: 100, exit_price: 105, exit_date: '2026-07-10' },
+      { id: 'c1', product: 'SRF', month: '202607', side: 'long' as const, lots: 1, entry_price: 100, exit_price: 105, exit_date: '2026-07-10' },
     ];
     const s = summarizeAccount([pos()], 102, spec, cash, closed);
     expect(s.realized).toBeCloseTo(closedPnl(closed[0], spec), 6);
@@ -379,7 +388,7 @@ describe('summarizeAccount：保證金與風險指標', () => {
 
 describe('rolloverAlerts：轉倉提醒', () => {
   it('離到期還久→不提醒', () => {
-    const [a] = rolloverAlerts([pos({ month: '202608' })], spec, '2026-07-01');
+    const [a] = rolloverAlerts([pos({ month: '202608' })], { SRF: spec }, '2026-07-01');
     expect(a.last_trading_day).toBe('2026-08-19');
     expect(a.days_left).toBe(49);
     expect(a.due).toBe(false);
@@ -387,20 +396,20 @@ describe('rolloverAlerts：轉倉提醒', () => {
   });
 
   it('預設前 7 天進入提醒區間', () => {
-    const [a] = rolloverAlerts([pos({ month: '202608' })], spec, '2026-08-12');
+    const [a] = rolloverAlerts([pos({ month: '202608' })], { SRF: spec }, '2026-08-12');
     expect(a.days_left).toBe(7);
     expect(a.due).toBe(true);
     expect(a.level).toBe('soon');
   });
 
   it('剩 2 天內升級為 urgent', () => {
-    const [a] = rolloverAlerts([pos({ month: '202608' })], spec, '2026-08-18');
+    const [a] = rolloverAlerts([pos({ month: '202608' })], { SRF: spec }, '2026-08-18');
     expect(a.days_left).toBe(1);
     expect(a.level).toBe('urgent');
   });
 
   it('過了最後交易日標記 expired', () => {
-    const [a] = rolloverAlerts([pos({ month: '202608' })], spec, '2026-08-20');
+    const [a] = rolloverAlerts([pos({ month: '202608' })], { SRF: spec }, '2026-08-20');
     expect(a.days_left).toBe(-1);
     expect(a.expired).toBe(true);
     expect(a.level).toBe('expired');
@@ -408,7 +417,7 @@ describe('rolloverAlerts：轉倉提醒', () => {
 
   it('提醒天數可調整（設 14 天＝提前兩週）', () => {
     const wide: FuturesSpec = { ...spec, rollover_days: 14 };
-    const [a] = rolloverAlerts([pos({ month: '202608' })], wide, '2026-08-10');
+    const [a] = rolloverAlerts([pos({ month: '202608' })], { SRF: wide }, '2026-08-10');
     expect(a.days_left).toBe(9);
     expect(a.due).toBe(true);
   });
@@ -420,7 +429,7 @@ describe('rolloverAlerts：轉倉提醒', () => {
         pos({ id: 'b', month: '202608', lots: 2 }),
         pos({ id: 'c', month: '202608', lots: 3 }),
       ],
-      spec,
+      { SRF: spec },
       '2026-07-01',
     );
     expect(alerts.map((a) => a.month)).toEqual(['202608', '202609']);
@@ -428,7 +437,7 @@ describe('rolloverAlerts：轉倉提醒', () => {
   });
 
   it('口數 0 的部位不產生提醒', () => {
-    expect(rolloverAlerts([pos({ lots: 0 })], spec, '2026-07-01')).toEqual([]);
+    expect(rolloverAlerts([pos({ lots: 0 })], { SRF: spec }, '2026-07-01')).toEqual([]);
   });
 });
 
@@ -528,7 +537,7 @@ describe('rolloverAlerts：用交易日判斷提醒區間', () => {
   const positions = [pos({ month: '202602', lots: 3 })];
 
   it('連假讓「日曆天還有 10 天」其實只剩 1 個交易日 → 提前亮紅燈', () => {
-    const [a] = rolloverAlerts(positions, spec, '2026-02-13', TW_HOLIDAYS_2026);
+    const [a] = rolloverAlerts(positions, { SRF: spec }, '2026-02-13', TW_HOLIDAYS_2026);
     expect(a.last_trading_day).toBe('2026-02-23');
     expect(a.days_left).toBe(10);            // 日曆天
     expect(a.trading_days_left).toBe(1);     // 實際只剩一個交易日
@@ -537,13 +546,13 @@ describe('rolloverAlerts：用交易日判斷提醒區間', () => {
   });
 
   it('沒有假日曆時標記 calendar_known=false', () => {
-    const [a] = rolloverAlerts(positions, spec, '2026-02-13');
+    const [a] = rolloverAlerts(positions, { SRF: spec }, '2026-02-13');
     expect(a.calendar_known).toBe(false);
     expect(a.holiday_adjusted).toBe(false);
   });
 
   it('過了最後交易日就是 expired', () => {
-    const [a] = rolloverAlerts(positions, spec, '2026-03-02', TW_HOLIDAYS_2026);
+    const [a] = rolloverAlerts(positions, { SRF: spec }, '2026-03-02', TW_HOLIDAYS_2026);
     expect(a.expired).toBe(true);
     expect(a.level).toBe('expired');
   });
@@ -692,7 +701,7 @@ describe('stressTest：壓力測試', () => {
   const positions = [pos({ lots: 5, entry_price: 100 })];
 
   it('情境結果與 summarizeAccount 在同一價位完全一致', () => {
-    const rows = stressTest(positions, spec, 60_000, 100, { drops: [0.1] });
+    const rows = stressTest(positions, oneProduct(100), 60_000, { drops: [0.1] });
     const direct = summarizeAccount(positions, 90, spec, 60_000);
     expect(rows[0].price_after).toBeCloseTo(90, 10);
     expect(rows[0].equity).toBeCloseTo(direct.equity, 10);
@@ -701,17 +710,17 @@ describe('stressTest：壓力測試', () => {
   });
 
   it('beta 放大標的跌幅，指數跌幅維持情境本身', () => {
-    const rows = stressTest(positions, spec, 60_000, 100, { drops: [0.1], index: 40_000, beta: 1.2 });
+    const rows = stressTest(positions, oneProduct(100, { beta: 1.2, index_ref: 40_000 }), 60_000, { drops: [0.1] });
     expect(rows[0].price_after).toBeCloseTo(88, 10);      // 100 × (1 − 1.2×0.1)
     expect(rows[0].index_after as number).toBeCloseTo(36_000, 6); // 指數仍是 −10%
   });
 
   it('沒填參考指數時 index_after 為 null', () => {
-    expect(stressTest(positions, spec, 60_000, 100, { drops: [0.05] })[0].index_after).toBeNull();
+    expect(stressTest(positions, oneProduct(100), 60_000, { drops: [0.05] })[0].index_after).toBeNull();
   });
 
   it('跌幅由小到大排序，淨多單的權益數必然遞減', () => {
-    const rows = stressTest(positions, spec, 60_000, 100, { drops: [0.2, 0.05, 0.1] });
+    const rows = stressTest(positions, oneProduct(100), 60_000, { drops: [0.2, 0.05, 0.1] });
     expect(rows.map((r) => r.drop)).toEqual([0.05, 0.1, 0.2]);
     expect(rows[0].equity).toBeGreaterThan(rows[1].equity);
     expect(rows[1].equity).toBeGreaterThan(rows[2].equity);
@@ -719,13 +728,13 @@ describe('stressTest：壓力測試', () => {
 
   it('跌夠深就會從 ok 走到 call / danger', () => {
     // 5 口需要原始 39,500／維持 30,500；8 萬現金撐得住 −3%，撐不住 −20%
-    const rows = stressTest(positions, spec, 80_000, 100, { drops: [0.03, 0.1, 0.2] });
+    const rows = stressTest(positions, oneProduct(100), 80_000, { drops: [0.03, 0.1, 0.2] });
     expect(rows[0].status).toBe('ok');
     expect(['call', 'danger']).toContain(rows[2].status);
   });
 
   it('負的 drop ＝上漲情境，淨多單權益數上升', () => {
-    const rows = stressTest(positions, spec, 80_000, 100, { drops: [-0.1, 0.1] });
+    const rows = stressTest(positions, oneProduct(100), 80_000, { drops: [-0.1, 0.1] });
     expect(rows[0].drop).toBe(-0.1);      // 排序後上漲在前
     expect(rows[0].price_after).toBeCloseTo(110, 10);
     expect(rows[0].equity).toBeGreaterThan(rows[1].equity);
@@ -737,7 +746,7 @@ describe('stressTest：壓力測試', () => {
       pos({ id: 'b', month: '202609', lots: 2, entry_price: 100 }),
     ];
     const book = { byMonth: { 202608: 100, 202609: 101 }, fallback: 100 };
-    const rows = stressTest(multi, spec, 100_000, book, { drops: [0.1] });
+    const rows = stressTest(multi, oneProduct(book), 100_000, { drops: [0.1] });
     expect(rows[0].price_after).toBeCloseTo(90, 10); // 參考月 08
     const direct = summarizeAccount(multi, { byMonth: { 202608: 90, 202609: 90.9 }, fallback: 90 }, spec, 100_000);
     expect(rows[0].equity).toBeCloseTo(direct.equity, 8);
@@ -748,7 +757,7 @@ describe('stressTest：停損模擬', () => {
   const positions = [pos({ id: 'p1', lots: 5, entry_price: 100 })];
 
   it('觸價的部位視為出場：保證金釋放、損益進現金、狀態變 flat', () => {
-    const rows = stressTest(positions, spec, 80_000, 100, { drops: [0.2], stopLoss: { p1: 96 } });
+    const rows = stressTest(positions, oneProduct(100), 80_000, { drops: [0.2], stopLoss: { p1: 96 } });
     const r = rows[0];
     expect(r.stopped_lots).toBe(5);
     // 停損在 96 出場的損益，而不是抱到 80
@@ -759,14 +768,14 @@ describe('stressTest：停損模擬', () => {
   });
 
   it('沒觸價就維持原樣（停損價之上不出場）', () => {
-    const rows = stressTest(positions, spec, 80_000, 100, { drops: [0.02], stopLoss: { p1: 96 } });
+    const rows = stressTest(positions, oneProduct(100), 80_000, { drops: [0.02], stopLoss: { p1: 96 } });
     expect(rows[0].stopped_lots).toBe(0);
     expect(rows[0].status).toBe('ok');
   });
 
   it('有停損時撐得過原本會斷頭的情境', () => {
-    const noStop = stressTest(positions, spec, 45_000, 100, { drops: [0.25] })[0];
-    const withStop = stressTest(positions, spec, 45_000, 100, { drops: [0.25], stopLoss: { p1: 96 } })[0];
+    const noStop = stressTest(positions, oneProduct(100), 45_000, { drops: [0.25] })[0];
+    const withStop = stressTest(positions, oneProduct(100), 45_000, { drops: [0.25], stopLoss: { p1: 96 } })[0];
     expect(noStop.status).toBe('danger');
     expect(withStop.status).toBe('flat');
     expect(withStop.equity).toBeGreaterThan(noStop.equity);
@@ -774,15 +783,15 @@ describe('stressTest：停損模擬', () => {
 
   it('空單的停損方向相反：漲破才出場', () => {
     const shorts = [pos({ id: 'p1', side: 'short', lots: 5, entry_price: 100 })];
-    const up = stressTest(shorts, spec, 80_000, 100, { drops: [-0.1], stopLoss: { p1: 104 } })[0];
-    const down = stressTest(shorts, spec, 80_000, 100, { drops: [0.1], stopLoss: { p1: 104 } })[0];
+    const up = stressTest(shorts, oneProduct(100), 80_000, { drops: [-0.1], stopLoss: { p1: 104 } })[0];
+    const down = stressTest(shorts, oneProduct(100), 80_000, { drops: [0.1], stopLoss: { p1: 104 } })[0];
     expect(up.stopped_lots).toBe(5);   // 漲到 110 → 破 104 出場
     expect(down.stopped_lots).toBe(0); // 跌到 90 → 空單爽賺，不出場
   });
 
   it('只有部分部位設停損時，其餘部位繼續承受行情', () => {
     const two = [pos({ id: 'p1', lots: 3, entry_price: 100 }), pos({ id: 'p2', lots: 2, entry_price: 100 })];
-    const r = stressTest(two, spec, 80_000, 100, { drops: [0.2], stopLoss: { p1: 96 } })[0];
+    const r = stressTest(two, oneProduct(100), 80_000, { drops: [0.2], stopLoss: { p1: 96 } })[0];
     expect(r.stopped_lots).toBe(3);
     expect(r.risk_indicator).not.toBeNull(); // p2 還在，還有維持保證金要求
     expect(r.status).not.toBe('flat');
@@ -906,9 +915,9 @@ describe('buildRiskReport：文字報告', () => {
       spec,
       summary: summarizeAccount(positions, 102, spec, 60_000),
       price: 102, cash: 60_000, index: 40_000, beta: 1,
-      stress: stressTest(positions, spec, 60_000, 102, { drops: [0.05, 0.2], index: 40_000, beta: 1 }),
+      stress: stressTest(positions, oneProduct(102, { index_ref: 40_000 }), 60_000, { drops: [0.05, 0.2] }),
       plan: targetPlan(positions, spec, 60_000, 102, 0.2),
-      alerts: rolloverAlerts(positions, spec, '2026-08-17'), // 距 8/19 剩 2 天
+      alerts: rolloverAlerts(positions, { SRF: spec }, '2026-08-17'), // 距 8/19 剩 2 天
     });
     expect(text).toContain('小型臺灣50 ETF 期貨（SRF）');
     expect(text).toContain('【保證金水位】');
@@ -1363,18 +1372,18 @@ describe('gateway sanitize：截圖匯入新增的欄位必須在白名單裡', 
   // 這裡掉的是 fee/tax（已實現損益變推估值）與 ref（同一張截圖會被重複匯入）。
   it('平倉紀錄保留 fee / tax / ref / entry_date', () => {
     const out = sanitizeClosed([{
-      id: 'c1', month: '202609', side: 'long', lots: 3,
+      id: 'c1', product: 'SRF', month: '202609', side: 'long', lots: 3,
       entry_price: 104.5, exit_price: 105.55, exit_date: '2026-08-18',
       entry_date: '2026-08-11', fee: 240, tax: 12, ref: 'c|2026-08-18|61469|61632|3',
-    }]);
+    }], ['SRF'], 'SRF');
     expect(out[0]).toMatchObject({ fee: 240, tax: 12, ref: 'c|2026-08-18|61469|61632|3', entry_date: '2026-08-11' });
   });
 
   it('費用是負數或不是數字就當作沒有（退回 spec 推估，不會變成負費用）', () => {
     const out = sanitizeClosed([{
-      id: 'c1', month: '202609', side: 'long', lots: 1,
+      id: 'c1', product: 'SRF', month: '202609', side: 'long', lots: 1,
       entry_price: 100, exit_price: 101, exit_date: '2026-08-18', fee: -5, tax: 'abc',
-    }]);
+    }], ['SRF'], 'SRF');
     expect(out[0].fee).toBeUndefined();
     expect(out[0].tax).toBeUndefined();
   });
@@ -1383,7 +1392,7 @@ describe('gateway sanitize：截圖匯入新增的欄位必須在白名單裡', 
     const out = sanitizePositions([{
       id: 'p1', month: '202609', side: 'long', lots: 5, entry_price: 103.5,
       entry_date: '2026-08-19', ref: 'f|2026-08-19 09:12:03|61166',
-    }]);
+    }], ['SRF'], 'SRF');
     expect(out[0].ref).toBe('f|2026-08-19 09:12:03|61166');
   });
 
@@ -1593,5 +1602,80 @@ describe('rollCostEstimate — 轉倉成本', () => {
     const r = rollCostEstimate(0, DEFAULT_SPEC, 12, 1);
     expect(Number.isFinite(r.per_year_pct)).toBe(true);
     expect(r.per_year_pct).toBe(0);
+  });
+});
+
+describe('summarizeAccountAll：多商品彙總（帳戶同時持有 SRF ETF 期貨＋個股期貨）', () => {
+  const specA: FuturesSpec = { ...DEFAULT_SPEC };
+  // 個股期貨常見規格：2,000 股/口，保證金比 SRF 高得多
+  const specB: FuturesSpec = { ...DEFAULT_SPEC, contract_size: 2000, initial_margin: 15000, maintenance_margin: 11500 };
+
+  const posA = (over: Partial<FuturesPosition> = {}): FuturesPosition => ({
+    id: 'a1', product: 'SRF', month: '202609', side: 'long', lots: 5, entry_price: 100, entry_date: '2026-07-01', ...over,
+  });
+  const posB = (over: Partial<FuturesPosition> = {}): FuturesPosition => ({
+    id: 'b1', product: 'UMC', month: '202609', side: 'long', lots: 2, entry_price: 50, entry_date: '2026-08-01', ...over,
+  });
+
+  it('單商品、beta=1 時與 summarizeAccount 逐位元相同（多商品追繳/斷頭價解法的回歸測試）', () => {
+    const positions = [posA({ lots: 5 })];
+    const products: Record<string, ProductPriceSpec> = { SRF: { spec: specA, price: 102, beta: 1 } };
+    const multi = summarizeAccountAll(positions, products, 60_000);
+    const single = summarizeAccount(positions, 102, specA, 60_000);
+    expect(multi.equity).toBeCloseTo(single.equity, 10);
+    expect(multi.required_initial).toBeCloseTo(single.required_initial, 10);
+    expect(multi.margin_call_shift as number).toBeCloseTo(single.margin_call_shift as number, 6);
+    expect(multi.liquidation_shift as number).toBeCloseTo(single.liquidation_shift as number, 6);
+    expect(multi.margin_call_price as number).toBeCloseTo(single.margin_call_price as number, 6);
+    expect(multi.liquidation_price as number).toBeCloseTo(single.liquidation_price as number, 6);
+    expect(multi.status).toBe(single.status);
+  });
+
+  it('保證金與名目曝險是逐商品加總，不是把兩個商品套同一組 spec', () => {
+    const positions = [posA({ lots: 5 }), posB({ lots: 2 })];
+    const products: Record<string, ProductPriceSpec> = {
+      SRF: { spec: specA, price: 102, beta: 1 },
+      UMC: { spec: specB, price: 55, beta: 1 },
+    };
+    const s = summarizeAccountAll(positions, products, 100_000);
+    expect(s.required_initial).toBeCloseTo(5 * specA.initial_margin + 2 * specB.initial_margin, 6);
+    expect(s.required_maintenance).toBeCloseTo(5 * specA.maintenance_margin + 2 * specB.maintenance_margin, 6);
+    expect(s.total_lots).toBe(7);
+    expect(s.by_product).toHaveLength(2);
+    expect(s.by_product?.find((r) => r.product === 'SRF')?.lots).toBe(5);
+    expect(s.by_product?.find((r) => r.product === 'UMC')?.lots).toBe(2);
+  });
+
+  it('參考商品＝口數最多的那個，斷頭/追繳價用它的價格表示（不是固定選第一個商品）', () => {
+    const positions = [posA({ lots: 3 }), posB({ lots: 10 })]; // 這次 UMC 口數較多
+    const products: Record<string, ProductPriceSpec> = {
+      SRF: { spec: specA, price: 102, beta: 1 },
+      UMC: { spec: specB, price: 55, beta: 1 },
+    };
+    const s = summarizeAccountAll(positions, products, 300_000);
+    expect(s.reference_product).toBe('UMC');
+    expect(s.reference_price).toBeCloseTo(55, 6);
+  });
+
+  it('斷頭/追繳價換算用的是「大盤同時變動 X%」乘上參考商品自己的 beta，不是把絕對價格平移套用到不同價位的商品', () => {
+    const positions = [posB({ lots: 10 })];
+    const products: Record<string, ProductPriceSpec> = { UMC: { spec: specB, price: 100, beta: 1.5 } };
+    const s = summarizeAccountAll(positions, products, 400_000);
+    expect(s.liquidation_move).not.toBeNull();
+    expect(s.liquidation_shift as number).toBeCloseTo(100 * 1.5 * (s.liquidation_move as number), 6);
+  });
+
+  it('已平倉紀錄跟著自己商品的 spec 算已實現損益，不會套錯商品的手續費/契約單位', () => {
+    const closed = [
+      { id: 'c1', product: 'UMC', month: '202608', side: 'long' as const, lots: 1, entry_price: 120, exit_price: 125, exit_date: '2026-08-20' },
+    ];
+    const products: Record<string, ProductPriceSpec> = {
+      SRF: { spec: specA, price: 102, beta: 1 },
+      UMC: { spec: specB, price: 55, beta: 1 },
+    };
+    const s = summarizeAccountAll([], products, 0, closed);
+    // 用 specB（2000 股/口）算，不是 specA（1000 股/口）
+    expect(s.realized).toBeCloseTo(closedPnl(closed[0], specB), 6);
+    expect(s.realized).not.toBeCloseTo(closedPnl(closed[0], specA), 6);
   });
 });

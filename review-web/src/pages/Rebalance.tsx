@@ -4,7 +4,7 @@ import { SlidersHorizontal, AlertTriangle, CheckCircle2, Info, ArrowRightLeft, S
 import { getRebalanceConfig, saveRebalanceConfig, subscribeRebalance, type RebalanceConfig } from '../lib/rebalanceStore';
 import { computeRebalance, aggregatePortfolio, BOND_ETFS, ETF_CODE, DEFAULT_MACRO_THRESHOLDS, type RebalanceResult, type Trade, computeFundFlows, computeMarketStatus, type MarketStatus, type BondPriority, type MacroState, type MacroCombination, type MacroThresholds, type MacroKey, combineFuturesBeta, stockTargetForOverallBeta, type CombinedBetaResult } from '../lib/rebalance';
 import { getFuturesConfig, subscribeFutures } from '../lib/futuresStore';
-import { summarizeAccount, findPreset, type PriceInput } from '../lib/futures';
+import { summarizeAccountAll, findPreset, priceOf, type PriceInput } from '../lib/futures';
 import { api, type Settlement } from '../lib/api';
 
 // 資產清單（00631L＋防守端債券 ETF）【增修I】
@@ -46,25 +46,48 @@ const tradeCodeCls = (code: string) => (TRADE_COLORS[code] ?? TRADE_COLORS['0063
  * 期貨頁與這頁原本各算各的 β，而 SRF 多單本質就是 0050 的市場曝險——不合併會
  * 系統性低估真實槓桿。這裡只**讀**期貨的 store（同一份 localStorage，期貨頁存雲端
  * 時會同步更新），不寫入、也不動 computeRebalance 的任何計算。
+ *
+ * 帳戶可能同時持有多個商品（例如 SRF ETF 期貨＋個股期貨），各自 beta 不同，
+ * 不能先把名目曝險加總再乘一個共同 beta——那樣兩個商品的比重會混在一起算錯。
+ * 做法是逐部位算「訊號方向名目 × 該商品 beta」後加總成 `exposure`，再回推一個
+ * 「有效 beta」＝exposure／notional，讓 combineFuturesBeta() 既有的
+ * `notional × beta` 算式不用改也能算出同一個總曝險。
  */
 function useFuturesExposure() {
   const [cfg, setCfg] = useState(() => getFuturesConfig());
   useEffect(() => subscribeFutures(() => setCfg(getFuturesConfig())), []);
 
   return useMemo(() => {
-    const price: PriceInput = { byMonth: cfg.prices, fallback: cfg.price };
-    const s = summarizeAccount(cfg.positions, price, cfg.spec, cfg.cash, cfg.closed);
+    const products: Record<string, { spec: typeof cfg.products[string]['spec']; price: PriceInput; beta: number }> = {};
+    for (const [code, p] of Object.entries(cfg.products)) {
+      products[code] = { spec: p.spec, price: { byMonth: p.prices, fallback: p.price }, beta: p.beta };
+    }
+    const s = summarizeAccountAll(cfg.positions, products, cfg.cash, cfg.closed);
     if (s.total_lots === 0) return null;
-    // 名目曝險要帶方向：contract_value 不分多空，淨曝險得用 net_lots 重算
-    const unit = cfg.spec.contract_size;
-    const notional = s.net_lots * unit * s.reference_price;
-    const preset = findPreset(cfg.contract);
+
+    let notional = 0;   // 淨名目曝險（帶方向，各部位用自己商品的價格）
+    let exposure = 0;   // 換算成大盤曝險後加總（各部位用自己商品的 beta）
+    for (const pos of cfg.positions) {
+      const lots = Math.max(0, pos.lots);
+      if (lots <= 0) continue;
+      const p = cfg.products[pos.product];
+      if (!p) continue;
+      const unit = Math.max(1, p.spec.contract_size || 1000);
+      const price = priceOf({ byMonth: p.prices, fallback: p.price }, pos.month);
+      const sign = pos.side === 'short' ? -1 : 1;
+      const posNotional = sign * lots * unit * price;
+      notional += posNotional;
+      // 台指期本身就是大盤（β=1）；ETF／個股期貨用使用者在期貨頁設的 beta
+      const preset = findPreset(p.code);
+      const beta = preset?.index_linked ? 1 : p.beta;
+      exposure += posNotional * beta;
+    }
+    const label = Object.keys(cfg.products).map((code) => cfg.products[code]?.name || code).join('＋');
     return {
       notional,
       equity: s.equity,
-      // 台指期本身就是大盤（β=1）；ETF 期貨用使用者在期貨頁設的 beta
-      beta: preset?.index_linked ? 1 : cfg.beta,
-      contract: cfg.contract,
+      beta: notional !== 0 ? exposure / notional : 1,
+      contract: label,
       net_lots: s.net_lots,
       long_lots: s.long_lots,
       short_lots: s.short_lots,

@@ -70,7 +70,7 @@ describe('fillSide：買賣別 × 倉別 → 這是哪個方向的部位', () =>
 
 describe('匯入平倉查詢', () => {
   it('五列全新 → 新增五筆紀錄，現金加總等於截圖上的總損益 22,012', () => {
-    const plan = buildImportPlan(emptyState(), [CLOSED_SCREEN], spec, { today: TODAY });
+    const plan = buildImportPlan(emptyState(), [CLOSED_SCREEN], spec, 'SRF', { today: TODAY });
     expect(plan.next.closed).toHaveLength(5);
     expect(plan.cash_delta).toBeCloseTo(22012, 0);
     expect(plan.next.cash).toBeCloseTo(22012, 0);
@@ -78,7 +78,7 @@ describe('匯入平倉查詢', () => {
   });
 
   it('用券商實收費用算損益，不用設定值推估（差 60 元/趟就是差在這）', () => {
-    const plan = buildImportPlan(emptyState(), [CLOSED_SCREEN], spec, { today: TODAY });
+    const plan = buildImportPlan(emptyState(), [CLOSED_SCREEN], spec, 'SRF', { today: TODAY });
     const first = plan.next.closed[0];
     expect(first.fee).toBe(240);   // 40 元/口 × 3 口 × 來回
     expect(first.tax).toBe(12);
@@ -88,8 +88,8 @@ describe('匯入平倉查詢', () => {
   });
 
   it('同一張截圖再匯一次不會重複計帳（ref 去重）', () => {
-    const first = buildImportPlan(emptyState(), [CLOSED_SCREEN], spec, { today: TODAY });
-    const again = buildImportPlan(first.next, [CLOSED_SCREEN], spec, { today: TODAY });
+    const first = buildImportPlan(emptyState(), [CLOSED_SCREEN], spec, 'SRF', { today: TODAY });
+    const again = buildImportPlan(first.next, [CLOSED_SCREEN], spec, 'SRF', { today: TODAY });
     expect(again.changed).toBe(false);
     expect(again.cash_delta).toBe(0);
     expect(again.next.closed).toHaveLength(5);
@@ -98,19 +98,19 @@ describe('匯入平倉查詢', () => {
 
   it('沒有 ref 的舊紀錄靠內容比對也認得出來，不會變成第二筆', () => {
     const manual: ClosedTrade = {
-      id: 'c_manual', month: '202608', side: 'long', lots: 3,
+      id: 'c_manual', product: 'SRF', month: '202608', side: 'long', lots: 3,
       entry_price: 103.8, exit_price: 104.15, exit_date: '2026-08-11',
     };
-    const plan = buildImportPlan(emptyState({ closed: [manual] }), [CLOSED_SCREEN], spec, { today: TODAY });
+    const plan = buildImportPlan(emptyState({ closed: [manual] }), [CLOSED_SCREEN], spec, 'SRF', { today: TODAY });
     expect(plan.next.closed).toHaveLength(5); // 4 筆新的 + 原本那筆
   });
 
   it('手動記的那筆會被補上券商實收費用，現金同步修正差額', () => {
     const manual: ClosedTrade = {
-      id: 'c_manual', month: '202608', side: 'long', lots: 3,
+      id: 'c_manual', product: 'SRF', month: '202608', side: 'long', lots: 3,
       entry_price: 103.8, exit_price: 104.15, exit_date: '2026-08-11',
     };
-    const plan = buildImportPlan(emptyState({ closed: [manual], cash: 100000 }), [CLOSED_SCREEN], spec, { today: TODAY });
+    const plan = buildImportPlan(emptyState({ closed: [manual], cash: 100000 }), [CLOSED_SCREEN], spec, 'SRF', { today: TODAY });
     const fixed = plan.next.closed.find((t) => t.id === 'c_manual');
     expect(fixed?.fee).toBe(240);
     expect(fixed?.tax).toBe(12);
@@ -121,23 +121,23 @@ describe('匯入平倉查詢', () => {
 
   it('有對應的未平倉部位時會一起沖銷掉口數', () => {
     const held: FuturesPosition = {
-      id: 'p1', month: '202608', side: 'long', lots: 6, entry_price: 103.8, entry_date: '2026-08-04',
+      id: 'p1', product: 'SRF', month: '202608', side: 'long', lots: 6, entry_price: 103.8, entry_date: '2026-08-04',
     };
-    const plan = buildImportPlan(emptyState({ positions: [held] }), [CLOSED_SCREEN], spec, { today: TODAY });
+    const plan = buildImportPlan(emptyState({ positions: [held] }), [CLOSED_SCREEN], spec, 'SRF', { today: TODAY });
     // 202608 平掉 3+3＝6 口，正好清空
     expect(plan.next.positions.filter((p) => p.month === '202608')).toHaveLength(0);
     expect(plan.ops.some((o) => o.kind === 'position_reduce' && !o.warn)).toBe(true);
   });
 
   it('沒有部位可沖銷時照樣記帳，但要出警告（不能安靜吞掉）', () => {
-    const plan = buildImportPlan(emptyState(), [CLOSED_SCREEN], spec, { today: TODAY });
+    const plan = buildImportPlan(emptyState(), [CLOSED_SCREEN], spec, 'SRF', { today: TODAY });
     expect(plan.ops.some((o) => o.kind === 'position_reduce' && o.warn)).toBe(true);
   });
 });
 
 describe('匯入成交回報', () => {
   it('新倉成交 → 新增部位，日期用成交當天', () => {
-    const plan = buildImportPlan(emptyState(), [FILL_SCREEN], spec, { today: TODAY });
+    const plan = buildImportPlan(emptyState(), [FILL_SCREEN], spec, 'SRF', { today: TODAY });
     expect(plan.next.positions).toHaveLength(1);
     expect(plan.next.positions[0]).toMatchObject({
       month: '202609', side: 'long', lots: 5, entry_price: 103.5, entry_date: '2026-08-19',
@@ -146,15 +146,15 @@ describe('匯入成交回報', () => {
   });
 
   it('同一張成交回報再匯一次不會多開一次倉', () => {
-    const first = buildImportPlan(emptyState(), [FILL_SCREEN], spec, { today: TODAY });
-    const again = buildImportPlan(first.next, [FILL_SCREEN], spec, { today: TODAY });
+    const first = buildImportPlan(emptyState(), [FILL_SCREEN], spec, 'SRF', { today: TODAY });
+    const again = buildImportPlan(first.next, [FILL_SCREEN], spec, 'SRF', { today: TODAY });
     expect(again.next.positions).toHaveLength(1);
     expect(again.changed).toBe(false);
   });
 
   it('平倉成交會沖銷部位並產生平倉紀錄', () => {
     const held: FuturesPosition = {
-      id: 'p1', month: '202609', side: 'long', lots: 5, entry_price: 103.5, entry_date: '2026-08-11',
+      id: 'p1', product: 'SRF', month: '202609', side: 'long', lots: 5, entry_price: 103.5, entry_date: '2026-08-11',
     };
     const sell: ScanFillRow = {
       ...FILL, direction: 'sell', action: 'close', lots: 2, price: 105, ref: 'f|2026-08-19 10:00:00|9|sell|close|2|105',
@@ -162,7 +162,7 @@ describe('匯入成交回報', () => {
     const plan = buildImportPlan(
       emptyState({ positions: [held] }),
       [screen({ kind: 'fills', fill_rows: [sell], totals: { pnl: null, count: 1 } })],
-      spec, { today: TODAY },
+      spec, 'SRF', { today: TODAY },
     );
     expect(plan.next.positions[0].lots).toBe(3); // 部分平倉，剩 3 口
     expect(plan.next.closed).toHaveLength(1);
@@ -172,7 +172,7 @@ describe('匯入成交回報', () => {
 
   it('平倉查詢與成交回報講同一筆平倉時只算一次（兩張截圖一起匯的常態）', () => {
     const held: FuturesPosition = {
-      id: 'p1', month: '202609', side: 'long', lots: 11, entry_price: 104.4, entry_date: '2026-08-11',
+      id: 'p1', product: 'SRF', month: '202609', side: 'long', lots: 11, entry_price: 104.4, entry_date: '2026-08-11',
     };
     // 8/18 那三列平倉，成交回報上會是同一天同價位的三筆賣出
     const sells: ScanFillRow[] = [2, 6, 3].map((lots, i) => ({
@@ -183,7 +183,7 @@ describe('匯入成交回報', () => {
     const plan = buildImportPlan(
       emptyState({ positions: [held] }),
       [CLOSED_SCREEN, screen({ kind: 'fills', fill_rows: sells, totals: { pnl: null, count: 3 } })],
-      spec, { today: TODAY },
+      spec, 'SRF', { today: TODAY },
     );
     // 五筆平倉紀錄（來自平倉查詢），成交回報那三筆被認出是同一件事
     expect(plan.next.closed).toHaveLength(5);
@@ -195,9 +195,9 @@ describe('匯入成交回報', () => {
 describe('未平倉快照驗收', () => {
   it('事件重放後與快照一致 → 不覆寫、對帳全綠', () => {
     const held: FuturesPosition = {
-      id: 'p1', month: '202609', side: 'long', lots: 9, entry_price: 106.7166, entry_date: '2026-08-11',
+      id: 'p1', product: 'SRF', month: '202609', side: 'long', lots: 9, entry_price: 106.7166, entry_date: '2026-08-11',
     };
-    const plan = buildImportPlan(emptyState({ positions: [held] }), [FILL_SCREEN, OPEN_SCREEN], spec, { today: TODAY });
+    const plan = buildImportPlan(emptyState({ positions: [held] }), [FILL_SCREEN, OPEN_SCREEN], spec, 'SRF', { today: TODAY });
     // 9 口 @106.7166 + 今天新倉 5 口 @103.5 = 14 口 @105.5679
     expect(plan.ops.some((o) => o.kind === 'position_rewrite')).toBe(false);
     expect(plan.checks.every((c) => c.ok)).toBe(true);
@@ -205,9 +205,9 @@ describe('未平倉快照驗收', () => {
   });
 
   it('對不起來時以快照覆寫，並把分批合併成一筆（進場日取最早）', () => {
-    const a: FuturesPosition = { id: 'p1', month: '202609', side: 'long', lots: 4, entry_price: 100, entry_date: '2026-08-05' };
-    const b: FuturesPosition = { id: 'p2', month: '202609', side: 'long', lots: 4, entry_price: 101, entry_date: '2026-08-11' };
-    const plan = buildImportPlan(emptyState({ positions: [a, b] }), [OPEN_SCREEN], spec, { today: TODAY });
+    const a: FuturesPosition = { id: 'p1', product: 'SRF', month: '202609', side: 'long', lots: 4, entry_price: 100, entry_date: '2026-08-05' };
+    const b: FuturesPosition = { id: 'p2', product: 'SRF', month: '202609', side: 'long', lots: 4, entry_price: 101, entry_date: '2026-08-11' };
+    const plan = buildImportPlan(emptyState({ positions: [a, b] }), [OPEN_SCREEN], spec, 'SRF', { today: TODAY });
     expect(plan.next.positions).toHaveLength(1);
     expect(plan.next.positions[0]).toMatchObject({ lots: 14, entry_price: 105.5679, entry_date: '2026-08-05' });
     expect(plan.checks.every((c) => c.ok)).toBe(true);
@@ -215,11 +215,11 @@ describe('未平倉快照驗收', () => {
   });
 
   it('覆寫後停損價沿用口數最大那筆，不會因為合併就不見', () => {
-    const a: FuturesPosition = { id: 'p1', month: '202609', side: 'long', lots: 2, entry_price: 100, entry_date: '2026-08-05' };
-    const b: FuturesPosition = { id: 'p2', month: '202609', side: 'long', lots: 6, entry_price: 101, entry_date: '2026-08-11' };
+    const a: FuturesPosition = { id: 'p1', product: 'SRF', month: '202609', side: 'long', lots: 2, entry_price: 100, entry_date: '2026-08-05' };
+    const b: FuturesPosition = { id: 'p2', product: 'SRF', month: '202609', side: 'long', lots: 6, entry_price: 101, entry_date: '2026-08-11' };
     const plan = buildImportPlan(
       emptyState({ positions: [a, b], stop_loss: { p1: 95, p2: 99 } }),
-      [OPEN_SCREEN], spec, { today: TODAY },
+      [OPEN_SCREEN], spec, 'SRF', { today: TODAY },
     );
     const newId = plan.next.positions[0].id;
     expect(plan.next.stop_loss[newId]).toBe(99); // 來自口數較大的 p2
@@ -227,36 +227,36 @@ describe('未平倉快照驗收', () => {
   });
 
   it('沒勾「以截圖為準」就不動部位，只留警告', () => {
-    const a: FuturesPosition = { id: 'p1', month: '202609', side: 'long', lots: 4, entry_price: 100, entry_date: '2026-08-05' };
-    const plan = buildImportPlan(emptyState({ positions: [a] }), [OPEN_SCREEN], spec, { today: TODAY, adoptSnapshot: false });
+    const a: FuturesPosition = { id: 'p1', product: 'SRF', month: '202609', side: 'long', lots: 4, entry_price: 100, entry_date: '2026-08-05' };
+    const plan = buildImportPlan(emptyState({ positions: [a] }), [OPEN_SCREEN], spec, 'SRF', { today: TODAY, adoptSnapshot: false });
     expect(plan.next.positions).toEqual([a]);
     expect(plan.warnings.some((w) => w.includes('未勾選'))).toBe(true);
     expect(plan.checks.some((c) => !c.ok)).toBe(true);
   });
 
   it('快照上沒有的月份會被刪掉——但只有在「留倉筆數」對得上時才敢刪', () => {
-    const stale: FuturesPosition = { id: 'p9', month: '202608', side: 'long', lots: 3, entry_price: 103, entry_date: '2026-07-01' };
-    const ok = buildImportPlan(emptyState({ positions: [stale] }), [OPEN_SCREEN], spec, { today: TODAY });
+    const stale: FuturesPosition = { id: 'p9', product: 'SRF', month: '202608', side: 'long', lots: 3, entry_price: 103, entry_date: '2026-07-01' };
+    const ok = buildImportPlan(emptyState({ positions: [stale] }), [OPEN_SCREEN], spec, 'SRF', { today: TODAY });
     expect(ok.next.positions.some((p) => p.month === '202608')).toBe(false);
 
     // 截圖說有 2 筆但只認出 1 筆 → 不可信，不刪
     const partial = screen({ ...OPEN_SCREEN, totals: { pnl: -25450, count: 2 } });
-    const held = buildImportPlan(emptyState({ positions: [stale] }), [partial], spec, { today: TODAY });
+    const held = buildImportPlan(emptyState({ positions: [stale] }), [partial], spec, 'SRF', { today: TODAY });
     expect(held.next.positions.some((p) => p.month === '202608')).toBe(true);
     expect(held.warnings.some((w) => w.includes('留倉筆數'))).toBe(true);
   });
 
   it('未平倉損益對得起來（14 口 × 均價 105.5679 × 市價 103.75 ≈ −25,450）', () => {
-    const plan = buildImportPlan(emptyState(), [OPEN_SCREEN], spec, { today: TODAY });
+    const plan = buildImportPlan(emptyState(), [OPEN_SCREEN], spec, 'SRF', { today: TODAY });
     const check = plan.checks.find((c) => c.label.includes('未平倉損益'));
     expect(check?.ok).toBe(true);
   });
 
   it('現價預設不吃截圖，勾了才更新', () => {
-    const off = buildImportPlan(emptyState({ prices: { 202609: 104.9 } }), [OPEN_SCREEN], spec, { today: TODAY });
+    const off = buildImportPlan(emptyState({ prices: { 202609: 104.9 } }), [OPEN_SCREEN], spec, 'SRF', { today: TODAY });
     expect(off.next.prices['202609']).toBe(104.9);
 
-    const on = buildImportPlan(emptyState({ prices: { 202609: 104.9 } }), [OPEN_SCREEN], spec, { today: TODAY, applyPrices: true });
+    const on = buildImportPlan(emptyState({ prices: { 202609: 104.9 } }), [OPEN_SCREEN], spec, 'SRF', { today: TODAY, applyPrices: true });
     expect(on.next.prices['202609']).toBe(103.75);
   });
 });
@@ -264,10 +264,10 @@ describe('未平倉快照驗收', () => {
 describe('三張截圖一起匯入（2026-08-19 真實情境）', () => {
   it('平倉、加倉、快照三者一次對完，且再匯一次是空操作', () => {
     const before: FuturesPosition = {
-      id: 'p1', month: '202609', side: 'long', lots: 20, entry_price: 104.4, entry_date: '2026-08-11',
+      id: 'p1', product: 'SRF', month: '202609', side: 'long', lots: 20, entry_price: 104.4, entry_date: '2026-08-11',
     };
     const screens = [OPEN_SCREEN, CLOSED_SCREEN, FILL_SCREEN];
-    const plan = buildImportPlan(emptyState({ positions: [before], cash: 300000 }), screens, spec, { today: TODAY });
+    const plan = buildImportPlan(emptyState({ positions: [before], cash: 300000 }), screens, spec, 'SRF', { today: TODAY });
 
     expect(plan.next.closed).toHaveLength(5);
     expect(plan.cash_delta).toBeCloseTo(22012, 0);
@@ -276,7 +276,7 @@ describe('三張截圖一起匯入（2026-08-19 真實情境）', () => {
     expect(agg.get('202609:long')?.avg).toBeCloseTo(105.5679, 4);
     expect(plan.checks.every((c) => c.ok)).toBe(true);
 
-    const again = buildImportPlan(plan.next, screens, spec, { today: TODAY });
+    const again = buildImportPlan(plan.next, screens, spec, 'SRF', { today: TODAY });
     expect(again.changed).toBe(false);
     expect(again.cash_delta).toBe(0);
   });

@@ -10,12 +10,14 @@ import {
   DEFAULT_SPEC,
   CONTRACT_CODE,
   DEFAULT_STRESS_DROPS,
+  findPreset,
   type FuturesSpec,
   type FuturesPosition,
   type ClosedTrade,
   type CashFlow,
   type Side,
   type EntryBatch,
+  type ProductConfig,
 } from './futures';
 
 const VERSION = 'v1';
@@ -35,22 +37,21 @@ export interface PlannerConfig {
   stress_drops: number[];    // 壓力測試的情境
 }
 
+/**
+ * 帳戶設定。**多商品併存**：帳戶可能同時持有多個商品（例如 SRF ETF 期貨＋個股
+ * 期貨），每個商品自己一組契約規格／報價／beta，`positions`/`closed` 各自靠
+ * `product` 欄位指到 `products` 的 key。`cash`/`cash_flows`/`stop_loss` 維持
+ * 帳戶層級（本來就是跨商品共用的現金與停損設定）。
+ */
 export interface FuturesConfig {
-  contract: string;          // 商品／期交所行情代碼（SRF / NYF / MTX / TMF，可自訂）
-  price: number;             // 參考價／缺月份時的退路（抓期交所或手動輸入）
-  prices: Record<string, number>; // 各到期月份的價格 'YYYYMM' → 價；抓行情時全部存下來
-  price_month: string;       // price 對應的到期月份（抓價時帶回）
-  price_as_of: string;       // 報價日期 'YYYY-MM-DD'
-  price_source: 'live' | 'daily'; // 新增：'live' | 'daily'
+  products: Record<string, ProductConfig>; // 帳戶目前持有／設定過的商品
+  active_product: string;    // 設定頁/建倉試算頁「目前在編輯哪個商品」的 UI 狀態，不影響部位歸屬
   cash: number;              // 保證金專戶現金餘額（入金 ± 已實現損益）
-  index_ref: number;         // 現價當下的加權指數（用來把價格翻譯成大盤點數）
-  beta: number;              // 標的相對大盤的連動係數（0050 約 1.0～1.1；台指期＝1）
-  spec: FuturesSpec;         // 契約規格與費用設定
   positions: FuturesPosition[];
   closed: ClosedTrade[];
   cash_flows: CashFlow[];    // 帳戶資金進出流水帳（入金／出金），現金餘額的異動來源之一
   stop_loss: Record<string, number>; // 每筆部位的停損價（key＝position id）
-  planner: PlannerConfig;
+  planner: Record<string, PlannerConfig>; // 逐商品一份建倉試算參數
   /** 截圖匯入已經吃過的成交指紋（見 futuresImport.ts 的 ImportState.imported_refs） */
   imported_refs: string[];
 }
@@ -70,34 +71,52 @@ export const DEFAULT_PLANNER: PlannerConfig = {
   stress_drops: [...DEFAULT_STRESS_DROPS],
 };
 
+function clonePlanner(): PlannerConfig {
+  return { ...DEFAULT_PLANNER, batches: DEFAULT_PLANNER.batches.map((b) => ({ ...b })), stress_drops: [...DEFAULT_PLANNER.stress_drops] };
+}
+
+/** 內建預設商品的初始 ProductConfig（給 SEED 與舊格式遷移共用） */
+export function defaultProduct(code: string): ProductConfig {
+  const preset = findPreset(code);
+  return {
+    code,
+    name: preset?.name || code,
+    quote_contract: code,
+    underlying: preset?.underlying || '',
+    spec: preset?.spec ? { ...preset.spec } : { ...DEFAULT_SPEC },
+    beta: 1,
+    index_ref: 0,
+    index_linked: Boolean(preset?.index_linked),
+    price: 0,
+    prices: {},
+    price_month: '',
+    price_as_of: '',
+    price_source: 'daily',
+    is_custom: !preset,
+  };
+}
+
 const SEED: FuturesConfig = {
-  contract: CONTRACT_CODE,
-  price: 0,
-  prices: {},
-  price_month: '',
-  price_as_of: '',
-  price_source: 'daily',
+  products: { [CONTRACT_CODE]: defaultProduct(CONTRACT_CODE) },
+  active_product: CONTRACT_CODE,
   cash: 0,
-  index_ref: 0,
-  beta: 1,
-  spec: { ...DEFAULT_SPEC },
   positions: [],
   closed: [],
   cash_flows: [],
   stop_loss: {},
-  planner: { ...DEFAULT_PLANNER },
+  planner: { [CONTRACT_CODE]: clonePlanner() },
   imported_refs: [],
 };
 
 export function seedFuturesConfig(): FuturesConfig {
   return {
     ...SEED,
-    spec: { ...DEFAULT_SPEC },
+    products: { [CONTRACT_CODE]: defaultProduct(CONTRACT_CODE) },
     positions: [],
     closed: [],
     cash_flows: [],
     stop_loss: {},
-    planner: { ...DEFAULT_PLANNER, batches: DEFAULT_PLANNER.batches.map((b) => ({ ...b })), stress_drops: [...DEFAULT_PLANNER.stress_drops] },
+    planner: { [CONTRACT_CODE]: clonePlanner() },
     imported_refs: [],
   };
 }
@@ -158,7 +177,13 @@ function feeOrNull(v: unknown): number | null {
   return Number.isFinite(n) && n >= 0 ? n : null;
 }
 
-function sanitizePosition(v: unknown, i: number): FuturesPosition | null {
+/** 商品代碼：大寫英數，長度上限比舊版的 6 碼寬一些（自建個股期貨代碼可能更長） */
+function safeProductCode(v: unknown, fb = ''): string {
+  const s = str(v).toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 10);
+  return s || fb;
+}
+
+function sanitizePosition(v: unknown, i: number, codes: string[], defaultCode: string): FuturesPosition | null {
   if (!v || typeof v !== 'object') return null;
   const o = v as Record<string, unknown>;
   const month = safeMonth(o.month);
@@ -167,17 +192,19 @@ function sanitizePosition(v: unknown, i: number): FuturesPosition | null {
   const entry_price = Math.max(0, num(o.entry_price, 0));
   const entry_date = safeDate(o.entry_date);
   const side = safeSide(o.side);
-  const id = str(o.id) || `f_${month}_${side}_${i}_${lots}_${entry_price}`;
+  const rawProduct = safeProductCode(o.product);
+  const product = rawProduct && codes.includes(rawProduct) ? rawProduct : defaultCode;
+  const id = str(o.id) || `f_${product}_${month}_${side}_${i}_${lots}_${entry_price}`;
   const note = str(o.note);
   const ref = safeRef(o.ref);
   return {
-    id, month, side, lots, entry_price, entry_date,
+    id, product, month, side, lots, entry_price, entry_date,
     ...(note ? { note } : {}),
     ...(ref ? { ref } : {}),
   };
 }
 
-function sanitizeClosed(v: unknown, i: number): ClosedTrade | null {
+function sanitizeClosed(v: unknown, i: number, codes: string[], defaultCode: string): ClosedTrade | null {
   if (!v || typeof v !== 'object') return null;
   const o = v as Record<string, unknown>;
   const month = safeMonth(o.month);
@@ -188,13 +215,15 @@ function sanitizeClosed(v: unknown, i: number): ClosedTrade | null {
   const exit_date = safeDate(o.exit_date);
   const entry_date = safeDate(o.entry_date);
   const side = safeSide(o.side);
-  const id = str(o.id) || `c_${month}_${side}_${i}_${lots}_${exit_price}`;
+  const rawProduct = safeProductCode(o.product);
+  const product = rawProduct && codes.includes(rawProduct) ? rawProduct : defaultCode;
+  const id = str(o.id) || `c_${product}_${month}_${side}_${i}_${lots}_${exit_price}`;
   const note = str(o.note);
   const ref = safeRef(o.ref);
   const fee = feeOrNull(o.fee);
   const tax = feeOrNull(o.tax);
   return {
-    id, month, side, lots, entry_price, exit_price, exit_date,
+    id, product, month, side, lots, entry_price, exit_price, exit_date,
     ...(entry_date ? { entry_date } : {}),
     ...(note ? { note } : {}),
     ...(ref ? { ref } : {}),
@@ -269,6 +298,73 @@ function sanitizeRefs(v: unknown): string[] {
   return [...new Set(out)].slice(-MAX_IMPORTED_REFS);
 }
 
+/**
+ * 一個商品的完整設定。個股期貨跟 SRF/NYF 一樣沒有 OpenAPI 保證金端點，契約規格
+ * 一律手動輸入——這裡只負責 clamp／補預設值，不驗證數字合不合理（那是使用者
+ * 該對照期交所公告自己填的事）。`code` 沒對到 SYMBOL_PRESETS 時視為自建商品。
+ */
+function sanitizeProduct(v: unknown, code: string): ProductConfig {
+  const o = (v && typeof v === 'object' ? v : {}) as Record<string, unknown>;
+  const preset = findPreset(code);
+  return {
+    code,
+    name: str(o.name) || preset?.name || code,
+    quote_contract: safeProductCode(o.quote_contract, code) || code,
+    underlying: str(o.underlying) || preset?.underlying || '',
+    spec: sanitizeSpec(o.spec),
+    beta: Math.min(5, Math.max(0.01, num(o.beta, 1))),
+    index_ref: Math.max(0, num(o.index_ref, 0)),
+    index_linked: preset ? preset.index_linked : Boolean(o.index_linked),
+    price: Math.max(0, num(o.price, 0)),
+    prices: sanitizePrices(o.prices),
+    price_month: safeMonth(o.price_month),
+    price_as_of: /^\d{4}-\d{2}-\d{2}/.test(str(o.price_as_of)) ? str(o.price_as_of) : '',
+    price_source: o.price_source === 'live' ? 'live' : (o.price_source === 'manual' ? 'manual' : 'daily'),
+    is_custom: !preset,
+  };
+}
+
+function sanitizeProducts(v: unknown): Record<string, ProductConfig> {
+  const o = (v && typeof v === 'object' ? v : {}) as Record<string, unknown>;
+  const out: Record<string, ProductConfig> = {};
+  for (const [k, val] of Object.entries(o)) {
+    const code = safeProductCode(k);
+    if (!code) continue;
+    out[code] = sanitizeProduct(val, code);
+  }
+  return out;
+}
+
+/**
+ * 舊格式遷移：8/24 以前的帳戶設定整包只有一組 `contract`/`spec`/`beta`/`index_ref`/
+ * `prices`（見 FuturesConfig 的舊版定義），把它們包成 products 表裡的單一商品。
+ * VM 正式站現在存的就是這個格式，遷移錯了會讓既有 SRF 部位的保證金/風險指標跟
+ * 遷移前對不起來——這段動了要先跑 futures.test.ts 的遷移回歸案例。
+ */
+function legacyProduct(parsed: Record<string, unknown>): { code: string; product: ProductConfig } {
+  const code = safeProductCode(parsed.contract, CONTRACT_CODE) || CONTRACT_CODE;
+  const preset = findPreset(code);
+  return {
+    code,
+    product: {
+      code,
+      name: preset?.name || code,
+      quote_contract: code,
+      underlying: preset?.underlying || '',
+      spec: sanitizeSpec(parsed.spec),
+      beta: Math.min(5, Math.max(0.01, num(parsed.beta, 1))),
+      index_ref: Math.max(0, num(parsed.index_ref, 0)),
+      index_linked: Boolean(preset?.index_linked),
+      price: Math.max(0, num(parsed.price, 0)),
+      prices: sanitizePrices(parsed.prices),
+      price_month: safeMonth(parsed.price_month),
+      price_as_of: /^\d{4}-\d{2}-\d{2}/.test(str(parsed.price_as_of)) ? str(parsed.price_as_of) : '',
+      price_source: parsed.price_source === 'live' ? 'live' : 'daily',
+      is_custom: !preset,
+    },
+  };
+}
+
 function sanitizePlanner(v: unknown): PlannerConfig {
   const o = (v && typeof v === 'object' ? v : {}) as Record<string, unknown>;
   return {
@@ -286,11 +382,33 @@ function sanitizePlanner(v: unknown): PlannerConfig {
 }
 
 export function normalizeFutures(parsed: Record<string, unknown>): FuturesConfig {
+  const rawProducts = parsed.products;
+  const hasNewShape = Boolean(rawProducts && typeof rawProducts === 'object' && Object.keys(rawProducts as object).length > 0);
+
+  let products: Record<string, ProductConfig>;
+  let migratedDefaultCode = '';
+  if (hasNewShape) {
+    products = sanitizeProducts(rawProducts);
+  } else {
+    // 舊格式（8/24 以前）：整帳戶只有一組 contract/spec/beta/index_ref/prices，遷移成單一商品
+    const { code, product } = legacyProduct(parsed);
+    products = { [code]: product };
+    migratedDefaultCode = code;
+  }
+  if (Object.keys(products).length === 0) {
+    const { code, product } = legacyProduct({});
+    products = { [code]: product };
+    migratedDefaultCode = code;
+  }
+  const codes = Object.keys(products);
+  const wantedActive = safeProductCode(parsed.active_product);
+  const active_product = codes.includes(wantedActive) ? wantedActive : (migratedDefaultCode && codes.includes(migratedDefaultCode) ? migratedDefaultCode : codes[0]);
+
   const positions = (Array.isArray(parsed.positions) ? parsed.positions : [])
-    .map((p, i) => sanitizePosition(p, i))
+    .map((p, i) => sanitizePosition(p, i, codes, active_product))
     .filter((p): p is FuturesPosition => p !== null);
   const closed = (Array.isArray(parsed.closed) ? parsed.closed : [])
-    .map((t, i) => sanitizeClosed(t, i))
+    .map((t, i) => sanitizeClosed(t, i, codes, active_product))
     .filter((t): t is ClosedTrade => t !== null);
 
   // 停損價只保留還存在的部位，避免刪了部位後留下孤兒設定
@@ -304,22 +422,24 @@ export function normalizeFutures(parsed: Record<string, unknown>): FuturesConfig
     if (p > 0) stop_loss[k] = p;
   }
 
+  // planner 舊格式是單一物件（沒有逐商品 key）；新格式才是 `Record<code, PlannerConfig>`
+  const plannerIn = (parsed.planner && typeof parsed.planner === 'object' ? parsed.planner : {}) as Record<string, unknown>;
+  const planner: Record<string, PlannerConfig> = {};
+  if (hasNewShape) {
+    for (const c of codes) planner[c] = sanitizePlanner(plannerIn[c]);
+  } else {
+    for (const c of codes) planner[c] = c === active_product ? sanitizePlanner(plannerIn) : clonePlanner();
+  }
+
   return {
-    contract: (str(parsed.contract, CONTRACT_CODE) || CONTRACT_CODE).toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 6) || CONTRACT_CODE,
-    price: Math.max(0, num(parsed.price, 0)),
-    prices: sanitizePrices(parsed.prices),
-    price_month: safeMonth(parsed.price_month),
-    price_as_of: /^\d{4}-\d{2}-\d{2}/.test(str(parsed.price_as_of)) ? str(parsed.price_as_of) : '',
-    price_source: parsed.price_source === 'live' ? 'live' : 'daily',
+    products,
+    active_product,
     cash: num(parsed.cash, 0), // 權益數可以是負的（穿價），不 clamp
-    index_ref: Math.max(0, num(parsed.index_ref, 0)),
-    beta: Math.min(5, Math.max(0.01, num(parsed.beta, 1))),
-    spec: sanitizeSpec(parsed.spec),
     positions,
     closed,
     cash_flows: sanitizeFlows(parsed.cash_flows),
     stop_loss,
-    planner: sanitizePlanner(parsed.planner),
+    planner,
     imported_refs: sanitizeRefs(parsed.imported_refs),
   };
 }

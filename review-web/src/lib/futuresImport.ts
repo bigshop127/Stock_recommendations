@@ -142,6 +142,34 @@ export interface ImportOptions {
   applyPrices?: boolean;
 }
 
+// ── 帳戶層級（多商品）匯入 ────────────────────────────────────────────────────
+
+/** buildImportPlanForAccount 比對商品名稱／算損益需要的最小資訊 */
+export interface ProductLookup {
+  name: string;
+  spec: FuturesSpec;
+}
+
+/** 帳戶層級的匯入狀態——涵蓋所有商品，靠 positions/closed 各自的 .product 分家 */
+export interface AccountImportState {
+  positions: FuturesPosition[];
+  closed: ClosedTrade[];
+  /** 商品代碼 → 該商品的月份報價表（各商品各自一份，SRF 跟個股期貨不能共用同一張） */
+  product_prices: Record<string, Record<string, number>>;
+  stop_loss: Record<string, number>;
+  cash: number;
+  imported_refs: string[];
+}
+
+export interface AccountImportPlan {
+  next: AccountImportState;
+  ops: ImportOp[];
+  checks: ImportCheck[];
+  warnings: string[];
+  cash_delta: number;
+  changed: boolean;
+}
+
 const EPS = 0.005;          // 價格比對容差（最小跳動 0.05 的十分之一）
 const EPS_ENTRY = 0.011;    // 建倉價比對容差：抓得比報價鬆，因為券商是加權均價
 
@@ -231,11 +259,18 @@ function reduceFifo(
  *
  * 不直接改任何東西——呼叫端拿到 plan 之後由使用者確認才套用（與 opt25 保證金同步
  * 同一套兩段確認）。原因很實際：辨識錯一個數字就會動到真金白銀的現金餘額。
+ *
+ * ⚠️ **這支只認一個商品**：`state.positions`／`state.closed`／`state.prices` 必須是
+ * 呼叫端已經篩過、只屬於 `product` 這個商品的子集（多商品帳戶時，月份代碼在不同
+ * 商品間會撞號，混在一起會配對錯）。帳戶層級的多商品截圖匯入請走
+ * `buildImportPlanForAccount()`——它負責把截圖依 OCR 認出的商品名稱拆開，
+ * 對每個商品各呼叫一次這支再把結果併回去。
  */
 export function buildImportPlan(
   state: ImportState,
   screens: ScanScreen[],
   spec: FuturesSpec,
+  product: string,
   opts: ImportOptions,
 ): ImportPlan {
   const adoptSnapshot = opts.adoptSnapshot !== false;
@@ -306,6 +341,7 @@ export function buildImportPlan(
 
     const t: ClosedTrade = {
       id: nid('c'),
+      product,
       month: r.month,
       side: r.side,
       lots: r.lots,
@@ -375,6 +411,7 @@ export function buildImportPlan(
       }
       positions.push({
         id: nid('f'),
+        product,
         month: r.month,
         side,
         lots: r.lots,
@@ -506,6 +543,7 @@ export function buildImportPlan(
       const earliest = olds.map((p) => p.entry_date).filter(Boolean).sort()[0] || opts.today;
       const merged: FuturesPosition = {
         id: nid('f'),
+        product,
         month,
         side,
         lots: wantLots,
@@ -594,6 +632,158 @@ export function buildImportPlan(
   const changed = ops.some((o) => o.kind !== 'closed_skip');
   return {
     next: { positions, closed, prices, stop_loss, cash, imported_refs },
+    ops,
+    checks,
+    warnings,
+    cash_delta: cashDelta,
+    changed,
+  };
+}
+
+// ── 帳戶層級（多商品）匯入 ────────────────────────────────────────────────────
+
+/**
+ * 從 OCR「商品名稱原文」（例如「聯電期202609」）配對到帳戶已設定的商品代碼。
+ * 先把結尾的到期月份數字剝掉（跟 gateway 那份 monthOf() 撈月份的邏輯對稱），
+ * 剩下的文字跟每個已設定商品的 `name` 做子字串比對——配不到回 null，**不要猜**：
+ * 誤配到別的商品會把不相干的成交記進錯的帳，比「這批資料先不套用」危險得多。
+ */
+export function matchProduct(rawProduct: string, products: Record<string, ProductLookup>): string | null {
+  const stripped = String(rawProduct || '').replace(/20\d{2}(?:0[1-9]|1[0-2])\s*$/, '').trim();
+  if (!stripped) return null;
+  for (const [code, p] of Object.entries(products)) {
+    const name = (p.name || '').trim();
+    if (name && (stripped === name || stripped.includes(name) || name.includes(stripped))) return code;
+  }
+  return null;
+}
+
+/**
+ * 把一張截圖依每一列 OCR 認出的商品名稱拆成「每個商品各自一份 ScanScreen」。
+ * 同一張未平倉查詢截圖常常同時列多個商品（玉山 App 的「期貨資產總覽」就是這樣，
+ * 聯電期跟小型元大台灣50ETF期同一張表），不能整張截圖只認一個商品。
+ *
+ * `totals.count` 是 buildImportPlan 用來判斷「這個商品的未平倉快照有沒有認全」的
+ * 安全閥——拆開後不能沿用原始截圖的合計數（那是全部商品加總），所以這裡重算：
+ * 原始截圖本來就辨識完整時，直接給拆出來的列數（必然吻合，安全閥照常放行）；
+ * 原始截圖本來就不完整（辨識到的列數對不上截圖自己寫的合計）時，刻意給一個
+ * 對不上的數字，讓每個商品都繼續保守地拒絕用快照刪部位——不能因為拆開了
+ * 就把「可能有列沒認出來」的不確定性洗掉。
+ */
+function splitScreenByProduct(
+  screen: ScanScreen,
+  products: Record<string, ProductLookup>,
+  unmatched: Set<string>,
+): Map<string, ScanScreen> {
+  const originalTotal = screen.open_rows.length + screen.closed_rows.length + screen.fill_rows.length;
+  const originalComplete = screen.totals.count === null || screen.totals.count === originalTotal;
+  const out = new Map<string, ScanScreen>();
+  const bucket = (code: string): ScanScreen => {
+    let s = out.get(code);
+    if (!s) {
+      s = { kind: screen.kind, title: screen.title, open_rows: [], closed_rows: [], fill_rows: [], totals: { pnl: null, count: null }, warnings: [] };
+      out.set(code, s);
+    }
+    return s;
+  };
+  for (const r of screen.open_rows) {
+    const code = matchProduct(r.product, products);
+    if (!code) { unmatched.add(r.product); continue; }
+    bucket(code).open_rows.push(r);
+  }
+  for (const r of screen.closed_rows) {
+    const code = matchProduct(r.product, products);
+    if (!code) { unmatched.add(r.product); continue; }
+    bucket(code).closed_rows.push(r);
+  }
+  for (const r of screen.fill_rows) {
+    const code = matchProduct(r.product, products);
+    if (!code) { unmatched.add(r.product); continue; }
+    bucket(code).fill_rows.push(r);
+  }
+  for (const s of out.values()) {
+    const n = s.open_rows.length + s.closed_rows.length + s.fill_rows.length;
+    s.totals = { pnl: null, count: originalComplete ? n : n + 1 };
+  }
+  return out;
+}
+
+/**
+ * 帳戶層級的多商品截圖匯入：先把每張截圖拆成各商品自己的一份（見
+ * splitScreenByProduct），對每個商品各呼叫一次 buildImportPlan()（單商品版，
+ * 內部的月份/方向配對邏輯完全不用改——因為進去的資料已經先篩過只剩一個商品），
+ * 再把結果併回帳戶層級的陣列。現金／停損／匯入指紋是帳戶共用的，逐商品依序
+ * 傳遞下去（後一個商品的計算要看到前一個商品已經進出的現金），部位／已平倉
+ * 紀錄／月份報價則是「先拿掉這個商品原本那份，換成算出來的新的」。
+ *
+ * 認不出對應商品的列（帳戶還沒設定過這檔）**不會用猜的**：進 warnings 提醒
+ * 使用者先去設定頁新增這個商品，那批資料完全不套用——比誤配到別的商品安全。
+ */
+export function buildImportPlanForAccount(
+  state: AccountImportState,
+  screens: ScanScreen[],
+  products: Record<string, ProductLookup>,
+  opts: ImportOptions,
+): AccountImportPlan {
+  const unmatched = new Set<string>();
+  const byProduct = new Map<string, ScanScreen[]>();
+  for (const screen of screens) {
+    const split = splitScreenByProduct(screen, products, unmatched);
+    for (const [code, s] of split) {
+      const list = byProduct.get(code) ?? [];
+      list.push(s);
+      byProduct.set(code, list);
+    }
+  }
+
+  let positions = state.positions.map((p) => ({ ...p }));
+  let closed = state.closed.map((t) => ({ ...t }));
+  const product_prices: Record<string, Record<string, number>> = {};
+  for (const [code, m] of Object.entries(state.product_prices || {})) product_prices[code] = { ...m };
+  let stop_loss = { ...state.stop_loss };
+  let cash = state.cash;
+  let imported_refs = [...state.imported_refs];
+
+  const ops: ImportOp[] = [];
+  const checks: ImportCheck[] = [];
+  const warnings: string[] = [];
+  let cashDelta = 0;
+  const multi = byProduct.size > 1;
+
+  for (const code of [...byProduct.keys()].sort()) {
+    const lookup = products[code];
+    if (!lookup) { warnings.push(`商品代碼 ${code} 目前帳戶沒有設定，已略過這批資料。`); continue; }
+    const group = byProduct.get(code) as ScanScreen[];
+    const sub: ImportState = {
+      positions: positions.filter((p) => p.product === code),
+      closed: closed.filter((t) => t.product === code),
+      prices: product_prices[code] ?? {},
+      stop_loss,
+      cash,
+      imported_refs,
+    };
+    const plan = buildImportPlan(sub, group, lookup.spec, code, opts);
+    positions = positions.filter((p) => p.product !== code).concat(plan.next.positions);
+    closed = closed.filter((t) => t.product !== code).concat(plan.next.closed);
+    product_prices[code] = plan.next.prices;
+    stop_loss = plan.next.stop_loss;
+    cash = plan.next.cash;
+    imported_refs = plan.next.imported_refs;
+    cashDelta += plan.cash_delta;
+    const prefix = multi ? `[${lookup.name}] ` : '';
+    ops.push(...plan.ops.map((o) => ({ ...o, text: prefix + o.text })));
+    checks.push(...plan.checks.map((c) => ({ ...c, label: prefix + c.label })));
+    warnings.push(...plan.warnings.map((w) => prefix + w));
+  }
+
+  for (const raw of unmatched) {
+    const label = raw.replace(/20\d{2}(?:0[1-9]|1[0-2])\s*$/, '').trim() || raw;
+    warnings.push(`認出商品「${label}」，但帳戶還沒設定這個商品，這批資料未套用——請先到設定頁新增後再重新產生匯入計畫。`);
+  }
+
+  const changed = ops.some((o) => o.kind !== 'closed_skip');
+  return {
+    next: { positions, closed, product_prices, stop_loss, cash, imported_refs },
     ops,
     checks,
     warnings,

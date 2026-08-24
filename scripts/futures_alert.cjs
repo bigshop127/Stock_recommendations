@@ -181,54 +181,153 @@ function positionPnl(pos, price, spec) {
 }
 
 /**
- * 帳戶彙總。與前端 summarizeAccount 同一套定義：
- *   權益數 ＝ 保證金專戶現金 ＋ 未實現損益（已扣來回費用與期交稅）
+ * 舊格式遷移：8/24 以前存的部位檔整包只有一組 `contract`/`spec`/`beta`/
+ * `index_ref`/`price`/`prices`，這裡把它們包成 `products` 表裡的單一商品，跟
+ * review-web 前端／gateway 的遷移邏輯（見 futuresStore.ts／routes/futures.js）
+ * 對齊。這支只用來讀（不寫回檔案），所以不用做到跟前端一樣嚴格的白名單 clamp。
+ */
+function migrateFutures(raw) {
+  const f = raw && typeof raw === 'object' ? raw : {};
+  const codeOf = (v, fb) => {
+    const s = String(v || '').toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 10);
+    return s || fb;
+  };
+  const rawProducts = f.products;
+  const hasNewShape = Boolean(rawProducts && typeof rawProducts === 'object' && Object.keys(rawProducts).length > 0);
+  const products = {};
+  let defaultCode;
+  if (hasNewShape) {
+    for (const [k, p] of Object.entries(rawProducts)) {
+      const code = codeOf(k, 'SRF');
+      const o = p && typeof p === 'object' ? p : {};
+      products[code] = {
+        code,
+        name: String(o.name || code),
+        quote_contract: codeOf(o.quote_contract, code),
+        spec: Object.assign({ contract_size: 1000, tick_size: 0.05, initial_margin: 0, maintenance_margin: 0, fee_per_lot: 0, tax_rate: 0, rollover_days: 7, liquidation_ratio: 0.25 }, o.spec || {}),
+        beta: safeNum(o.beta, 1),
+        index_ref: safeNum(o.index_ref, 0),
+        price: safeNum(o.price, 0),
+        prices: (o.prices && typeof o.prices === 'object') ? Object.assign({}, o.prices) : {},
+      };
+    }
+    defaultCode = Object.keys(products)[0] || 'SRF';
+  }
+  if (Object.keys(products).length === 0) {
+    const code = codeOf(f.contract, 'SRF');
+    products[code] = {
+      code, name: code, quote_contract: code,
+      spec: Object.assign({ contract_size: 1000, tick_size: 0.05, initial_margin: 0, maintenance_margin: 0, fee_per_lot: 0, tax_rate: 0, rollover_days: 7, liquidation_ratio: 0.25 }, f.spec || {}),
+      beta: safeNum(f.beta, 1),
+      index_ref: safeNum(f.index_ref, 0),
+      price: safeNum(f.price, 0),
+      prices: (f.prices && typeof f.prices === 'object') ? Object.assign({}, f.prices) : {},
+    };
+    defaultCode = code;
+  }
+  const positions = (Array.isArray(f.positions) ? f.positions : []).map((p) => {
+    const rawCode = p && p.product ? codeOf(p.product, '') : '';
+    const product = rawCode && products[rawCode] ? rawCode : defaultCode;
+    return Object.assign({}, p, { product });
+  });
+  return { products, positions, cash: safeNum(f.cash, 0) };
+}
+
+/** 口數最多的「商品＋月份」——追繳/斷頭價、報價時段等headline 數字都以它為準 */
+function pickReferenceCode(products, positions) {
+  const byCode = new Map();
+  const fallback = Object.keys(products)[0] || '';
+  for (const p of Array.isArray(positions) ? positions : []) {
+    const lots = Math.max(0, safeNum(p.lots, 0));
+    if (lots <= 0) continue;
+    const code = p.product && products[p.product] ? p.product : fallback;
+    byCode.set(code, (byCode.get(code) || 0) + lots);
+  }
+  let best = fallback, bestLots = -1;
+  for (const [code, lots] of byCode) if (lots > bestLots) { bestLots = lots; best = code; }
+  return best;
+}
+
+/**
+ * 帳戶彙總——多商品版。與前端 summarizeAccountAll（src/lib/futures.ts）同一套定義：
+ *   權益數 ＝ 保證金專戶現金 ＋ 未實現損益（已扣來回費用與期交稅，逐部位各自的商品）
  *   風險指標 ＝ 權益數 ÷ 所需**原始**保證金（期交所定義；期貨商 App 顯示的就是它）
  * 追繳則是另一條線：權益數 ＜ 所需維持保證金。兩者不同門檻，不能用同一個比值分級。
- * 追繳／斷頭價解的是「各月份一起平移多少」，多月份持倉才不會算錯。
+ * 追繳／斷頭價解的是「大盤同時變動 X%」，每個部位用自己商品的 beta 換算價格變動——
+ * 兩個不同商品（0050 期貨、個股期貨）不能用同一個絕對價格平移量描述。
+ * `warn` 是這支腳本自訂的預警緩衝（仍以維持保證金為基準），跟前端頁面的 `warn`
+ * 定義不同，是刻意的（見下方 WARN_RATIO 註解），不要「修」成一致。
  */
-function summarize(futures, prices) {
-  const spec = futures.spec || {};
-  const unit = Math.max(1, safeNum(spec.contract_size, 1000));
-  const list = Array.isArray(futures.positions) ? futures.positions : [];
+function summarizeAll(products, positions, cash) {
+  const list = Array.isArray(positions) ? positions : [];
+  const codes = Object.keys(products);
+  const fallbackCode = codes[0];
+  const resolve = (code) => products[code] || products[fallbackCode];
 
   let total_lots = 0, net_lots = 0, long_lots = 0, short_lots = 0;
-  let contract_value = 0, unrealized = 0;
-  const lotsByMonth = new Map();
+  let contract_value = 0, unrealized = 0, denom = 0;
+  const lotsByRef = new Map();
+  const byProduct = new Map();
 
-  for (const pos of list) {
-    const lots = Math.max(0, safeNum(pos.lots, 0));
+  for (const posn of list) {
+    const lots = Math.max(0, safeNum(posn.lots, 0));
     if (lots <= 0) continue;
-    const s = sign(pos.side);
+    const pp = resolve(posn.product || fallbackCode);
+    if (!pp) continue;
+    const spec = pp.spec || {};
+    const unit = Math.max(1, safeNum(spec.contract_size, 1000));
+    const price0 = priceOf(pp.prices, pp.price, posn.month);
+    const beta = Math.max(0, safeNum(pp.beta, 1));
+    const s = sign(posn.side);
+    const taxRate = Math.max(0, safeNum(spec.tax_rate, 0));
+
     total_lots += lots;
     net_lots += s * lots;
     if (s > 0) long_lots += lots; else short_lots += lots;
-    const r = positionPnl(pos, priceOf(prices, futures.price, pos.month), spec);
+
+    const r = positionPnl(posn, price0, spec);
     contract_value += r.contract_value;
     unrealized += r.net_pnl;
-    lotsByMonth.set(pos.month, (lotsByMonth.get(pos.month) || 0) + lots);
+
+    const k = unit * price0 * beta;
+    denom += lots * k * (s - taxRate);
+
+    const code = posn.product || fallbackCode;
+    const refKey = `${code}:${posn.month}`;
+    lotsByRef.set(refKey, (lotsByRef.get(refKey) || 0) + lots);
+
+    const row = byProduct.get(code) || { product: code, lots: 0, unrealized: 0, required_initial: 0, required_maintenance: 0 };
+    row.lots += lots;
+    row.unrealized += r.net_pnl;
+    row.required_initial += Math.max(0, safeNum(spec.initial_margin, 0)) * lots;
+    row.required_maintenance += Math.max(0, safeNum(spec.maintenance_margin, 0)) * lots;
+    byProduct.set(code, row);
   }
 
-  const months = [...lotsByMonth.keys()].sort();
-  let reference_month = '', refLots = -1;
-  for (const m of months) {
-    const l = lotsByMonth.get(m) || 0;
-    if (l > refLots) { refLots = l; reference_month = m; }
+  let reference_product = '', reference_month = '', refLots = -1;
+  for (const key of [...lotsByRef.keys()].sort()) {
+    const l = lotsByRef.get(key) || 0;
+    if (l > refLots) { refLots = l; const [prod, month] = key.split(':'); reference_product = prod; reference_month = month; }
   }
-  const reference_price = priceOf(prices, futures.price, reference_month);
+  const refPP = reference_product ? resolve(reference_product) : resolve(fallbackCode);
+  const refBeta = refPP ? Math.max(0, safeNum(refPP.beta, 1)) : 1;
+  const reference_price = total_lots > 0 && refPP ? priceOf(refPP.prices, refPP.price, reference_month) : 0;
 
-  const cash = safeNum(futures.cash, 0);
-  const equity = cash + unrealized;
-  const required_initial = Math.max(0, safeNum(spec.initial_margin, 0)) * total_lots;
-  const required_maintenance = Math.max(0, safeNum(spec.maintenance_margin, 0)) * total_lots;
+  const months = [...new Set(list.map((p) => p.month))].sort();
+  const required_initial = [...byProduct.values()].reduce((sum, r) => sum + r.required_initial, 0);
+  const required_maintenance = [...byProduct.values()].reduce((sum, r) => sum + r.required_maintenance, 0);
+
+  const cashBal = safeNum(cash, 0);
+  const equity = cashBal + unrealized;
   const risk_indicator = required_initial > 0 ? equity / required_initial : null;
-  const liquidation_ratio = Math.max(0, safeNum(spec.liquidation_ratio, 0.25));
+  const liquidation_ratio = Math.max(0, safeNum(refPP && refPP.spec ? refPP.spec.liquidation_ratio : 0.25, 0.25));
 
-  const taxRate = Math.max(0, safeNum(spec.tax_rate, 0));
-  const denom = unit * (net_lots - taxRate * total_lots);
-  const shiftTo = (target) => (net_lots === 0 || denom === 0 ? null : (target - equity) / denom);
-  const call_shift = shiftTo(required_maintenance);
-  const cut_shift = shiftTo(required_initial * liquidation_ratio);
+  const shiftToMove = (target) => (denom === 0 ? null : (target - equity) / denom);
+  const call_move = shiftToMove(required_maintenance);
+  const cut_move = shiftToMove(required_initial * liquidation_ratio);
+  const moveToShift = (move) => (move === null ? null : reference_price * refBeta * move);
+  const call_shift = moveToShift(call_move);
+  const cut_shift = moveToShift(cut_move);
 
   // 三條線各自獨立：斷頭看風險指標（÷原始）、追繳看權益數是否低於維持保證金、
   // warn 是自訂的預警緩衝，仍以維持保證金為基準（改成 ÷原始 會讓告警提早近一倍而變吵）。
@@ -241,11 +340,12 @@ function summarize(futures, prices) {
   }
 
   return {
-    total_lots, net_lots, long_lots, short_lots, months, reference_month, reference_price,
-    contract_value, unrealized, equity, cash,
+    total_lots, net_lots, long_lots, short_lots, months, reference_product, reference_month, reference_price,
+    contract_value, unrealized, equity, cash: cashBal,
     required_initial, required_maintenance, risk_indicator, liquidation_ratio, status,
     margin_call_price: call_shift === null ? null : Math.max(0, reference_price + call_shift),
     liquidation_price: cut_shift === null ? null : Math.max(0, reference_price + cut_shift),
+    by_product: [...byProduct.values()],
   };
 }
 
@@ -293,38 +393,50 @@ const LEVEL_META = {
   warn: { zh: '⚠️ 接近追繳', color: '#f9a825', urgency: `權益數低於維持保證金的 ${Math.round(WARN_RATIO * 100)}%（自訂預警線，非期交所規定）。還有時間決定補錢還是減碼。` },
 };
 
-function buildEmail(s, contract, quoteDate, rollovers, marginNotice, notes = {}) {
+function buildEmail(s, products, quoteDate, rollovers, marginNotices, notes = {}) {
   const meta = LEVEL_META[s.status];
   const isRolloverOnly = !meta;
+  const codes = Object.keys(products);
+  const nameOf = (code) => (products[code] && products[code].name) || code;
+  const multi = codes.length > 1;
+  const label = codes.map(nameOf).join('＋');
 
   // 風險在安全區時，標題與抬頭要講「實際上發生了什麼」，不要無條件寫轉倉——
   // 從真的存在的事由組出來，才不會因為快照沒寫成就寄一封標題叫「轉倉提醒」的信
   const reasons = [];
   if (rollovers.length > 0) reasons.push('轉倉');
-  if (marginNotice) reasons.push('保證金');
+  if (marginNotices.length > 0) reasons.push('保證金');
   if (notes.snapshotSkip) reasons.push('權益曲線');
   const noticeLabel = reasons.length > 0 ? `${reasons.join('與')}提醒` : '狀態提醒';
   const subjectPrefix = `【期貨${noticeLabel}】`;
 
   const subject = isRolloverOnly
-    ? `${subjectPrefix}${contract}${rollovers.length > 0 ? ` ${rollovers.map((r) => r.month).join('、')} 即將到期` : ''}`
-    : `【期貨風險告警】${contract} ${meta.zh}｜風險指標 ${fmtPct(s.risk_indicator)}`;
+    ? `${subjectPrefix}${label}${rollovers.length > 0 ? ` ${rollovers.map((r) => (multi ? `${nameOf(r.product)}${r.month}` : r.month)).join('、')} 即將到期` : ''}`
+    : `【期貨風險告警】${label} ${meta.zh}｜風險指標 ${fmtPct(s.risk_indicator)}`;
 
   const rolloverLines = rollovers.length > 0
-    ? ['', '── 轉倉提醒 ──', ...rollovers.map((r) => r.expired
-      ? `● ${r.month} 已過最後交易日（${r.ltd}），${r.lots} 口應已被現金結算，請確認後在網頁上移到平倉紀錄`
-      : `● ${r.month} 還剩 ${r.left} 個交易日到期（最後交易日 ${r.ltd}），持有 ${r.lots} 口`)]
+    ? ['', '── 轉倉提醒 ──', ...rollovers.map((r) => {
+      const prefix = multi ? `${nameOf(r.product)} ` : '';
+      return r.expired
+        ? `● ${prefix}${r.month} 已過最後交易日（${r.ltd}），${r.lots} 口應已被現金結算，請確認後在網頁上移到平倉紀錄`
+        : `● ${prefix}${r.month} 還剩 ${r.left} 個交易日到期（最後交易日 ${r.ltd}），持有 ${r.lots} 口`;
+    })]
     : [];
 
-  const marginLines = marginNotice
+  const marginLines = marginNotices.length > 0
     ? [
       '',
       '── 保證金異動 ──',
-      `● 期交所 ${marginNotice.date} 現行值${marginNotice.stale ? '（期交所暫時抓不到，這是磁碟快取）' : ''}：原始 ${marginNotice.apiInitial.toLocaleString()} / 維持 ${marginNotice.apiMaintenance.toLocaleString()}`,
-      `● 你目前設定：原始 ${marginNotice.currentInitial.toLocaleString()} / 維持 ${marginNotice.currentMaintenance.toLocaleString()}`,
-      `● 依新值重算，你的追繳價會從 ${fmtPx(marginNotice.oldMarginCallPrice)} 變成 ${fmtPx(marginNotice.newMarginCallPrice)}`,
-      `● 到「契約規格 & 設定」按「同步保證金」更新`
+      ...marginNotices.flatMap((n) => [
+        `● ${multi ? nameOf(n.product) + '：' : ''}期交所 ${n.date} 現行值${n.stale ? '（期交所暫時抓不到，這是磁碟快取）' : ''}：原始 ${n.apiInitial.toLocaleString()} / 維持 ${n.apiMaintenance.toLocaleString()}`,
+        `  你目前設定：原始 ${n.currentInitial.toLocaleString()} / 維持 ${n.currentMaintenance.toLocaleString()}；依新值重算，追繳價會從 ${fmtPx(n.oldMarginCallPrice)} 變成 ${fmtPx(n.newMarginCallPrice)}`,
+      ]),
+      `● 到「契約規格 & 設定」按「同步保證金」更新`,
     ]
+    : [];
+
+  const productLines = multi
+    ? ['', '── 逐商品小計 ──', ...s.by_product.map((r) => `● ${nameOf(r.product)}：${r.lots} 口，原始保證金 ${fmtMoney(r.required_initial)}，未實現 ${fmtMoney(r.unrealized)}`)]
     : [];
 
   const snapshotLines = notes.snapshotSkip
@@ -342,7 +454,7 @@ function buildEmail(s, contract, quoteDate, rollovers, marginNotice, notes = {})
         : '※ 該月份目前沒有成交，報價退回期交所**每日結算價**（比今天慢一個交易日），盤中跌破的話這封信會晚一天。';
 
   const lines = [
-    isRolloverOnly ? `${contract} 期貨${noticeLabel}` : `${contract} 期貨風險告警：${meta.zh}`,
+    isRolloverOnly ? `${label} 期貨${noticeLabel}` : `${label} 期貨風險告警：${meta.zh}`,
     '',
     ...(meta ? [meta.urgency, ''] : []),
     '── 帳戶 ──',
@@ -355,9 +467,10 @@ function buildEmail(s, contract, quoteDate, rollovers, marginNotice, notes = {})
     `● 多 ${s.long_lots} 口 / 空 ${s.short_lots} 口（淨 ${s.net_lots >= 0 ? '+' : ''}${s.net_lots}）`,
     `● 名目曝險：${fmtMoney(s.contract_value)}`,
     `● 月份：${s.months.join('、') || '—'}（各月份分別報價）`,
-    `● 參考價：${fmtPx(s.reference_price)}（${s.reference_month}，期交所 ${quoteDate}）`,
+    `● 參考：${multi ? nameOf(s.reference_product) + '　' : ''}${fmtPx(s.reference_price)}（${s.reference_month}，期交所 ${quoteDate}）`,
+    ...productLines,
     '',
-    '── 危險價位（各月份一起移動）──',
+    '── 危險價位（大盤同時變動時，換算成參考商品的價格）──',
     `● 追繳價：${fmtPx(s.margin_call_price)}`,
     `● 斷頭價：${fmtPx(s.liquidation_price)}`,
     ...rolloverLines,
@@ -373,7 +486,7 @@ function buildEmail(s, contract, quoteDate, rollovers, marginNotice, notes = {})
   const color = meta ? meta.color : '#1565c0';
   const html = `<!DOCTYPE html><html><head><meta charset="utf-8"></head>
 <body style="font-family:-apple-system,Segoe UI,Roboto,sans-serif;color:#1a1a1a;line-height:1.6;max-width:560px;margin:0 auto;padding:16px;">
-  <h2 style="margin:0 0 4px;">${contract} 期貨${isRolloverOnly ? noticeLabel : '風險告警'}</h2>
+  <h2 style="margin:0 0 4px;">${label} 期貨${isRolloverOnly ? noticeLabel : '風險告警'}</h2>
   ${meta ? `<p style="margin:0 0 12px;color:${color};font-weight:bold;">${meta.zh}</p>` : ''}
   <div style="background:${color}11;border:1px solid ${color}33;border-radius:6px;padding:14px;text-align:center;margin-bottom:14px;">
     <div style="font-size:13px;color:#555;">風險指標</div>
@@ -385,16 +498,17 @@ function buildEmail(s, contract, quoteDate, rollovers, marginNotice, notes = {})
     <tr><td style="padding:6px;border:1px solid #eee;">權益數</td><td style="padding:6px;border:1px solid #eee;"><b>${fmtMoney(s.equity)}</b>（現金 ${fmtMoney(s.cash)} ＋ 未實現 ${fmtMoney(s.unrealized)}）</td></tr>
     <tr><td style="padding:6px;border:1px solid #eee;">所需原始 / 維持</td><td style="padding:6px;border:1px solid #eee;">${fmtMoney(s.required_initial)} / ${fmtMoney(s.required_maintenance)}</td></tr>
     <tr><td style="padding:6px;border:1px solid #eee;">部位</td><td style="padding:6px;border:1px solid #eee;">多 ${s.long_lots} / 空 ${s.short_lots} 口，名目 ${fmtMoney(s.contract_value)}</td></tr>
-    <tr><td style="padding:6px;border:1px solid #eee;">參考價</td><td style="padding:6px;border:1px solid #eee;">${fmtPx(s.reference_price)}（${s.reference_month}，${quoteDate}）</td></tr>
+    <tr><td style="padding:6px;border:1px solid #eee;">參考價</td><td style="padding:6px;border:1px solid #eee;">${multi ? nameOf(s.reference_product) + ' ' : ''}${fmtPx(s.reference_price)}（${s.reference_month}，${quoteDate}）</td></tr>
     <tr><td style="padding:6px;border:1px solid #eee;">追繳價 / 斷頭價</td><td style="padding:6px;border:1px solid #eee;"><b style="color:#ef6c00;">${fmtPx(s.margin_call_price)}</b> / <b style="color:#c62828;">${fmtPx(s.liquidation_price)}</b></td></tr>
-    ${rollovers.map((r) => `<tr><td style="padding:6px;border:1px solid #eee;">轉倉 ${r.month}</td><td style="padding:6px;border:1px solid #eee;">${r.expired ? `已過最後交易日 ${r.ltd}` : `剩 ${r.left} 個交易日（${r.ltd}）`}，${r.lots} 口</td></tr>`).join('\n    ')}
+    ${multi ? s.by_product.map((r) => `<tr><td style="padding:6px;border:1px solid #eee;">${nameOf(r.product)}</td><td style="padding:6px;border:1px solid #eee;">${r.lots} 口，原始保證金 ${fmtMoney(r.required_initial)}，未實現 ${fmtMoney(r.unrealized)}</td></tr>`).join('\n    ') : ''}
+    ${rollovers.map((r) => `<tr><td style="padding:6px;border:1px solid #eee;">轉倉 ${multi ? nameOf(r.product) + ' ' : ''}${r.month}</td><td style="padding:6px;border:1px solid #eee;">${r.expired ? `已過最後交易日 ${r.ltd}` : `剩 ${r.left} 個交易日（${r.ltd}）`}，${r.lots} 口</td></tr>`).join('\n    ')}
   </table>
-  ${marginNotice ? `
+  ${marginNotices.length > 0 ? `
   <div style="background:#fff3e0;border:1px solid #ffe0b2;border-radius:6px;padding:12px;margin-top:14px;font-size:13px;">
     <h4 style="margin:0 0 6px;color:#e65100;">── 保證金異動 ──</h4>
-    <p style="margin:0 0 4px;">● 期交所 <b>${marginNotice.date}</b> 現行值${marginNotice.stale ? '（期交所暫時抓不到，這是磁碟快取）' : ''}：原始 ${marginNotice.apiInitial.toLocaleString()} / 維持 ${marginNotice.apiMaintenance.toLocaleString()}</p>
-    <p style="margin:0 0 4px;">● 你目前設定：原始 ${marginNotice.currentInitial.toLocaleString()} / 維持 ${marginNotice.currentMaintenance.toLocaleString()}</p>
-    <p style="margin:0 0 4px;">● 依新值重算，你的追繳價會從 <b>${fmtPx(marginNotice.oldMarginCallPrice)}</b> 變成 <b>${fmtPx(marginNotice.newMarginCallPrice)}</b></p>
+    ${marginNotices.map((n) => `
+    <p style="margin:0 0 4px;">● ${multi ? `<b>${nameOf(n.product)}</b>：` : ''}期交所 <b>${n.date}</b> 現行值${n.stale ? '（期交所暫時抓不到，這是磁碟快取）' : ''}：原始 ${n.apiInitial.toLocaleString()} / 維持 ${n.apiMaintenance.toLocaleString()}</p>
+    <p style="margin:0 0 4px;">　你目前設定：原始 ${n.currentInitial.toLocaleString()} / 維持 ${n.currentMaintenance.toLocaleString()}；追繳價會從 <b>${fmtPx(n.oldMarginCallPrice)}</b> 變成 <b>${fmtPx(n.newMarginCallPrice)}</b></p>`).join('\n    ')}
     <p style="margin:0;color:#e65100;font-weight:bold;">● 請到「契約規格 & 設定」按「同步保證金」更新</p>
   </div>` : ''}
   ${notes.snapshotSkip ? `
@@ -458,58 +572,62 @@ async function main() {
   const dryRun = argv.includes('--dry-run');
   const snapshotOnly = argv.includes('--snapshot-only');
 
-  let futures;
+  let raw;
   try {
-    futures = JSON.parse(fs.readFileSync(POSITIONS_PATH, 'utf-8'));
+    raw = JSON.parse(fs.readFileSync(POSITIONS_PATH, 'utf-8'));
   } catch {
     log(`找不到或無法解析期貨部位檔 ${POSITIONS_PATH}（請先在網頁上按「存到雲端」）。跳過。`);
     return;
   }
-  const positions = Array.isArray(futures.positions) ? futures.positions.filter((p) => safeNum(p.lots, 0) > 0) : [];
+  const migrated = migrateFutures(raw);
+  const products = migrated.products;
+  const cash = migrated.cash;
+  const positions = migrated.positions.filter((p) => safeNum(p.lots, 0) > 0);
   if (positions.length === 0) { log('沒有未平倉部位，無需告警也不寫快照。'); return; }
 
-  const contract = String(futures.contract || 'SRF');
+  const referenceCode = pickReferenceCode(products, positions);
 
-  // 行情：打本機 gateway（它會代抓期交所並快取），抓不到就用存檔裡的價格續行——
+  // 行情：逐商品打本機 gateway（它會代抓期交所並快取），抓不到就用存檔裡的價格續行——
   // 部位還在、風險還在，用舊價至少能算出一個保守的提醒，比整支跳過好。
   // 兩套價，用途不同、不能混：
-  //   prices         ── 風險評估用「此刻的市價」（即時價優先），信裡講的追繳距離要照這個
-  //   snapshotPrices ── 權益曲線用「日盤結算價」。每日結算價只由一般交易時段決定
+  //   prices（各商品 .prices）── 風險評估用「此刻的市價」（即時價優先），信裡講的追繳距離要照這個
+  //   snapshot（各商品 ._settlement）── 權益曲線用「日盤結算價」。每日結算價只由一般交易時段決定
   //                     （期交所每日行情檔的盤後列 SettlementPrice 是 NULL），追繳也照它算；
   //                     而且用當下成交價的話，同一天幾點跑 cron 就得到不同的歷史值，
   //                     曲線會變成不可重現。代價是曲線比今天慢一個交易日（每日檔要等
   //                     夜盤跑完才出），這是刻意換來的。
   const pos = (v) => (Number.isFinite(v) && v > 0 ? v : null);
-  let prices = Object.assign({}, futures.prices || {});
-  let snapshotPrices = null;
-  let snapshotDate = null;
-  let quoteDate = String(futures.price_as_of || '').slice(0, 10) || new Date().toLocaleDateString('sv-SE');
-  let quoteStale = true;
-  let priceSession = null;   // 'day' | 'night' | null，只用來在信裡講清楚報價是哪個時段
-  try {
-    const q = await httpGetJson(`${GATEWAY_BASE}/api/futures/quote?contract=${encodeURIComponent(contract)}`);
-    const months = (q && q.months) || [];
-    const snap = {};
-    let got = 0;
-    let settleGot = 0;
-    for (const m of months) {
-      const live = pos(m.live);
-      const daily = pos(m.settlement) ?? pos(m.last);
-      if (live !== null || daily !== null) { prices[m.month] = live ?? daily; got += 1; }
-      if (daily !== null) { snap[m.month] = daily; settleGot += 1; }
+  for (const [code, pp] of Object.entries(products)) {
+    try {
+      const q = await httpGetJson(`${GATEWAY_BASE}/api/futures/quote?contract=${encodeURIComponent(pp.quote_contract || code)}`);
+      const months = (q && q.months) || [];
+      const snap = {};
+      let got = 0, settleGot = 0;
+      for (const m of months) {
+        const live = pos(m.live);
+        const daily = pos(m.settlement) ?? pos(m.last);
+        if (live !== null || daily !== null) { pp.prices[m.month] = live ?? daily; got += 1; }
+        if (daily !== null) { snap[m.month] = daily; settleGot += 1; }
+      }
+      if (got > 0) {
+        pp._quoteStale = false;
+        pp._quoteDate = q.live_as_of ? q.live_as_of.slice(0, 10) : (q.date || null);
+        const withLive = months.find((m) => pos(m.live) !== null);
+        pp._session = withLive ? (withLive.live_session || null) : null;
+      } else {
+        pp._quoteStale = true;
+        log(`${code} 期交所回應沒有可用價格，改用部位檔裡的存價`);
+      }
+      if (settleGot > 0 && q.date) pp._settlement = { prices: snap, date: q.date };
+    } catch (e) {
+      pp._quoteStale = true;
+      log(`抓 ${code} 期交所行情失敗（${e.message}），改用部位檔裡的存價`);
     }
-    if (got > 0) {
-      quoteStale = false;
-      quoteDate = q.live_as_of ? q.live_as_of.slice(0, 10) : (q.date || quoteDate);
-      const withLive = months.find((m) => pos(m.live) !== null);
-      priceSession = withLive ? (withLive.live_session || null) : null;
-    } else {
-      log('期交所回應沒有可用價格，改用部位檔裡的存價');
-    }
-    if (settleGot > 0 && q.date) { snapshotPrices = snap; snapshotDate = q.date; }
-  } catch (e) {
-    log(`抓期交所行情失敗（${e.message}），改用部位檔裡的存價 ${quoteDate}`);
   }
+  const refPP = products[referenceCode];
+  const quoteStale = !refPP || refPP._quoteStale !== false;
+  const quoteDate = (refPP && refPP._quoteDate) || new Date().toLocaleDateString('sv-SE');
+  const priceSession = (refPP && refPP._session) || null;
 
   // 休市日曆（同樣走 gateway；抓不到就只跳過週末）
   let holidays = null;
@@ -518,32 +636,32 @@ async function main() {
     if (h && Array.isArray(h.dates)) holidays = new Set(h.dates);
   } catch (e) { log(`抓休市日曆失敗（${e.message}），最後交易日只跳過週末`); }
 
-  const s = summarize(Object.assign({}, futures, { positions }), prices);
-  log(`風險指標=${fmtPct(s.risk_indicator)} 狀態=${s.status} 權益=${fmtMoney(s.equity)} 參考價=${fmtPx(s.reference_price)}@${quoteDate}${quoteStale ? '(存價)' : ''} 追繳=${fmtPx(s.margin_call_price)} 斷頭=${fmtPx(s.liquidation_price)}`);
+  const s = summarizeAll(products, positions, cash);
+  log(`風險指標=${fmtPct(s.risk_indicator)} 狀態=${s.status} 權益=${fmtMoney(s.equity)} 參考=${referenceCode}@${fmtPx(s.reference_price)}@${quoteDate}${quoteStale ? '(存價)' : ''} 追繳=${fmtPx(s.margin_call_price)} 斷頭=${fmtPx(s.liquidation_price)}`);
 
-  // 抓期交所保證金（用於核對不一致）
-  let marginNotice = null;
+  // 抓期交所保證金（用於核對不一致）——逐商品各自核對，個股期貨沒有這個端點會自然略過
+  const marginNotices = [];
   try {
     const apiMargins = await httpGetJson(`${GATEWAY_BASE}/api/futures/margins`);
-    if (apiMargins && apiMargins.margins && apiMargins.margins[contract]) {
-      const info = apiMargins.margins[contract];
-      const currentInitial = safeNum(futures.spec?.initial_margin, 0);
-      const currentMaintenance = safeNum(futures.spec?.maintenance_margin, 0);
-      if (currentInitial !== info.initial || currentMaintenance !== info.maintenance) {
-        const virtualSpec = Object.assign({}, futures.spec || {}, {
-          initial_margin: info.initial,
-          maintenance_margin: info.maintenance,
-        });
+    if (apiMargins && apiMargins.margins) {
+      for (const [code, pp] of Object.entries(products)) {
+        const info = apiMargins.margins[pp.quote_contract || code];
+        if (!info) continue;
+        const currentInitial = safeNum(pp.spec.initial_margin, 0);
+        const currentMaintenance = safeNum(pp.spec.maintenance_margin, 0);
+        if (currentInitial === info.initial && currentMaintenance === info.maintenance) continue;
         // 跟上面的 s 用同一份 positions，否則兩邊的追繳價不是同一個基準
-        const virtualFutures = Object.assign({}, futures, { spec: virtualSpec, positions });
-        const virtualSummary = summarize(virtualFutures, prices);
-
-        marginNotice = {
+        const virtualProducts = Object.assign({}, products, {
+          [code]: Object.assign({}, pp, { spec: Object.assign({}, pp.spec, { initial_margin: info.initial, maintenance_margin: info.maintenance }) }),
+        });
+        const virtualSummary = summarizeAll(virtualProducts, positions, cash);
+        marginNotices.push({
+          product: code,
           date: apiMargins.date,
           // 去重要用「保證金數值」，不能用 date：實測期交所這個端點的 Date 是
           // **資料日**（每個交易日都推進一天），不是公告日。用 date 當 key 的話
           // 只要設定沒同步，就會每個交易日都寄一封一模一樣的信。
-          key: `${info.initial}/${info.maintenance}`,
+          key: `${code}:${info.initial}/${info.maintenance}`,
           stale: apiMargins.stale === true,
           apiInitial: info.initial,
           apiMaintenance: info.maintenance,
@@ -551,18 +669,24 @@ async function main() {
           currentMaintenance,
           oldMarginCallPrice: s.margin_call_price,
           newMarginCallPrice: virtualSummary.margin_call_price,
-        };
+        });
       }
     }
   } catch (e) {
     log(`抓期交所保證金失敗（${e.message}），略過保證金核對`);
   }
 
-  // 快照：用日盤結算價那套價，日期也用每日行情檔自己的日期——不是「今天」。
-  // 抓不到每日行情就整個略過，寧可曲線缺一天，也不要寫進一列基準不同的資料。
+  // 快照：用日盤結算價那套價，日期也用參考商品每日行情檔自己的日期——不是「今天」。
+  // 抓不到參考商品的每日行情就整個略過，寧可曲線缺一天，也不要寫進一列基準不同的資料。
   let snapshotSkip = null;
-  if (snapshotPrices && snapshotDate) {
-    const snapSummary = summarize(Object.assign({}, futures, { positions }), snapshotPrices);
+  const snapshotDate = refPP && refPP._settlement ? refPP._settlement.date : null;
+  if (snapshotDate) {
+    const snapshotProducts = {};
+    for (const [code, pp] of Object.entries(products)) {
+      const settle = pp._settlement;
+      snapshotProducts[code] = Object.assign({}, pp, { prices: (settle && settle.prices) ? settle.prices : pp.prices });
+    }
+    const snapSummary = summarizeAll(snapshotProducts, positions, cash);
     if (dryRun) {
       log(`DRY-RUN 快照 ${snapshotDate}（日盤結算價）：權益 ${fmtMoney(snapSummary.equity)}`);
     } else {
@@ -575,29 +699,37 @@ async function main() {
   }
   if (snapshotOnly) return;
 
-  // 轉倉提醒：進入提醒區間（預設到期前 7 個交易日）或已過期
+  // 轉倉提醒：進入提醒區間（預設到期前 7 個交易日）或已過期——依「商品＋月份」分組
   const today = new Date().toLocaleDateString('sv-SE');
-  const window = Math.max(0, safeNum((futures.spec || {}).rollover_days, 7));
-  const lotsByMonth = new Map();
-  for (const p of positions) lotsByMonth.set(p.month, (lotsByMonth.get(p.month) || 0) + safeNum(p.lots, 0));
+  const lotsByKey = new Map();
+  for (const p of positions) {
+    const code = p.product && products[p.product] ? p.product : referenceCode;
+    const key = `${code}:${p.month}`;
+    const row = lotsByKey.get(key) || { product: code, month: p.month, lots: 0 };
+    row.lots += safeNum(p.lots, 0);
+    lotsByKey.set(key, row);
+  }
   const rollovers = [];
-  for (const [month, lots] of lotsByMonth) {
+  for (const { product, month, lots } of lotsByKey.values()) {
+    const pp = products[product] || refPP;
+    const window = Math.max(0, safeNum(pp && pp.spec ? pp.spec.rollover_days : 7, 7));
     const ltd = lastTradingDay(month, holidays);
     if (!ltd) continue;
     const left = tradingDaysBetween(today, ltd, holidays);
     const expired = left !== null && left < 0;
-    if (expired || (left !== null && left <= window)) rollovers.push({ month, lots, ltd, left, expired });
+    if (expired || (left !== null && left <= window)) rollovers.push({ product, month, lots, ltd, left, expired });
   }
 
   const state = readState();
   const riskActionable = s.status === 'warn' || s.status === 'call' || s.status === 'danger';
   const riskChanged = s.status !== state.last_status;
-  // 轉倉去重記到「月份＋是否已過期」的層級：同一個月份從「快到期」變成「已過期」要再寄一次
-  const rolloverKey = rollovers.map((r) => `${r.month}:${r.expired ? 'x' : 'due'}`).join(',');
+  // 轉倉去重記到「商品＋月份＋是否已過期」的層級：同一個月份從「快到期」變成「已過期」要再寄一次
+  const rolloverKey = rollovers.map((r) => `${r.product}:${r.month}:${r.expired ? 'x' : 'due'}`).join(',');
   const rolloverChanged = rolloverKey !== '' && rolloverKey !== state.last_rollover_key;
 
   // 保證金去重：同一組保證金數值只講一次（見上面 key 的註解，不能用日期）
-  const hasNewMarginNotice = marginNotice && state.last_margin_notice_key !== marginNotice.key;
+  const marginNoticeKey = marginNotices.map((n) => n.key).sort().join(',');
+  const hasNewMarginNotice = marginNoticeKey !== '' && marginNoticeKey !== state.last_margin_notice_key;
 
   // 快照沒寫成的話要講一聲，否則權益曲線會安靜地長洞。只在「從正常變成寫不進去」
   // 那一次寄，連續失敗不重複轟炸——跟上面狀態／轉倉／保證金同一套去重邏輯。
@@ -609,7 +741,7 @@ async function main() {
       last_rollover_key: rolloverKey,
       last_date: quoteDate,
       risk_indicator: s.risk_indicator,
-      last_margin_notice_key: marginNotice ? marginNotice.key : state.last_margin_notice_key,
+      last_margin_notice_key: marginNoticeKey || state.last_margin_notice_key,
       last_snapshot_skip: !!snapshotSkip,
       updated_at: new Date().toISOString(),
     });
@@ -624,7 +756,7 @@ async function main() {
   if (!riskActionable && !rolloverChanged && !hasNewMarginNotice && !snapshotSkipNew && !force) { log('轉倉提醒/保證金未變化，略過。'); return; }
 
   const { subject, text, html } = buildEmail(
-    s, contract, quoteDate + (quoteStale ? '（存價）' : ''), rollovers, marginNotice,
+    s, products, quoteDate + (quoteStale ? '（存價）' : ''), rollovers, marginNotices,
     { session: priceSession, snapshotSkip, quoteStale },
   );
   if (dryRun) { log('DRY-RUN，不寄信。主旨: ' + subject); console.log('\n' + text + '\n'); return; }

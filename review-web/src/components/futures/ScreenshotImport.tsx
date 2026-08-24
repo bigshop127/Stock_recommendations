@@ -14,10 +14,9 @@
 import React, { useMemo, useRef, useState } from 'react';
 import { ScanLine, ImagePlus, X, CheckCircle2, AlertTriangle, Loader2, Sparkles } from 'lucide-react';
 import { api } from '../../lib/api';
-import type { FuturesSpec } from '../../lib/futures';
 import {
-  buildImportPlan, fillSide,
-  type ScanScreen, type ImportPlan, type ImportState,
+  buildImportPlanForAccount, fillSide, matchProduct,
+  type ScanScreen, type AccountImportPlan, type AccountImportState, type ProductLookup,
 } from '../../lib/futuresImport';
 
 type Picked = { id: string; name: string; mime: string; data: string; url: string; kb: number };
@@ -63,11 +62,12 @@ async function shrink(file: File, maxDim = 2400, quality = 0.9): Promise<Omit<Pi
 }
 
 export const ScreenshotImport: React.FC<{
-  state: ImportState;
-  spec: FuturesSpec;
+  state: AccountImportState;
+  products: Record<string, ProductLookup>;
   today: string;
-  onApply: (plan: ImportPlan) => void;
-}> = ({ state, spec, today, onApply }) => {
+  onApply: (plan: AccountImportPlan) => void;
+}> = ({ state, products, today, onApply }) => {
+  const productName = (code: string) => products[code]?.name || code;
   const [picked, setPicked] = useState<Picked[]>([]);
   const [scan, setScan] = useState<{ status: 'idle' | 'loading' | 'done' | 'error'; msg: string | null; screens: ScanScreen[]; model: string }>(
     { status: 'idle', msg: null, screens: [], model: '' },
@@ -115,8 +115,8 @@ export const ScreenshotImport: React.FC<{
 
   const plan = useMemo(() => {
     if (scan.screens.length === 0) return null;
-    return buildImportPlan(state, scan.screens, spec, { today, adoptSnapshot, applyPrices });
-  }, [state, scan.screens, spec, today, adoptSnapshot, applyPrices]);
+    return buildImportPlanForAccount(state, scan.screens, products, { today, adoptSnapshot, applyPrices });
+  }, [state, scan.screens, products, today, adoptSnapshot, applyPrices]);
 
   const reset = () => {
     setPicked([]);
@@ -227,6 +227,7 @@ export const ScreenshotImport: React.FC<{
               <table className="w-full min-w-[420px] text-[11px]">
                 <thead>
                   <tr className="text-zinc-500 border-b border-border">
+                    <th className="text-left font-medium py-1 pr-2">商品</th>
                     <th className="text-left font-medium py-1 pr-2">月份</th>
                     <th className="text-left font-medium py-1 pr-2">方向</th>
                     <th className="text-right font-medium py-1 pr-2">口數</th>
@@ -236,8 +237,11 @@ export const ScreenshotImport: React.FC<{
                   </tr>
                 </thead>
                 <tbody>
-                  {s.open_rows.map((r, j) => (
+                  {s.open_rows.map((r, j) => {
+                    const matched = matchProduct(r.product, products);
+                    return (
                     <tr key={j} className="border-b border-border/40 last:border-0">
+                      <td className={`py-1 pr-2 ${matched ? 'text-zinc-400' : 'text-amber-400'}`}>{matched ? productName(matched) : `⚠ ${r.product}`}</td>
                       <td className="py-1 pr-2 font-mono text-zinc-300">{mLabel(r.month)}</td>
                       <td className={`py-1 pr-2 ${r.side === 'long' ? 'text-bull' : 'text-bear'}`}>{r.side === 'long' ? '多' : '空'}</td>
                       <td className="py-1 pr-2 text-right font-mono text-zinc-300">{r.lots}</td>
@@ -245,7 +249,8 @@ export const ScreenshotImport: React.FC<{
                       <td className="py-1 pr-2 text-right font-mono text-zinc-400">{r.market_price?.toFixed(2) ?? '—'}</td>
                       <td className="py-1 text-right font-mono text-zinc-400">{r.pnl !== null ? money(r.pnl) : '—'}</td>
                     </tr>
-                  ))}
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
@@ -256,6 +261,7 @@ export const ScreenshotImport: React.FC<{
               <table className="w-full min-w-[520px] text-[11px]">
                 <thead>
                   <tr className="text-zinc-500 border-b border-border">
+                    <th className="text-left font-medium py-1 pr-2">商品</th>
                     <th className="text-left font-medium py-1 pr-2">平倉日</th>
                     <th className="text-left font-medium py-1 pr-2">月份</th>
                     <th className="text-left font-medium py-1 pr-2">方向</th>
@@ -267,8 +273,11 @@ export const ScreenshotImport: React.FC<{
                   </tr>
                 </thead>
                 <tbody>
-                  {s.closed_rows.map((r, j) => (
+                  {s.closed_rows.map((r, j) => {
+                    const matched = matchProduct(r.product, products);
+                    return (
                     <tr key={j} className="border-b border-border/40 last:border-0">
+                      <td className={`py-1 pr-2 ${matched ? 'text-zinc-400' : 'text-amber-400'}`}>{matched ? productName(matched) : `⚠ ${r.product}`}</td>
                       <td className="py-1 pr-2 font-mono text-zinc-400">{r.exit_date}</td>
                       <td className="py-1 pr-2 font-mono text-zinc-300">{mLabel(r.month)}</td>
                       <td className={`py-1 pr-2 ${r.side === 'long' ? 'text-bull' : 'text-bear'}`}>{r.side === 'long' ? '多' : '空'}</td>
@@ -280,7 +289,8 @@ export const ScreenshotImport: React.FC<{
                       </td>
                       <td className="py-1 text-right font-mono text-zinc-300">{r.net_pnl !== null ? money(r.net_pnl) : '—'}</td>
                     </tr>
-                  ))}
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
@@ -291,6 +301,7 @@ export const ScreenshotImport: React.FC<{
               <table className="w-full min-w-[420px] text-[11px]">
                 <thead>
                   <tr className="text-zinc-500 border-b border-border">
+                    <th className="text-left font-medium py-1 pr-2">商品</th>
                     <th className="text-left font-medium py-1 pr-2">成交時間</th>
                     <th className="text-left font-medium py-1 pr-2">月份</th>
                     <th className="text-left font-medium py-1 pr-2">買賣</th>
@@ -300,8 +311,11 @@ export const ScreenshotImport: React.FC<{
                   </tr>
                 </thead>
                 <tbody>
-                  {s.fill_rows.map((r, j) => (
+                  {s.fill_rows.map((r, j) => {
+                    const matched = matchProduct(r.product, products);
+                    return (
                     <tr key={j} className="border-b border-border/40 last:border-0">
+                      <td className={`py-1 pr-2 ${matched ? 'text-zinc-400' : 'text-amber-400'}`}>{matched ? productName(matched) : `⚠ ${r.product}`}</td>
                       <td className="py-1 pr-2 font-mono text-zinc-400">{r.date} {r.time}</td>
                       <td className="py-1 pr-2 font-mono text-zinc-300">{mLabel(r.month)}</td>
                       <td className={`py-1 pr-2 ${r.direction === 'buy' ? 'text-bull' : 'text-bear'}`}>{r.direction === 'buy' ? '買進' : '賣出'}</td>
@@ -312,7 +326,8 @@ export const ScreenshotImport: React.FC<{
                       <td className="py-1 pr-2 text-right font-mono text-zinc-300">{r.lots}</td>
                       <td className="py-1 text-right font-mono text-zinc-400">{r.price.toFixed(2)}</td>
                     </tr>
-                  ))}
+                    );
+                  })}
                 </tbody>
               </table>
             </div>

@@ -78,7 +78,13 @@ function feeOrNull(v) {
   return Number.isFinite(n) && n >= 0 ? n : null;
 }
 
-function sanitizePositions(val) {
+/** 商品代碼：大寫英數，上限比舊版帳戶代碼的 6 碼寬一些（自建個股期貨代碼可能更長） */
+function safeProductCode(v, fb) {
+  const s = str(v).toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 10);
+  return s || (fb || '');
+}
+
+function sanitizePositions(val, codes, defaultCode) {
   if (!Array.isArray(val)) return [];
   const out = [];
   val.forEach((p, i) => {
@@ -89,11 +95,13 @@ function sanitizePositions(val) {
     const lots = Math.max(0, num(p.lots, 0));
     const entry_price = Math.max(0, num(p.entry_price, 0));
     const entry_date = safeDate(p.entry_date);
-    const id = str(p.id) || `f_${month}_${side}_${i}_${lots}_${entry_price}`;
+    const rawProduct = safeProductCode(p.product);
+    const product = rawProduct && codes.includes(rawProduct) ? rawProduct : defaultCode;
+    const id = str(p.id) || `f_${product}_${month}_${side}_${i}_${lots}_${entry_price}`;
     const note = str(p.note);
     const ref = safeRef(p.ref);
     out.push({
-      id, month, side, lots, entry_price, entry_date,
+      id, product, month, side, lots, entry_price, entry_date,
       ...(note ? { note } : {}),
       ...(ref ? { ref } : {}),
     });
@@ -101,7 +109,7 @@ function sanitizePositions(val) {
   return out;
 }
 
-function sanitizeClosed(val) {
+function sanitizeClosed(val, codes, defaultCode) {
   if (!Array.isArray(val)) return [];
   const out = [];
   val.forEach((t, i) => {
@@ -114,13 +122,15 @@ function sanitizeClosed(val) {
     const exit_price = Math.max(0, num(t.exit_price, 0));
     const exit_date = safeDate(t.exit_date);
     const entry_date = safeDate(t.entry_date);
-    const id = str(t.id) || `c_${month}_${side}_${i}_${lots}_${exit_price}`;
+    const rawProduct = safeProductCode(t.product);
+    const product = rawProduct && codes.includes(rawProduct) ? rawProduct : defaultCode;
+    const id = str(t.id) || `c_${product}_${month}_${side}_${i}_${lots}_${exit_price}`;
     const note = str(t.note);
     const ref = safeRef(t.ref);
     const fee = feeOrNull(t.fee);
     const tax = feeOrNull(t.tax);
     out.push({
-      id, month, side, lots, entry_price, exit_price, exit_date,
+      id, product, month, side, lots, entry_price, exit_price, exit_date,
       ...(entry_date ? { entry_date } : {}),
       ...(note ? { note } : {}),
       ...(ref ? { ref } : {}),
@@ -231,9 +241,96 @@ function sanitizeRefs(val) {
   return [...new Set(out)].slice(-MAX_IMPORTED_REFS);
 }
 
+/**
+ * 一個商品的完整設定。個股期貨跟 SRF/NYF 一樣沒有 OpenAPI 保證金端點，契約規格
+ * 一律由前端手動輸入送上來——這裡只 clamp／補預設值，不驗證數字合不合理。
+ */
+function sanitizeProduct(v, code) {
+  const o = v && typeof v === 'object' ? v : {};
+  return {
+    code,
+    name: str(o.name) || code,
+    quote_contract: safeProductCode(o.quote_contract, code) || code,
+    underlying: str(o.underlying),
+    spec: sanitizeSpec(o.spec),
+    beta: clamp(o.beta, 0.01, 5, 1),
+    index_ref: Math.max(0, num(o.index_ref, 0)),
+    index_linked: Boolean(o.index_linked),
+    price: Math.max(0, num(o.price, 0)),
+    prices: sanitizePrices(o.prices),
+    price_month: safeMonth(o.price_month),
+    price_as_of: /^\d{4}-\d{2}-\d{2}/.test(str(o.price_as_of)) ? str(o.price_as_of) : '',
+    price_source: o.price_source === 'live' ? 'live' : (o.price_source === 'manual' ? 'manual' : 'daily'),
+    is_custom: Boolean(o.is_custom),
+  };
+}
+
+function sanitizeProducts(v) {
+  const o = v && typeof v === 'object' ? v : {};
+  const out = {};
+  for (const [k, val] of Object.entries(o)) {
+    const code = safeProductCode(k);
+    if (!code) continue;
+    out[code] = sanitizeProduct(val, code);
+  }
+  return out;
+}
+
+/**
+ * 舊格式遷移：8/24 以前存的帳戶設定整包只有一組 `contract`/`spec`/`beta`/
+ * `index_ref`/`prices`，把它們包成 products 表裡的單一商品。VM 正式站現在存的
+ * 就是這個格式——遷移錯了會讓既有 SRF 部位的保證金/風險指標跟遷移前對不起來，
+ * 這段動了要先跑 review-web 的 futures.test.ts 遷移回歸案例再部署。
+ */
+function legacyProduct(b) {
+  const code = safeProductCode(b.contract, 'SRF') || 'SRF';
+  return {
+    code,
+    product: {
+      code,
+      name: code,
+      quote_contract: code,
+      underlying: '',
+      spec: sanitizeSpec(b.spec),
+      beta: clamp(b.beta, 0.01, 5, 1),
+      index_ref: Math.max(0, num(b.index_ref, 0)),
+      index_linked: false,
+      price: Math.max(0, num(b.price, 0)),
+      prices: sanitizePrices(b.prices),
+      price_month: safeMonth(b.price_month),
+      price_as_of: /^\d{4}-\d{2}-\d{2}/.test(str(b.price_as_of)) ? str(b.price_as_of) : '',
+      price_source: b.price_source === 'live' ? 'live' : 'daily',
+      is_custom: false,
+    },
+  };
+}
+
 function sanitizeFutures(body) {
   const b = body && typeof body === 'object' ? body : {};
-  const positions = sanitizePositions(b.positions);
+
+  const rawProducts = b.products;
+  const hasNewShape = Boolean(rawProducts && typeof rawProducts === 'object' && Object.keys(rawProducts).length > 0);
+  let products;
+  let migratedDefaultCode = '';
+  if (hasNewShape) {
+    products = sanitizeProducts(rawProducts);
+  } else {
+    const legacy = legacyProduct(b);
+    products = { [legacy.code]: legacy.product };
+    migratedDefaultCode = legacy.code;
+  }
+  if (Object.keys(products).length === 0) {
+    const legacy = legacyProduct({});
+    products = { [legacy.code]: legacy.product };
+    migratedDefaultCode = legacy.code;
+  }
+  const codes = Object.keys(products);
+  const wantedActive = safeProductCode(b.active_product);
+  const active_product = codes.includes(wantedActive)
+    ? wantedActive
+    : (migratedDefaultCode && codes.includes(migratedDefaultCode) ? migratedDefaultCode : codes[0]);
+
+  const positions = sanitizePositions(b.positions, codes, active_product);
   const ids = new Set(positions.map((p) => p.id));
   const stopIn = b.stop_loss && typeof b.stop_loss === 'object' ? b.stop_loss : {};
   const stop_loss = {};
@@ -242,23 +339,25 @@ function sanitizeFutures(body) {
     const p = num(stopIn[k], 0);
     if (p > 0) stop_loss[k] = p;
   }
-  const contract = (str(b.contract, 'SRF') || 'SRF').toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 6) || 'SRF';
+
+  // planner 舊格式是單一物件（沒有逐商品 key）；新格式才是 `{ [code]: PlannerConfig }`
+  const plannerIn = b.planner && typeof b.planner === 'object' ? b.planner : {};
+  const planner = {};
+  if (hasNewShape) {
+    for (const c of codes) planner[c] = sanitizePlanner(plannerIn[c]);
+  } else {
+    for (const c of codes) planner[c] = c === active_product ? sanitizePlanner(plannerIn) : sanitizePlanner({});
+  }
+
   return {
-    contract,
-    price: Math.max(0, num(b.price, 0)),
-    prices: sanitizePrices(b.prices),
-    price_month: safeMonth(b.price_month),
-    price_as_of: /^\d{4}-\d{2}-\d{2}/.test(str(b.price_as_of)) ? str(b.price_as_of) : '',
-    price_source: b.price_source === 'live' ? 'live' : 'daily',
+    products,
+    active_product,
     cash: num(b.cash, 0), // 權益數可為負（穿價），不 clamp
-    index_ref: Math.max(0, num(b.index_ref, 0)),
-    beta: clamp(b.beta, 0.01, 5, 1),
-    spec: sanitizeSpec(b.spec),
     positions,
-    closed: sanitizeClosed(b.closed),
+    closed: sanitizeClosed(b.closed, codes, active_product),
     cash_flows: sanitizeCashFlows(b.cash_flows),
     stop_loss,
-    planner: sanitizePlanner(b.planner),
+    planner,
     imported_refs: sanitizeRefs(b.imported_refs),
   };
 }

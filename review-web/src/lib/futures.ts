@@ -47,9 +47,15 @@ export function tickValue(spec: FuturesSpec): number {
 
 export type Side = 'long' | 'short';
 
-/** 一筆未平倉部位（同月份同方向可以分筆記，均價各自算） */
+/** 一筆未平倉部位（同商品同月份同方向可以分筆記，均價各自算） */
 export interface FuturesPosition {
   id: string;
+  /**
+   * 商品代碼，對應 FuturesConfig.products 的 key（見 futuresStore.ts）。
+   * 帳戶可能同時持有多個商品（例如 SRF ETF 期貨＋個股期貨），月份代碼本身
+   * 在不同商品間會撞號（都可能有 202609），一定要靠這個欄位才分得出來。
+   */
+  product: string;
   month: string;        // 到期月份 'YYYYMM'
   side: Side;
   lots: number;         // 口數
@@ -68,6 +74,8 @@ export interface FuturesPosition {
 /** 已平倉紀錄（用來累算已實現損益，並讓權益數對得起來） */
 export interface ClosedTrade {
   id: string;
+  /** 商品代碼，語意同 FuturesPosition.product */
+  product: string;
   month: string;
   side: Side;           // 開倉方向
   lots: number;
@@ -338,6 +346,7 @@ export function closeLots(
 
   const closed: ClosedTrade = {
     id: extra?.id || `c_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+    product: pos.product,
     month: pos.month,
     side: pos.side,
     lots: want,
@@ -468,6 +477,25 @@ export interface AccountSummary {
   margin_call_price: number | null;  // 參考月份的追繳價（＝reference_price + margin_call_shift）
   liquidation_price: number | null;  // 參考月份的斷頭價
   status: 'flat' | 'ok' | 'warn' | 'call' | 'danger';
+  /**
+   * 以下三個欄位只有 summarizeAccountAll()（多商品彙總）才會填，summarizeAccount()
+   * （單商品）維持 undefined——舊有呼叫端不用改就能繼續動作。
+   */
+  reference_product?: string;        // 參考月份所屬的商品代碼
+  /** 觸發追繳／斷頭需要「大盤同時變動」的比例（負值＝下跌）；換算個別商品價格要再乘該商品的 beta */
+  margin_call_move?: number | null;
+  liquidation_move?: number | null;
+  by_product?: ProductSummaryRow[];  // 逐商品的口數／曝險／損益／保證金小計
+}
+
+/** 逐商品的彙總小計，供多商品帳戶的畫面拆分顯示 */
+export interface ProductSummaryRow {
+  product: string;
+  lots: number;
+  contract_value: number;
+  unrealized: number;
+  required_initial: number;
+  required_maintenance: number;
 }
 
 /**
@@ -580,9 +608,161 @@ export function summarizeAccount(
   };
 }
 
+/**
+ * 帳戶彙總——多商品版。行為與 summarizeAccount() 完全一致，唯一差別是每個部位
+ * 依 `pos.product` 各自查自己的 spec／價格，不是全部套同一組。
+ *
+ * ⚠️ 追繳／斷頭價的解法必須跟著改：summarizeAccount() 解的是「參考商品的價格平移
+ * δ」，這在只有一個商品時成立（所有部位共用同一個價格軸），但兩個不同商品
+ * （例如 0050 期貨跟聯電期）的價格不能用同一個絕對平移量描述。這裡改成解
+ * 「大盤同時變動 X%」，每個部位用自己商品的 beta 換算價格變動：
+ *
+ *   price_p(X) = price_p(0) · (1 + beta_p · X)
+ *   equity(X)  = equity(0) + X · Σ_pos [ lots_p · unit_p · price_p(0) · beta_p · (sign_p − taxRate_p) ]
+ *
+ * 對 X 仍是線性（每個部位對 X 的偏微分是常數），所以解法跟原本一樣簡單，只是
+ * denom 從「單一 spec 的封閉式」變成逐部位加總。只有一個商品、beta＝1 時，
+ * X·beta_p·price_p(0) 就等於原本的 δ，兩個函式的 margin_call_shift／
+ * liquidation_shift／margin_call_price／liquidation_price 逐位元相同
+ * （見 futures.test.ts 的回歸測試）。
+ */
+export function summarizeAccountAll(
+  positions: FuturesPosition[],
+  products: Record<string, ProductPriceSpec>,
+  cash: number,
+  closed: ClosedTrade[] = [],
+): AccountSummary {
+  const keys = Object.keys(products);
+  const fallbackKey = keys[0];
+  const resolve = (code: string): ProductPriceSpec | undefined => products[code] ?? (fallbackKey ? products[fallbackKey] : undefined);
+  const list = Array.isArray(positions) ? positions : [];
+
+  let total_lots = 0;
+  let net_lots = 0;
+  let long_lots = 0;
+  let short_lots = 0;
+  let contract_value = 0;
+  let unrealized = 0;
+  let unrealized_gross = 0;
+  let denom = 0;
+  const lotsByRef = new Map<string, number>();      // key = `${product}:${month}`，找口數最多的那筆當參考
+  const byProduct = new Map<string, ProductSummaryRow>();
+
+  for (const pos of list) {
+    const lots = Math.max(0, safe(pos.lots));
+    if (lots <= 0) continue;
+    const pp = resolve(pos.product);
+    if (!pp) continue;
+    const spec = pp.spec;
+    const unit = Math.max(1, safe(spec.contract_size, 1000));
+    const price0 = priceOf(pp.price, pos.month);
+    const beta = Math.max(0, safe(pp.beta, 1));
+    const s = sign(pos.side);
+    const taxRate = Math.max(0, safe(spec.tax_rate));
+
+    total_lots += lots;
+    net_lots += s * lots;
+    if (s > 0) long_lots += lots; else short_lots += lots;
+
+    const pnl = positionPnl(pos, price0, spec);
+    contract_value += pnl.contract_value;
+    unrealized += pnl.net_pnl;
+    unrealized_gross += pnl.gross_pnl;
+
+    const k = unit * price0 * beta;
+    denom += lots * k * (s - taxRate);
+
+    const refKey = `${pos.product}:${pos.month}`;
+    lotsByRef.set(refKey, (lotsByRef.get(refKey) ?? 0) + lots);
+
+    const row = byProduct.get(pos.product) ?? {
+      product: pos.product, lots: 0, contract_value: 0, unrealized: 0,
+      required_initial: 0, required_maintenance: 0,
+    };
+    row.lots += lots;
+    row.contract_value += pnl.contract_value;
+    row.unrealized += pnl.net_pnl;
+    row.required_initial += Math.max(0, safe(spec.initial_margin)) * lots;
+    row.required_maintenance += Math.max(0, safe(spec.maintenance_margin)) * lots;
+    byProduct.set(pos.product, row);
+  }
+
+  // 參考商品／月份＝口數最多的那組（平手取排序後第一個，跟 summarizeAccount 的
+  // 「平手取近月」精神一致，只是 key 多了商品這一段）
+  let reference_product = '';
+  let reference_month = '';
+  let refLots = -1;
+  for (const key of [...lotsByRef.keys()].sort()) {
+    const l = lotsByRef.get(key) ?? 0;
+    if (l > refLots) {
+      refLots = l;
+      const [prod, month] = key.split(':');
+      reference_product = prod;
+      reference_month = month;
+    }
+  }
+  const refPP = reference_product ? resolve(reference_product) : (fallbackKey ? products[fallbackKey] : undefined);
+  const refBeta = refPP ? Math.max(0, safe(refPP.beta, 1)) : 1;
+  const reference_price = total_lots > 0 && refPP ? priceOf(refPP.price, reference_month) : 0;
+
+  const months = [...new Set(list.map((p) => p.month))].sort();
+  const required_initial = [...byProduct.values()].reduce((sum, r) => sum + r.required_initial, 0);
+  const required_maintenance = [...byProduct.values()].reduce((sum, r) => sum + r.required_maintenance, 0);
+
+  const realized = (Array.isArray(closed) ? closed : []).reduce((sum, t) => {
+    const pp = resolve(t.product);
+    return pp ? sum + closedPnl(t, pp.spec) : sum;
+  }, 0);
+  const cashBal = safe(cash);
+  const equity = cashBal + unrealized;
+  const equity_broker = cashBal + unrealized_gross;
+  const excess = equity - required_initial;
+  const risk_indicator = required_initial > 0 ? equity / required_initial : null;
+  const margin_call_ratio = required_initial > 0 ? required_maintenance / required_initial : null;
+  const leverage = equity > 0 && contract_value > 0 ? contract_value / equity : null;
+
+  const shiftToMove = (target: number): number | null => {
+    if (denom === 0) return null;
+    return (target - equity) / denom;
+  };
+  // liquidation_ratio 是期交所統一規定（25%），各商品理論上會一樣；有分歧時用參考商品的值
+  const liquidationRatio = Math.max(0, safe(refPP?.spec.liquidation_ratio, 0.25));
+  const margin_call_move = shiftToMove(required_maintenance);
+  const liquidation_move = shiftToMove(required_initial * liquidationRatio);
+  const moveToShift = (move: number | null) => (move === null ? null : reference_price * refBeta * move);
+  const margin_call_shift = moveToShift(margin_call_move);
+  const liquidation_shift = moveToShift(liquidation_move);
+  const priceAt = (shift: number | null) => (shift === null ? null : Math.max(0, reference_price + shift));
+
+  let status: AccountSummary['status'] = 'flat';
+  if (total_lots > 0 && risk_indicator !== null) {
+    if (risk_indicator < liquidationRatio) status = 'danger';
+    else if (equity < required_maintenance) status = 'call';
+    else if (equity < required_initial) status = 'warn';
+    else status = 'ok';
+  }
+
+  return {
+    total_lots, net_lots, long_lots, short_lots,
+    contract_value, unrealized, unrealized_gross, realized, equity, equity_broker,
+    required_initial, required_maintenance, excess,
+    risk_indicator, margin_call_ratio, leverage,
+    months, reference_month, reference_price,
+    margin_call_shift, liquidation_shift,
+    margin_call_price: priceAt(margin_call_shift),
+    liquidation_price: priceAt(liquidation_shift),
+    status,
+    reference_product,
+    margin_call_move,
+    liquidation_move,
+    by_product: [...byProduct.values()],
+  };
+}
+
 // ── 轉倉提醒 ────────────────────────────────────────────────────────────────
 
 export interface RolloverAlert {
+  product: string;
   month: string;
   lots: number;
   last_trading_day: string | null;
@@ -596,7 +776,8 @@ export interface RolloverAlert {
 }
 
 /**
- * 每個有未平倉口數的月份各給一則轉倉狀態。
+ * 每個「商品＋有未平倉口數的月份」各給一則轉倉狀態——多商品時月份代碼會撞號
+ * （兩個商品都可能有 202609），不能只用月份分組。
  *
  * 提醒區間用**營業日**判斷而不是日曆天：到期前一週如果卡到連假，日曆天還有 7 天
  * 但實際只剩 2 個交易日能處理，用日曆天算會晚兩天才亮燈。沒有假日曆時退回日曆天。
@@ -605,20 +786,24 @@ export interface RolloverAlert {
  */
 export function rolloverAlerts(
   positions: FuturesPosition[],
-  spec: FuturesSpec,
+  specs: Record<string, FuturesSpec>,
   today: string,
   holidays?: Holidays,
 ): RolloverAlert[] {
-  const byMonth = new Map<string, number>();
+  const byKey = new Map<string, { product: string; month: string; lots: number }>();
   for (const pos of Array.isArray(positions) ? positions : []) {
     const lots = Math.max(0, safe(pos.lots));
     if (lots <= 0) continue;
-    byMonth.set(pos.month, (byMonth.get(pos.month) || 0) + lots);
+    const key = `${pos.product}:${pos.month}`;
+    const row = byKey.get(key) ?? { product: pos.product, month: pos.month, lots: 0 };
+    row.lots += lots;
+    byKey.set(key, row);
   }
 
-  const window = Math.max(0, safe(spec.rollover_days, 7));
   const out: RolloverAlert[] = [];
-  for (const [month, lots] of byMonth) {
+  for (const { product, month, lots } of byKey.values()) {
+    const spec = specs[product];
+    const window = Math.max(0, safe(spec?.rollover_days, 7));
     const raw = lastTradingDay(month);                 // 未經假日校正的第三個星期三
     const ltd = lastTradingDay(month, holidays);       // 校正後
     // 假日曆只涵蓋當年度：月份不在涵蓋範圍內時，這個日期沒被真正驗證過
@@ -635,6 +820,7 @@ export function rolloverAlerts(
     else if (left !== null && left <= 2) level = 'urgent';
     else if (due) level = 'soon';
     out.push({
+      product,
       month,
       lots,
       last_trading_day: ltd,
@@ -647,7 +833,7 @@ export function rolloverAlerts(
       level,
     });
   }
-  return out.sort((a, b) => (a.month < b.month ? -1 : a.month > b.month ? 1 : 0));
+  return out.sort((a, b) => (a.month < b.month ? -1 : a.month > b.month ? 1 : (a.product < b.product ? -1 : a.product > b.product ? 1 : 0)));
 }
 
 /**
@@ -790,6 +976,41 @@ export function findPreset(code: string): (SymbolPreset & { spec: FuturesSpec })
   return SYMBOL_PRESETS.find((p) => p.code === c) ?? null;
 }
 
+// ── 帳戶持有的商品（多商品併存）──────────────────────────────────────────────
+
+/**
+ * 帳戶目前持有／設定過的一個商品（內建的 SYMBOL_PRESETS 之一，或使用者自建的
+ * 個股期貨）。FuturesConfig.products 是 `code → ProductConfig` 的表，
+ * FuturesPosition.product／ClosedTrade.product 指到這裡的 key。
+ *
+ * 個股期貨沒有 OpenAPI 保證金端點（跟 SRF/NYF 同一類），契約規格一律手動輸入，
+ * 跟既有 SRF/NYF 的維護模式一致——`is_custom` 只是用來在 UI 上跟 5 個內建預設分開列。
+ */
+export interface ProductConfig {
+  code: string;               // 帳戶內部 key（內建商品＝SYMBOL_PRESETS 的 code；自建商品由使用者輸入）
+  name: string;                // 顯示名稱，如「聯電期」
+  quote_contract: string;      // 期交所 DailyMarketReportFut 的 Contract 欄位值（抓每日行情用）
+  underlying: string;          // 標的描述，如「2303 聯電」或「0050」
+  spec: FuturesSpec;
+  beta: number;                // 標的相對大盤的連動係數，供斷頭價/追繳價的多商品情境換算與壓力測試用
+  index_ref: number;           // 現價當下的加權指數
+  index_linked: boolean;       // true＝標的本身就是大盤指數（beta 固定 1）
+  price: number;               // 參考價／缺月份時的退路（抓期交所或手動輸入）
+  prices: Record<string, number>; // 各到期月份的價格 'YYYYMM' → 價
+  price_month: string;
+  price_as_of: string;
+  price_source: 'live' | 'daily' | 'manual';
+  is_custom: boolean;          // true＝使用者自建（個股期貨等），false＝SYMBOL_PRESETS 內建
+}
+
+/** summarizeAccountAll／stressTest 需要的最小資訊：這個商品現在怎麼估價、規格是什麼 */
+export interface ProductPriceSpec {
+  spec: FuturesSpec;
+  price: PriceInput;
+  beta: number;
+  index_ref?: number;
+}
+
 // ── 大盤連動 ────────────────────────────────────────────────────────────────
 
 /**
@@ -842,8 +1063,7 @@ export const DEFAULT_STRESS_DROPS = [-0.05, 0.03, 0.05, 0.08, 0.1, 0.15, 0.2, 0.
  */
 function applyStops(
   positions: FuturesPosition[],
-  price: PriceInput,
-  spec: FuturesSpec,
+  products: Record<string, ProductPriceSpec>,
   stopLoss?: Record<string, number>,
 ): { remaining: FuturesPosition[]; realized: number; stoppedLots: number } {
   if (!stopLoss || Object.keys(stopLoss).length === 0) {
@@ -853,12 +1073,14 @@ function applyStops(
   let realized = 0;
   let stoppedLots = 0;
   for (const p of Array.isArray(positions) ? positions : []) {
+    const pp = products[p.product];
+    if (!pp) { remaining.push(p); continue; }
     const stop = safe(stopLoss[p.id], 0);
-    const px = priceOf(price, p.month);
+    const px = priceOf(pp.price, p.month);
     // 多單跌破停損、空單漲破停損 → 出場
     const hit = stop > 0 && (p.side === 'long' ? px <= stop : px >= stop);
     if (hit) {
-      realized += positionPnl(p, stop, spec).net_pnl;
+      realized += positionPnl(p, stop, pp.spec).net_pnl;
       stoppedLots += Math.max(0, safe(p.lots));
     } else {
       remaining.push(p);
@@ -868,34 +1090,39 @@ function applyStops(
 }
 
 /**
- * 大盤變動 X% 時帳戶會變成什麼樣子。
+ * 大盤變動 X% 時帳戶會變成什麼樣子——多商品版：每個商品各自的 beta 把「大盤變動」
+ * 換算成自己的價格變動（跟 summarizeAccountAll 解斷頭價用的是同一套模型），
+ * 縮放完再直接重跑 summarizeAccountAll()，費用/期交稅/多空對沖的處理跟總覽頁
+ * 完全一致，不會出現「總覽算的跟壓力測試算的對不起來」。
  *
- * 直接重跑 summarizeAccount()，所以費用、期交稅、多空對沖的處理跟總覽頁完全一致，
- * 不會出現「總覽算的跟壓力測試算的對不起來」。各月份**按比例一起變動**，
- * 月份價差維持結構不變。
+ * `drops` 是「大盤變動比例」本身（0.05＝跌 5%），不是任一商品自己的價格變動比例——
+ * 每個商品用自己的 beta 再換算一次，這樣兩個 beta 不同的商品（例如 0050 期貨
+ * beta≈1.05、某檔波動更大的個股期貨 beta≈1.3）才會在同一個「大盤跌多少」的情境
+ * 下各自算出合理的價格變動。
  */
 export function stressTest(
   positions: FuturesPosition[],
-  spec: FuturesSpec,
+  products: Record<string, ProductPriceSpec>,
   cash: number,
-  price: PriceInput,
-  opts: { drops?: number[]; index?: number; beta?: number; stopLoss?: Record<string, number> } = {},
+  opts: { drops?: number[]; stopLoss?: Record<string, number> } = {},
 ): StressRow[] {
   const drops = (opts.drops ?? DEFAULT_STRESS_DROPS).slice().sort((a, b) => a - b);
-  const beta = Math.max(0, safe(opts.beta, 1));
-  const refIndex = safe(opts.index, 0);
 
   return drops.map((d) => {
     const drop = safe(d);
-    const after = scalePrices(price, Math.max(0, 1 - beta * drop));
-    const { remaining, realized, stoppedLots } = applyStops(positions, after, spec, opts.stopLoss);
-    const s = summarizeAccount(remaining, after, spec, safe(cash) + realized, []);
+    const after: Record<string, ProductPriceSpec> = {};
+    for (const [code, pp] of Object.entries(products)) {
+      const beta = Math.max(0, safe(pp.beta, 1));
+      after[code] = { ...pp, price: scalePrices(pp.price, Math.max(0, 1 - beta * drop)) };
+    }
+    const { remaining, realized, stoppedLots } = applyStops(positions, after, opts.stopLoss);
+    const s = summarizeAccountAll(remaining, after, safe(cash) + realized, []);
+    const refCode = s.reference_product || Object.keys(products)[0] || '';
+    const refIndex = safe(products[refCode]?.index_ref, 0);
     return {
       drop,
       index_after: refIndex > 0 ? refIndex * (1 - drop) : null,
-      price_after: s.total_lots > 0
-        ? s.reference_price
-        : priceOf(after, referenceMonthOf(positions)),
+      price_after: s.reference_price,
       unrealized: s.unrealized,
       equity: s.equity,
       excess: s.excess,
@@ -1571,7 +1798,7 @@ export function leverageLadder(
       };
     }
     const pos: FuturesPosition[] = [{
-      id: 'lev-' + lv, month: '000000', side: 'long', lots,
+      id: 'lev-' + lv, product: 'SRF', month: '000000', side: 'long', lots,
       entry_price: p, entry_date: '',
     }];
     const s = summarizeAccount(pos, p, spec, cap);
