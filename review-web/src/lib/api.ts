@@ -594,6 +594,8 @@ export const api = {
   getFuturesQuote: (contract = 'SRF') =>
     req<FuturesQuoteResp>(`/futures/quote${qs({ contract })}`),
   getFuturesMargins: () => req<FuturesMarginsResp>('/futures/margins'),
+  // 個股/ETF期貨保證金（沒有 OpenAPI，gateway 代抓期交所 stockMargining 頁面解析）
+  getFuturesStockMargins: () => req<FuturesStockMarginsResp>('/futures/stock-margins'),
   // 台股休市日曆（證交所 OpenAPI，只涵蓋當年度）——期貨最後交易日遇假日要順延
   getMarketHolidays: () => req<MarketHolidaysResp>('/market/holidays'),
   getFuturesEquityHistory: () => req<FuturesEquityHistoryResp>('/futures/equity-history'),
@@ -692,6 +694,37 @@ export interface FuturesMarginInfo {
   maintenance: number;
   clearing: number;
   contract_name: string;
+}
+
+/** 個股期貨的保證金是「比例」不是金額——要乘上標的期貨現價 × 契約單位才是實際金額，且會隨標的價格每天變動 */
+export interface StockMarginInfo {
+  stock_code: string;
+  name: string;
+  tier: string;
+  settlement_pct: number;
+  maintenance_pct: number;
+  initial_pct: number;
+}
+
+/** ETF 期貨（SRF/NYF 這類）的保證金跟指數類一樣是固定金額 */
+export interface EtfMarginInfo {
+  stock_code: string;
+  name: string;
+  settlement: number;
+  maintenance: number;
+  initial: number;
+}
+
+export interface FuturesStockMarginsResp {
+  source: string;
+  fetched_at: string;
+  stock_date: string;  // 個股期貨那張表自己標的「更新日期」，'YYYY-MM-DD'
+  etf_date: string;    // ETF期貨那張表自己標的「更新日期」
+  stocks: Record<string, StockMarginInfo>;  // key＝股票期貨英文代碼，如 CCF（聯電期）
+  etfs: Record<string, EtfMarginInfo>;      // key＝ETF期貨英文代碼，如 SRF／NYF
+  cached?: boolean;
+  stale?: boolean;
+  stale_reason?: string;
 }
 
 export interface TaiexResp {

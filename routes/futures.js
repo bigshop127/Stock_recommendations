@@ -913,6 +913,173 @@ router.get('/api/futures/margins', async (req, res) => {
   }
 });
 
+// ── 個股/ETF期貨保證金（沒有 OpenAPI，只有 HTML 表格）────────────────────────
+//
+// https://www.taifex.com.tw/cht/5/stockMargining 分兩張表：
+//   (一) 標的證券為股票之股票期貨契約 —— 給的是**比例**（原始/維持/結算保證金
+//        適用比例），不是金額。個股期貨的保證金 = 標的期貨現價 × 契約單位 × 比例，
+//        會隨標的價格每天變動，跟指數類/ETF類的固定金額不是同一種東西。
+//   (二) 標的證券為受益憑證之股票期貨契約 —— SRF/NYF 這類 ETF 期貨在這張，
+//        直接給金額（跟 DEFAULT_SPEC 現在存的 6,700/8,700 是同一個口徑）。
+// 這頁沒有 JSON API、也沒有版號可以偵測改版，用固定的 headers="xxx" 屬性逐列抓——
+// 比多裝一個 HTML parser 套件划算，但欄位順序真的改版就會抓到 0 筆（有防呆）。
+const STOCK_MARGINS_CACHE_PATH = path.join(DATA_DIR, 'taifex_stock_margins.json');
+// 這頁「更新日期」欄位顯示的是以週/月為單位在變，不像行情那樣分秒必爭，快取拉長到
+// 6 小時對期交所比較客氣；失敗退回磁碟快取只給 30 分鐘，避免暫時性失敗卡一整天。
+const STOCK_MARGINS_TTL_MS = 6 * 60 * 60 * 1000;
+const STOCK_MARGINS_STALE_TTL_MS = 30 * 60 * 1000;
+const STOCK_MARGINS_URL = process.env.TAIFEX_STOCK_MARGINS_URL
+  || 'https://www.taifex.com.tw/cht/5/stockMargining';
+let stockMarginsCache = { at: 0, data: null, stale: false };
+
+/** 從一段 HTML 裡逐列抓 <td headers="xxx">值</td>；抓不齊該列的欄位就整列跳過 */
+function extractStockMarginRows(html, headerIds) {
+  const rows = [];
+  const rowRe = /<tr>([\s\S]*?)<\/tr>/g;
+  let m;
+  while ((m = rowRe.exec(html))) {
+    const rowHtml = m[1];
+    const cells = {};
+    let ok = true;
+    for (const h of headerIds) {
+      const cellRe = new RegExp(`headers="${h}"[^>]*>([\\s\\S]*?)<\\/td>`);
+      const cm = cellRe.exec(rowHtml);
+      if (!cm) { ok = false; break; }
+      cells[h] = cm[1].replace(/<br\s*\/?>/gi, ' ').replace(/&nbsp;/gi, ' ').replace(/<[^>]+>/g, '').trim();
+    }
+    if (ok) rows.push(cells);
+  }
+  return rows;
+}
+
+/** 從 startMarker 開始截到 endMarker 之前（截不到 endMarker 就取到底），兩個都是頁面上的固定文字 */
+function sliceHtmlSection(html, startMarker, endMarker) {
+  const start = html.indexOf(startMarker);
+  if (start < 0) return '';
+  const from = html.slice(start);
+  const end = from.indexOf(endMarker);
+  return end > 0 ? from.slice(0, end) : from;
+}
+
+function pctOrNull(v) {
+  const n = parseFloat(String(v).replace('%', '').trim());
+  return Number.isFinite(n) ? n / 100 : null;
+}
+function amountOrNull(v) {
+  const n = parseFloat(String(v).replace(/,/g, '').trim());
+  return Number.isFinite(n) ? n : null;
+}
+
+/**
+ * 每個表格區塊自己標的「更新日期：2026/08/20」，轉成 ['2026-08-20', ...]。
+ * 這個標籤出現在區塊的 <table> **之前**（sliceHtmlSection 的起點是 <thead> 的
+ * id="id_a"/id_b，日期在那之前），所以不能從切出來的區塊裡找，改成掃全頁一次，
+ * 依頁面固定順序取——股票期貨表在前、ETF期貨表在後（股票選擇權/ETF選擇權的
+ * 日期也會被掃到，但那两個在後面用不到，取前兩個就是要的）。
+ */
+function pageUpdateDates(html) {
+  const out = [];
+  const re = /更新日期[：:]\s*(\d{4})\/(\d{2})\/(\d{2})/g;
+  let m;
+  while ((m = re.exec(html))) out.push(`${m[1]}-${m[2]}-${m[3]}`);
+  return out;
+}
+
+// GET /api/futures/stock-margins —— 個股期貨（比例）＋ ETF 期貨（金額）保證金
+router.get('/api/futures/stock-margins', async (req, res) => {
+  const now = Date.now();
+  const ttl = stockMarginsCache.stale ? STOCK_MARGINS_STALE_TTL_MS : STOCK_MARGINS_TTL_MS;
+  if (stockMarginsCache.data && now - stockMarginsCache.at < ttl) {
+    return res.json({ ...stockMarginsCache.data, cached: true, stale: stockMarginsCache.stale });
+  }
+
+  const serveDisk = (reason) => {
+    try {
+      if (fs.existsSync(STOCK_MARGINS_CACHE_PATH)) {
+        const disk = JSON.parse(fs.readFileSync(STOCK_MARGINS_CACHE_PATH, 'utf-8'));
+        const stale = { ...disk, stale_reason: reason };
+        stockMarginsCache = { at: now, data: stale, stale: true };
+        return res.json({ ...stale, cached: false, stale: true });
+      }
+    } catch { /* 快取檔壞掉就當沒有 */ }
+    return sendError(res, httpError(502, 'TAIFEX', '抓取期交所個股/ETF期貨保證金失敗: ' + reason));
+  };
+
+  try {
+    const r = await fetch(STOCK_MARGINS_URL, {
+      headers: { 'User-Agent': 'Mozilla/5.0 (compatible; puhui-review-web/1.0)' },
+      signal: AbortSignal.timeout(20000),
+    });
+    if (!r.ok) return serveDisk(`HTTP ${r.status}`);
+    const html = await r.text();
+
+    const stockSection = sliceHtmlSection(html, 'id="id_a"', '標的證券為受益憑證之股票期貨契約');
+    const etfSection = sliceHtmlSection(html, 'id="id_b"', '股票選擇權契約保證金一覽表');
+    const [stockDate = '', etfDate = ''] = pageUpdateDates(html);
+
+    const stockRows = extractStockMarginRows(stockSection,
+      ['bond_id_a', 'commodity_stock_id_a', 'bond_ch_name1_a', 'bond_cate_a', 'bond_rate1', 'bond_rate2', 'bond_rate3']);
+    const etfRows = extractStockMarginRows(etfSection,
+      ['bond_id_b', 'commodity_stock_id_b', 'bond_ch_name1_b', 'bond_rate1_b', 'bond_rate2_b', 'bond_rate3_b']);
+
+    const stocks = {};
+    for (const row of stockRows) {
+      const code = str(row.bond_id_a).trim().toUpperCase();
+      if (!code) continue;
+      const settlement_pct = pctOrNull(row.bond_rate1);
+      const maintenance_pct = pctOrNull(row.bond_rate2);
+      const initial_pct = pctOrNull(row.bond_rate3);
+      if (initial_pct === null || maintenance_pct === null) continue;
+      stocks[code] = {
+        stock_code: row.commodity_stock_id_a,
+        name: row.bond_ch_name1_a,
+        tier: row.bond_cate_a,
+        settlement_pct, maintenance_pct, initial_pct,
+      };
+    }
+
+    const etfs = {};
+    for (const row of etfRows) {
+      const code = str(row.bond_id_b).trim().toUpperCase();
+      if (!code) continue;
+      const settlement = amountOrNull(row.bond_rate1_b);
+      const maintenance = amountOrNull(row.bond_rate2_b);
+      const initial = amountOrNull(row.bond_rate3_b);
+      if (initial === null || maintenance === null) continue;
+      etfs[code] = {
+        stock_code: row.commodity_stock_id_b,
+        name: row.bond_ch_name1_b,
+        settlement, maintenance, initial,
+      };
+    }
+
+    if (Object.keys(stocks).length === 0 && Object.keys(etfs).length === 0) {
+      return serveDisk('解析不到任何保證金資料，網頁版面可能改版了');
+    }
+
+    const data = {
+      source: 'taifex-html',
+      fetched_at: new Date().toISOString(),
+      stock_date: stockDate,
+      etf_date: etfDate,
+      stocks,
+      etfs,
+    };
+
+    try {
+      fs.mkdirSync(DATA_DIR, { recursive: true });
+      const tmp = STOCK_MARGINS_CACHE_PATH + '.tmp';
+      fs.writeFileSync(tmp, JSON.stringify(data, null, 2));
+      fs.renameSync(tmp, STOCK_MARGINS_CACHE_PATH);
+    } catch (e) { /* 落地失敗不影響這次回應 */ }
+
+    stockMarginsCache = { at: now, data, stale: false };
+    return res.json({ ...data, cached: false, stale: false });
+  } catch (err) {
+    return serveDisk(err.message);
+  }
+});
+
 // ── 權益數歷史（scripts/futures_alert.cjs 每日寫入）──────────────────────────
 //
 // 只讀不寫：寫入端是排程腳本，網頁改設定不該動到歷史紀錄。檔案不存在（還沒跑過

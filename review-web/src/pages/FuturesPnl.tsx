@@ -12,7 +12,7 @@ import { Panel, StatTile, RiskMeter, ThreatCard, LevelCard, Row, Chip, type Tone
 import { ScreenshotImport } from '../components/futures/ScreenshotImport';
 import type { AccountImportState, ProductLookup } from '../lib/futuresImport';
 import { api } from '../lib/api';
-import type { FuturesMonthQuote, FuturesEquityHistoryResp, FuturesMarginsResp, TaiexResp } from '../lib/api';
+import type { FuturesMonthQuote, FuturesEquityHistoryResp, FuturesMarginsResp, FuturesStockMarginsResp, TaiexResp } from '../lib/api';
 import {
   CONTRACT_CODE, CONTRACT_NAME, UNDERLYING_CODE,
   SYMBOL_PRESETS, findPreset,
@@ -3812,6 +3812,7 @@ const SettingsTab: React.FC<{
   const [addingCustom, setAddingCustom] = useState(false);
   const [newProduct, setNewProduct] = useState(NEW_PRODUCT_FORM_SEED);
   const [apiMargins, setApiMargins] = useState<FuturesMarginsResp | null>(null);
+  const [stockMargins, setStockMargins] = useState<FuturesStockMarginsResp | null>(null);
   const [syncState, setSyncState] = useState<{
     status: 'idle' | 'loading' | 'success' | 'error';
     message: string | null;
@@ -3836,65 +3837,101 @@ const SettingsTab: React.FC<{
     api.getFuturesMargins()
       .then((res) => { if (!cancelled) setApiMargins(res); })
       .catch(() => { /* ignore */ });
+    api.getFuturesStockMargins()
+      .then((res) => { if (!cancelled) setStockMargins(res); })
+      .catch(() => { /* ignore */ });
     return () => { cancelled = true; };
   }, []);
 
+  /**
+   * 套用一組新算出來的保證金：跑 before/after 的 summarizeAccount 對比，開確認 modal——
+   * 不管保證金是從哪個來源算出來的（指數類固定金額／個股期貨比例×現價），套用前
+   * 都要看得到「這樣改對現有部位的影響」，同一套 UI，不分岔。
+   */
+  const openMarginConfirm = (date: string, initial: number, maintenance: number) => {
+    const newSpec: FuturesSpec = { ...activeProductCfg.spec, initial_margin: initial, maintenance_margin: maintenance };
+    const ownPositions = config.positions.filter((p) => p.product === activeCode);
+    const ownClosed = config.closed.filter((t) => t.product === activeCode);
+    const priceInput = { byMonth: activeProductCfg.prices, fallback: activeProductCfg.price };
+    const oldSummary = summarizeAccount(ownPositions, priceInput, activeProductCfg.spec, config.cash, ownClosed);
+    const newSummary = summarizeAccount(ownPositions, priceInput, newSpec, config.cash, ownClosed);
+    setSyncModal({
+      isOpen: true,
+      date,
+      oldInitial: activeProductCfg.spec.initial_margin,
+      newInitial: initial,
+      oldMaintenance: activeProductCfg.spec.maintenance_margin,
+      newMaintenance: maintenance,
+      lots: oldSummary.total_lots,
+      oldMarginUsed: oldSummary.required_initial,
+      newMarginUsed: newSummary.required_initial,
+      oldMarginCallPrice: oldSummary.margin_call_price,
+      newMarginCallPrice: newSummary.margin_call_price,
+      pendingSpec: newSpec,
+    });
+  };
+
   const handleSyncMargins = async () => {
     setSyncState({ status: 'loading', message: null });
+    const contractKey = (activeProductCfg.quote_contract || activeCode).toUpperCase();
     try {
+      // 來源①：指數類（TX／MTX／TMF）OpenAPI，固定金額
       const resp = await api.getFuturesMargins();
       setApiMargins(resp);
-      const contractKey = activeProductCfg.quote_contract || activeCode;
       const marginInfo = resp.margins[contractKey];
-      if (!marginInfo) {
-        setSyncState({
-          status: 'success',
-          message: `這個商品期交所沒有提供 API，保證金請依期貨商通知手動維護`
-        });
+      if (marginInfo) {
+        if (activeProductCfg.spec.initial_margin === marginInfo.initial && activeProductCfg.spec.maintenance_margin === marginInfo.maintenance) {
+          setSyncState({ status: 'success', message: `已是最新（期交所 ${resp.date} 現行值${resp.stale ? '，磁碟快取' : ''}）` });
+        } else {
+          openMarginConfirm(resp.date, marginInfo.initial, marginInfo.maintenance);
+          setSyncState({ status: 'idle', message: null });
+        }
         return;
       }
 
-      const isIdentical =
-        activeProductCfg.spec.initial_margin === marginInfo.initial &&
-        activeProductCfg.spec.maintenance_margin === marginInfo.maintenance;
-
-      if (isIdentical) {
-        setSyncState({
-          status: 'success',
-          message: `已是最新（期交所 ${resp.date} 現行值${resp.stale ? '，磁碟快取' : ''}）`
-        });
+      // 來源②：個股/ETF期貨（沒有 OpenAPI，gateway 代抓 stockMargining 頁面解析）
+      const stockResp = await api.getFuturesStockMargins();
+      const etfInfo = stockResp.etfs[contractKey];
+      if (etfInfo) {
+        if (activeProductCfg.spec.initial_margin === etfInfo.initial && activeProductCfg.spec.maintenance_margin === etfInfo.maintenance) {
+          setSyncState({ status: 'success', message: `已是最新（期交所 ${stockResp.etf_date || stockResp.fetched_at.slice(0, 10)} 現行值${stockResp.stale ? '，磁碟快取' : ''}）` });
+        } else {
+          openMarginConfirm(stockResp.etf_date || stockResp.fetched_at.slice(0, 10), etfInfo.initial, etfInfo.maintenance);
+          setSyncState({ status: 'idle', message: null });
+        }
         return;
       }
 
-      const newSpec: FuturesSpec = {
-        ...activeProductCfg.spec,
-        initial_margin: marginInfo.initial,
-        maintenance_margin: marginInfo.maintenance,
-      };
+      const stockInfo = stockResp.stocks[contractKey];
+      if (stockInfo) {
+        // 個股期貨給的是比例，要乘上「目前這個商品在用的現價」才是金額，而且會隨標的
+        // 價格每天變動——沒有現價就算不出來，不能自己編一個數字出來假裝同步成功。
+        const ownPositions = config.positions.filter((p) => p.product === activeCode);
+        const refMonth = referenceMonthOf(ownPositions);
+        const price = priceOf({ byMonth: activeProductCfg.prices, fallback: activeProductCfg.price }, refMonth);
+        if (!(price > 0)) {
+          setSyncState({
+            status: 'error',
+            message: `這個商品的保證金是比例（原始 ${(stockInfo.initial_pct * 100).toFixed(2)}%／維持 ${(stockInfo.maintenance_pct * 100).toFixed(2)}%，${stockInfo.tier}），要乘上現價才是金額——先按「真實同步」抓到報價或手動填現價，再同步保證金。`,
+          });
+          return;
+        }
+        const unit = Math.max(1, activeProductCfg.spec.contract_size || 2000);
+        const initial = Math.round(price * unit * stockInfo.initial_pct);
+        const maintenance = Math.round(price * unit * stockInfo.maintenance_pct);
+        if (activeProductCfg.spec.initial_margin === initial && activeProductCfg.spec.maintenance_margin === maintenance) {
+          setSyncState({ status: 'success', message: `已是最新（依期交所 ${stockInfo.tier} 比例 × 現價 ${price} 算出，${stockResp.stock_date || '比例表'}${stockResp.stale ? '，磁碟快取' : ''}）` });
+        } else {
+          openMarginConfirm(
+            `${stockResp.stock_date || stockResp.fetched_at.slice(0, 10)}（${stockInfo.tier}比例 ${(stockInfo.initial_pct * 100).toFixed(2)}% × 現價 ${price}，非固定金額，行情變動會跟著變）`,
+            initial, maintenance,
+          );
+          setSyncState({ status: 'idle', message: null });
+        }
+        return;
+      }
 
-      const ownPositions = config.positions.filter((p) => p.product === activeCode);
-      const ownClosed = config.closed.filter((t) => t.product === activeCode);
-      const priceInput = { byMonth: activeProductCfg.prices, fallback: activeProductCfg.price };
-      const oldSummary = summarizeAccount(ownPositions, priceInput, activeProductCfg.spec, config.cash, ownClosed);
-      const newSummary = summarizeAccount(ownPositions, priceInput, newSpec, config.cash, ownClosed);
-
-      // 口數與所需保證金直接取彙總的結果，不要自己再 reduce 一次——
-      // summarizeAccount 會把負數/壞掉的 lots 夾成 0，手算的版本不會。
-      setSyncModal({
-        isOpen: true,
-        date: resp.date,
-        oldInitial: activeProductCfg.spec.initial_margin,
-        newInitial: marginInfo.initial,
-        oldMaintenance: activeProductCfg.spec.maintenance_margin,
-        newMaintenance: marginInfo.maintenance,
-        lots: oldSummary.total_lots,
-        oldMarginUsed: oldSummary.required_initial,
-        newMarginUsed: newSummary.required_initial,
-        oldMarginCallPrice: oldSummary.margin_call_price,
-        newMarginCallPrice: newSummary.margin_call_price,
-        pendingSpec: newSpec,
-      });
-      setSyncState({ status: 'idle', message: null });
+      setSyncState({ status: 'success', message: `這個商品期交所沒有提供保證金資料，請依期貨商通知手動維護` });
     } catch (e) {
       setSyncState({
         status: 'error',
@@ -3906,9 +3943,10 @@ const SettingsTab: React.FC<{
   // 說明文字有四種狀態，其中「不一致」是最需要講話的那一種——你的追繳價正在用
   // 舊保證金算。原本這個狀態會掉到最後的預設文案，反而什麼都不提醒。
   const marginDescription: { text: string; warn: boolean } = (() => {
+    const contractKey = (activeProductCfg.quote_contract || activeCode).toUpperCase();
     const stale = apiMargins?.stale ? '（期交所暫時抓不到，顯示的是磁碟快取）' : '';
     if (apiMargins) {
-      const marginInfo = apiMargins.margins[activeProductCfg.quote_contract || activeCode];
+      const marginInfo = apiMargins.margins[contractKey];
       if (marginInfo) {
         const same = activeProductCfg.spec.initial_margin === marginInfo.initial
           && activeProductCfg.spec.maintenance_margin === marginInfo.maintenance;
@@ -3922,11 +3960,32 @@ const SettingsTab: React.FC<{
           warn: true,
         };
       }
-      return { text: '這個商品期交所沒有提供 OpenAPI，保證金請依期貨商通知手動維護。', warn: false };
+    }
+    // 指數類 OpenAPI 沒有這個代碼，退回個股/ETF期貨那份（gateway 代抓 stockMargining 頁面解析）
+    if (stockMargins) {
+      const sStale = stockMargins.stale ? '（期交所暫時抓不到，顯示的是磁碟快取）' : '';
+      const etfInfo = stockMargins.etfs[contractKey];
+      if (etfInfo) {
+        const same = activeProductCfg.spec.initial_margin === etfInfo.initial && activeProductCfg.spec.maintenance_margin === etfInfo.maintenance;
+        if (same) return { text: `保證金＝期交所 ${stockMargins.etf_date} 現行值（自動同步）${sStale}`, warn: false };
+        return {
+          text: `⚠️ 目前設定（原始 ${money(activeProductCfg.spec.initial_margin)}／維持 ${money(activeProductCfg.spec.maintenance_margin)}）`
+            + `與期交所 ${stockMargins.etf_date} 現行值（原始 ${money(etfInfo.initial)}／維持 ${money(etfInfo.maintenance)}）不一致`
+            + `${sStale}，追繳價與斷頭價正在用舊值計算——請按下方「同步保證金」。`,
+          warn: true,
+        };
+      }
+      const stockInfo = stockMargins.stocks[contractKey];
+      if (stockInfo) {
+        return {
+          text: `保證金是比例、不是固定金額（${stockInfo.tier}：原始 ${(stockInfo.initial_pct * 100).toFixed(2)}%／維持 ${(stockInfo.maintenance_pct * 100).toFixed(2)}% × 現價，期交所 ${stockMargins.stock_date} 現行值${sStale}）——按下方「同步保證金」會用目前的現價換算成金額，行情變動後金額會跟著變，記得不時重新同步。`,
+          warn: false,
+        };
+      }
     }
     return {
       text: '保證金會依市場風險調整，期貨商通知調整時回來這裡改，追繳價與斷頭價會跟著更新。'
-        + '指數類商品（TX／MTX／TMF）可以按下方「同步保證金」直接抓期交所現行值。',
+        + '按下方「同步保證金」可直接抓期交所現行值（指數類與個股/ETF期貨皆支援）。',
       warn: false,
     };
   })();
