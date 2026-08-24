@@ -3797,7 +3797,7 @@ const NEW_PRODUCT_FORM_SEED = {
   code: '', name: '', underlying: '', quote_contract: '',
   contract_size: '2000', tick_size: '0.05',
   initial_margin: '', maintenance_margin: '', fee_per_lot: '', tax_rate: '0.00002',
-  beta: '1',
+  beta: '1', ref_price: '',
 };
 
 const SettingsTab: React.FC<{
@@ -4057,7 +4057,7 @@ const SettingsTab: React.FC<{
     }));
   };
 
-  /** 新增個股期貨等自建商品——契約規格一律手動輸入（跟 SRF/NYF 一樣，期交所沒有這類的 OpenAPI 保證金端點） */
+  /** 新增個股期貨等自建商品——契約單位/跳動點/手續費仍手動輸入；保證金若「期交所行情代碼」對得上 stockMargins 表，UI 會提供「套用」按鈕自動代入，使用者仍可手動覆蓋 */
   const submitCustomProduct = () => {
     const code = newProduct.code.trim().toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 10);
     const name = newProduct.name.trim();
@@ -4113,6 +4113,26 @@ const SettingsTab: React.FC<{
         planner: nextPlanner,
         active_product: c.active_product === code ? (codes[0] ?? code) : c.active_product,
       };
+    }));
+  };
+
+  /** 新增商品表單填的「期交所行情代碼」若在剛抓回來的 stockMargins 表裡對得到號，就能直接抓現行值套用，不用使用者自己手算比例 */
+  const newProductLookupCode = (newProduct.quote_contract.trim() || newProduct.code.trim()).toUpperCase();
+  const newProductEtfMatch = stockMargins?.etfs[newProductLookupCode];
+  const newProductStockMatch = !newProductEtfMatch ? stockMargins?.stocks[newProductLookupCode] : undefined;
+  const applyNewProductEtfMargin = () => {
+    if (!newProductEtfMatch) return;
+    setNewProduct((f) => ({ ...f, initial_margin: String(newProductEtfMatch.initial), maintenance_margin: String(newProductEtfMatch.maintenance) }));
+  };
+  const applyNewProductStockMargin = () => {
+    if (!newProductStockMatch) return;
+    const price = parseFloat(newProduct.ref_price);
+    const size = parseFloat(newProduct.contract_size);
+    if (!(price > 0) || !(size > 0)) return;
+    setNewProduct((f) => ({
+      ...f,
+      initial_margin: String(Math.round(price * size * newProductStockMatch.initial_pct)),
+      maintenance_margin: String(Math.round(price * size * newProductStockMatch.maintenance_pct)),
     }));
   };
 
@@ -4181,7 +4201,7 @@ const SettingsTab: React.FC<{
           ) : (
             <div className="space-y-3 bg-zinc-900/40 border border-border rounded-xl p-4">
               <div className="text-[11px] text-zinc-400">
-                個股期貨跟 0050 期貨一樣，期交所沒有保證金 OpenAPI，契約單位／保證金請照期交所公告或券商 App 手動填。
+                契約單位／跳動點請照期交所公告或券商 App 手動填；保證金若填對「期交所行情代碼」，下面會自動抓期交所現行值可以直接套用，不用自己算。
               </div>
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                 <Field label="顯示名稱" hint="例：聯電期">
@@ -4225,6 +4245,35 @@ const SettingsTab: React.FC<{
                     className="w-full bg-zinc-900 border border-border rounded-lg px-3 py-2 text-sm font-mono text-zinc-100" />
                 </Field>
               </div>
+
+              {newProductEtfMatch && (
+                <div className="bg-emerald-500/10 border border-emerald-500/30 rounded-lg p-3 space-y-2">
+                  <div className="text-[11px] text-emerald-300">
+                    抓到期交所現行值（{newProductLookupCode}，{stockMargins?.etf_date}）：原始 {money(newProductEtfMatch.initial)} ／ 維持 {money(newProductEtfMatch.maintenance)}
+                  </div>
+                  <button type="button" onClick={applyNewProductEtfMargin} className="px-3 py-1.5 bg-emerald-500/20 border border-emerald-500/40 text-emerald-300 text-[11px] font-semibold rounded-lg hover:bg-emerald-500/30 transition">
+                    套用到上面的保證金欄位
+                  </button>
+                </div>
+              )}
+              {newProductStockMatch && (
+                <div className="bg-emerald-500/10 border border-emerald-500/30 rounded-lg p-3 space-y-2">
+                  <div className="text-[11px] text-emerald-300">
+                    抓到期交所現行比例（{newProductLookupCode}，{newProductStockMatch.tier}，{stockMargins?.stock_date}）：原始 {(newProductStockMatch.initial_pct * 100).toFixed(2)}% ／ 維持 {(newProductStockMatch.maintenance_pct * 100).toFixed(2)}%——個股期貨的保證金是比例，要乘上參考價才是金額。
+                  </div>
+                  <div className="flex items-end gap-2">
+                    <Field label="目前參考價" hint="用來換算成金額；之後行情變動可以再到設定頁按「同步保證金」重算">
+                      <input type="number" step="0.05" min="0" value={newProduct.ref_price} onChange={(e) => setNewProduct((f) => ({ ...f, ref_price: e.target.value }))}
+                        className="w-28 bg-zinc-900 border border-border rounded-lg px-3 py-2 text-sm font-mono text-zinc-100" placeholder="例：125" />
+                    </Field>
+                    <button type="button" onClick={applyNewProductStockMargin} disabled={!(parseFloat(newProduct.ref_price) > 0)}
+                      className="px-3 py-1.5 bg-emerald-500/20 border border-emerald-500/40 text-emerald-300 text-[11px] font-semibold rounded-lg hover:bg-emerald-500/30 transition disabled:opacity-40 disabled:cursor-not-allowed">
+                      套用到上面的保證金欄位
+                    </button>
+                  </div>
+                </div>
+              )}
+
               <div className="flex items-center gap-2">
                 <button onClick={submitCustomProduct} className="px-4 py-2 bg-primary text-white text-xs font-semibold rounded-lg hover:bg-primary/90 transition">
                   新增商品
