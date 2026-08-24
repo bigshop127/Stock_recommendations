@@ -596,6 +596,8 @@ export const api = {
   getFuturesMargins: () => req<FuturesMarginsResp>('/futures/margins'),
   // 個股/ETF期貨保證金（沒有 OpenAPI，gateway 代抓期交所 stockMargining 頁面解析）
   getFuturesStockMargins: () => req<FuturesStockMarginsResp>('/futures/stock-margins'),
+  // 個股期貨標的的契約單位（沒有 OpenAPI，gateway 代抓期交所 stockLists 頁面解析）
+  getFuturesStockContracts: () => req<FuturesStockContractsResp>('/futures/stock-contracts'),
   // 台股休市日曆（證交所 OpenAPI，只涵蓋當年度）——期貨最後交易日遇假日要順延
   getMarketHolidays: () => req<MarketHolidaysResp>('/market/holidays'),
   getFuturesEquityHistory: () => req<FuturesEquityHistoryResp>('/futures/equity-history'),
@@ -722,6 +724,22 @@ export interface FuturesStockMarginsResp {
   etf_date: string;    // ETF期貨那張表自己標的「更新日期」
   stocks: Record<string, StockMarginInfo>;  // key＝股票期貨英文代碼，如 CCF（聯電期）
   etfs: Record<string, EtfMarginInfo>;      // key＝ETF期貨英文代碼，如 SRF／NYF
+  cached?: boolean;
+  stale?: boolean;
+  stale_reason?: string;
+}
+
+/** 契約單位（股數/口）——key 是「商品代碼」不含月份也不含期貨的 F 字尾，如 CC（聯電） */
+export interface StockContractInfo {
+  stock_code: string;
+  name: string;
+  abbrev: string;
+  contract_size: number;
+}
+export interface FuturesStockContractsResp {
+  source: string;
+  fetched_at: string;
+  contracts: Record<string, StockContractInfo>;
   cached?: boolean;
   stale?: boolean;
   stale_reason?: string;

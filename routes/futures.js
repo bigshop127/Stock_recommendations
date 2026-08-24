@@ -1080,6 +1080,107 @@ router.get('/api/futures/stock-margins', async (req, res) => {
   }
 });
 
+// ── 個股期貨標的清單（契約單位）───────────────────────────────────────────────
+// 期交所「股票期貨/股票選擇權 交易標的」頁：https://www.taifex.com.tw/cht/2/stockLists
+// 這頁沒有 headers="xxx" 屬性可以定位欄位，改用固定欄位順序解析（見 extractStockListRows）。
+// 資料是「哪些股票能開期貨、契約規格多大」，不像保證金比例常常變，快取拉到 24 小時對
+// 期交所比較客氣；失敗退回磁碟快取只給 1 小時。
+const STOCK_CONTRACTS_CACHE_PATH = path.join(DATA_DIR, 'taifex_stock_contracts.json');
+const STOCK_CONTRACTS_TTL_MS = 24 * 60 * 60 * 1000;
+const STOCK_CONTRACTS_STALE_TTL_MS = 60 * 60 * 1000;
+const STOCK_CONTRACTS_URL = process.env.TAIFEX_STOCK_LISTS_URL
+  || 'https://www.taifex.com.tw/cht/2/stockLists';
+let stockContractsCache = { at: 0, data: null, stale: false };
+
+/**
+ * 逐列抓 <tr>...</tr> 裡固定順序的 <td>，這頁沒有 headers="xxx" 可以定位欄位。
+ * 欄位順序（14 欄）：商品代碼／標的證券全名／證券代號／簡稱／期貨勾選／選擇權勾選／
+ * 週選擇權勾選／上市普通股／上櫃普通股／上市ETF／上櫃ETF／契約單位／
+ * 一般交易時段／盤後交易時段；抓不到 12 欄以上就整列跳過（順便濾掉表尾合計列）。
+ */
+function extractStockListRows(html) {
+  const rows = [];
+  const rowRe = /<tr>([\s\S]*?)<\/tr>/g;
+  let m;
+  while ((m = rowRe.exec(html))) {
+    const cellRe = /<td[^>]*>([\s\S]*?)<\/td>/g;
+    const cells = [];
+    let cm;
+    while ((cm = cellRe.exec(m[1]))) {
+      cells.push(cm[1].replace(/<[^>]+>/g, ' ').replace(/&nbsp;/gi, ' ').replace(/\s+/g, ' ').trim());
+    }
+    if (cells.length >= 12) rows.push(cells);
+  }
+  return rows;
+}
+
+// GET /api/futures/stock-contracts —— 個股期貨標的的契約單位（股數/口），key＝商品代碼（不含月份，如 CC）
+router.get('/api/futures/stock-contracts', async (req, res) => {
+  const now = Date.now();
+  const ttl = stockContractsCache.stale ? STOCK_CONTRACTS_STALE_TTL_MS : STOCK_CONTRACTS_TTL_MS;
+  if (stockContractsCache.data && now - stockContractsCache.at < ttl) {
+    return res.json({ ...stockContractsCache.data, cached: true, stale: stockContractsCache.stale });
+  }
+
+  const serveDisk = (reason) => {
+    try {
+      if (fs.existsSync(STOCK_CONTRACTS_CACHE_PATH)) {
+        const disk = JSON.parse(fs.readFileSync(STOCK_CONTRACTS_CACHE_PATH, 'utf-8'));
+        const stale = { ...disk, stale_reason: reason };
+        stockContractsCache = { at: now, data: stale, stale: true };
+        return res.json({ ...stale, cached: false, stale: true });
+      }
+    } catch { /* 快取檔壞掉就當沒有 */ }
+    return sendError(res, httpError(502, 'TAIFEX', '抓取期交所股票期貨標的清單失敗: ' + reason));
+  };
+
+  try {
+    const r = await fetch(STOCK_CONTRACTS_URL, {
+      headers: { 'User-Agent': 'Mozilla/5.0 (compatible; puhui-review-web/1.0)' },
+      signal: AbortSignal.timeout(20000),
+    });
+    if (!r.ok) return serveDisk(`HTTP ${r.status}`);
+    const html = await r.text();
+    const rows = extractStockListRows(html);
+
+    const contracts = {};
+    for (const cells of rows) {
+      const code = str(cells[0]).trim().toUpperCase();
+      if (!/^[A-Z0-9]{2,4}$/.test(code)) continue; // 濾掉表尾「標的合計數」列
+      const size = amountOrNull(cells[11]);
+      if (size === null) continue;
+      contracts[code] = {
+        stock_code: cells[2] || '',
+        name: cells[1] || '',
+        abbrev: cells[3] || '',
+        contract_size: size,
+      };
+    }
+
+    if (Object.keys(contracts).length === 0) {
+      return serveDisk('解析不到任何標的資料，網頁版面可能改版了');
+    }
+
+    const data = {
+      source: 'taifex-html',
+      fetched_at: new Date().toISOString(),
+      contracts,
+    };
+
+    try {
+      fs.mkdirSync(DATA_DIR, { recursive: true });
+      const tmp = STOCK_CONTRACTS_CACHE_PATH + '.tmp';
+      fs.writeFileSync(tmp, JSON.stringify(data, null, 2));
+      fs.renameSync(tmp, STOCK_CONTRACTS_CACHE_PATH);
+    } catch (e) { /* 落地失敗不影響這次回應 */ }
+
+    stockContractsCache = { at: now, data, stale: false };
+    return res.json({ ...data, cached: false, stale: false });
+  } catch (err) {
+    return serveDisk(err.message);
+  }
+});
+
 // ── 權益數歷史（scripts/futures_alert.cjs 每日寫入）──────────────────────────
 //
 // 只讀不寫：寫入端是排程腳本，網頁改設定不該動到歷史紀錄。檔案不存在（還沒跑過

@@ -12,7 +12,7 @@ import { Panel, StatTile, RiskMeter, ThreatCard, LevelCard, Row, Chip, type Tone
 import { ScreenshotImport } from '../components/futures/ScreenshotImport';
 import type { AccountImportState, ProductLookup } from '../lib/futuresImport';
 import { api } from '../lib/api';
-import type { FuturesMonthQuote, FuturesEquityHistoryResp, FuturesMarginsResp, FuturesStockMarginsResp, TaiexResp } from '../lib/api';
+import type { FuturesMonthQuote, FuturesEquityHistoryResp, FuturesMarginsResp, FuturesStockMarginsResp, FuturesStockContractsResp, TaiexResp } from '../lib/api';
 import {
   CONTRACT_CODE, CONTRACT_NAME, UNDERLYING_CODE,
   SYMBOL_PRESETS, findPreset,
@@ -3813,6 +3813,9 @@ const SettingsTab: React.FC<{
   const [newProduct, setNewProduct] = useState(NEW_PRODUCT_FORM_SEED);
   const [apiMargins, setApiMargins] = useState<FuturesMarginsResp | null>(null);
   const [stockMargins, setStockMargins] = useState<FuturesStockMarginsResp | null>(null);
+  const [stockContracts, setStockContracts] = useState<FuturesStockContractsResp | null>(null);
+  const [productQuery, setProductQuery] = useState('');
+  const [productPickBusy, setProductPickBusy] = useState<string | null>(null);
   const [syncState, setSyncState] = useState<{
     status: 'idle' | 'loading' | 'success' | 'error';
     message: string | null;
@@ -3840,6 +3843,9 @@ const SettingsTab: React.FC<{
     api.getFuturesStockMargins()
       .then((res) => { if (!cancelled) setStockMargins(res); })
       .catch(() => { /* ignore */ });
+    api.getFuturesStockContracts()
+      .then((res) => { if (!cancelled) setStockContracts(res); })
+      .catch(() => { /* 抓不到契約單位就讓使用者照舊手動填 */ });
     return () => { cancelled = true; };
   }, []);
 
@@ -4136,6 +4142,77 @@ const SettingsTab: React.FC<{
     }));
   };
 
+  /**
+   * 「搜尋標的」下拉的候選清單——直接從已經載入的 stockMargins 表建，不用另打一次 API。
+   * name 欄位是「聯電期貨」這種帶「期貨」字尾的商品簡稱，顯示跟比對前先把字尾拿掉。
+   */
+  const productSearchIndex = useMemo(() => {
+    const list: { code: string; label: string; stockCode: string; kind: 'stock' | 'etf' }[] = [];
+    if (stockMargins) {
+      for (const [code, m] of Object.entries(stockMargins.stocks)) {
+        list.push({ code, label: m.name.replace(/期貨$/, '').trim() || m.name, stockCode: m.stock_code, kind: 'stock' });
+      }
+      for (const [code, m] of Object.entries(stockMargins.etfs)) {
+        list.push({ code, label: m.name.replace(/期貨$/, '').trim() || m.name, stockCode: m.stock_code, kind: 'etf' });
+      }
+    }
+    return list;
+  }, [stockMargins]);
+
+  const productSearchResults = useMemo(() => {
+    const q = productQuery.trim();
+    if (!q) return [];
+    const qUpper = q.toUpperCase();
+    return productSearchIndex
+      .filter((e) => e.label.includes(q) || e.stockCode.includes(q) || e.code.includes(qUpper))
+      .slice(0, 8);
+  }, [productQuery, productSearchIndex]);
+
+  /**
+   * 選一個搜尋結果＝一次帶入名稱／代碼／標的／契約單位，並且非同步抓最新價把保證金
+   * 算好填上——跟人工流程用的是同一套資料（stockMargins／stockContracts），只是不用
+   * 使用者自己找代碼、自己查現價、自己算比例。算完的欄位還是一般 input，有問題可以
+   * 直接手動改，或改「期交所行情代碼」／「目前參考價」後再按一次「套用」重算。
+   */
+  const pickProductSearchResult = (entry: { code: string; label: string; stockCode: string; kind: 'stock' | 'etf' }) => {
+    const rootCode = entry.code.replace(/F$/, '');
+    const sizeFromList = entry.kind === 'stock' ? stockContracts?.contracts[rootCode]?.contract_size : undefined;
+    const etfMatch = stockMargins?.etfs[entry.code];
+
+    setProductQuery('');
+    setNewProduct((f) => ({
+      ...f,
+      name: /期(貨)?$/.test(entry.label) ? entry.label : `${entry.label}期`,
+      code: entry.code,
+      quote_contract: entry.code,
+      underlying: `${entry.stockCode} ${entry.label}`,
+      contract_size: sizeFromList ? String(sizeFromList) : f.contract_size,
+      ...(etfMatch ? { initial_margin: String(etfMatch.initial), maintenance_margin: String(etfMatch.maintenance) } : {}),
+    }));
+
+    if (etfMatch) return; // ETF 期貨保證金是固定金額，不用等報價就能套用
+
+    setProductPickBusy(entry.code);
+    api.getFuturesQuote(entry.code)
+      .then((q) => {
+        const nearest = q.months?.[0];
+        const price = nearest?.live ?? nearest?.settlement ?? nearest?.last ?? null;
+        if (!price) return;
+        const size = sizeFromList || parseFloat(newProduct.contract_size) || 2000;
+        const stockMatch = stockMargins?.stocks[entry.code];
+        setNewProduct((f) => ({
+          ...f,
+          ref_price: String(price),
+          ...(stockMatch ? {
+            initial_margin: String(Math.round(price * size * stockMatch.initial_pct)),
+            maintenance_margin: String(Math.round(price * size * stockMatch.maintenance_pct)),
+          } : {}),
+        }));
+      })
+      .catch(() => { /* 抓不到現價就留給使用者自己填「目前參考價」 */ })
+      .finally(() => setProductPickBusy((cur) => (cur === entry.code ? null : cur)));
+  };
+
   return (
     <div className="space-y-5">
       {/* 帳戶持有的商品 */}
@@ -4203,6 +4280,43 @@ const SettingsTab: React.FC<{
               <div className="text-[11px] text-zinc-400">
                 契約單位／跳動點請照期交所公告或券商 App 手動填；保證金若填對「期交所行情代碼」，下面會自動抓期交所現行值可以直接套用，不用自己算。
               </div>
+
+              <div className="relative">
+                <Field label="搜尋標的" hint="輸入股名或代號，例如「聯電」或「2303」，選一個之後下面欄位（含兩種保證金）會自動帶入，有問題再手動改">
+                  <input
+                    value={productQuery}
+                    onChange={(e) => setProductQuery(e.target.value)}
+                    placeholder="聯電 / 2303 / 0050"
+                    className="w-full bg-zinc-900 border border-border rounded-lg px-3 py-2 text-sm text-zinc-100"
+                  />
+                </Field>
+                {productQuery.trim() !== '' && (
+                  <div className="absolute z-10 mt-1 w-full max-h-56 overflow-y-auto rounded-lg border border-border bg-zinc-950/95 shadow-lg divide-y divide-border/60">
+                    {productSearchResults.length === 0 ? (
+                      <div className="p-3 text-center text-[11px] text-zinc-500">
+                        {stockMargins ? '查無符合的期貨標的' : '期交所資料載入中…'}
+                      </div>
+                    ) : productSearchResults.map((entry) => (
+                      <button
+                        key={entry.code}
+                        type="button"
+                        onClick={() => pickProductSearchResult(entry)}
+                        className="w-full flex items-center justify-between px-3 py-2 text-left hover:bg-zinc-800/50 transition"
+                      >
+                        <span>
+                          <span className="text-xs font-semibold text-zinc-200 mr-2">{entry.label}</span>
+                          <span className="text-[10px] text-zinc-500 font-mono">{entry.stockCode}</span>
+                        </span>
+                        <span className="text-[10px] text-zinc-500 font-mono">{entry.code}{entry.kind === 'etf' ? '．ETF' : ''}</span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+                {productPickBusy && (
+                  <div className="mt-1 text-[11px] text-zinc-500">抓最新價／計算保證金中…</div>
+                )}
+              </div>
+
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                 <Field label="顯示名稱" hint="例：聯電期">
                   <input value={newProduct.name} onChange={(e) => setNewProduct((f) => ({ ...f, name: e.target.value }))}
