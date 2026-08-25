@@ -20,7 +20,7 @@
  *   優先比對 `ref`（成交時間＋委託書號組成的指紋），沒有 ref 才退回內容比對。
  */
 import {
-  closeLots, closedPnl, positionPnl,
+  closeLots, closedPnl, positionPnl, findPreset,
   type ClosedTrade, type FuturesPosition, type FuturesSpec, type Side,
 } from './futures';
 
@@ -656,17 +656,43 @@ export function buildImportPlan(
 // ── 帳戶層級（多商品）匯入 ────────────────────────────────────────────────────
 
 /**
+ * 拉近「券商 App 顯示的名字」跟「帳戶設定裡存的名字」的常見落差，好讓下面的子字串
+ * 比對配得到：全形/半形空白不一定同一邊有、「臺」「台」兩種寫法混用、結尾「期貨」
+ * 有些券商會省成「期」。不處理商品全名裡的其他差異（例如發行商簡稱有沒有列出來）
+ * ——那種差異留給 matchProduct() 用「帳戶存的名字」與「內建預設的官方名字」雙重比對解決。
+ */
+function normalizeProductName(s: string): string {
+  return String(s || '')
+    .replace(/臺/g, '台')
+    .replace(/\s+/g, '')
+    .replace(/期(貨)?$/, '')
+    .trim();
+}
+
+/**
  * 從 OCR「商品名稱原文」（例如「聯電期202609」）配對到帳戶已設定的商品代碼。
  * 先把結尾的到期月份數字剝掉（跟 gateway 那份 monthOf() 撈月份的邏輯對稱），
  * 剩下的文字跟每個已設定商品的 `name` 做子字串比對——配不到回 null，**不要猜**：
  * 誤配到別的商品會把不相干的成交記進錯的帳，比「這批資料先不套用」危險得多。
+ *
+ * 內建商品（SRF/NYF…）除了比對帳戶存的 `name`，也一併比對 SYMBOL_PRESETS 目前的
+ * 官方名字：帳戶那份是**新增當下**複製過去的快照，改了預設名字不會回頭更新舊帳戶，
+ * 沒有這條路的話，早期用舊預設名字新增的帳戶會一直配不到（例如 SRF 舊預設是「小型
+ * 臺灣50 ETF 期貨」，但券商 App 實際顯示「小型元大台灣50ETF期」，兩者連正規化後都對
+ * 不起來——差在「元大」這個發行商簡稱）。
  */
 export function matchProduct(rawProduct: string, products: Record<string, ProductLookup>): string | null {
   const stripped = String(rawProduct || '').replace(/20\d{2}(?:0[1-9]|1[0-2])\s*$/, '').trim();
   if (!stripped) return null;
+  const strippedNorm = normalizeProductName(stripped);
+  if (!strippedNorm) return null;
   for (const [code, p] of Object.entries(products)) {
-    const name = (p.name || '').trim();
-    if (name && (stripped === name || stripped.includes(name) || name.includes(stripped))) return code;
+    const candidates = new Set([p.name, findPreset(code)?.name].filter((n): n is string => !!n && !!n.trim()));
+    for (const name of candidates) {
+      if (stripped === name || stripped.includes(name) || name.includes(stripped)) return code;
+      const nameNorm = normalizeProductName(name);
+      if (nameNorm && (strippedNorm === nameNorm || strippedNorm.includes(nameNorm) || nameNorm.includes(strippedNorm))) return code;
+    }
   }
   return null;
 }

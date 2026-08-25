@@ -26,7 +26,7 @@ export interface FuturesSpec {
 }
 
 export const CONTRACT_CODE = 'SRF';
-export const CONTRACT_NAME = '小型臺灣50 ETF 期貨';
+export const CONTRACT_NAME = '小型元大台灣50ETF期貨';
 export const UNDERLYING_CODE = '0050';
 
 export const DEFAULT_SPEC: FuturesSpec = {
@@ -906,7 +906,7 @@ export interface SymbolPreset {
 export const SYMBOL_PRESETS: (SymbolPreset & { spec: FuturesSpec })[] = [
   {
     code: 'SRF',
-    name: '小型臺灣50 ETF 期貨',
+    name: '小型元大台灣50ETF期貨',
     underlying: '0050',
     unit_label: '股/口',
     price_label: '0050 期貨價格',
@@ -919,7 +919,7 @@ export const SYMBOL_PRESETS: (SymbolPreset & { spec: FuturesSpec })[] = [
   },
   {
     code: 'NYF',
-    name: '臺灣50 ETF 期貨（大型）',
+    name: '元大台灣50ETF期貨',
     underlying: '0050',
     unit_label: '股/口',
     price_label: '0050 期貨價格',

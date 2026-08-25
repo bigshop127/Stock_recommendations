@@ -8,7 +8,7 @@
 import { describe, it, expect } from 'vitest';
 import { DEFAULT_SPEC, closedPnl, type ClosedTrade, type FuturesPosition } from './futures';
 import {
-  buildImportPlan, buildImportPlanForAccount, fillSide, aggregatePositions,
+  buildImportPlan, buildImportPlanForAccount, fillSide, aggregatePositions, matchProduct,
   type ScanScreen, type ScanClosedRow, type ScanFillRow, type ScanOpenRow, type ScanAccountSummary,
   type ImportState, type AccountImportState, type ProductLookup,
 } from './futuresImport';
@@ -467,6 +467,33 @@ describe('gateway 截圖辨識的正規化', () => {
     const s = normalizeScreen({ kind: 'account', account_totals: { initial_margin: 1000 } });
     expect(s.account?.equity).toBeNull();
     expect(s.warnings.some((w: string) => w.includes('認不出權益總值'))).toBe(true);
+  });
+});
+
+describe('matchProduct：商品名稱配對', () => {
+  it('帳戶存的名字就是券商顯示的名字時直接對得上', () => {
+    const products: Record<string, ProductLookup> = { SRF: { name: '小型元大台灣50ETF期', spec } };
+    expect(matchProduct('小型元大台灣50ETF期202609', products)).toBe('SRF');
+  });
+
+  // 8/25 真實事故：帳戶是在「元大」還沒加進 SYMBOL_PRESETS 預設名字之前新增的 SRF，
+  // 存的名字停在舊預設「小型臺灣50 ETF 期貨」；券商 App 顯示的是「小型元大台灣50ETF期」。
+  // 兩邊光靠子字串比對永遠對不上（差在「元大」），這批資料因此被判定成「帳戶沒設定
+  // 這個商品」而整批不套用。matchProduct 現在也會拿 SYMBOL_PRESETS 目前的官方名字
+  // 當備援候選，讓這種「帳戶那份名字是舊快照」的帳戶不用手動改設定就能重新配上。
+  it('帳戶存的是改版前的舊預設名字，仍能配到內建商品目前的官方名字', () => {
+    const products: Record<string, ProductLookup> = { SRF: { name: '小型臺灣50 ETF 期貨', spec } };
+    expect(matchProduct('小型元大台灣50ETF期202609', products)).toBe('SRF');
+  });
+
+  it('大型 NYF 也走同一條路徑', () => {
+    const products: Record<string, ProductLookup> = { NYF: { name: '臺灣50 ETF 期貨（大型）', spec } };
+    expect(matchProduct('元大台灣50ETF期202609', products)).toBe('NYF');
+  });
+
+  it('真的沒設定過的商品仍然回 null，不會亂猜', () => {
+    const products: Record<string, ProductLookup> = { SRF: { name: '小型元大台灣50ETF期', spec } };
+    expect(matchProduct('聯電期202609', products)).toBeNull();
   });
 });
 
