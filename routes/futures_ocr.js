@@ -29,12 +29,17 @@ const ALLOWED_MIME = new Set(['image/jpeg', 'image/png', 'image/webp']);
 const PROMPT = `你是台灣期貨券商 App 的截圖判讀器。看這張截圖，只輸出一個 JSON 物件，不要任何說明文字、不要 markdown code fence。
 
 先判斷這是哪一種畫面，填在 kind：
-- "open"   ：未平倉查詢／未沖銷部位（欄位有「口數 / 成交均價 / 市價 / 未平倉損益」）
-- "closed" ：平倉查詢／已結算損益（欄位有「平倉日期 / 交易日期 / 平倉損益 / 手續費 / 交易稅 / 淨損益」，每一列有上下兩行）
-- "fills"  ：成交回報／今日成交（欄位有「成交時間 / 成交口數 / 成交均價 / 倉別」）
-- "unknown"：不是上述三種
+- "open"    ：未平倉查詢／未沖銷部位（欄位有「口數 / 成交均價 / 市價 / 未平倉損益」，一列是一個商品/月份/方向的部位）
+- "closed"  ：平倉查詢／已結算損益（欄位有「平倉日期 / 交易日期 / 平倉損益 / 手續費 / 交易稅 / 淨損益」，每一列有上下兩行）
+- "fills"   ：成交回報／今日成交（欄位有「成交時間 / 成交口數 / 成交均價 / 倉別」）
+- "account" ：帳戶總覽／權益數查詢——**整戶層級的資產彙總畫面，不是個別部位列表**。常見於券商 App
+              首頁的「個人資產總覽－期貨」小卡，或「期權-權益數查詢」明細頁；欄位是單一數字，例如
+              「權益總值／權益數／風險權益數」「未平倉損益／未沖銷期貨浮動損益」「原始保證金」
+              「維持保證金／維持率保證金」「可動用保證金」「風險指標」。就算欄位名稱跟這裡列的不完全
+              一樣，只要整張圖在講「這個帳戶目前的權益/保證金/風險指標是多少」而不是逐筆部位，就算這類。
+- "unknown" ：不是上述四種
 
-輸出格式（用不到的陣列給空陣列，讀不到的數字給 null）：
+輸出格式（用不到的陣列給空陣列，用不到的物件給 null，讀不到的數字給 null）：
 {
   "kind": "open",
   "title": "畫面標題文字",
@@ -54,7 +59,15 @@ const PROMPT = `你是台灣期貨券商 App 的截圖判讀器。看這張截�
     { "product": "商品名稱原文", "month": "YYYYMM", "datetime": "YYYY/MM/DD HH:MM:SS",
       "direction": "買進|賣出", "open_close": "新倉|平倉", "lots": 成交口數,
       "price": 成交均價, "order_id": "委託書號" }
-  ]
+  ],
+  "account_totals": {
+    "equity": 權益總值或權益數(毛額,含未平倉損益,不是扣掉未實現的口徑)的數字,
+    "unrealized_pnl": 未平倉損益或未沖銷期貨浮動損益的數字,
+    "initial_margin": 原始保證金的數字,
+    "maintenance_margin": 維持保證金或維持率保證金的數字,
+    "available_margin": 可動用(出金)保證金的數字,
+    "risk_ratio": 風險指標的數字(單位是百分比，畫面寫「304.31」或「304.31%」都輸出 304.31)
+  }
 }
 
 規則（很重要，錯了會算錯錢）：
@@ -63,7 +76,9 @@ const PROMPT = `你是台灣期貨券商 App 的截圖判讀器。看這張截�
 3. 手續費與交易稅是**每一行各自**的金額，各自填在自己那一腿，不要相加。
 4. 數字去掉千分位逗號，只輸出數字本身，不要引號、不要單位、不要正負號以外的符號。損失是負數。
 5. 一列都沒有的畫面，陣列就給 []。看不清楚的欄位給 null，**不要猜**。
-6. 不要輸出帳號、姓名或任何截圖上的個人資料。`;
+6. 不要輸出帳號、姓名或任何截圖上的個人資料。
+7. kind 是 "account" 時，open_rows/closed_rows/fill_rows 一律給 []、totals 一律給 {"pnl": null, "count": null}，
+   帳戶數字改填在 account_totals；kind 不是 "account" 時 account_totals 給 null。`;
 
 function keys() {
   return [process.env.GEMINI_API_KEY, process.env.GEMINI_API_KEY_2, process.env.GEMINI_API_KEY_3].filter(Boolean);
@@ -131,11 +146,12 @@ function actionOf(v) {
 
 function kindOf(v, obj) {
   const s = str(v).toLowerCase();
-  if (['open', 'closed', 'fills', 'unknown'].includes(s)) return s;
-  // 模型有時把 kind 寫成中文標題；用哪個陣列有東西反推
+  if (['open', 'closed', 'fills', 'account', 'unknown'].includes(s)) return s;
+  // 模型有時把 kind 寫成中文標題；用哪個陣列/物件有東西反推
   if (Array.isArray(obj.closed_rows) && obj.closed_rows.length) return 'closed';
   if (Array.isArray(obj.fill_rows) && obj.fill_rows.length) return 'fills';
   if (Array.isArray(obj.open_rows) && obj.open_rows.length) return 'open';
+  if (obj.account_totals && typeof obj.account_totals === 'object' && num(obj.account_totals.equity) !== null) return 'account';
   return 'unknown';
 }
 
@@ -266,6 +282,19 @@ function normalizeFills(raw, warnings) {
   return out;
 }
 
+/** ④ 帳戶總覽／權益數查詢：沒有逐筆部位，只有整戶層級的單一數字 */
+function normalizeAccount(raw) {
+  const o = raw && typeof raw === 'object' ? raw : {};
+  return {
+    equity: num(o.equity),
+    unrealized_pnl: num(o.unrealized_pnl),
+    initial_margin: num(o.initial_margin),
+    maintenance_margin: num(o.maintenance_margin),
+    available_margin: num(o.available_margin),
+    risk_ratio: num(o.risk_ratio),
+  };
+}
+
 function normalizeScreen(obj) {
   const warnings = [];
   const o = obj && typeof obj === 'object' ? obj : {};
@@ -277,15 +306,19 @@ function normalizeScreen(obj) {
     open_rows: kind === 'open' ? normalizeOpen(o.open_rows, warnings) : [],
     closed_rows: kind === 'closed' ? normalizeClosed(o.closed_rows, warnings) : [],
     fill_rows: kind === 'fills' ? normalizeFills(o.fill_rows, warnings) : [],
+    account: kind === 'account' ? normalizeAccount(o.account_totals) : null,
     totals: { pnl: num(totalsRaw.pnl), count: num(totalsRaw.count) },
     warnings,
   };
   const parsed = screen.open_rows.length + screen.closed_rows.length + screen.fill_rows.length;
-  if (screen.totals.count !== null && screen.totals.count !== parsed) {
+  if (kind !== 'account' && screen.totals.count !== null && screen.totals.count !== parsed) {
     warnings.push(`截圖上寫有 ${screen.totals.count} 筆，但只認出 ${parsed} 筆——請確認截圖沒有被裁切或需要往下捲。`);
   }
+  if (kind === 'account' && screen.account.equity === null) {
+    warnings.push('這張像是帳戶總覽／權益數查詢畫面，但認不出權益總值／權益數，已略過。');
+  }
   if (kind === 'unknown') {
-    warnings.push('這張認不出是未平倉查詢、平倉查詢或成交回報，已略過。');
+    warnings.push('這張認不出是未平倉查詢、平倉查詢、成交回報或帳戶總覽，已略過。');
   }
   return screen;
 }
@@ -408,6 +441,7 @@ router.normalizeScreen = normalizeScreen;
 router.normalizeClosed = normalizeClosed;
 router.normalizeFills = normalizeFills;
 router.normalizeOpen = normalizeOpen;
+router.normalizeAccount = normalizeAccount;
 router.monthOf = monthOf;
 router.isoDate = isoDate;
 router.parseJson = parseJson;

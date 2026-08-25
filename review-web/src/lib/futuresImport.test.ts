@@ -8,8 +8,9 @@
 import { describe, it, expect } from 'vitest';
 import { DEFAULT_SPEC, closedPnl, type ClosedTrade, type FuturesPosition } from './futures';
 import {
-  buildImportPlan, fillSide, aggregatePositions,
-  type ScanScreen, type ScanClosedRow, type ScanFillRow, type ScanOpenRow, type ImportState,
+  buildImportPlan, buildImportPlanForAccount, fillSide, aggregatePositions,
+  type ScanScreen, type ScanClosedRow, type ScanFillRow, type ScanOpenRow, type ScanAccountSummary,
+  type ImportState, type AccountImportState, type ProductLookup,
 } from './futuresImport';
 
 const spec = { ...DEFAULT_SPEC };
@@ -30,6 +31,18 @@ function screen(over: Partial<ScanScreen>): ScanScreen {
 
 function emptyState(over: Partial<ImportState> = {}): ImportState {
   return { positions: [], closed: [], prices: {}, stop_loss: {}, cash: 0, imported_refs: [], ...over };
+}
+
+function accountSummary(over: Partial<ScanAccountSummary> = {}): ScanAccountSummary {
+  return {
+    equity: null, unrealized_pnl: null, initial_margin: null,
+    maintenance_margin: null, available_margin: null, risk_ratio: null,
+    ...over,
+  };
+}
+
+function emptyAccountState(over: Partial<AccountImportState> = {}): AccountImportState {
+  return { positions: [], closed: [], product_prices: {}, stop_loss: {}, cash: 0, imported_refs: [], ...over };
 }
 
 // ── 真實截圖 ② 平倉查詢：5 列，總損益 22,012 ────────────────────────────────
@@ -413,5 +426,130 @@ describe('gateway 截圖辨識的正規化', () => {
     expect(s.kind).toBe('unknown');
     expect(s.open_rows).toHaveLength(0);
     expect(s.warnings.some((w: string) => w.includes('認不出'))).toBe(true);
+  });
+
+  // 2026-08-25：使用者拿玉山 App「個人資產總覽－期貨」與「期權-權益數查詢」兩張截圖
+  // 去掃描，兩張都認不出來——這兩張是帳戶層級的彙總畫面，不是部位列表。
+  it('帳戶總覽（個人資產總覽－期貨）：千分位逗號要吃掉，風險指標保留百分比原始數字', () => {
+    const s = normalizeScreen({
+      kind: 'account',
+      title: '個人資產總覽',
+      account_totals: {
+        equity: '491,929', unrealized_pnl: '-29,450', initial_margin: '161,652',
+        maintenance_margin: '124,353', available_margin: '330,277', risk_ratio: '304.31',
+      },
+    });
+    expect(s.kind).toBe('account');
+    expect(s.account).toEqual({
+      equity: 491929, unrealized_pnl: -29450, initial_margin: 161652,
+      maintenance_margin: 124353, available_margin: 330277, risk_ratio: 304.31,
+    });
+    expect(s.open_rows).toHaveLength(0);
+    expect(s.warnings).toHaveLength(0);
+  });
+
+  it('帳戶總覽（期權-權益數查詢）：欄位名稱不同也認得出來', () => {
+    const s = normalizeScreen({
+      kind: 'account',
+      title: '期權-權益數查詢',
+      account_totals: { equity: 491929, initial_margin: 161652, maintenance_margin: 124353, risk_ratio: 304.31 },
+    });
+    expect(s.kind).toBe('account');
+    expect(s.account?.equity).toBe(491929);
+  });
+
+  it('kind 沒填但有 account_totals.equity 時能反推成 account', () => {
+    const s = normalizeScreen({ account_totals: { equity: 100000 } });
+    expect(s.kind).toBe('account');
+  });
+
+  it('帳戶總覽認不出權益總值就留警告並略過', () => {
+    const s = normalizeScreen({ kind: 'account', account_totals: { initial_margin: 1000 } });
+    expect(s.account?.equity).toBeNull();
+    expect(s.warnings.some((w: string) => w.includes('認不出權益總值'))).toBe(true);
+  });
+});
+
+describe('帳戶總覽截圖對帳（buildImportPlanForAccount）', () => {
+  const SRF: ProductLookup = { name: '小型元大台灣50ETF期', spec };
+  const products: Record<string, ProductLookup> = { SRF };
+
+  function accScreen(over: Partial<ScanScreen> = {}): ScanScreen {
+    return { kind: 'account', title: '', open_rows: [], closed_rows: [], fill_rows: [], account: accountSummary(), totals: { pnl: null, count: null }, warnings: [], ...over };
+  }
+
+  it('沒有部位時：現金餘額直接校正成截圖上的權益總值', () => {
+    const plan = buildImportPlanForAccount(
+      emptyAccountState({ cash: 0 }),
+      [accScreen({ account: accountSummary({ equity: 491929 }) })],
+      products, { today: TODAY },
+    );
+    expect(plan.next.cash).toBe(491929);
+    expect(plan.cash_delta).toBe(491929);
+    expect(plan.ops.some((o) => o.kind === 'cash_reconcile')).toBe(true);
+    expect(plan.changed).toBe(true);
+  });
+
+  it('已經對得上時不動現金、不產生異動', () => {
+    const held: FuturesPosition = { id: 'p1', product: 'SRF', month: '202609', side: 'long', lots: 10, entry_price: 100, entry_date: '2026-08-11' };
+    const plan = buildImportPlanForAccount(
+      // 毛未平倉損益 = (105-100)*1000*10 = 50,000，權益 = 450,000+50,000 = 500,000
+      emptyAccountState({ positions: [held], product_prices: { SRF: { 202609: 105 } }, cash: 450000 }),
+      [accScreen({ account: accountSummary({ equity: 500000 }) })],
+      products, { today: TODAY },
+    );
+    expect(plan.ops.some((o) => o.kind === 'cash_reconcile')).toBe(false);
+    expect(plan.changed).toBe(false);
+    expect(plan.next.cash).toBe(450000);
+    expect(plan.checks.find((c) => c.label.includes('帳戶權益總值'))?.ok).toBe(true);
+  });
+
+  it('對不上時用毛未平倉損益反推現金，差額進 cash_delta', () => {
+    const held: FuturesPosition = { id: 'p1', product: 'SRF', month: '202609', side: 'long', lots: 10, entry_price: 100, entry_date: '2026-08-11' };
+    const plan = buildImportPlanForAccount(
+      // 毛未平倉損益 = 50,000，implied cash = 520,000 − 50,000 = 470,000（跟目前 450,000 差 20,000）
+      emptyAccountState({ positions: [held], product_prices: { SRF: { 202609: 105 } }, cash: 450000 }),
+      [accScreen({ account: accountSummary({ equity: 520000 }) })],
+      products, { today: TODAY },
+    );
+    expect(plan.next.cash).toBe(470000);
+    expect(plan.cash_delta).toBe(20000);
+    expect(plan.ops.find((o) => o.kind === 'cash_reconcile')?.warn).toBe(true); // 差額 > 500
+  });
+
+  it('部位缺現價時不敢反推，只留警告不動現金', () => {
+    const held: FuturesPosition = { id: 'p1', product: 'SRF', month: '202609', side: 'long', lots: 10, entry_price: 100, entry_date: '2026-08-11' };
+    const plan = buildImportPlanForAccount(
+      emptyAccountState({ positions: [held], cash: 450000 }), // 沒給 product_prices
+      [accScreen({ account: accountSummary({ equity: 500000 }) })],
+      products, { today: TODAY },
+    );
+    expect(plan.next.cash).toBe(450000);
+    expect(plan.warnings.some((w) => w.includes('缺現價'))).toBe(true);
+  });
+
+  it('兩張帳戶總覽截圖權益值不一致時會警告，並採用欄位認出最多的那張', () => {
+    const plan = buildImportPlanForAccount(
+      emptyAccountState({ cash: 0 }),
+      [
+        accScreen({ title: '個人資產總覽', account: accountSummary({ equity: 491929 }) }),
+        accScreen({
+          title: '期權-權益數查詢',
+          account: accountSummary({ equity: 492500, initial_margin: 161652, maintenance_margin: 124353, available_margin: 330277, risk_ratio: 304.31 }),
+        }),
+      ],
+      products, { today: TODAY },
+    );
+    expect(plan.warnings.some((w) => w.includes('不完全一致'))).toBe(true);
+    expect(plan.next.cash).toBe(492500); // 用欄位較完整（期權-權益數查詢）那張
+  });
+
+  it('認不出畫面種類的截圖，警告不會被靜靜吞掉（多商品分帳流程也要看得到）', () => {
+    const plan = buildImportPlanForAccount(
+      emptyAccountState(),
+      [accScreen({ kind: 'unknown', account: null, warnings: ['這張認不出是未平倉查詢、平倉查詢、成交回報或帳戶總覽，已略過。'] })],
+      products, { today: TODAY },
+    );
+    expect(plan.warnings.some((w) => w.includes('認不出'))).toBe(true);
   });
 });

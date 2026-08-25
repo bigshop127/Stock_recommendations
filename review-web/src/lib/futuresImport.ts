@@ -20,13 +20,13 @@
  *   優先比對 `ref`（成交時間＋委託書號組成的指紋），沒有 ref 才退回內容比對。
  */
 import {
-  closeLots, closedPnl,
+  closeLots, closedPnl, positionPnl,
   type ClosedTrade, type FuturesPosition, type FuturesSpec, type Side,
 } from './futures';
 
 // ── gateway /api/futures/ocr 回傳的形狀 ─────────────────────────────────────
 
-export type ScanKind = 'open' | 'closed' | 'fills' | 'unknown';
+export type ScanKind = 'open' | 'closed' | 'fills' | 'account' | 'unknown';
 
 /** ① 未平倉查詢的一列 */
 export interface ScanOpenRow {
@@ -69,12 +69,24 @@ export interface ScanFillRow {
   ref: string;
 }
 
+/** ④ 帳戶總覽／權益數查詢：沒有逐筆部位，只有整戶層級的單一數字（券商「期貨資產總覽」小卡或明細頁） */
+export interface ScanAccountSummary {
+  equity: number | null;             // 權益總值／權益數（毛額，含未平倉損益）
+  unrealized_pnl: number | null;     // 未平倉損益／未沖銷期貨浮動損益（毛額）
+  initial_margin: number | null;     // 原始保證金
+  maintenance_margin: number | null; // 維持保證金／維持率保證金
+  available_margin: number | null;   // 可動用（出金）保證金
+  risk_ratio: number | null;         // 風險指標，單位百分比（304.31 代表 304.31%）
+}
+
 export interface ScanScreen {
   kind: ScanKind;
   title: string;
   open_rows: ScanOpenRow[];
   closed_rows: ScanClosedRow[];
   fill_rows: ScanFillRow[];
+  /** 只有 kind === 'account' 才會有值——帳戶層級彙總，沒有部位可併帳，只拿來對帳現金 */
+  account?: ScanAccountSummary | null;
   /** 截圖上自己寫的合計（估總損益／總損益／筆數），拿來驗收辨識有沒有漏列 */
   totals: { pnl: number | null; count: number | null };
   warnings: string[];
@@ -107,7 +119,8 @@ export type ImportOpKind =
   | 'position_add'     // 新倉成交 → 新增部位
   | 'position_reduce'  // 平倉 → 沖銷未平倉口數
   | 'position_rewrite' // 以未平倉快照覆寫某個月份/方向
-  | 'price_update';    // 用截圖上的市價更新現價
+  | 'price_update'     // 用截圖上的市價更新現價
+  | 'cash_reconcile';  // 依帳戶總覽截圖的權益總值校正保證金專戶現金餘額
 
 export interface ImportOp {
   kind: ImportOpKind;
@@ -747,6 +760,10 @@ export function buildImportPlanForAccount(
   const ops: ImportOp[] = [];
   const checks: ImportCheck[] = [];
   const warnings: string[] = [];
+  // 每張原始截圖自己的警告（讀不完整、認不出畫面種類…）——分商品的 buildImportPlan()
+  // 只看得到拆過的子畫面（warnings 一律是空的，見 splitScreenByProduct 的 bucket()），
+  // 不在這裡收一次的話，這些警告會被靜靜吞掉，使用者只會覺得「傳了截圖但什麼都沒發生」。
+  for (const s of screens) warnings.push(...s.warnings);
   let cashDelta = 0;
   const multi = byProduct.size > 1;
 
@@ -779,6 +796,60 @@ export function buildImportPlanForAccount(
   for (const raw of unmatched) {
     const label = raw.replace(/20\d{2}(?:0[1-9]|1[0-2])\s*$/, '').trim() || raw;
     warnings.push(`認出商品「${label}」，但帳戶還沒設定這個商品，這批資料未套用——請先到設定頁新增後再重新產生匯入計畫。`);
+  }
+
+  // ── ④ 帳戶總覽／權益數查詢：沒有部位列可併帳，只拿它的權益總值反推現金餘額 ──
+  // 跟頁面上「跟期貨商對帳」同一套公式：期貨商的權益總值是毛額（未扣出場那趟還沒
+  // 發生的手續費與期交稅），所以要用毛未平倉損益反推，不能用本頁預設顯示的淨額。
+  const acctScreens = screens.filter(
+    (s): s is ScanScreen & { account: ScanAccountSummary } => s.kind === 'account' && !!s.account && s.account.equity !== null,
+  );
+  if (acctScreens.length > 0) {
+    // 同一時刻可能截了不只一張（例如首頁小卡＋權益數查詢明細頁），取欄位認出最多的那張
+    const completeness = (s: ScanScreen & { account: ScanAccountSummary }) =>
+      Object.values(s.account).filter((v) => v !== null).length;
+    const best = acctScreens.reduce((a, b) => (completeness(b) > completeness(a) ? b : a));
+    const equityScreen = best.account.equity as number;
+
+    const equities = acctScreens.map((s) => s.account.equity as number);
+    if (Math.max(...equities) - Math.min(...equities) > 5) {
+      warnings.push(`帳戶總覽截圖不只一張，權益總值認出的數字不完全一致（${equities.map((e) => money(e)).join('、')}），採用資訊最完整的一張。`);
+    }
+
+    let unrealizedGross = 0;
+    let missingPrice = false;
+    for (const pos of positions) {
+      const lots = Math.max(0, num(pos.lots));
+      if (lots <= 0) continue;
+      const lookup = products[pos.product];
+      if (!lookup) continue;
+      const price = (product_prices[pos.product] || {})[pos.month];
+      if (!(price > 0)) { missingPrice = true; continue; }
+      unrealizedGross += positionPnl(pos, price, lookup.spec).gross_pnl;
+    }
+
+    if (missingPrice) {
+      warnings.push('帳戶總覽截圖已認出權益總值，但有部位缺現價、無法精準反推毛未平倉損益，這次不會校正現金餘額——請先確認各商品現價再重新產生匯入計畫。');
+    } else {
+      const currentBroker = cash + unrealizedGross;
+      const diff = equityScreen - currentBroker;
+      checks.push({
+        label: '帳戶權益總值（帳戶總覽截圖）',
+        screen: money(equityScreen),
+        computed: money(currentBroker),
+        ok: Math.abs(diff) < 1,
+      });
+      if (Math.abs(diff) >= 1) {
+        cash += diff;
+        cashDelta += diff;
+        ops.push({
+          kind: 'cash_reconcile',
+          text: '依帳戶總覽截圖校正保證金專戶現金餘額（手續費尾差、利息、忘記記的入出金都會在這裡現形；差額很大時請先確認有沒有漏記入出金或平倉再套用）',
+          amount: diff,
+          warn: Math.abs(diff) >= 500,
+        });
+      }
+    }
   }
 
   const changed = ops.some((o) => o.kind !== 'closed_skip');

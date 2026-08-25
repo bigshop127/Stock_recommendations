@@ -25,6 +25,7 @@ const KIND_LABEL: Record<string, string> = {
   open: '未平倉查詢',
   closed: '平倉查詢',
   fills: '成交回報',
+  account: '帳戶總覽',
   unknown: '無法辨識',
 };
 
@@ -139,8 +140,10 @@ export const ScreenshotImport: React.FC<{
       <p className="text-[11px] text-zinc-500 leading-relaxed">
         把券商 App 的 <strong className="text-zinc-400">未平倉查詢</strong>、
         <strong className="text-zinc-400">平倉查詢</strong>、
-        <strong className="text-zinc-400">成交回報</strong> 截圖丟進來（可一次多張），
-        辨識後會列出打算做的異動讓你確認再套用。
+        <strong className="text-zinc-400">成交回報</strong>，
+        或「<strong className="text-zinc-400">個人資產總覽</strong>」「<strong className="text-zinc-400">期權-權益數查詢</strong>」
+        這類<strong className="text-zinc-400">帳戶總覽</strong>截圖丟進來（可一次多張），
+        辨識後會列出打算做的異動讓你確認再套用；帳戶總覽截圖沒有個別部位，只會拿權益總值來對帳、校正保證金專戶現金餘額。
         <br />
         截圖會送到 gateway 再轉給 Google Gemini 辨識，<strong className="text-zinc-400">不會存檔、不寫入 log</strong>；
         帳號與姓名不會被寫進任何資料。
@@ -331,6 +334,23 @@ export const ScreenshotImport: React.FC<{
                 </tbody>
               </table>
             </div>
+          )}
+
+          {s.kind === 'account' && s.account && (
+            <dl className="grid grid-cols-2 gap-x-4 gap-y-1 text-[11px]">
+              <div className="text-zinc-500">權益總值</div>
+              <div className="text-right font-mono text-zinc-300">{s.account.equity !== null ? money(s.account.equity) : '—'}</div>
+              <div className="text-zinc-500">未平倉損益</div>
+              <div className="text-right font-mono text-zinc-300">{s.account.unrealized_pnl !== null ? money(s.account.unrealized_pnl) : '—'}</div>
+              <div className="text-zinc-500">原始保證金</div>
+              <div className="text-right font-mono text-zinc-300">{s.account.initial_margin !== null ? money(s.account.initial_margin) : '—'}</div>
+              <div className="text-zinc-500">維持（率）保證金</div>
+              <div className="text-right font-mono text-zinc-300">{s.account.maintenance_margin !== null ? money(s.account.maintenance_margin) : '—'}</div>
+              <div className="text-zinc-500">可動用保證金</div>
+              <div className="text-right font-mono text-zinc-300">{s.account.available_margin !== null ? money(s.account.available_margin) : '—'}</div>
+              <div className="text-zinc-500">風險指標</div>
+              <div className="text-right font-mono text-zinc-300">{s.account.risk_ratio !== null ? `${s.account.risk_ratio.toFixed(2)}%` : '—'}</div>
+            </dl>
           )}
         </div>
       ))}
