@@ -299,7 +299,11 @@ export function buildImportPlan(
   let cash = num(state.cash);
   let cashDelta = 0;
   let seq = 0;
-  const nid = (prefix: string) => `${prefix}_imp${opts.today.replace(/-/g, '')}_${++seq}`;
+  // 帶上商品代碼：buildImportPlanForAccount 對每個商品各呼叫一次這支，每次 seq 都是
+  // 從 0 起算，同一天匯入兩個商品沒有它會撞出一樣的 id（例如都叫 f_imp20260825_1）
+  // ——position id 是帳戶層級共用的鍵（stop_loss／React key 都靠它），不能只在單一
+  // 商品內唯一。
+  const nid = (prefix: string) => `${prefix}_imp${opts.today.replace(/-/g, '')}_${product}_${++seq}`;
 
   for (const s of screens) warnings.push(...s.warnings);
 
