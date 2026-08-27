@@ -12,6 +12,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ListOrdered, ScanLine, PlusCircle, Trash2, Pencil, X, Settings2,
   Cloud, CloudOff, Loader2, Filter, ExternalLink, RefreshCw, AlertTriangle,
+  ChevronDown, ChevronRight,
 } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { api } from '../lib/api';
@@ -208,6 +209,40 @@ export const RealizedPnl: React.FC = () => {
     filteredRows.forEach((r) => { byCategory[r.category] += r.net; });
     return { net, gross, cost, wins, byCategory };
   }, [filteredRows]);
+
+  /**
+   * 明細表按標的收合：同一檔（類別＋代號）常常一堆筆數（尤其期貨、當沖股），
+   * 攤開來看很亂。`filteredRows` 已經是日期新到舊排序，用 reduce 依 key 分組時
+   * 組內順序會自然沿用，不必再排一次。單筆的組直接當一般列顯示，不長 chevron。
+   */
+  interface RowGroup {
+    key: string; category: Category; symbol: string; name: string;
+    rows: RealizedRow[]; gross: number; fee: number; tax: number; net: number; latestDate: string;
+  }
+  const groupedRows = useMemo<RowGroup[]>(() => {
+    const map = new Map<string, RowGroup>();
+    filteredRows.forEach((r) => {
+      const key = `${r.category}|${r.symbol}`;
+      let g = map.get(key);
+      if (!g) {
+        g = { key, category: r.category, symbol: r.symbol, name: r.name, rows: [], gross: 0, fee: 0, tax: 0, net: 0, latestDate: r.date };
+        map.set(key, g);
+      }
+      g.rows.push(r);
+      g.gross += r.gross; g.fee += r.fee; g.tax += r.tax; g.net += r.net;
+      if (r.date > g.latestDate) g.latestDate = r.date;
+    });
+    return [...map.values()].sort((a, b) => (b.latestDate < a.latestDate ? -1 : b.latestDate > a.latestDate ? 1 : 0));
+  }, [filteredRows]);
+
+  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
+  const toggleGroup = (key: string) => {
+    setExpandedGroups((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key); else next.add(key);
+      return next;
+    });
+  };
 
   // ── 個股/ETF 新增/編輯表單 ────────────────────────────────────────────────
   const [form, setForm] = useState(emptyForm());
@@ -421,40 +456,72 @@ export const RealizedPnl: React.FC = () => {
               </tr>
             </thead>
             <tbody>
-              {filteredRows.length === 0 && (
+              {groupedRows.length === 0 && (
                 <tr><td colSpan={9} className="py-6 text-center text-zinc-600">沒有符合篩選條件的紀錄</td></tr>
               )}
-              {filteredRows.map((r) => (
-                <tr key={r.key} className="border-b border-border/50 last:border-0">
-                  <td className="py-2 pr-3 text-zinc-400">{CATEGORY_LABEL[r.category]}</td>
-                  <td className="py-2 pr-3 text-zinc-300">{r.name}（{r.symbol}）</td>
-                  <td className="py-2 pr-3 font-mono text-zinc-400">{r.date || '—'}</td>
-                  <td className={`py-2 pr-3 ${r.side === 'long' ? 'text-bull' : 'text-bear'}`}>{r.side === 'long' ? '多' : '空'}</td>
-                  <td className="py-2 pr-3 text-right font-mono text-zinc-300">{r.qtyLabel}</td>
-                  <td className={`py-2 pr-3 text-right font-mono ${pnlCls(r.gross)}`}>{money(r.gross)}</td>
-                  <td className="py-2 pr-3 text-right font-mono text-zinc-500" title={r.actualCost ? '券商實收金額' : '依費率設定推估'}>
-                    {money(r.fee + r.tax)}{r.actualCost ? '' : ' 估'}
-                  </td>
-                  <td className={`py-2 pr-3 text-right font-mono font-semibold ${pnlCls(r.net)}`}>{money(r.net)}</td>
-                  <td className="py-2 text-right">
-                    {r.editable ? (
-                      <div className="flex items-center justify-end gap-1">
-                        <button onClick={() => editTrade(stock.trades.find((t) => t.id === r.key)!)}
-                          className="p-1 text-zinc-500 hover:text-zinc-200" title="編輯">
-                          <Pencil className="w-3.5 h-3.5" />
-                        </button>
-                        <button onClick={() => deleteTrade(r.key)} className="p-1 text-zinc-500 hover:text-rose-400" title="刪除">
-                          <Trash2 className="w-3.5 h-3.5" />
-                        </button>
-                      </div>
-                    ) : (
-                      <Link to="/futures" className="inline-flex items-center gap-1 text-[10px] text-zinc-600 hover:text-zinc-300" title="到期貨頁編輯">
-                        <ExternalLink className="w-3 h-3" />
-                      </Link>
+              {groupedRows.map((g) => {
+                const single = g.rows.length === 1;
+                const expanded = single || groupedRows.length === 1 || expandedGroups.has(g.key);
+                return (
+                  <React.Fragment key={g.key}>
+                    {!single && (
+                      <tr
+                        onClick={() => toggleGroup(g.key)}
+                        className="border-b border-border/50 bg-zinc-900/40 hover:bg-zinc-900/70 cursor-pointer select-none"
+                      >
+                        <td className="py-2 pr-3 text-zinc-400">{CATEGORY_LABEL[g.category]}</td>
+                        <td className="py-2 pr-3 text-zinc-200 font-semibold">
+                          <span className="inline-flex items-center gap-1.5">
+                            {expanded ? <ChevronDown className="w-3.5 h-3.5 text-zinc-500" /> : <ChevronRight className="w-3.5 h-3.5 text-zinc-500" />}
+                            {g.name}（{g.symbol}）
+                            <span className="text-[10px] font-normal text-zinc-500">× {g.rows.length} 筆</span>
+                          </span>
+                        </td>
+                        <td className="py-2 pr-3 font-mono text-[10px] text-zinc-500">最近 {g.latestDate}</td>
+                        <td className="py-2 pr-3" />
+                        <td className="py-2 pr-3" />
+                        <td className={`py-2 pr-3 text-right font-mono ${pnlCls(g.gross)}`}>{money(g.gross)}</td>
+                        <td className="py-2 pr-3 text-right font-mono text-zinc-500">{money(g.fee + g.tax)}</td>
+                        <td className={`py-2 pr-3 text-right font-mono font-bold ${pnlCls(g.net)}`}>{money(g.net)}</td>
+                        <td className="py-2" />
+                      </tr>
                     )}
-                  </td>
-                </tr>
-              ))}
+                    {expanded && g.rows.map((r) => (
+                      <tr key={r.key} className={`border-b border-border/50 last:border-0 ${single ? '' : 'bg-zinc-950/40'}`}>
+                        <td className="py-2 pr-3 text-zinc-400">{single ? CATEGORY_LABEL[r.category] : ''}</td>
+                        <td className="py-2 pr-3 text-zinc-300">
+                          {single ? <>{r.name}（{r.symbol}）</> : <span className="pl-4 text-zinc-600">└</span>}
+                        </td>
+                        <td className="py-2 pr-3 font-mono text-zinc-400">{r.date || '—'}</td>
+                        <td className={`py-2 pr-3 ${r.side === 'long' ? 'text-bull' : 'text-bear'}`}>{r.side === 'long' ? '多' : '空'}</td>
+                        <td className="py-2 pr-3 text-right font-mono text-zinc-300">{r.qtyLabel}</td>
+                        <td className={`py-2 pr-3 text-right font-mono ${pnlCls(r.gross)}`}>{money(r.gross)}</td>
+                        <td className="py-2 pr-3 text-right font-mono text-zinc-500" title={r.actualCost ? '券商實收金額' : '依費率設定推估'}>
+                          {money(r.fee + r.tax)}{r.actualCost ? '' : ' 估'}
+                        </td>
+                        <td className={`py-2 pr-3 text-right font-mono font-semibold ${pnlCls(r.net)}`}>{money(r.net)}</td>
+                        <td className="py-2 text-right">
+                          {r.editable ? (
+                            <div className="flex items-center justify-end gap-1">
+                              <button onClick={() => editTrade(stock.trades.find((t) => t.id === r.key)!)}
+                                className="p-1 text-zinc-500 hover:text-zinc-200" title="編輯">
+                                <Pencil className="w-3.5 h-3.5" />
+                              </button>
+                              <button onClick={() => deleteTrade(r.key)} className="p-1 text-zinc-500 hover:text-rose-400" title="刪除">
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
+                          ) : (
+                            <Link to="/futures" className="inline-flex items-center gap-1 text-[10px] text-zinc-600 hover:text-zinc-300" title="到期貨頁編輯">
+                              <ExternalLink className="w-3 h-3" />
+                            </Link>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </React.Fragment>
+                );
+              })}
             </tbody>
           </table>
         </div>
