@@ -176,6 +176,24 @@ export const RealizedPnl: React.FC = () => {
   }, [allRows, category]);
 
   /**
+   * 月份快選：故意用 `allRows`（不隨類別篩選變動）算，切換「期貨/個股/ETF」
+   * 分類時月份按鈕不會跳動位置。近 6 個月直接排成按鈕一鍵點選（使用者要的
+   * 「點 7 月」體驗）；更舊的塞進一個下拉選單，不然月份一多按鈕會爆版。
+   */
+  const monthOptions = useMemo(() => {
+    const set = new Set<string>();
+    allRows.forEach((r) => { const m = monthOf(r.date); if (m) set.add(m); });
+    return [...set].sort().reverse(); // 新到舊
+  }, [allRows]);
+  const RECENT_MONTHS_SHOWN = 6;
+  const recentMonths = monthOptions.slice(0, RECENT_MONTHS_SHOWN);
+  const olderMonths = monthOptions.slice(RECENT_MONTHS_SHOWN);
+  const monthChipLabel = (m: string) => {
+    const [y, mm] = m.split('-');
+    return Number(y) === new Date().getFullYear() ? `${Number(mm)}月` : `${y.slice(2)}/${mm}`;
+  };
+
+  /**
    * 切換分類時，若目前選的標的不屬於新分類，重置成「全部標的」，避免篩出空
    * 清單卻看不出原因。故意在點擊當下算，不用 useEffect 監看 category
    * ——這是使用者動作的直接後果，不是外部系統回撥，effect 只會多一次重繪。
@@ -243,6 +261,9 @@ export const RealizedPnl: React.FC = () => {
       return next;
     });
   };
+
+  // 篩到只剩單一類別時「類別」欄每一列都長一樣，是純雜訊，整欄拿掉
+  const showCategoryCol = category === 'all';
 
   // ── 個股/ETF 新增/編輯表單 ────────────────────────────────────────────────
   const [form, setForm] = useState(emptyForm());
@@ -369,62 +390,94 @@ export const RealizedPnl: React.FC = () => {
         desc="彙整期貨、個股、ETF 三種已實現損益，可依標的／月份／日期區間篩選。期貨的平倉紀錄仍在「期貨損益總覽」頁管理，這裡只唯讀彙總。"
       >
         {/* ── 篩選列 ── */}
-        <div className="flex flex-wrap items-center gap-2 mb-4">
-          <span className="flex items-center gap-1 text-[11px] text-zinc-500 mr-1">
-            <Filter className="w-3.5 h-3.5" /> 篩選
-          </span>
-          {(['all', 'futures', 'stock', 'etf'] as const).map((c) => (
+        <div className="space-y-2 mb-4">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="flex items-center gap-1 text-[11px] text-zinc-500 mr-1">
+              <Filter className="w-3.5 h-3.5" /> 篩選
+            </span>
+            {(['all', 'futures', 'stock', 'etf'] as const).map((c) => (
+              <button
+                key={c}
+                onClick={() => changeCategory(c)}
+                className={`px-3 py-1.5 rounded-lg text-[11px] font-semibold border transition ${
+                  category === c
+                    ? 'bg-primary/15 text-primary border-primary/30'
+                    : 'text-zinc-400 border-border hover:text-zinc-200 hover:border-zinc-600'
+                }`}
+              >
+                {c === 'all' ? '全部類別' : CATEGORY_LABEL[c]}
+              </button>
+            ))}
+
+            <select
+              value={symbol}
+              onChange={(e) => setSymbol(e.target.value)}
+              className="px-2.5 py-1.5 rounded-lg text-[11px] bg-zinc-900 border border-border text-zinc-300"
+            >
+              <option value="">全部標的</option>
+              {symbolOptions.map(([key, v]) => (
+                <option key={key} value={key}>{CATEGORY_LABEL[v.category]}・{v.name}（{v.symbol}）</option>
+              ))}
+            </select>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-[11px] text-zinc-500 mr-1 pl-[19px]">區間</span>
             <button
-              key={c}
-              onClick={() => changeCategory(c)}
+              onClick={() => { setTimeMode('all'); setMonth(''); setDateStart(''); setDateEnd(''); }}
               className={`px-3 py-1.5 rounded-lg text-[11px] font-semibold border transition ${
-                category === c
+                timeMode === 'all'
                   ? 'bg-primary/15 text-primary border-primary/30'
                   : 'text-zinc-400 border-border hover:text-zinc-200 hover:border-zinc-600'
               }`}
             >
-              {c === 'all' ? '全部類別' : CATEGORY_LABEL[c]}
+              全部時間
             </button>
-          ))}
-
-          <select
-            value={symbol}
-            onChange={(e) => setSymbol(e.target.value)}
-            className="px-2.5 py-1.5 rounded-lg text-[11px] bg-zinc-900 border border-border text-zinc-300"
-          >
-            <option value="">全部標的</option>
-            {symbolOptions.map(([key, v]) => (
-              <option key={key} value={key}>{CATEGORY_LABEL[v.category]}・{v.name}（{v.symbol}）</option>
+            {recentMonths.map((m) => (
+              <button
+                key={m}
+                onClick={() => { setTimeMode('month'); setMonth(m); }}
+                className={`px-3 py-1.5 rounded-lg text-[11px] font-semibold border transition ${
+                  timeMode === 'month' && month === m
+                    ? 'bg-primary/15 text-primary border-primary/30'
+                    : 'text-zinc-400 border-border hover:text-zinc-200 hover:border-zinc-600'
+                }`}
+              >
+                {monthChipLabel(m)}
+              </button>
             ))}
-          </select>
-
-          <select
-            value={timeMode}
-            onChange={(e) => { setTimeMode(e.target.value as typeof timeMode); setMonth(''); setDateStart(''); setDateEnd(''); }}
-            className="px-2.5 py-1.5 rounded-lg text-[11px] bg-zinc-900 border border-border text-zinc-300"
-          >
-            <option value="all">全部時間</option>
-            <option value="month">單一月份</option>
-            <option value="range">自訂區間</option>
-          </select>
-
-          {timeMode === 'month' && (
-            <input
-              type="month"
-              value={month}
-              onChange={(e) => setMonth(e.target.value)}
-              className="px-2.5 py-1.5 rounded-lg text-[11px] bg-zinc-900 border border-border text-zinc-300"
-            />
-          )}
-          {timeMode === 'range' && (
-            <>
-              <input type="date" value={dateStart} onChange={(e) => setDateStart(e.target.value)}
-                className="px-2.5 py-1.5 rounded-lg text-[11px] bg-zinc-900 border border-border text-zinc-300" />
-              <span className="text-zinc-600 text-[11px]">至</span>
-              <input type="date" value={dateEnd} onChange={(e) => setDateEnd(e.target.value)}
-                className="px-2.5 py-1.5 rounded-lg text-[11px] bg-zinc-900 border border-border text-zinc-300" />
-            </>
-          )}
+            {olderMonths.length > 0 && (
+              <select
+                value={timeMode === 'month' && olderMonths.includes(month) ? month : ''}
+                onChange={(e) => { if (e.target.value) { setTimeMode('month'); setMonth(e.target.value); } }}
+                className="px-2.5 py-1.5 rounded-lg text-[11px] bg-zinc-900 border border-border text-zinc-300"
+              >
+                <option value="">更早月份…</option>
+                {olderMonths.map((m) => (
+                  <option key={m} value={m}>{m.replace('-', '/')}</option>
+                ))}
+              </select>
+            )}
+            <button
+              onClick={() => setTimeMode('range')}
+              className={`px-3 py-1.5 rounded-lg text-[11px] font-semibold border transition ${
+                timeMode === 'range'
+                  ? 'bg-primary/15 text-primary border-primary/30'
+                  : 'text-zinc-400 border-border hover:text-zinc-200 hover:border-zinc-600'
+              }`}
+            >
+              自訂區間
+            </button>
+            {timeMode === 'range' && (
+              <>
+                <input type="date" value={dateStart} onChange={(e) => setDateStart(e.target.value)}
+                  className="px-2.5 py-1.5 rounded-lg text-[11px] bg-zinc-900 border border-border text-zinc-300" />
+                <span className="text-zinc-600 text-[11px]">至</span>
+                <input type="date" value={dateEnd} onChange={(e) => setDateEnd(e.target.value)}
+                  className="px-2.5 py-1.5 rounded-lg text-[11px] bg-zinc-900 border border-border text-zinc-300" />
+              </>
+            )}
+          </div>
         </div>
 
         {/* ── 彙總卡 ── */}
@@ -444,7 +497,7 @@ export const RealizedPnl: React.FC = () => {
           <table className="w-full text-xs min-w-[720px]">
             <thead>
               <tr className="text-zinc-500 border-b border-border">
-                <th className="text-left font-medium py-2 pr-3">類別</th>
+                {showCategoryCol && <th className="text-left font-medium py-2 pr-3">類別</th>}
                 <th className="text-left font-medium py-2 pr-3">標的</th>
                 <th className="text-left font-medium py-2 pr-3">日期</th>
                 <th className="text-left font-medium py-2 pr-3">方向</th>
@@ -457,7 +510,7 @@ export const RealizedPnl: React.FC = () => {
             </thead>
             <tbody>
               {groupedRows.length === 0 && (
-                <tr><td colSpan={9} className="py-6 text-center text-zinc-600">沒有符合篩選條件的紀錄</td></tr>
+                <tr><td colSpan={showCategoryCol ? 9 : 8} className="py-6 text-center text-zinc-600">沒有符合篩選條件的紀錄</td></tr>
               )}
               {groupedRows.map((g) => {
                 const single = g.rows.length === 1;
@@ -469,7 +522,7 @@ export const RealizedPnl: React.FC = () => {
                         onClick={() => toggleGroup(g.key)}
                         className="border-b border-border/50 bg-zinc-900/40 hover:bg-zinc-900/70 cursor-pointer select-none"
                       >
-                        <td className="py-2 pr-3 text-zinc-400">{CATEGORY_LABEL[g.category]}</td>
+                        {showCategoryCol && <td className="py-2 pr-3 text-zinc-400">{CATEGORY_LABEL[g.category]}</td>}
                         <td className="py-2 pr-3 text-zinc-200 font-semibold">
                           <span className="inline-flex items-center gap-1.5">
                             {expanded ? <ChevronDown className="w-3.5 h-3.5 text-zinc-500" /> : <ChevronRight className="w-3.5 h-3.5 text-zinc-500" />}
@@ -488,7 +541,7 @@ export const RealizedPnl: React.FC = () => {
                     )}
                     {expanded && g.rows.map((r) => (
                       <tr key={r.key} className={`border-b border-border/50 last:border-0 ${single ? '' : 'bg-zinc-950/40'}`}>
-                        <td className="py-2 pr-3 text-zinc-400">{single ? CATEGORY_LABEL[r.category] : ''}</td>
+                        {showCategoryCol && <td className="py-2 pr-3 text-zinc-400">{single ? CATEGORY_LABEL[r.category] : ''}</td>}
                         <td className="py-2 pr-3 text-zinc-300">
                           {single ? <>{r.name}（{r.symbol}）</> : <span className="pl-4 text-zinc-600">└</span>}
                         </td>
