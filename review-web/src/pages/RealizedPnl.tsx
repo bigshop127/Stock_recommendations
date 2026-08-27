@@ -522,16 +522,15 @@ export const RealizedPnl: React.FC = () => {
           </div>
         </div>
 
-        {/* ── 彙總卡 ── */}
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+        {/* ── 彙總卡：期貨/個股/ETF 三類分開列，不合併成一格 ── */}
+        <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
           <StatTile label="淨已實現損益" value={money(totals.net)} valueCls={pnlCls(totals.net)} tone="primary"
             sub={`毛損益 ${money(totals.gross)} － 費用 ${money(totals.cost)}`} />
           <StatTile label="交易筆數" value={String(filteredRows.length)} tone="zinc"
             sub={filteredRows.length > 0 ? `勝率 ${pct(totals.wins / filteredRows.length, 0)}` : '尚無資料'} />
           <StatTile label="期貨小計" value={money(totals.byCategory.futures)} valueCls={pnlCls(totals.byCategory.futures)} tone="sky" />
-          <StatTile label="個股＋ETF小計" value={money(totals.byCategory.stock + totals.byCategory.etf)}
-            valueCls={pnlCls(totals.byCategory.stock + totals.byCategory.etf)} tone="sky"
-            sub={`個股 ${money(totals.byCategory.stock)}・ETF ${money(totals.byCategory.etf)}`} />
+          <StatTile label="個股小計" value={money(totals.byCategory.stock)} valueCls={pnlCls(totals.byCategory.stock)} tone="sky" />
+          <StatTile label="ETF小計" value={money(totals.byCategory.etf)} valueCls={pnlCls(totals.byCategory.etf)} tone="sky" />
         </div>
 
         {/* ── 圖表區：類別占比／每月趨勢／前五大貢獻標的，皆跟著上面的篩選走 ── */}
@@ -872,9 +871,17 @@ const MonthlyPnlChart: React.FC<{ data: { month: string; net: number }[] }> = ({
     const el = containerRef.current;
     if (!el || data.length === 0) return;
 
+    /**
+     * `autoSize:true` 讓套件自己接手 ResizeObserver 同步容器尺寸到畫布的內部繪圖
+     * 緩衝區——曾經改用手動 `width: el.clientWidth` + 自己的 ResizeObserver 只
+     * `applyOptions({width})`，結果畫布的 backing buffer 卡在 HTML canvas 預設值
+     * 300×150（跟外層 CSS 顯示尺寸完全兜不上），造成滑鼠座標系統跟圖表內部的時間
+     * 軸座標系統對不齊，crosshair 的 `time` 永遠解析不出來（`param.time` 恆為
+     * undefined）——外觀看起來長條圖是正常的（CSS 拉伸掩蓋了問題），但滑鼠移到
+     * 哪裡都讀不到對應時間點，這就是「淨損益卡住不跟著滑鼠變化」的根因。
+     */
     const chart = createChart(el, {
-      width: el.clientWidth,
-      height: 160,
+      autoSize: true,
       layout: { background: { type: ColorType.Solid, color: 'transparent' }, textColor: '#94a3b8', fontSize: 10 },
       grid: { vertLines: { visible: false }, horzLines: { color: '#27272a' } },
       rightPriceScale: { borderColor: '#3f3f46' },
@@ -884,8 +891,6 @@ const MonthlyPnlChart: React.FC<{ data: { month: string; net: number }[] }> = ({
         tickMarkFormatter: (t: Time) => (typeof t === 'object' ? `${t.month}月` : String(t)),
       },
       crosshair: { mode: 0 },
-      handleScale: false,
-      handleScroll: false,
     });
 
     const series = chart.addHistogramSeries({ priceFormat: { type: 'price', precision: 0, minMove: 1 } });
@@ -907,18 +912,16 @@ const MonthlyPnlChart: React.FC<{ data: { month: string; net: number }[] }> = ({
       setLegend(data.find((d) => d.month === `${t.year}-${String(t.month).padStart(2, '0')}`));
     });
 
-    const ro = new ResizeObserver(() => chart.applyOptions({ width: el.clientWidth }));
-    ro.observe(el);
-    return () => { ro.disconnect(); chart.remove(); };
+    return () => chart.remove();
   }, [data]);
 
   if (data.length === 0) {
-    return <div className="h-[160px] flex items-center justify-center text-xs text-zinc-600">尚無資料</div>;
+    return <div className="h-40 flex items-center justify-center text-xs text-zinc-600">尚無資料</div>;
   }
   return (
-    <div className="relative w-full">
+    <div className="relative w-full h-40">
       <div ref={legendRef} className="absolute top-0 left-1 z-10 text-[11px] font-mono text-zinc-400 select-none pointer-events-none" />
-      <div ref={containerRef} className="w-full" />
+      <div ref={containerRef} className="w-full h-full" />
     </div>
   );
 };
