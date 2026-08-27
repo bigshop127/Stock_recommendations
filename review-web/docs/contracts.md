@@ -697,3 +697,45 @@
 }
 ```
 * **去重**：`ref` 指紋（代號＋賣出日＋股數＋買賣均價）跟前端 `imported_refs` 帳本比對，同一張截圖重複匯入不會重複計帳（見 `src/lib/stockRealizedImport.ts`）。
+
+### 2.21 個股／ETF 真實同步觸發／狀態 `/api/stocks/sync-realized-{trigger,status}`
+
+* **Description**: 玉山證券個股／ETF 已實現交易的真實同步（opt37，2026-08-27）。跟 §2.18 的持倉同步是同一套機制（gateway 在 Oracle VM 上 spawn `deploy/sync_realized_vm.sh`，amd64 容器 + qemu），差別是這裡呼叫的是 `scripts/sync_fugle_realized.py`，跑玉山 SDK 的 `get_transactions_by_date()`（成交明細）而不是 `get_inventories()`（庫存）。玉山這個 API 沒有專門的「已實現損益」端點，但 `buy_sell == "S"` 的列本身就是券商已經配對好的收盤賣出腿，`make`／`cost`／`recv` 欄位就是券商自己算好的已實現損益（已驗證：`recv - abs(cost) == make`），所以不需要自己做 FIFO 配對。詳見 `scripts/sync_fugle_realized.py` 檔頭註解（欄位換算公式與已知限制）。
+* **POST `/sync-realized-trigger`**：立刻回 `202 {ok, triggered_at}`；同時只允許一個同步在跑（重複觸發回 `409 BUSY`）。Body 可選 `{ "since": "YYYY-MM-DD" }` 指定回溯起點（不給則用腳本預設的往回 730 天）；查詢範圍過大時腳本會自動切成 ≤150 天一段（玉山實測 180 天可行、366 天回 `AW00002`）。
+* **GET `/sync-realized-status`**：最近一次執行結果，`message` 沿用 §2.18 同一套錯誤碼翻譯（`AGA0002`/`AWA0005`/憑證/docker）。成功時 `summary` 帶回本次同步的新增/略過統計（見下方）。
+
+```jsonc
+{
+  "state": "ok",             // idle | running | ok | error
+  "started_at": "2026-08-27T14:23:59.303Z",
+  "finished_at": "2026-08-27T14:24:41.180Z",
+  "exit_code": 0,
+  "message": null,
+  "since": null,
+  "summary": { "added": 3, "skipped_already": 5, "skipped_duplicate": 0, "total_incoming": 8 },
+  "log_tail": "…"
+}
+```
+
+### 2.22 個股／ETF 真實同步寫入端點 `/api/stock-realized/sync-import`
+
+* **Description**: `scripts/sync_fugle_realized.py` 專用的合併寫入端點（不是給瀏覽器打的）。跟 §2.19 的 `POST /api/stock-realized`（整份覆蓋）不同，這個端點是**增量合併**：帶一批玉山同步回來的交易，跟現有 `trades`/`imported_refs` 做兩層去重後只把「真正新的」併進去，不會動到既有資料。
+* **去重兩層**：
+  1. **`sync_ref` 快速路徑**：每筆帶一個 `sync_ref`（用玉山回傳的 `order_no` 組出來，前綴 `api|` 存進 `imported_refs`）——同一筆交易重複同步（例如排程重複跑同一段區間）會直接跳過，回應計入 `skipped_already`。
+  2. **模糊比對安全網**：`sync_ref` 沒比對到時，再檢查現有 `trades` 裡是否已有「同代號＋同賣出日＋同股數＋賣出均價相差 <0.01」的一筆——這是為了接住「使用者已經手動輸入或截圖匯入過同一筆交易，但 API 算出來的買進均價（見下）跟截圖顯示的買進均價對不上小數點，光比 `sync_ref` 或完整欄位會漏接、造成同一筆損益被重複計入淨損益」的狀況。命中的話記錄 `ref` 但不新增，回應計入 `skipped_duplicate`。
+* **買進均價的已知限制**：API 只回傳配對後的 `cost`（賣出腿對應的成本基礎，已內含當初買進那腿的手續費），所以這裡反推出的 `buy_price = abs(cost) / qty` 是「含手續費的成本均價」，不是券商 App 單純顯示的買進均價；`fee` 只放這個賣出腿自己的手續費，`tax` 是這個賣出腿的證交稅——兩者相減後的淨損益仍跟券商 App 的 `make` 完全一致，只是「買進均價」與「手續費」單獨看的話會跟截圖版本有一點分配上的差異（不影響金額正確性，只是同一筆錢分配到不同欄位）。`side` 一律回 `"long"`（API 的 `s_type` 欄位無法穩定反解出融資/融券，且 side 只影響顯示不影響計算，見 `src/lib/stockRealized.ts` 的設計說明）。
+* **Method**: `POST`
+* **Request Body**:
+```jsonc
+{
+  "trades": [
+    {
+      "symbol": "3081", "name": "聯亞", "side": "long",
+      "qty": 80, "buy_price": 2154.9125, "sell_price": 2400,
+      "sell_date": "2026-08-07", "fee": 273, "tax": 576,
+      "note": "玉山 API 真實同步", "sync_ref": "3081_6H195003363520"
+    }
+  ]
+}
+```
+* **Response (200 OK)**: `{ "ok": true, "added": 1, "skipped_already": 0, "skipped_duplicate": 0, "total_incoming": 1, "saved_at": "ISO時間" }`

@@ -11,7 +11,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ListOrdered, ScanLine, PlusCircle, Trash2, Pencil, X, Settings2,
-  Cloud, CloudOff, Loader2, Filter, ExternalLink,
+  Cloud, CloudOff, Loader2, Filter, ExternalLink, RefreshCw, AlertTriangle,
 } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { api } from '../lib/api';
@@ -270,6 +270,50 @@ export const RealizedPnl: React.FC = () => {
     void saveToCloud(plan.next);
   };
 
+  // ── 玉山 API 真實同步（opt37）：gateway 在 VM 上跑 sync_fugle_realized.py，立即回
+  // 202，實際結果寫進 data/sync_realized_status.json，這裡輪詢到 ok/error 為止。
+  // 觸發後 gateway 會先同步寫入 state:'running' 才回應，故不需要另外記 baseline
+  // 時間戳來排除「看到舊一輪殘留的 ok/error」——這點跟 Rebalance.tsx 的持倉同步不同。
+  const [realSync, setRealSync] = useState<{
+    status: 'idle' | 'triggering' | 'waiting' | 'done' | 'error' | 'timeout'; msg: string | null;
+  }>({ status: 'idle', msg: null });
+
+  const syncRealFromApi = async () => {
+    setRealSync({ status: 'triggering', msg: null });
+    try {
+      await api.triggerStockRealizedSync();
+    } catch (e) {
+      setRealSync({ status: 'error', msg: e instanceof Error ? e.message : '觸發失敗' });
+      return;
+    }
+    setRealSync({ status: 'waiting', msg: null });
+    const maxAttempts = 60; // 3 秒一次，約 3 分鐘逾時（容器在 qemu 模擬下啟動較慢＋多段查詢）
+    for (let i = 0; i < maxAttempts; i++) {
+      await new Promise((r) => setTimeout(r, 3000));
+      try {
+        const st = await api.getStockRealizedSyncStatus();
+        if (st.state === 'error') {
+          setRealSync({ status: 'error', msg: st.message || '同步失敗' });
+          return;
+        }
+        if (st.state === 'ok') {
+          const resp = await api.getStockRealized();
+          if (resp.exists && resp.data) saveStockRealizedConfig(resp.data as unknown as StockRealizedConfig);
+          setStock(getStockRealizedConfig());
+          const s = st.summary;
+          setRealSync({
+            status: 'done',
+            msg: s ? `新增 ${s.added} 筆（${s.skipped_already + s.skipped_duplicate} 筆已存在，略過）` : '同步完成',
+          });
+          return;
+        }
+      } catch {
+        // 單次輪詢失敗不中斷，繼續重試到逾時
+      }
+    }
+    setRealSync({ status: 'timeout', msg: '逾時未收到更新。同步跑在 VM 上（與電腦是否開機無關），稍後重新整理頁面查看結果。' });
+  };
+
   const cloudIcon = cloud.status === 'loading'
     ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
     : cloud.status === 'error'
@@ -424,6 +468,11 @@ export const RealizedPnl: React.FC = () => {
         desc="期貨部位請到「期貨損益總覽」頁管理；這裡只管個股與 ETF。"
         right={
           <>
+            <button onClick={() => void syncRealFromApi()} disabled={realSync.status === 'triggering' || realSync.status === 'waiting'}
+              className="flex items-center gap-1 px-2.5 py-1 rounded-lg border border-border text-[11px] font-semibold text-zinc-300 hover:text-zinc-100 hover:border-zinc-600 disabled:opacity-50">
+              <RefreshCw className={`w-3.5 h-3.5 ${realSync.status === 'triggering' || realSync.status === 'waiting' ? 'animate-spin' : ''}`} />
+              真實同步
+            </button>
             <button onClick={() => setShowRates((v) => !v)}
               className="flex items-center gap-1 px-2.5 py-1 rounded-lg border border-border text-[11px] font-semibold text-zinc-300 hover:text-zinc-100 hover:border-zinc-600">
               <Settings2 className="w-3.5 h-3.5" /> 費率設定
@@ -439,6 +488,20 @@ export const RealizedPnl: React.FC = () => {
           </>
         }
       >
+        {realSync.status !== 'idle' && (
+          <div className={`flex items-center gap-1.5 text-[11px] mb-3 ${
+            realSync.status === 'error' ? 'text-rose-400' : realSync.status === 'timeout' ? 'text-amber-400' : realSync.status === 'done' ? 'text-emerald-400' : 'text-zinc-400'
+          }`}>
+            {(realSync.status === 'triggering' || realSync.status === 'waiting') && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+            {(realSync.status === 'error' || realSync.status === 'timeout') && <AlertTriangle className="w-3.5 h-3.5" />}
+            {realSync.status === 'triggering' && '真實同步觸發中…'}
+            {realSync.status === 'waiting' && '真實同步：VM 執行中…（呼叫玉山 API 抓已實現交易）'}
+            {realSync.status === 'done' && `真實同步完成：${realSync.msg}`}
+            {realSync.status === 'error' && `真實同步失敗：${realSync.msg}`}
+            {realSync.status === 'timeout' && realSync.msg}
+          </div>
+        )}
+
         {showRates && (
           <FeeRateForm
             key={JSON.stringify(stock.fee_rates)}
@@ -561,6 +624,9 @@ export const RealizedPnl: React.FC = () => {
 
         <p className="text-[11px] text-zinc-500">
           目前共 {stock.trades.length} 筆個股／ETF 已實現交易（明細見上方彙總表）。
+          「真實同步」預設回溯兩年、可重複執行（已同步過的交易不會重複計入），淨損益與券商 App 一致；
+          唯獨買進均價是用玉山回傳的成本反推、已內含買進手續費，跟截圖上單純顯示的買進均價可能有小數點差異，
+          且同步進來的交易方向一律先標「多」，若原本是融券放空請自行改成「空」（純顯示用，不影響金額）。
         </p>
       </Panel>
     </div>

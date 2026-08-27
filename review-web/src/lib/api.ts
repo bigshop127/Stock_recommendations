@@ -630,6 +630,14 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ images }),
     }),
+  /** 玉山 API 真實同步（opt37）：立即回 202，完成與否輪詢 getStockRealizedSyncStatus() */
+  triggerStockRealizedSync: (since?: string) =>
+    req<{ ok: boolean; triggered_at: string }>('/stocks/sync-realized-trigger', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(since ? { since } : {}),
+    }),
+  getStockRealizedSyncStatus: () => req<StockRealizedSyncStatus>('/stocks/sync-realized-status'),
 };
 
 // 快照列的形狀定義在 lib/futures.ts（純計算層），這裡只轉出去給呼叫端用——
@@ -990,5 +998,15 @@ export interface StockRealizedOcrResp {
   scanned_at: string;
 }
 
-
+// 玉山 API 真實同步（opt37，routes/stock_realized_sync.js）
+export interface StockRealizedSyncStatus {
+  state: 'idle' | 'running' | 'ok' | 'error';
+  started_at?: string | null;
+  finished_at?: string | null;
+  exit_code?: number | null;
+  message?: string | null;
+  since?: string | null;
+  summary?: { added: number; skipped_already: number; skipped_duplicate: number; total_incoming: number } | null;
+  log_tail?: string;
+}
 
