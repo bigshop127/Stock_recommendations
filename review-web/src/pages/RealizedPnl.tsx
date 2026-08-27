@@ -9,6 +9,7 @@
  * 這一頁（見 StockScreenshotImport.tsx 與下方的 TradeForm）。
  */
 import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { createChart, ColorType, type Time, type BusinessDay, type HistogramData } from 'lightweight-charts';
 import {
   ListOrdered, ScanLine, PlusCircle, Trash2, Pencil, X, Settings2,
   Cloud, CloudOff, Loader2, Filter, ExternalLink, RefreshCw, AlertTriangle,
@@ -37,6 +38,8 @@ const pnlCls = (v: number) => (v >= 0 ? 'text-bull' : 'text-bear');
 
 type Category = 'futures' | 'stock' | 'etf';
 const CATEGORY_LABEL: Record<Category, string> = { futures: '期貨', stock: '個股', etf: 'ETF' };
+/** 圓餅圖用的分類色——刻意不用 bull/bear（紅漲綠跌是損益語意，這裡是純分類，混用會誤導） */
+const CATEGORY_COLOR: Record<Category, string> = { futures: '#38bdf8', stock: '#a78bfa', etf: '#34d399' };
 
 /** 合併後的單一列，畫面顯示用；`raw` 保留原始物件供編輯/刪除用 */
 interface RealizedRow {
@@ -252,6 +255,45 @@ export const RealizedPnl: React.FC = () => {
     });
     return [...map.values()].sort((a, b) => (b.latestDate < a.latestDate ? -1 : b.latestDate > a.latestDate ? 1 : 0));
   }, [filteredRows]);
+
+  /**
+   * 類別占比圓餅圖的資料：用絕對值算占比（損益本身有正有負，直接用淨值算
+   * 占比在有虧有賺時會出現「占比>100%」或負占比這種看了更困惑的數字），
+   * 圖例仍顯示真正的正負淨損益，不會誤導成「這塊都是賺的」。
+   */
+  const donutData = useMemo(() => {
+    const cats: Category[] = ['futures', 'stock', 'etf'];
+    const abs = cats.map((c) => Math.abs(totals.byCategory[c]));
+    const sum = abs.reduce((s, v) => s + v, 0);
+    if (sum <= 0) return [];
+    let cursor = 0;
+    return cats
+      .map((c, i) => {
+        const pct = abs[i] / sum;
+        const seg = { category: c, pct, net: totals.byCategory[c], offset: cursor };
+        cursor += pct;
+        return seg;
+      })
+      .filter((s) => s.pct > 0);
+  }, [totals]);
+
+  /** 每月淨損益趨勢：依目前篩選結果彙總，時間軸由舊到新（跟月份快選鈕的新到舊排序刻意不同——長條圖是看趨勢，習慣由左到右愈來愈新）*/
+  const monthlyPnl = useMemo(() => {
+    const map = new Map<string, number>();
+    filteredRows.forEach((r) => {
+      const m = monthOf(r.date);
+      if (!m) return;
+      map.set(m, (map.get(m) || 0) + r.net);
+    });
+    return [...map.entries()].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)).map(([month, net]) => ({ month, net }));
+  }, [filteredRows]);
+
+  /** 前五大貢獻標的：依淨損益絕對值排序，虧最多跟賺最多的都算「貢獻」，不是只挑賺錢的 */
+  const topContributors = useMemo(
+    () => [...groupedRows].sort((a, b) => Math.abs(b.net) - Math.abs(a.net)).slice(0, 5),
+    [groupedRows],
+  );
+  const maxAbsContributor = Math.max(1, ...topContributors.map((g) => Math.abs(g.net)));
 
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
   const toggleGroup = (key: string) => {
@@ -491,6 +533,70 @@ export const RealizedPnl: React.FC = () => {
             valueCls={pnlCls(totals.byCategory.stock + totals.byCategory.etf)} tone="sky"
             sub={`個股 ${money(totals.byCategory.stock)}・ETF ${money(totals.byCategory.etf)}`} />
         </div>
+
+        {/* ── 圖表區：類別占比／每月趨勢／前五大貢獻標的，皆跟著上面的篩選走 ── */}
+        {filteredRows.length > 0 && (
+          <div className="mt-4 grid grid-cols-1 lg:grid-cols-3 gap-3">
+            <div className="border border-border rounded-xl p-4 bg-zinc-900/40">
+              <div className="text-[11px] text-zinc-500 mb-3">類別占比</div>
+              {donutData.length > 0 ? (
+                <div className="flex items-center gap-4">
+                  <svg viewBox="0 0 36 36" className="w-20 h-20 -rotate-90 shrink-0">
+                    <circle cx="18" cy="18" r="15.9155" fill="none" stroke="#27272a" strokeWidth="4" />
+                    {donutData.map((seg) => (
+                      <circle
+                        key={seg.category}
+                        cx="18" cy="18" r="15.9155" fill="none"
+                        stroke={CATEGORY_COLOR[seg.category]}
+                        strokeWidth="4"
+                        strokeDasharray={`${seg.pct * 100} ${100 - seg.pct * 100}`}
+                        strokeDashoffset={-seg.offset * 100}
+                      />
+                    ))}
+                  </svg>
+                  <ul className="space-y-1.5 text-[11px] flex-1 min-w-0">
+                    {donutData.map((seg) => (
+                      <li key={seg.category} className="flex items-center gap-1.5" title={money(seg.net)}>
+                        <span className="w-2 h-2 rounded-full shrink-0" style={{ background: CATEGORY_COLOR[seg.category] }} />
+                        <span className="text-zinc-400 truncate">{CATEGORY_LABEL[seg.category]}</span>
+                        <span className="ml-auto font-mono font-semibold text-zinc-300">{Math.round(seg.pct * 100)}%</span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              ) : (
+                <div className="h-20 flex items-center justify-center text-xs text-zinc-600">尚無資料</div>
+              )}
+            </div>
+
+            <div className="lg:col-span-2 border border-border rounded-xl p-4 bg-zinc-900/40">
+              <div className="text-[11px] text-zinc-500 mb-1">每月淨損益</div>
+              <MonthlyPnlChart data={monthlyPnl} />
+            </div>
+
+            {topContributors.length > 0 && (
+              <div className="lg:col-span-3 border border-border rounded-xl p-4 bg-zinc-900/40">
+                <div className="text-[11px] text-zinc-500 mb-3">前五大貢獻標的（依淨損益絕對值排序）</div>
+                <div className="space-y-2">
+                  {topContributors.map((g) => (
+                    <div key={g.key} className="flex items-center gap-2 text-xs">
+                      <span className="w-24 sm:w-36 shrink-0 truncate text-zinc-300" title={`${g.name}（${g.symbol}）`}>
+                        {g.name}（{g.symbol}）
+                      </span>
+                      <div className="flex-1 h-4 rounded bg-zinc-950 overflow-hidden">
+                        <div
+                          className={`h-full ${g.net >= 0 ? 'bg-bull/80' : 'bg-bear/80'}`}
+                          style={{ width: `${(Math.abs(g.net) / maxAbsContributor) * 100}%` }}
+                        />
+                      </div>
+                      <span className={`w-20 shrink-0 text-right font-mono font-semibold ${pnlCls(g.net)}`}>{money(g.net)}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
 
         {/* ── 明細表 ── */}
         <div className="mt-4 overflow-x-auto">
@@ -749,6 +855,70 @@ export const RealizedPnl: React.FC = () => {
           且同步進來的交易方向一律先標「多」，若原本是融券放空請自行改成「空」（純顯示用，不影響金額）。
         </p>
       </Panel>
+    </div>
+  );
+};
+
+/**
+ * 每月淨損益長條圖，用專案既有的 lightweight-charts（其他頁面畫 K 線用的那套）
+ * 的 histogram series，不必為了一張簡單長條圖再加新套件。比照 PriceChart.tsx
+ * 的建立/resize/卸載模式，但只有一條 series，不需要它那套多圖同步的複雜度。
+ */
+const MonthlyPnlChart: React.FC<{ data: { month: string; net: number }[] }> = ({ data }) => {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const legendRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el || data.length === 0) return;
+
+    const chart = createChart(el, {
+      width: el.clientWidth,
+      height: 160,
+      layout: { background: { type: ColorType.Solid, color: 'transparent' }, textColor: '#94a3b8', fontSize: 10 },
+      grid: { vertLines: { visible: false }, horzLines: { color: '#27272a' } },
+      rightPriceScale: { borderColor: '#3f3f46' },
+      timeScale: {
+        borderColor: '#3f3f46',
+        // 資料點都是月初，內建格式會印出完整日期，改成跟月份快選鈕同一種簡短格式
+        tickMarkFormatter: (t: Time) => (typeof t === 'object' ? `${t.month}月` : String(t)),
+      },
+      crosshair: { mode: 0 },
+      handleScale: false,
+      handleScroll: false,
+    });
+
+    const series = chart.addHistogramSeries({ priceFormat: { type: 'price', precision: 0, minMove: 1 } });
+    const points: HistogramData[] = data.map((d) => {
+      const [y, m] = d.month.split('-').map(Number);
+      const time: BusinessDay = { year: y, month: m, day: 1 };
+      return { time, value: d.net, color: d.net >= 0 ? '#ef4444' : '#22c55e' };
+    });
+    series.setData(points);
+    chart.timeScale().fitContent();
+
+    const setLegend = (found: { month: string; net: number } | undefined) => {
+      if (legendRef.current) legendRef.current.textContent = found ? `${found.month}` + '　淨損益 ' + money(found.net) : '';
+    };
+    setLegend(data[data.length - 1]);
+    chart.subscribeCrosshairMove((param) => {
+      if (!param.time) { setLegend(data[data.length - 1]); return; }
+      const t = param.time as unknown as { year: number; month: number };
+      setLegend(data.find((d) => d.month === `${t.year}-${String(t.month).padStart(2, '0')}`));
+    });
+
+    const ro = new ResizeObserver(() => chart.applyOptions({ width: el.clientWidth }));
+    ro.observe(el);
+    return () => { ro.disconnect(); chart.remove(); };
+  }, [data]);
+
+  if (data.length === 0) {
+    return <div className="h-[160px] flex items-center justify-center text-xs text-zinc-600">尚無資料</div>;
+  }
+  return (
+    <div className="relative w-full">
+      <div ref={legendRef} className="absolute top-0 left-1 z-10 text-[11px] font-mono text-zinc-400 select-none pointer-events-none" />
+      <div ref={containerRef} className="w-full" />
     </div>
   );
 };
