@@ -2,6 +2,7 @@
 // 統一錯誤格式 { error: { code, message, detail? } }
 import type { FuturesEquityRow } from './futures';
 import type { ScanScreen } from './futuresImport';
+import type { StockScanScreen } from './stockRealizedImport';
 
 const BASE = '/api';
 
@@ -613,6 +614,22 @@ export const api = {
     }),
   // 加權指數：gateway 自己抓 TWSE（盤中走 MIS 即時、收盤後退每日 OpenAPI），不經 engine
   getTaiex: () => req<TaiexResp>('/market/taiex'),
+
+  // 個股／ETF 已實現損益（opt36，gateway 讀寫 data/stock_realized_trades.json）
+  getStockRealized: () => req<StockRealizedResp>('/stock-realized'),
+  saveStockRealized: (payload: unknown) =>
+    req<StockRealizedSaveResp>('/stock-realized', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    }),
+  /** 個股／ETF券商截圖辨識（opt36），比照 scanFuturesScreens 的做法 */
+  scanStockRealizedScreens: (images: { mime: string; data: string }[]) =>
+    req<StockRealizedOcrResp>('/stocks/realized-ocr', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ images }),
+    }),
 };
 
 // 快照列的形狀定義在 lib/futures.ts（純計算層），這裡只轉出去給呼叫端用——
@@ -952,6 +969,25 @@ export function marketStockHeatmap(o?: { period?: string; date?: string }, force
     heatmapCache.set(key, { timestamp: Date.now(), data });
     return data;
   });
+}
+
+// ── 個股／ETF 已實現損益（opt36）─────────────────────────────────────────────
+export interface StockRealizedResp {
+  exists: boolean;
+  data: Record<string, unknown> | null;
+  saved_at: string | null;
+}
+export interface StockRealizedSaveResp {
+  ok: boolean;
+  data: Record<string, unknown>;
+  saved_at: string;
+}
+export interface StockRealizedOcrResp {
+  ok: boolean;
+  screens: StockScanScreen[];
+  warnings: string[];
+  model: string;
+  scanned_at: string;
 }
 
 

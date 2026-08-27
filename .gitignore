@@ -112,3 +112,7 @@ data/twse_holidays.json
 data/twse_taiex.json
 # 保留下來的舊 log 樣本（見 ops-local-gateway-autostart.md §4.1b 的 pm2 當機迴圈）
 data/_archive/
+
+# === Added 2026-08-27 (opt36 已實現損益總覽：個股/ETF 已實現交易) ===
+# 個股/ETF 已實現交易明細（含買賣價與數量，個人財務數字，不進 repo）
+data/stock_realized_trades.json

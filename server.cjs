@@ -25,6 +25,7 @@ app.use(cors()); // 補啟用 CORS（前端跨網域可打）
 // 必須掛在全域 express.json() 之前——後者先跑就直接 413，根本輪不到那條路由；
 // body-parser 解過就會標記 req._body，所以下一行對這條路徑會自動略過。
 app.use('/api/futures/ocr', express.json({ limit: '20mb' }));
+app.use('/api/stocks/realized-ocr', express.json({ limit: '20mb' }));
 app.use(express.json());
 app.use(express.static('public'));
 
@@ -33,6 +34,8 @@ app.use(require('./routes/market'));
 app.use(require('./routes/rebalance'));
 app.use(require('./routes/futures'));
 app.use(require('./routes/futures_ocr'));
+app.use(require('./routes/stock_realized'));
+app.use(require('./routes/stock_realized_ocr'));
 
 // 階段 8：serve review-web 前端 build（review-web/dist）在子路徑 /review
 const reviewDist = path.join(__dirname, 'review-web', 'dist');

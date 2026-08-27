@@ -633,3 +633,67 @@
   "log_tail": "…"           // 腳本輸出末段（除錯用）
 }
 ```
+
+### 2.19 個股／ETF 已實現損益雲端同步 `/api/stock-realized`
+
+* **Description**: 「已實現損益總覽」頁（opt36）個股／ETF 已實現交易的雲端持久化。gateway 純檔案讀寫 `data/stock_realized_trades.json`（不經 engine），POST 一律伺服端 sanitize：代號正規化成大寫英數、缺 `sell_date` 或 `symbol` 的列直接丟棄（沒有賣出日就沒辦法歸到月份/區間篩選）、`fee`/`tax` 非負有限數才留否則存 `null`（前端用費率設定推估）。原子寫入（`.tmp`→rename）。交易明細已 gitignore（含財務數字不進版控）。跟期貨的 `/api/futures/positions` 是完全獨立的兩份檔案——這頁唯讀彙總期貨的 `closed`，不會把兩者的資料混寫進同一個檔案。
+* **Method**: `GET` / `POST`
+
+```jsonc
+// GET 回應
+{
+  "exists": true,
+  "data": {
+    "trades": [
+      {
+        "id": "s_2330_2026-08-10_long_...", "symbol": "2330", "name": "台積電",
+        "kind": "stock",       // stock | etf，預設用代號規則（'00' 開頭＝etf）判斷
+        "side": "long",        // long＝現股買進後賣出；short＝融券賣出後買進回補
+        "qty": 1000, "buy_price": 500, "sell_price": 550,
+        "buy_date": "2026-08-01", "sell_date": "2026-08-10",
+        "fee": null, "tax": null   // null＝用 fee_rates 推估；有值＝券商實收
+      }
+    ],
+    "fee_rates": {
+      "fee_rate": 0.001425, "fee_discount": 1,
+      "stock_tax_rate": 0.003, "etf_tax_rate": 0.001
+    },
+    "imported_refs": ["s|2330|2026-08-10|1000|500|550"]
+  },
+  "saved_at": "2026-08-27T14:12:57.501Z"
+}
+```
+（檔不存在時 `{ "exists": false, "data": null, "saved_at": null }`。）
+* **POST Body**：同 `data` 物件。**Response**：`{ "ok": true, "data": {...清洗後...}, "saved_at": "ISO時間" }`。
+
+### 2.20 個股／ETF券商截圖辨識 `/api/stocks/realized-ocr`
+
+* **Description**: 比照期貨的 `/api/futures/ocr`（§opt30），辨識台股券商 App 的「已實現損益查詢」截圖。跟期貨截圖不同，這種畫面**每一列本來就是一筆結算完成的完整交易**（買賣雙腿、手續費、證交稅、損益都在同一列），不需要拆兩腿再湊，所以只有一種畫面 kind（`realized`），辨識結果直接對應 `StockRealizedTrade`（缺 `id`）。模型與 key 輪換沿用 `futures_ocr.js` 同一套（3 把 `GEMINI_API_KEY*` × `gemini-2.5-flash`/`gemini-2.5-flash-lite`）。圖片不落地也不記 log；單張上限約 6MB、一次最多 4 張。
+* **Method**: `POST`
+* **Request Body**: `{ "images": [{ "mime": "image/jpeg", "data": "<base64，不含 data URL 前綴>" }] }`
+* **Response (200 OK)**:
+```jsonc
+{
+  "ok": true,
+  "screens": [
+    {
+      "title": "已實現損益查詢",
+      "rows": [
+        {
+          "symbol": "2330", "name": "台積電", "kind": "stock", "side": "long",
+          "qty": 1000, "buy_price": 500, "sell_price": 550,
+          "buy_date": "2026-08-01", "sell_date": "2026-08-10",
+          "fee": 21, "tax": 165, "net_pnl": 49814,
+          "ref": "s|2330|2026-08-10|1000|500|550"
+        }
+      ],
+      "totals": { "pnl": 49814, "count": 1 },
+      "warnings": []
+    }
+  ],
+  "warnings": [],
+  "model": "gemini-2.5-flash",
+  "scanned_at": "2026-08-27T14:14:03.668Z"
+}
+```
+* **去重**：`ref` 指紋（代號＋賣出日＋股數＋買賣均價）跟前端 `imported_refs` 帳本比對，同一張截圖重複匯入不會重複計帳（見 `src/lib/stockRealizedImport.ts`）。

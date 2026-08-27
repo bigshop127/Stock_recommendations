@@ -17,7 +17,8 @@ import {
   Waves,
   LayoutGrid,
   SlidersHorizontal,
-  Activity
+  Activity,
+  ListOrdered
 } from 'lucide-react';
 import { api } from '../lib/api';
 import type { Health } from '../lib/api';
@@ -202,6 +203,19 @@ export const Layout: React.FC<LayoutProps> = ({ children }) => {
             >
               <Activity className="w-5 h-5" />
               期貨損益總覽
+            </Link>
+
+            {/* 已實現損益總覽（opt36：期貨＋個股＋ETF 統一彙總與篩選） */}
+            <Link
+              to="/realized-pnl"
+              className={`flex items-center gap-3 px-4 py-3 rounded-lg text-sm font-medium transition-all duration-200 ${
+                location.pathname === '/realized-pnl'
+                  ? 'bg-primary/10 text-primary border border-primary/20 shadow-sm'
+                  : 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800/40 border border-transparent'
+              }`}
+            >
+              <ListOrdered className="w-5 h-5" />
+              已實現損益總覽
             </Link>
 
             {/* 個股多維度審查 折疊選單 */}
