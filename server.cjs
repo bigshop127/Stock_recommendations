@@ -29,6 +29,10 @@ app.use('/api/stocks/realized-ocr', express.json({ limit: '20mb' }));
 app.use(express.json());
 app.use(express.static('public'));
 
+// stock_realized_sync 要掛在 gateway 之前：gateway 的 `GET /api/stocks/:code`
+// 是萬用路由，註冊順序在前的話會把 /api/stocks/sync-realized-status 誤吃成
+// 「查代號叫 sync-realized-status 的個股」（opt37 上線時實測到，非假設）。
+app.use(require('./routes/stock_realized_sync'));
 app.use(require('./routes/gateway'));
 app.use(require('./routes/market'));
 app.use(require('./routes/rebalance'));
@@ -36,7 +40,6 @@ app.use(require('./routes/futures'));
 app.use(require('./routes/futures_ocr'));
 app.use(require('./routes/stock_realized'));
 app.use(require('./routes/stock_realized_ocr'));
-app.use(require('./routes/stock_realized_sync'));
 
 // 階段 8：serve review-web 前端 build（review-web/dist）在子路徑 /review
 const reviewDist = path.join(__dirname, 'review-web', 'dist');
