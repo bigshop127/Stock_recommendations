@@ -209,13 +209,19 @@ export const NetWorth: React.FC = () => {
             {cloudIcon} {cloud.status === 'loading' ? '同步中…' : cloud.status === 'error' ? '同步失敗' : '雲端已同步'}
           </Chip>
         }
-        desc="銀行帳戶＋股市（券商現金＋庫存市值）＋期貨權益，統整成淨資產。銀行沒有任何 API，數字要自己填（或截圖輔助辨識）；股市與期貨會自動帶入「再平衡計算機」真實同步與「期貨損益總覽」的最新資料。按「更新今天快照」才會存進歷史線圖——歷史從第一次使用這頁那天開始累積，之前的資料沒有留存。"
+        desc="銀行帳戶＋股市（庫存市值＋在途交割）＋期貨權益，統整成淨資產。銀行沒有任何 API，數字要自己填（或截圖輔助辨識）；股市與期貨會自動帶入「再平衡計算機」真實同步與「期貨損益總覽」的最新資料。按「更新今天快照」才會存進歷史線圖——歷史從第一次使用這頁那天開始累積，之前的資料沒有留存。已入帳、可自由動用的券商現金**不算進股市這格**（見下方「更新今天快照」卡片裡單獨列的那行），避免看起來像跟銀行帳戶重複算——但仍然算進總資產，所以銀行＋股市＋期貨三格加起來會比總資產少，差額就是那筆已入帳現金。"
       >
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-4">
           <StatTile label="銀行帳戶" value={money(composition.bank)} tone="amber" icon={<Landmark className="w-3.5 h-3.5" />} />
-          <StatTile label="股市（現金＋庫存）" value={money(composition.stock)} tone="primary" icon={<TrendingUp className="w-3.5 h-3.5" />} />
+          <StatTile
+            label="股市（庫存＋交割中）"
+            value={money(composition.stock)}
+            tone="primary"
+            icon={<TrendingUp className="w-3.5 h-3.5" />}
+            hint="庫存市值＋在途交割淨額，不含已入帳可動用現金（那筆錢單獨列在下方「更新今天快照」卡片，避免跟銀行帳戶看起來重複）"
+          />
           <StatTile label="期貨權益" value={money(composition.futures)} tone="sky" icon={<Activity className="w-3.5 h-3.5" />} />
-          <StatTile label="總資產" value={money(total)} tone="emerald" valueCls="text-emerald-300" />
+          <StatTile label="總資產" value={money(total)} tone="emerald" valueCls="text-emerald-300" hint="含已入帳的券商現金——銀行＋股市＋期貨三格加起來會比這個數字少" />
         </div>
 
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
@@ -236,7 +242,9 @@ export const NetWorth: React.FC = () => {
               </div>
             </div>
             <div className="text-[11px] text-zinc-500 space-y-1">
-              <div className="flex justify-between"><span>已入帳可用現金（自動）</span><span className="font-mono text-zinc-300">{money(settledStockCash(draft))}</span></div>
+              <div className="flex justify-between" title="不算進上方「股市」那格，避免看起來跟銀行帳戶重複——但仍計入總資產">
+                <span>已入帳可用現金（自動，不算進股市格）</span><span className="font-mono text-zinc-300">{money(settledStockCash(draft))}</span>
+              </div>
               <div className="flex justify-between">
                 <span>尚未交割淨額（自動）</span>
                 <span className="font-mono text-zinc-300">

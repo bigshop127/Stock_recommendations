@@ -28,16 +28,26 @@ export function settledStockCash(s: NetWorthSnapshot): number {
 
 export interface NetWorthComposition {
   bank: number;
-  stock: number; // stock_cash + stock_holdings_value 合併顯示（使用者的心智模型是「股市那邊的錢」，不分現金/庫存）
+  /**
+   * 只算「股市特定」的部分：庫存市值＋在途交割淨額，**不含**已入帳可動用現金
+   * （settledStockCash）——那筆錢已經在畫面別處單獨列成一行，這裡再算會變成
+   * 使用者眼中的「重複計算」。已入帳現金仍然算在 total／snapshotTotal() 裡，
+   * 只是不歸在這個分類底下顯示（使用者 2026-08-28 明確要求的分法）。
+   */
+  stock: number;
   futures: number;
+  /** 完整總資產（含已入帳現金），與 snapshotTotal() 一致——注意 bank+stock+futures
+   *  不會等於 total，兩者故意不同，差額就是已入帳可動用現金。 */
   total: number;
 }
 
 export function snapshotComposition(s: NetWorthSnapshot): NetWorthComposition {
-  const bank = s.bank;
-  const stock = s.stock_cash + s.stock_holdings_value;
-  const futures = s.futures_equity;
-  return { bank, stock, futures, total: bank + stock + futures };
+  return {
+    bank: s.bank,
+    stock: s.stock_pending_settlement + s.stock_holdings_value,
+    futures: s.futures_equity,
+    total: snapshotTotal(s),
+  };
 }
 
 /** 'YYYY-MM-DD' 今天日期（本地時區），新增快照的預設日期 */
