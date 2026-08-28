@@ -862,6 +862,12 @@ export const RealizedPnl: React.FC = () => {
  * 每月淨損益長條圖，用專案既有的 lightweight-charts（其他頁面畫 K 線用的那套）
  * 的 histogram series，不必為了一張簡單長條圖再加新套件。比照 PriceChart.tsx
  * 的建立/resize/卸載模式，但只有一條 series，不需要它那套多圖同步的複雜度。
+ *
+ * 互動改成「點哪個月才顯示哪個月」（不是滑鼠移過去才跳）：series 預設的
+ * `lastValueVisible`／`priceLineVisible` 會在價格軸上釘住最後一筆的數字，不管
+ * 點哪裡那顆數字都不會變，使用者會誤以為整張圖「卡住」——關掉這兩個內建標籤，
+ * 改成點擊(`subscribeClick`)時才更新左上角文字，並用 `setCrosshairPosition`
+ * 把十字線釘在被點的那根柱子上，離開圖表也不會消失，明確標出目前選的是哪個月。
  */
 const MonthlyPnlChart: React.FC<{ data: { month: string; net: number }[] }> = ({ data }) => {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -876,9 +882,9 @@ const MonthlyPnlChart: React.FC<{ data: { month: string; net: number }[] }> = ({
      * 緩衝區——曾經改用手動 `width: el.clientWidth` + 自己的 ResizeObserver 只
      * `applyOptions({width})`，結果畫布的 backing buffer 卡在 HTML canvas 預設值
      * 300×150（跟外層 CSS 顯示尺寸完全兜不上），造成滑鼠座標系統跟圖表內部的時間
-     * 軸座標系統對不齊，crosshair 的 `time` 永遠解析不出來（`param.time` 恆為
-     * undefined）——外觀看起來長條圖是正常的（CSS 拉伸掩蓋了問題），但滑鼠移到
-     * 哪裡都讀不到對應時間點，這就是「淨損益卡住不跟著滑鼠變化」的根因。
+     * 軸座標系統對不齊，點擊的 `time` 永遠解析不出來（`param.time` 恆為
+     * undefined）——外觀看起來長條圖是正常的（CSS 拉伸掩蓋了問題），但點哪裡都讀
+     * 不到對應時間點。
      */
     const chart = createChart(el, {
       autoSize: true,
@@ -891,9 +897,16 @@ const MonthlyPnlChart: React.FC<{ data: { month: string; net: number }[] }> = ({
         tickMarkFormatter: (t: Time) => (typeof t === 'object' ? `${t.month}月` : String(t)),
       },
       crosshair: { mode: 0 },
+      handleScroll: false,
+      handleScale: false,
     });
 
-    const series = chart.addHistogramSeries({ priceFormat: { type: 'price', precision: 0, minMove: 1 } });
+    const series = chart.addHistogramSeries({
+      priceFormat: { type: 'price', precision: 0, minMove: 1 },
+      // 關掉價格軸上釘住最後一筆數字的內建標籤，改用下面點擊才更新的文字
+      lastValueVisible: false,
+      priceLineVisible: false,
+    });
     const points: HistogramData[] = data.map((d) => {
       const [y, m] = d.month.split('-').map(Number);
       const time: BusinessDay = { year: y, month: m, day: 1 };
@@ -905,11 +918,23 @@ const MonthlyPnlChart: React.FC<{ data: { month: string; net: number }[] }> = ({
     const setLegend = (found: { month: string; net: number } | undefined) => {
       if (legendRef.current) legendRef.current.textContent = found ? `${found.month}` + '　淨損益 ' + money(found.net) : '';
     };
-    setLegend(data[data.length - 1]);
-    chart.subscribeCrosshairMove((param) => {
-      if (!param.time) { setLegend(data[data.length - 1]); return; }
+    const selectMonth = (found: { month: string; net: number } | undefined) => {
+      setLegend(found);
+      if (found) {
+        const [y, m] = found.month.split('-').map(Number);
+        chart.setCrosshairPosition(found.net, { year: y, month: m, day: 1 } as BusinessDay, series);
+      } else {
+        chart.clearCrosshairPosition();
+      }
+    };
+    // 預設選最新一個月，跟原本沒點擊前的行為一致
+    selectMonth(data[data.length - 1]);
+
+    chart.subscribeClick((param) => {
+      if (!param.time) return;
       const t = param.time as unknown as { year: number; month: number };
-      setLegend(data.find((d) => d.month === `${t.year}-${String(t.month).padStart(2, '0')}`));
+      const found = data.find((d) => d.month === `${t.year}-${String(t.month).padStart(2, '0')}`);
+      if (found) selectMonth(found);
     });
 
     return () => chart.remove();
@@ -921,7 +946,7 @@ const MonthlyPnlChart: React.FC<{ data: { month: string; net: number }[] }> = ({
   return (
     <div className="relative w-full h-40">
       <div ref={legendRef} className="absolute top-0 left-1 z-10 text-[11px] font-mono text-zinc-400 select-none pointer-events-none" />
-      <div ref={containerRef} className="w-full h-full" />
+      <div ref={containerRef} className="w-full h-full cursor-pointer" />
     </div>
   );
 };
