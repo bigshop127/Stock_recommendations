@@ -592,6 +592,13 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ snapshots }),
     }),
+  // 銀行 App 餘額截圖辨識：立即呼叫（不像已實現損益走匯入計畫，這裡只回一個建議數字）
+  scanNetWorthBank: (images: { mime: string; data: string }[]) =>
+    req<NetWorthBankOcrResp>('/networth/bank-ocr', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ images }),
+    }),
 
   // 期貨損益總覽（gateway 讀寫 data/futures_positions.json；報價代抓期交所 OpenAPI）
   getFuturesPositions: () => req<FuturesPositionsResp>('/futures/positions'),
@@ -908,6 +915,7 @@ export interface Settlement {
 // 唯讀 metadata，只有真實同步腳本會寫入，前端存設定表單時不會（也不該）帶這欄位。
 export interface FullInventoryPosition {
   code: string;
+  name?: string; // 沒把握 Fugle API 一定有給，讀不到就沒有這欄，前端退回顯示代號
   shares: number;
   avg_cost: number;
   market_price: number;
@@ -1011,7 +1019,10 @@ export interface NetWorthSnapshot {
   id: string;
   date: string;                  // 'YYYY-MM-DD'，一天一筆（同一天再存＝覆蓋）
   bank: number;                  // 銀行帳戶總額（完全手動，沒有任何 API）
-  stock_cash: number;            // 券商現金餘額（自動帶入：rebalance holdings.cash）
+  stock_cash: number;            // 券商現金餘額（自動帶入：rebalance holdings.cash，含在途交割）
+  /** 在途交割淨額（自動帶入：rebalance settlement.net），已經算在 stock_cash 裡面，
+   *  這欄只是拆出來給畫面用——正＝應收（賣出還沒入帳）、負＝應付（買進還沒扣款）。 */
+  stock_pending_settlement: number;
   stock_holdings_value: number;  // 股票/ETF 庫存市值（自動帶入：full_inventory.total_value）
   futures_equity: number;        // 期貨權益數（自動帶入：futures/equity-history 最新一筆）
   note?: string;
@@ -1025,6 +1036,28 @@ export interface NetWorthSaveResp {
   ok: boolean;
   snapshots: NetWorthSnapshot[];
   saved_at: string;
+}
+
+// 銀行 App 餘額截圖辨識（資產變化圖用；銀行沒有任何 API，這是唯一能省手動輸入的路）
+export interface NetWorthBankOcrAccount {
+  label: string;
+  balance: number;
+}
+export interface NetWorthBankOcrScreen {
+  kind: 'balance' | 'unknown';
+  bank_name: string | null;
+  total_balance: number | null;
+  accounts: NetWorthBankOcrAccount[];
+  suggested: number; // 這張截圖的建議值：有 total_balance 用它，沒有就是 accounts 加總
+  warnings: string[];
+}
+export interface NetWorthBankOcrResp {
+  ok: boolean;
+  screens: NetWorthBankOcrScreen[];
+  total_suggested: number; // 多張截圖（可能不同銀行）的建議值加總
+  warnings: string[];
+  model: string;
+  scanned_at: string;
 }
 
 // ── 個股／ETF 已實現損益（opt36）─────────────────────────────────────────────

@@ -46,6 +46,7 @@ export function sanitizeSnapshot(v: unknown, i: number): NetWorthSnapshot | null
     date,
     bank: Math.max(0, num(o.bank, 0)),
     stock_cash: Math.max(0, num(o.stock_cash, 0)),
+    stock_pending_settlement: num(o.stock_pending_settlement, 0),
     stock_holdings_value: Math.max(0, num(o.stock_holdings_value, 0)),
     futures_equity: num(o.futures_equity, 0),
     ...(note ? { note } : {}),

@@ -122,8 +122,12 @@ def extract_full_inventory(inventories):
             continue
         avg_cost = float(item.get("price_avg", 0) or 0)
         market_price = float(item.get("price_now", 0) or item.get("price_mkt", 0) or 0)
+        # 沒把握 esun_trade 的 inventories 一定會給名稱欄位（沒查到官方文件列出保證有這個
+        # key），純粹能拿就拿、拿不到就讓前端退回顯示代號本身，不影響市值計算。
+        name = str(item.get("stock_name") or item.get("name") or "").strip()
         out.append({
             "code": code,
+            "name": name,
             "shares": shares,
             "avg_cost": avg_cost,
             "market_price": market_price,

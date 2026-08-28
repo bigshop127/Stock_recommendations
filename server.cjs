@@ -26,6 +26,7 @@ app.use(cors()); // 補啟用 CORS（前端跨網域可打）
 // body-parser 解過就會標記 req._body，所以下一行對這條路徑會自動略過。
 app.use('/api/futures/ocr', express.json({ limit: '20mb' }));
 app.use('/api/stocks/realized-ocr', express.json({ limit: '20mb' }));
+app.use('/api/networth/bank-ocr', express.json({ limit: '20mb' }));
 app.use(express.json());
 app.use(express.static('public'));
 
@@ -37,6 +38,7 @@ app.use(require('./routes/gateway'));
 app.use(require('./routes/market'));
 app.use(require('./routes/rebalance'));
 app.use(require('./routes/networth'));
+app.use(require('./routes/networth_ocr'));
 app.use(require('./routes/futures'));
 app.use(require('./routes/futures_ocr'));
 app.use(require('./routes/stock_realized'));

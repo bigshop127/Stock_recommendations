@@ -10,7 +10,8 @@ export interface NetWorthSnapshot {
   id: string;
   date: string; // 'YYYY-MM-DD'
   bank: number;
-  stock_cash: number;
+  stock_cash: number; // 已入帳＋在途交割的總額（stock_pending_settlement 已經算在裡面）
+  stock_pending_settlement: number; // 拆出來顯示用，正＝應收、負＝應付
   stock_holdings_value: number;
   futures_equity: number;
   note?: string;
@@ -18,6 +19,11 @@ export interface NetWorthSnapshot {
 
 export function snapshotTotal(s: NetWorthSnapshot): number {
   return s.bank + s.stock_cash + s.stock_holdings_value + s.futures_equity;
+}
+
+/** 已入帳、不用等交割就能動用的現金——stock_cash 扣掉還在途的淨額 */
+export function settledStockCash(s: NetWorthSnapshot): number {
+  return s.stock_cash - s.stock_pending_settlement;
 }
 
 export interface NetWorthComposition {

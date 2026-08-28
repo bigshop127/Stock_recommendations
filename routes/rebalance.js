@@ -157,6 +157,7 @@ function sanitizeFullInventory(v) {
     .map((p) => (p && typeof p === 'object' && typeof p.code === 'string' && p.code
       ? {
           code: p.code.slice(0, 12),
+          ...(typeof p.name === 'string' && p.name ? { name: p.name.slice(0, 40) } : {}),
           shares: Math.max(0, safeNum(p.shares, 0)),
           avg_cost: Math.max(0, safeNum(p.avg_cost, 0)),
           market_price: Math.max(0, safeNum(p.market_price, 0)),

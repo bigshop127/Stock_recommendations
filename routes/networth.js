@@ -46,6 +46,11 @@ function sanitizeSnapshot(s, i) {
     date,
     bank: Math.max(0, safeNum(s.bank, 0)),
     stock_cash: Math.max(0, safeNum(s.stock_cash, 0)),
+    // 交割款細分（2026-08-28 新增）：stock_cash 是「已入帳＋在途交割」的總額
+    // （沿用 rebalance holdings.cash 的既有語意，不動它），這個欄位單獨存淨在途
+    // 交割款（正＝應收、負＝應付），純粹是把 stock_cash 拆開顯示用，兩者相減
+    // 才是「已入帳、不用等交割就能動用」的現金——不 clamp 正負，方向本身是資訊。
+    stock_pending_settlement: safeNum(s.stock_pending_settlement, 0),
     stock_holdings_value: Math.max(0, safeNum(s.stock_holdings_value, 0)),
     // 期貨權益虧到接近斷頭時可能非常低但理論上不會真的變負（斷頭會強制平倉出場），
     // 不過不硬 clamp 0，免得把「快斷頭」的警訊悄悄抹平成看起來還好的 0。
