@@ -144,6 +144,34 @@ function sanitizeSettlement(v) {
   };
 }
 
+// 完整庫存快照（由真實同步腳本 scripts/sync_fugle_holdings.py 帶入，opt「資產變化圖」
+// 新增）：get_inventories() 回傳的整個帳戶持倉市值總和，不像 sanitizeHoldings 主體只追
+// 蹤 00631L/00687B/00953B 三檔——淨資產頁要算「股市所有錢」需要整戶市值，不是只有這三
+// 檔。跟 _settlement 同一個處理方式：非使用者可編輯欄位，屬 metadata，POST 沒帶就沿用
+// 上次快照（見下方 POST handler），GET 以獨立的 full_inventory 回傳、不混進 holdings。
+function sanitizeFullInventory(v) {
+  if (!v || typeof v !== 'object') return null;
+  const positionsIn = Array.isArray(v.positions) ? v.positions : [];
+  const positions = positionsIn
+    .slice(0, 200)
+    .map((p) => (p && typeof p === 'object' && typeof p.code === 'string' && p.code
+      ? {
+          code: p.code.slice(0, 12),
+          shares: Math.max(0, safeNum(p.shares, 0)),
+          avg_cost: Math.max(0, safeNum(p.avg_cost, 0)),
+          market_price: Math.max(0, safeNum(p.market_price, 0)),
+          value: Math.max(0, safeNum(p.value, 0)),
+        }
+      : null))
+    .filter((p) => p !== null);
+  if (positions.length === 0 && !(safeNum(v.total_value, 0) > 0)) return null;
+  return {
+    total_value: Math.max(0, safeNum(v.total_value, 0)),
+    positions,
+    synced_at: typeof v.synced_at === 'string' ? v.synced_at : '',
+  };
+}
+
 // 【regime-aware】變現優先順序 / 宏觀 regime 設定的清洗（與 store 對齊；告警腳本忽略這些欄位）
 function safeBondPriority(v) {
   return v === 'bond1_first' || v === 'bond2_first' ? v : 'regime_aware';
@@ -263,6 +291,7 @@ router.get('/api/rebalance/holdings', (req, res) => {
       holdings: sanitizeHoldings(parsed),
       saved_at: typeof parsed._saved_at === 'string' ? parsed._saved_at : null,
       settlement: sanitizeSettlement(parsed._settlement),
+      full_inventory: sanitizeFullInventory(parsed._full_inventory),
     });
   } catch (err) {
     return sendError(res, httpError(500, 'INTERNAL', '讀取持倉檔失敗: ' + err.message));
@@ -277,22 +306,25 @@ router.post('/api/rebalance/holdings', (req, res) => {
     // 同步腳本會帶入，手動存檔（不帶 settlement）時沿用上次快照，不清掉。
     let readme;
     let settlement = sanitizeSettlement(req.body.settlement);
+    let full_inventory = sanitizeFullInventory(req.body.full_inventory);
     try {
       const prev = JSON.parse(fs.readFileSync(HOLDINGS_PATH, 'utf-8'));
       if (prev && typeof prev._readme === 'string') readme = prev._readme;
       if (!settlement && prev && prev._settlement) settlement = sanitizeSettlement(prev._settlement);
+      if (!full_inventory && prev && prev._full_inventory) full_inventory = sanitizeFullInventory(prev._full_inventory);
     } catch (_) { /* 無舊檔或壞檔就略過 */ }
     const saved_at = new Date().toISOString();
     const toWrite = {
       ...(readme ? { _readme: readme } : {}),
       ...clean,
       ...(settlement ? { _settlement: settlement } : {}),
+      ...(full_inventory ? { _full_inventory: full_inventory } : {}),
       _saved_at: saved_at,
     };
     const tmp = HOLDINGS_PATH + '.tmp';
     fs.writeFileSync(tmp, JSON.stringify(toWrite, null, 2));
     fs.renameSync(tmp, HOLDINGS_PATH);
-    return res.json({ ok: true, holdings: clean, saved_at });
+    return res.json({ ok: true, holdings: clean, saved_at, full_inventory });
   } catch (err) {
     return sendError(res, httpError(400, 'BAD_REQUEST', '儲存持倉失敗: ' + err.message));
   }

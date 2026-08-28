@@ -12,6 +12,7 @@ const GroupDetail = lazy(() => import('./pages/GroupDetail').then(m => ({ defaul
 const Rebalance = lazy(() => import('./pages/Rebalance').then(m => ({ default: m.Rebalance })));
 const FuturesPnl = lazy(() => import('./pages/FuturesPnl').then(m => ({ default: m.FuturesPnl })));
 const RealizedPnl = lazy(() => import('./pages/RealizedPnl').then(m => ({ default: m.RealizedPnl })));
+const NetWorth = lazy(() => import('./pages/NetWorth').then(m => ({ default: m.NetWorth })));
 
 function App() {
   return (
@@ -36,6 +37,7 @@ function App() {
             <Route path="/rebalance" element={<Rebalance />} />
             <Route path="/futures" element={<FuturesPnl />} />
             <Route path="/realized-pnl" element={<RealizedPnl />} />
+            <Route path="/net-worth" element={<NetWorth />} />
             {/* 2026-07-29：崩盤策略回測實驗室下架，位置改給期貨損益總覽。
                 舊書籤/PWA 捷徑導到新頁，不要讓它落到 404 再彈回首頁。 */}
             <Route path="/backtest" element={<Navigate to="/futures" replace />} />

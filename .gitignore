@@ -116,3 +116,7 @@ data/_archive/
 # === Added 2026-08-27 (opt36 已實現損益總覽：個股/ETF 已實現交易) ===
 # 個股/ETF 已實現交易明細（含買賣價與數量，個人財務數字，不進 repo）
 data/stock_realized_trades.json
+
+# === Added 2026-08-28 (資產變化圖：淨資產快照) ===
+# 銀行帳戶＋股市＋期貨的淨資產快照（含銀行餘額，個人財務數字，不進 repo）
+data/networth_snapshots.json

@@ -104,6 +104,34 @@ def extract_positions(inventories):
     return out
 
 
+def extract_full_inventory(inventories):
+    """Same per-item cost_qty/market_price logic as extract_positions(), but over
+    EVERY code in the account instead of just TRACKED_CODES — used to price the
+    "資產變化圖" net-worth snapshot's 股票/ETF 庫存市值, which needs the whole
+    account, not just the 00631L/00687B/00953B rebalance strategy legs."""
+    out = []
+    for item in inventories:
+        code = item.get("stk_no")
+        if not code:
+            continue
+        raw_qty = item.get("cost_qty")
+        if raw_qty in (None, ""):
+            raw_qty = item.get("qty_l", 0)
+        shares = int(float(raw_qty or 0))
+        if shares <= 0:
+            continue
+        avg_cost = float(item.get("price_avg", 0) or 0)
+        market_price = float(item.get("price_now", 0) or item.get("price_mkt", 0) or 0)
+        out.append({
+            "code": code,
+            "shares": shares,
+            "avg_cost": avg_cost,
+            "market_price": market_price,
+            "value": shares * market_price,
+        })
+    return out
+
+
 def pending_settlement_adjustment(settlements, today=None):
     """Sum settlement rows whose c_date (settlement date) is strictly after
     today — those are the only ones not yet reflected in available_balance.
@@ -192,7 +220,7 @@ def build_settlement(adjustment, pending_rows):
     }
 
 
-def build_payload(positions, cash, prior, settlement=None):
+def build_payload(positions, cash, prior, settlement=None, full_inventory=None):
     prior = prior or {}
     etf_pos = positions.get(ETF_CODE, {"shares": 0, "avg_cost": 0, "market_price": 0})
 
@@ -225,6 +253,7 @@ def build_payload(positions, cash, prior, settlement=None):
         },
         "trades": [],
         "settlement": settlement or {},
+        "full_inventory": full_inventory or {},
     }
     return payload
 
@@ -236,6 +265,7 @@ def main():
 
     inventories, balance, settlements = fetch_account(sdk)
     positions = extract_positions(inventories)
+    full_positions = extract_full_inventory(inventories)
     raw_cash = float(balance.get("available_balance", 0) or 0)
     adjustment, pending_rows = pending_settlement_adjustment(settlements)
     cash = raw_cash + adjustment
@@ -256,6 +286,14 @@ def main():
         print(f"  {code}: shares={p['shares']}, avg_cost={p['avg_cost']}, market_price={p['market_price']}")
     print(f"  cash: {cash}")
 
+    full_inventory_total = sum(p["value"] for p in full_positions)
+    full_inventory = {
+        "total_value": full_inventory_total,
+        "positions": full_positions,
+        "synced_at": datetime.now().isoformat(),
+    }
+    print(f"\nFull account inventory (all codes, for net-worth snapshot): {len(full_positions)} positions, total value {full_inventory_total:.0f}")
+
     print("\nFetching current review-web config (to preserve target_beta/locks/etc)...")
     try:
         prior = get_current_holdings()
@@ -266,7 +304,7 @@ def main():
         sys.exit(1)
 
     settlement = build_settlement(adjustment, pending_rows)
-    payload = build_payload(positions, cash, prior, settlement)
+    payload = build_payload(positions, cash, prior, settlement, full_inventory)
 
     print("\nPushing snapshot to review-web...")
     resp = requests.post(GATEWAY_URL, json=payload, timeout=10)

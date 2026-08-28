@@ -18,7 +18,8 @@ import {
   LayoutGrid,
   SlidersHorizontal,
   Activity,
-  ListOrdered
+  ListOrdered,
+  Wallet
 } from 'lucide-react';
 import { api } from '../lib/api';
 import type { Health } from '../lib/api';
@@ -45,7 +46,7 @@ interface LayoutProps {
  * 注意再平衡頁**不在**這個名單：它的「抓最新價」走 /api/stocks/:code/ohlcv，
  * 那條是 engine 的代理。
  */
-const ENGINE_FREE_PATHS = new Set(['/futures']);
+const ENGINE_FREE_PATHS = new Set(['/futures', '/net-worth']);
 
 export const Layout: React.FC<LayoutProps> = ({ children }) => {
   const location = useLocation();
@@ -216,6 +217,19 @@ export const Layout: React.FC<LayoutProps> = ({ children }) => {
             >
               <ListOrdered className="w-5 h-5" />
               已實現損益總覽
+            </Link>
+
+            {/* 資產變化圖（2026-08-28：銀行＋股市＋期貨統整成淨資產，含長期歷史線圖） */}
+            <Link
+              to="/net-worth"
+              className={`flex items-center gap-3 px-4 py-3 rounded-lg text-sm font-medium transition-all duration-200 ${
+                location.pathname === '/net-worth'
+                  ? 'bg-primary/10 text-primary border border-primary/20 shadow-sm'
+                  : 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800/40 border border-transparent'
+              }`}
+            >
+              <Wallet className="w-5 h-5" />
+              資產變化圖
             </Link>
 
             {/* 個股多維度審查 折疊選單 */}

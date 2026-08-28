@@ -36,6 +36,7 @@ app.use(require('./routes/stock_realized_sync'));
 app.use(require('./routes/gateway'));
 app.use(require('./routes/market'));
 app.use(require('./routes/rebalance'));
+app.use(require('./routes/networth'));
 app.use(require('./routes/futures'));
 app.use(require('./routes/futures_ocr'));
 app.use(require('./routes/stock_realized'));

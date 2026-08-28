@@ -584,6 +584,15 @@ export const api = {
   // 宏觀 regime 指標同步（Yahoo：^IRX / ^TYX / TWD=X）——公開市場資料、不碰交易帳戶【regime-aware】
   getMacroIndicators: () => req<MacroIndicatorsResp>('/rebalance/macro-indicators'),
 
+  // 資產變化圖／淨資產快照（gateway 讀寫 data/networth_snapshots.json）
+  getNetWorth: () => req<NetWorthResp>('/networth'),
+  saveNetWorth: (snapshots: NetWorthSnapshot[]) =>
+    req<NetWorthSaveResp>('/networth', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ snapshots }),
+    }),
+
   // 期貨損益總覽（gateway 讀寫 data/futures_positions.json；報價代抓期交所 OpenAPI）
   getFuturesPositions: () => req<FuturesPositionsResp>('/futures/positions'),
   saveFuturesPositions: (payload: unknown) =>
@@ -893,16 +902,34 @@ export interface Settlement {
   payable: number;      // 應付合計（負）
   rows: SettlementRow[];
 }
+// 完整庫存快照（由真實同步腳本帶入，見 sync_fugle_holdings.py 的 full_inventory）：
+// 整戶持倉市值總和，不像 RebalanceHoldingsPayload 主體只追蹤 00631L/00687B/00953B
+// 三檔——「資產變化圖」淨資產頁算「股市所有錢」需要整戶市值。跟 Settlement 一樣是
+// 唯讀 metadata，只有真實同步腳本會寫入，前端存設定表單時不會（也不該）帶這欄位。
+export interface FullInventoryPosition {
+  code: string;
+  shares: number;
+  avg_cost: number;
+  market_price: number;
+  value: number;
+}
+export interface FullInventory {
+  total_value: number;
+  positions: FullInventoryPosition[];
+  synced_at: string;
+}
 export interface RebalanceHoldingsResp {
   exists: boolean;
   holdings: RebalanceHoldingsPayload | null;
   saved_at: string | null;
   settlement?: Settlement | null;
+  full_inventory?: FullInventory | null;
 }
 export interface RebalanceHoldingsSaveResp {
   ok: boolean;
   holdings: RebalanceHoldingsPayload;
   saved_at: string;
+  full_inventory?: FullInventory | null;
 }
 
 export interface SymbolHit {
@@ -977,6 +1004,27 @@ export function marketStockHeatmap(o?: { period?: string; date?: string }, force
     heatmapCache.set(key, { timestamp: Date.now(), data });
     return data;
   });
+}
+
+// ── 資產變化圖／淨資產快照 ───────────────────────────────────────────────────
+export interface NetWorthSnapshot {
+  id: string;
+  date: string;                  // 'YYYY-MM-DD'，一天一筆（同一天再存＝覆蓋）
+  bank: number;                  // 銀行帳戶總額（完全手動，沒有任何 API）
+  stock_cash: number;            // 券商現金餘額（自動帶入：rebalance holdings.cash）
+  stock_holdings_value: number;  // 股票/ETF 庫存市值（自動帶入：full_inventory.total_value）
+  futures_equity: number;        // 期貨權益數（自動帶入：futures/equity-history 最新一筆）
+  note?: string;
+}
+export interface NetWorthResp {
+  exists: boolean;
+  snapshots: NetWorthSnapshot[];
+  saved_at: string | null;
+}
+export interface NetWorthSaveResp {
+  ok: boolean;
+  snapshots: NetWorthSnapshot[];
+  saved_at: string;
 }
 
 // ── 個股／ETF 已實現損益（opt36）─────────────────────────────────────────────
