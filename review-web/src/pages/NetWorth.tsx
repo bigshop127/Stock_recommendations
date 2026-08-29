@@ -717,7 +717,7 @@ export const NetWorth: React.FC = () => {
                 </thead>
                 <tbody>
                   {[...filteredBills].sort((a, b) => (b.statement_date ?? '').localeCompare(a.statement_date ?? '')).map((b) => (
-                    <tr key={b.id} className="border-t border-border/60">
+                    <tr key={b.id} className={`border-t border-border/60 ${TONE[billBankTone(b.bank, b.currency)].bg}`}>
                       <td className="px-3 py-2 text-zinc-300 font-mono whitespace-nowrap">{b.statement_date ?? '—'}</td>
                       <td className="px-3 py-2 whitespace-nowrap">
                         <span className="inline-flex items-center gap-1.5 text-zinc-300">
