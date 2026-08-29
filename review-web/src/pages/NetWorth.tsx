@@ -19,7 +19,7 @@ import {
   CreditCard, RefreshCw, Plus, Pencil, X,
 } from 'lucide-react';
 import { api, type FullInventoryPosition, type MonthlyBill } from '../lib/api';
-import { Panel, StatTile, Chip } from '../components/futures/ui';
+import { Panel, StatTile, Chip, TONE, type Tone } from '../components/futures/ui';
 import {
   snapshotTotal, snapshotComposition, settledStockCash, todayDate, type NetWorthSnapshot,
 } from '../lib/netWorth';
@@ -221,6 +221,15 @@ export const NetWorth: React.FC = () => {
     () => (billMonth ? bills.filter((b) => monthOf(b.statement_date ?? '') === billMonth) : bills),
     [bills, billMonth],
   );
+
+  // 銀行／卡片＋幣別各自固定一個色調，統計磚跟下面明細表的色點才能對得上；
+  // 未來新增銀行/卡片沒對到表也不會壞，就落回原本的橘色
+  const BILL_BANK_TONES: Record<string, Tone> = {
+    '台新|TWD': 'sky',
+    '玉山|TWD': 'emerald',
+    '玉山|JPY': 'amber',
+  };
+  const billBankTone = (bank: string, currency: string): Tone => BILL_BANK_TONES[`${bank}|${currency}`] ?? 'orange';
 
   // 依銀行＋幣別分組小計（篩選範圍內），幣別不同不能直接相加，分開列
   const billBreakdown = useMemo(() => {
@@ -614,27 +623,36 @@ export const NetWorth: React.FC = () => {
           )}
         </div>
 
-        {/* 篩選範圍內的小計：TWD 總支出＋筆數＋依銀行/幣別分開列（幣別不同不能直接相加） */}
+        {/* 篩選範圍內的小計：TWD 總支出＋依銀行/幣別分開列（幣別不同不能直接相加）；
+            筆數不再佔一整塊磚，改成右上角一行小字；卡片數量會隨銀行增加，
+            改成左右可拉的滑軌而不是繼續往下擠成好幾排 */}
         {filteredBills.length > 0 ? (
-          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3 mb-4">
-            <StatTile
-              label="TWD 支出小計"
-              value={money(billTwdTotal)}
-              tone="primary"
-              icon={<CreditCard className="w-3.5 h-3.5" />}
-              sub={<span className="text-zinc-500">{billMonth ? billMonthChipLabel(billMonth) : '全部月份合計'}</span>}
-            />
-            <StatTile label="帳單筆數" value={String(filteredBills.length)} tone="zinc" />
-            {billBreakdown.map((g) => (
-              <StatTile
-                key={`${g.bank}|${g.currency}`}
-                label={`${g.bank}（${g.currency}）`}
-                value={`${g.currency === 'TWD' ? '' : g.currency + ' '}${money(g.total)}`}
-                tone="orange"
-                icon={<CreditCard className="w-3.5 h-3.5" />}
-                sub={`${g.count} 筆`}
-              />
-            ))}
+          <div className="mb-4">
+            <div className="flex justify-end mb-1.5">
+              <span className="text-[11px] text-zinc-500">共 {filteredBills.length} 筆帳單</span>
+            </div>
+            <div className="flex items-stretch gap-3 overflow-x-auto pb-2 snap-x snap-mandatory">
+              <div className="shrink-0 w-[200px] snap-start">
+                <StatTile
+                  label="TWD 支出小計"
+                  value={money(billTwdTotal)}
+                  tone="primary"
+                  icon={<CreditCard className="w-3.5 h-3.5" />}
+                  sub={<span className="text-zinc-500">{billMonth ? billMonthChipLabel(billMonth) : '全部月份合計'}</span>}
+                />
+              </div>
+              {billBreakdown.map((g) => (
+                <div key={`${g.bank}|${g.currency}`} className="shrink-0 w-[200px] snap-start">
+                  <StatTile
+                    label={`${g.bank}（${g.currency}）`}
+                    value={`${g.currency === 'TWD' ? '' : g.currency + ' '}${money(g.total)}`}
+                    tone={billBankTone(g.bank, g.currency)}
+                    icon={<CreditCard className="w-3.5 h-3.5" />}
+                    sub={`${g.count} 筆`}
+                  />
+                </div>
+              ))}
+            </div>
           </div>
         ) : (
           <div className="h-16 flex items-center justify-center text-xs text-zinc-600 mb-4">
@@ -699,7 +717,12 @@ export const NetWorth: React.FC = () => {
                   {[...filteredBills].sort((a, b) => (b.statement_date ?? '').localeCompare(a.statement_date ?? '')).map((b) => (
                     <tr key={b.id} className="border-t border-border/60">
                       <td className="px-3 py-2 text-zinc-300 font-mono whitespace-nowrap">{b.statement_date ?? '—'}</td>
-                      <td className="px-3 py-2 text-zinc-300 whitespace-nowrap">{b.bank}{b.card_name ? `｜${b.card_name}` : ''}</td>
+                      <td className="px-3 py-2 whitespace-nowrap">
+                        <span className="inline-flex items-center gap-1.5 text-zinc-300">
+                          <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${TONE[billBankTone(b.bank, b.currency)].bar}`} aria-hidden />
+                          {b.bank}{b.card_name ? `｜${b.card_name}` : ''}
+                        </span>
+                      </td>
                       <td className="px-3 py-2 text-right font-mono text-zinc-100 font-semibold">{b.currency === 'TWD' ? '' : `${b.currency} `}{money(b.amount_due)}</td>
                       <td className="px-3 py-2 text-right font-mono text-zinc-400">{money(b.minimum_due)}</td>
                       <td className="px-3 py-2 text-zinc-300 font-mono whitespace-nowrap">{b.due_date ?? '未知'}</td>
