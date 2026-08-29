@@ -637,6 +637,7 @@ export const NetWorth: React.FC = () => {
                   label="TWD 支出小計"
                   value={money(billTwdTotal)}
                   tone="primary"
+                  tintBg
                   icon={<CreditCard className="w-3.5 h-3.5" />}
                   sub={<span className="text-zinc-500">{billMonth ? billMonthChipLabel(billMonth) : '全部月份合計'}</span>}
                 />
@@ -647,6 +648,7 @@ export const NetWorth: React.FC = () => {
                     label={`${g.bank}（${g.currency}）`}
                     value={`${g.currency === 'TWD' ? '' : g.currency + ' '}${money(g.total)}`}
                     tone={billBankTone(g.bank, g.currency)}
+                    tintBg
                     icon={<CreditCard className="w-3.5 h-3.5" />}
                     sub={`${g.count} 筆`}
                   />

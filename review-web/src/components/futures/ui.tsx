@@ -93,8 +93,9 @@ export const Panel: React.FC<{
 );
 
 /**
- * 統計磚。左側一條色帶是唯一的視覺重量來源——四塊並排時靠色帶分群，
- * 比整塊染色不吵，數字也還讀得清楚。
+ * 統計磚。預設左側一條色帶是唯一的視覺重量來源——四塊並排時靠色帶分群，
+ * 比整塊染色不吵，數字也還讀得清楚。`tintBg` 是給像信用卡帳單那種「磚本身
+ * 就代表一個分類（銀行/幣別）」的場景opt-in 用的，這時整塊染色反而是重點。
  */
 export const StatTile: React.FC<{
   label: string;
@@ -105,10 +106,14 @@ export const StatTile: React.FC<{
   valueCls?: string;
   hint?: string;
   icon?: React.ReactNode;
-}> = ({ label, value, sub, tone = 'zinc', valueCls, hint, icon }) => (
+  /** true 時底色／邊框整塊套 tone（預設 false，維持原本深色底＋色帶的樣式） */
+  tintBg?: boolean;
+}> = ({ label, value, sub, tone = 'zinc', valueCls, hint, icon, tintBg = false }) => (
   <div
     title={hint}
-    className="relative bg-card border border-border rounded-xl pl-4 pr-3 py-3 shadow-sm overflow-hidden"
+    className={`relative rounded-xl pl-4 pr-3 py-3 shadow-sm overflow-hidden border ${
+      tintBg ? `${TONE[tone].bg} ${TONE[tone].border}` : 'bg-card border-border'
+    }`}
   >
     <span className={`absolute left-0 inset-y-0 w-1 ${TONE[tone].bar} opacity-70`} aria-hidden />
     <div className="flex items-center gap-1.5 text-[11px] text-zinc-500 font-medium">
