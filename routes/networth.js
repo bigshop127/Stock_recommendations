@@ -7,11 +7,13 @@
  * 原子寫入（.tmp → rename）、免登入個人自用。
  *
  * 資料形狀是一串「快照」，一天一筆（同一天多次儲存＝覆蓋，見 sanitizeSnapshots
- * 的 Map 去重，後蓋前）：銀行帳戶（完全手動，沒有任何 API）＋股票現金／庫存市值
- * （前端從 rebalance holdings 的 full_inventory 自動帶入，見 RebalanceHoldingsResp）
- * ＋期貨權益（前端從 futures/equity-history 自動帶入）。加總算「淨資產」是前端算，
- * 這裡只負責存這四個數字，不重新推導——跟股市市值不同，銀行餘額沒有任何伺服端能
- * 驗證的來源，伺服端硬要重算反而會蓋掉使用者真實輸入的數字。
+ * 的 Map 去重，後蓋前）：股票現金／庫存市值（前端從 rebalance holdings 的
+ * full_inventory 自動帶入，見 RebalanceHoldingsResp）＋期貨權益（前端從
+ * futures/equity-history 自動帶入），全部自動同步、沒有任何手動輸入欄位。加總算
+ * 「淨資產」是前端算，這裡只負責存這三個數字，不重新推導。
+ *
+ * 2026-08-29 移除了原本的「銀行帳戶」手動輸入欄位——使用者發現那格填的其實就是
+ * 券商現金的重複人工估算，既然券商現金已經自動同步，這格沒有存在必要。
  */
 'use strict';
 
@@ -44,7 +46,6 @@ function sanitizeSnapshot(s, i) {
   return {
     id,
     date,
-    bank: Math.max(0, safeNum(s.bank, 0)),
     stock_cash: Math.max(0, safeNum(s.stock_cash, 0)),
     // 交割款細分（2026-08-28 新增）：stock_cash 是「已入帳＋在途交割」的總額
     // （沿用 rebalance holdings.cash 的既有語意，不動它），這個欄位單獨存淨在途

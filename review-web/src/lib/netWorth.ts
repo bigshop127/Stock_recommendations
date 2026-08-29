@@ -9,7 +9,6 @@
 export interface NetWorthSnapshot {
   id: string;
   date: string; // 'YYYY-MM-DD'
-  bank: number;
   stock_cash: number; // 已入帳＋在途交割的總額（stock_pending_settlement 已經算在裡面）
   stock_pending_settlement: number; // 拆出來顯示用，正＝應收、負＝應付
   stock_holdings_value: number;
@@ -18,7 +17,7 @@ export interface NetWorthSnapshot {
 }
 
 export function snapshotTotal(s: NetWorthSnapshot): number {
-  return s.bank + s.stock_cash + s.stock_holdings_value + s.futures_equity;
+  return s.stock_cash + s.stock_holdings_value + s.futures_equity;
 }
 
 /** 已入帳、不用等交割就能動用的現金——stock_cash 扣掉還在途的淨額 */
@@ -27,21 +26,19 @@ export function settledStockCash(s: NetWorthSnapshot): number {
 }
 
 export interface NetWorthComposition {
-  bank: number;
   /** 已入帳、不用等交割就能動用的券商現金——單獨一格顯示，不歸在 stock 底下
    *  （避免跟庫存市值混在一起看起來像同一種東西）。 */
   cash: number;
   /** 只算「股市特定」的部分：庫存市值＋在途交割淨額，不含已入帳現金（見 cash）。 */
   stock: number;
   futures: number;
-  /** 完整總資產，與 snapshotTotal() 一致——bank + cash + stock + futures 應該剛好等於 total，
-   *  四格拆分是為了不重複計算，不是為了讓總數對不起來。 */
+  /** 完整總資產，與 snapshotTotal() 一致——cash + stock + futures 應該剛好等於 total，
+   *  三格拆分是為了不重複計算，不是為了讓總數對不起來。 */
   total: number;
 }
 
 export function snapshotComposition(s: NetWorthSnapshot): NetWorthComposition {
   return {
-    bank: s.bank,
     cash: settledStockCash(s),
     stock: s.stock_pending_settlement + s.stock_holdings_value,
     futures: s.futures_equity,

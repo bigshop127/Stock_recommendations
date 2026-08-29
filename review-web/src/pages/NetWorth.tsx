@@ -1,23 +1,24 @@
 /**
  * NetWorth.tsx — 資產變化圖／淨資產總覽（2026-08-28 新增；2026-08-28 補交割款細分
- * ／持股明細／期貨明細／銀行截圖辨識）。
+ * ／持股明細／期貨明細；2026-08-29 移除銀行帳戶手動輸入——那格填的其實就是券商
+ * 現金的重複人工估算，既然券商現金已經自動同步，這格沒有存在必要）。
  *
- * 銀行帳戶（完全手動，沒有任何 API，可截圖辨識輔助）＋股市（再平衡計算機「真實
- * 同步」帶回來的券商現金＋整戶庫存市值，見 lib/api.ts 的 full_inventory）＋期貨
- * 權益（期貨損益總覽頁既有的權益數歷史最新一筆），統整成一個淨資產數字。
+ * 股市（再平衡計算機「真實同步」帶回來的券商現金＋整戶庫存市值，見 lib/api.ts 的
+ * full_inventory）＋期貨權益（期貨損益總覽頁既有的權益數歷史最新一筆），統整成
+ * 一個淨資產數字，全部自動同步、沒有任何手動輸入欄位。
  *
- * 歷史無法回填：銀行餘額從沒被記錄過，股市/期貨的即時資料也只有「現在」這一份
- * 快照——所以「長期歷史變化」是從使用者第一次按「更新今天快照」那天開始累積，
- * 不是回溯重建的。快照一天一筆，同一天再存就覆蓋（見 netWorthStore.ts）。
+ * 歷史無法回填：股市/期貨的即時資料只有「現在」這一份快照——所以「長期歷史變化」
+ * 是從使用者第一次按「更新今天快照」那天開始累積，不是回溯重建的。快照一天一筆，
+ * 同一天再存就覆蓋（見 netWorthStore.ts）。
  */
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createChart, ColorType, type Time, type BusinessDay, type HistogramData } from 'lightweight-charts';
 import {
-  Wallet, Landmark, TrendingUp, Activity, Save, Trash2,
-  Cloud, CloudOff, Loader2, Info, ImagePlus, ScanLine, AlertTriangle, CheckCircle2,
+  Wallet, TrendingUp, Activity, Save, Trash2,
+  Cloud, CloudOff, Loader2, Info, AlertTriangle,
   CreditCard, RefreshCw, Plus, Pencil, X,
 } from 'lucide-react';
-import { api, type FullInventoryPosition, type NetWorthBankOcrResp, type MonthlyBill } from '../lib/api';
+import { api, type FullInventoryPosition, type MonthlyBill } from '../lib/api';
 import { Panel, StatTile, Chip } from '../components/futures/ui';
 import {
   snapshotTotal, snapshotComposition, settledStockCash, todayDate, type NetWorthSnapshot,
@@ -35,9 +36,9 @@ const money = (v: number) => `${v < 0 ? '-' : ''}$${Math.abs(Math.round(v)).toLo
 const pct = (v: number, d = 1) => `${(v * 100).toFixed(d)}%`;
 const pnlCls = (v: number) => (v >= 0 ? 'text-bull' : 'text-bear');
 
-type NWCategory = 'bank' | 'cash' | 'stock' | 'futures';
-const NW_LABEL: Record<NWCategory, string> = { bank: '銀行', cash: '券商現金', stock: '股市庫存', futures: '期貨' };
-const NW_COLOR: Record<NWCategory, string> = { bank: '#facc15', cash: '#fb923c', stock: '#a78bfa', futures: '#38bdf8' };
+type NWCategory = 'cash' | 'stock' | 'futures';
+const NW_LABEL: Record<NWCategory, string> = { cash: '券商現金', stock: '股市庫存', futures: '期貨' };
+const NW_COLOR: Record<NWCategory, string> = { cash: '#fb923c', stock: '#a78bfa', futures: '#38bdf8' };
 
 interface AutoStock {
   cash: number;
@@ -58,7 +59,6 @@ export const NetWorth: React.FC = () => {
   const [cloud, setCloud] = useState<{ status: 'idle' | 'loading' | 'saved' | 'error'; msg: string | null }>({ status: 'idle', msg: null });
   const [autoStock, setAutoStock] = useState<AutoStock>({ cash: 0, pendingSettlement: 0, holdings: 0, positions: [], syncedAt: null });
   const [autoFutures, setAutoFutures] = useState<AutoFutures>({ equity: 0, updatedAt: null, positions: [], products: {} });
-  const [bankInput, setBankInput] = useState('');
   const [bills, setBills] = useState<MonthlyBill[]>([]);
   const [billsUpdatedAt, setBillsUpdatedAt] = useState<string | null>(null);
   const [billSync, setBillSync] = useState<{ status: 'idle' | 'triggering' | 'waiting' | 'done' | 'error' | 'timeout'; msg: string | null }>({ status: 'idle', msg: null });
@@ -66,7 +66,6 @@ export const NetWorth: React.FC = () => {
   useEffect(() => subscribeNetWorth(() => setSnapshots(getNetWorthConfig().snapshots)), []);
 
   const didInit = useRef(false);
-  const bankInitialized = useRef(false);
   useEffect(() => {
     if (didInit.current) return;
     didInit.current = true;
@@ -81,10 +80,6 @@ export const NetWorth: React.FC = () => {
       .then(([nw, rb, fut, futPos, mb]) => {
         if (nw.status === 'fulfilled' && nw.value.exists) {
           saveNetWorthConfig({ snapshots: nw.value.snapshots });
-          if (!bankInitialized.current && nw.value.snapshots.length > 0) {
-            bankInitialized.current = true;
-            setBankInput(String(nw.value.snapshots[nw.value.snapshots.length - 1].bank));
-          }
         }
         if (rb.status === 'fulfilled' && rb.value.exists && rb.value.holdings) {
           const h = rb.value.holdings;
@@ -116,16 +111,15 @@ export const NetWorth: React.FC = () => {
       .catch((e) => setCloud({ status: 'error', msg: e instanceof Error ? e.message : '雲端載入失敗' }));
   }, []);
 
-  // 「現在」草稿：銀行輸入框 + 自動帶入的股市/期貨，按下「更新今天快照」才真的存檔
+  // 「現在」草稿：全部自動帶入的股市/期貨，按下「更新今天快照」才真的存檔
   const draft: NetWorthSnapshot = useMemo(() => ({
     id: 'draft',
     date: todayDate(),
-    bank: Math.max(0, parseFloat(bankInput) || 0),
     stock_cash: autoStock.cash,
     stock_pending_settlement: autoStock.pendingSettlement,
     stock_holdings_value: autoStock.holdings,
     futures_equity: autoFutures.equity,
-  }), [bankInput, autoStock, autoFutures.equity]);
+  }), [autoStock, autoFutures.equity]);
 
   const composition = snapshotComposition(draft);
   const total = snapshotTotal(draft);
@@ -155,7 +149,7 @@ export const NetWorth: React.FC = () => {
       : <Cloud className="w-3.5 h-3.5" />;
 
   const donutData = useMemo(() => {
-    const cats: NWCategory[] = ['bank', 'cash', 'stock', 'futures'];
+    const cats: NWCategory[] = ['cash', 'stock', 'futures'];
     const abs = cats.map((c) => Math.abs(composition[c]));
     const sum = abs.reduce((s, v) => s + v, 0);
     if (sum <= 0) return [];
@@ -306,16 +300,15 @@ export const NetWorth: React.FC = () => {
             {cloudIcon} {cloud.status === 'loading' ? '同步中…' : cloud.status === 'error' ? '同步失敗' : '雲端已同步'}
           </Chip>
         }
-        desc="銀行帳戶＋券商現金＋股市庫存＋期貨權益，統整成淨資產——四格加總就是總資產，不會對不起來。銀行沒有任何 API，數字要自己填（或截圖輔助辨識）；券商現金／股市／期貨會自動帶入「再平衡計算機」真實同步與「期貨損益總覽」的最新資料。按「更新今天快照」才會存進歷史線圖——歷史從第一次使用這頁那天開始累積，之前的資料沒有留存。"
+        desc="券商現金＋股市庫存＋期貨權益，統整成淨資產——三格加總就是總資產，全部自動帶入「再平衡計算機」真實同步與「期貨損益總覽」的最新資料，沒有任何手動輸入。按「更新今天快照」才會存進歷史線圖——歷史從第一次使用這頁那天開始累積，之前的資料沒有留存。"
       >
-        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3 mb-4">
-          <StatTile label="銀行帳戶" value={money(composition.bank)} tone="amber" icon={<Landmark className="w-3.5 h-3.5" />} />
+        <div className="grid grid-cols-2 sm:grid-cols-2 lg:grid-cols-4 gap-3 mb-4">
           <StatTile
             label="券商現金"
             value={money(composition.cash)}
             tone="orange"
             icon={<Wallet className="w-3.5 h-3.5" />}
-            hint="證券交易帳戶裡已入帳、不用等交割就能動用的現金餘額——來自「再平衡計算機」真實同步，跟你手動填的「銀行帳戶」是不同帳戶的錢，不會重複計算"
+            hint="證券交易帳戶裡已入帳、不用等交割就能動用的現金餘額——來自「再平衡計算機」真實同步"
           />
           <StatTile
             label="股市庫存"
@@ -325,26 +318,13 @@ export const NetWorth: React.FC = () => {
             hint="庫存市值＋在途交割淨額，不含已入帳可動用現金（見左邊「券商現金」那格）"
           />
           <StatTile label="期貨權益" value={money(composition.futures)} tone="sky" icon={<Activity className="w-3.5 h-3.5" />} />
-          <StatTile label="總資產" value={money(total)} tone="emerald" valueCls="text-emerald-300" hint="銀行＋券商現金＋股市庫存＋期貨四格加總" />
+          <StatTile label="總資產" value={money(total)} tone="emerald" valueCls="text-emerald-300" hint="券商現金＋股市庫存＋期貨三格加總" />
         </div>
 
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
           {/* 更新今天快照 */}
           <div className="lg:col-span-1 border border-border rounded-xl p-4 bg-zinc-900/40 space-y-3">
-            <div className="text-[11px] text-zinc-500">更新今天（{todayDate()}）的快照</div>
-            <div>
-              <label className="text-[10px] text-zinc-500">銀行帳戶總額（手動輸入，可截圖輔助）</label>
-              <input
-                type="number"
-                value={bankInput}
-                onChange={(e) => setBankInput(e.target.value)}
-                placeholder="0"
-                className="w-full px-2 py-1.5 rounded-lg bg-zinc-950 border border-border text-xs text-zinc-200 font-mono"
-              />
-              <div className="mt-1.5">
-                <BankOcrWidget onApply={(amount) => setBankInput(String(Math.round(amount)))} />
-              </div>
-            </div>
+            <div className="text-[11px] text-zinc-500">今天（{todayDate()}）的自動快照</div>
             <div className="text-[11px] text-zinc-500 space-y-1">
               <div className="flex justify-between" title="即上方「券商現金」那格的來源">
                 <span>已入帳可用現金（自動）</span><span className="font-mono text-zinc-300">{money(settledStockCash(draft))}</span>
@@ -509,7 +489,6 @@ export const NetWorth: React.FC = () => {
               <thead>
                 <tr className="bg-zinc-900/60 text-zinc-500">
                   <th className="text-left px-3 py-2 font-medium">日期</th>
-                  <th className="text-right px-3 py-2 font-medium">銀行</th>
                   <th className="text-right px-3 py-2 font-medium">股市</th>
                   <th className="text-right px-3 py-2 font-medium">期貨</th>
                   <th className="text-right px-3 py-2 font-medium">總資產</th>
@@ -520,7 +499,6 @@ export const NetWorth: React.FC = () => {
                 {[...snapshots].reverse().map((s) => (
                   <tr key={s.id} className="border-t border-border/60">
                     <td className="px-3 py-2 text-zinc-300 font-mono whitespace-nowrap">{s.date}</td>
-                    <td className="px-3 py-2 text-right font-mono text-zinc-300">{money(s.bank)}</td>
                     <td className="px-3 py-2 text-right font-mono text-zinc-300">{money(s.stock_cash + s.stock_holdings_value)}</td>
                     <td className="px-3 py-2 text-right font-mono text-zinc-300">{money(s.futures_equity)}</td>
                     <td className="px-3 py-2 text-right font-mono font-semibold text-zinc-100">{money(snapshotTotal(s))}</td>
@@ -822,156 +800,6 @@ const MonthlyBillsChart: React.FC<{ data: { month: string; total: number }[] }> 
     <div className="relative w-full h-32">
       <div ref={legendRef} className="absolute top-0 left-1 z-10 text-[11px] font-mono text-zinc-400 select-none pointer-events-none" />
       <div ref={containerRef} className="w-full h-full cursor-pointer" />
-    </div>
-  );
-};
-
-type Picked = { id: string; name: string; mime: string; data: string; url: string; kb: number };
-
-/** 縮圖 + 轉 JPEG，比照 StockScreenshotImport.tsx 的 shrink()。回 base64 本體＋預覽 URL。 */
-async function shrinkImage(file: File, maxDim = 1600, quality = 0.85): Promise<Omit<Picked, 'id'>> {
-  const url = URL.createObjectURL(file);
-  try {
-    const img = await new Promise<HTMLImageElement>((resolve, reject) => {
-      const el = new Image();
-      el.onload = () => resolve(el);
-      el.onerror = () => reject(new Error(`讀不到圖片：${file.name}`));
-      el.src = url;
-    });
-    const scale = Math.min(1, maxDim / Math.max(img.naturalWidth, img.naturalHeight));
-    const w = Math.max(1, Math.round(img.naturalWidth * scale));
-    const h = Math.max(1, Math.round(img.naturalHeight * scale));
-    const canvas = document.createElement('canvas');
-    canvas.width = w;
-    canvas.height = h;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) throw new Error('這個瀏覽器不支援 canvas，無法縮圖');
-    ctx.fillStyle = '#ffffff';
-    ctx.fillRect(0, 0, w, h);
-    ctx.drawImage(img, 0, 0, w, h);
-    const dataUrl = canvas.toDataURL('image/jpeg', quality);
-    const data = dataUrl.slice(dataUrl.indexOf(',') + 1);
-    return { name: file.name, mime: 'image/jpeg', data, url: dataUrl, kb: Math.round((data.length * 3) / 4 / 1024) };
-  } finally {
-    URL.revokeObjectURL(url);
-  }
-}
-
-/**
- * 銀行 App 餘額截圖辨識。比已實現損益的截圖匯入簡單很多——只有一個數字要抽出來，
- * 不需要「掃描→比對→套用」三段式的異動清單，辨識完直接把建議總額顯示出來，使用者
- * 按「套用」才會真的寫進銀行輸入框（仍然要按外層的「更新今天快照」才會存檔，維持
- * 「確認過才落地」的一致精神，只是這裡的確認動作只有一個數字，不必搞出一整份清單）。
- */
-const BankOcrWidget: React.FC<{ onApply: (amount: number) => void }> = ({ onApply }) => {
-  const [picked, setPicked] = useState<Picked[]>([]);
-  const [scan, setScan] = useState<{ status: 'idle' | 'loading' | 'done' | 'error'; msg: string | null; result: NetWorthBankOcrResp | null }>(
-    { status: 'idle', msg: null, result: null },
-  );
-  const fileRef = useRef<HTMLInputElement>(null);
-
-  const addFiles = async (files: FileList | File[] | null) => {
-    if (!files) return;
-    const list = [...files].filter((f) => f.type.startsWith('image/')).slice(0, 4);
-    if (list.length === 0) return;
-    setScan({ status: 'idle', msg: null, result: null });
-    const out: Picked[] = [];
-    for (const f of list) {
-      try {
-        const s = await shrinkImage(f);
-        out.push({ ...s, id: `${f.name}_${f.size}_${Math.random().toString(36).slice(2, 7)}` });
-      } catch (e) {
-        setScan({ status: 'error', msg: e instanceof Error ? e.message : '圖片讀取失敗', result: null });
-      }
-    }
-    setPicked((p) => [...p, ...out].slice(0, 4));
-  };
-
-  const runScan = async () => {
-    if (picked.length === 0) return;
-    setScan({ status: 'loading', msg: null, result: null });
-    try {
-      const resp = await api.scanNetWorthBank(picked.map((p) => ({ mime: p.mime, data: p.data })));
-      setScan({ status: 'done', msg: resp.warnings.length > 0 ? resp.warnings.join('；') : null, result: resp });
-    } catch (e) {
-      setScan({ status: 'error', msg: e instanceof Error ? e.message : '辨識失敗', result: null });
-    }
-  };
-
-  const reset = () => {
-    setPicked([]);
-    setScan({ status: 'idle', msg: null, result: null });
-    if (fileRef.current) fileRef.current.value = '';
-  };
-
-  return (
-    <div className="border border-dashed border-border rounded-lg p-2.5 space-y-2">
-      <input
-        ref={fileRef}
-        type="file"
-        accept="image/*"
-        multiple
-        className="hidden"
-        onChange={(e) => { void addFiles(e.target.files); }}
-      />
-      <div className="flex flex-wrap items-center gap-2">
-        <button
-          onClick={() => fileRef.current?.click()}
-          className="inline-flex items-center gap-1 px-2 py-1 rounded-md bg-zinc-800 border border-border text-[10px] text-zinc-300 hover:text-zinc-100"
-        >
-          <ImagePlus className="w-3 h-3" /> 截圖辨識銀行餘額
-        </button>
-        {picked.length > 0 && (
-          <button
-            onClick={() => void runScan()}
-            disabled={scan.status === 'loading'}
-            className="inline-flex items-center gap-1 px-2 py-1 rounded-md bg-cyan-500/90 text-white text-[10px] font-semibold hover:bg-cyan-500 disabled:opacity-40"
-          >
-            {scan.status === 'loading' ? <Loader2 className="w-3 h-3 animate-spin" /> : <ScanLine className="w-3 h-3" />}
-            {scan.status === 'loading' ? '辨識中…' : `掃描（${picked.length}張）`}
-          </button>
-        )}
-        {(picked.length > 0 || scan.result) && (
-          <button onClick={reset} className="text-[10px] text-zinc-600 hover:text-zinc-300">清除</button>
-        )}
-      </div>
-
-      {picked.length > 0 && (
-        <div className="flex flex-wrap gap-1.5">
-          {picked.map((p) => (
-            <img key={p.id} src={p.url} alt={p.name} className="w-10 h-16 object-cover object-top rounded border border-border" />
-          ))}
-        </div>
-      )}
-
-      {scan.status === 'error' && (
-        <p className="text-[10px] text-rose-400 flex items-start gap-1">
-          <AlertTriangle className="w-3 h-3 mt-0.5 shrink-0" /> {scan.msg}
-        </p>
-      )}
-
-      {scan.result && (
-        <div className="space-y-1.5">
-          {scan.result.screens.map((s, i) => (
-            <div key={i} className="text-[10px] text-zinc-500">
-              {s.kind === 'balance'
-                ? (
-                  <>
-                    {s.bank_name ?? `第 ${i + 1} 張`}：建議 {money(s.suggested)}
-                    {s.accounts.length > 0 && `（${s.accounts.map((a) => `${a.label} ${money(a.balance)}`).join('、')}）`}
-                  </>
-                )
-                : <span className="text-amber-400">第 {i + 1} 張認不出是餘額畫面，已略過</span>}
-            </div>
-          ))}
-          <button
-            onClick={() => onApply(scan.result!.total_suggested)}
-            className="inline-flex items-center gap-1 px-2 py-1 rounded-md bg-emerald-500/90 text-white text-[10px] font-semibold hover:bg-emerald-500"
-          >
-            <CheckCircle2 className="w-3 h-3" /> 套用建議總額 {money(scan.result.total_suggested)}
-          </button>
-        </div>
-      )}
     </div>
   );
 };

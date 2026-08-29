@@ -592,13 +592,6 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ snapshots }),
     }),
-  // 銀行 App 餘額截圖辨識：立即呼叫（不像已實現損益走匯入計畫，這裡只回一個建議數字）
-  scanNetWorthBank: (images: { mime: string; data: string }[]) =>
-    req<NetWorthBankOcrResp>('/networth/bank-ocr', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ images }),
-    }),
 
   // 每月信用卡帳單（gateway 讀寫 data/monthly_bills.json；寫入端是 cron 排程腳本＋手動補登）
   getMonthlyBills: () => req<MonthlyBillsResp>('/monthly-bills'),
@@ -1033,7 +1026,6 @@ export function marketStockHeatmap(o?: { period?: string; date?: string }, force
 export interface NetWorthSnapshot {
   id: string;
   date: string;                  // 'YYYY-MM-DD'，一天一筆（同一天再存＝覆蓋）
-  bank: number;                  // 銀行帳戶總額（完全手動，沒有任何 API）
   stock_cash: number;            // 券商現金餘額（自動帶入：rebalance holdings.cash，含在途交割）
   /** 在途交割淨額（自動帶入：rebalance settlement.net），已經算在 stock_cash 裡面，
    *  這欄只是拆出來給畫面用——正＝應收（賣出還沒入帳）、負＝應付（買進還沒扣款）。 */
@@ -1051,28 +1043,6 @@ export interface NetWorthSaveResp {
   ok: boolean;
   snapshots: NetWorthSnapshot[];
   saved_at: string;
-}
-
-// 銀行 App 餘額截圖辨識（資產變化圖用；銀行沒有任何 API，這是唯一能省手動輸入的路）
-export interface NetWorthBankOcrAccount {
-  label: string;
-  balance: number;
-}
-export interface NetWorthBankOcrScreen {
-  kind: 'balance' | 'unknown';
-  bank_name: string | null;
-  total_balance: number | null;
-  accounts: NetWorthBankOcrAccount[];
-  suggested: number; // 這張截圖的建議值：有 total_balance 用它，沒有就是 accounts 加總
-  warnings: string[];
-}
-export interface NetWorthBankOcrResp {
-  ok: boolean;
-  screens: NetWorthBankOcrScreen[];
-  total_suggested: number; // 多張截圖（可能不同銀行）的建議值加總
-  warnings: string[];
-  model: string;
-  scanned_at: string;
 }
 
 // 每月信用卡帳單（資產變化圖用；scripts/fetch_credit_card_bills.cjs 排程自動寫入，
