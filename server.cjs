@@ -39,6 +39,7 @@ app.use(require('./routes/market'));
 app.use(require('./routes/rebalance'));
 app.use(require('./routes/networth'));
 app.use(require('./routes/networth_ocr'));
+app.use(require('./routes/monthly_bills'));
 app.use(require('./routes/futures'));
 app.use(require('./routes/futures_ocr'));
 app.use(require('./routes/stock_realized'));

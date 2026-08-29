@@ -28,22 +28,21 @@ export function settledStockCash(s: NetWorthSnapshot): number {
 
 export interface NetWorthComposition {
   bank: number;
-  /**
-   * 只算「股市特定」的部分：庫存市值＋在途交割淨額，**不含**已入帳可動用現金
-   * （settledStockCash）——那筆錢已經在畫面別處單獨列成一行，這裡再算會變成
-   * 使用者眼中的「重複計算」。已入帳現金仍然算在 total／snapshotTotal() 裡，
-   * 只是不歸在這個分類底下顯示（使用者 2026-08-28 明確要求的分法）。
-   */
+  /** 已入帳、不用等交割就能動用的券商現金——單獨一格顯示，不歸在 stock 底下
+   *  （避免跟庫存市值混在一起看起來像同一種東西）。 */
+  cash: number;
+  /** 只算「股市特定」的部分：庫存市值＋在途交割淨額，不含已入帳現金（見 cash）。 */
   stock: number;
   futures: number;
-  /** 完整總資產（含已入帳現金），與 snapshotTotal() 一致——注意 bank+stock+futures
-   *  不會等於 total，兩者故意不同，差額就是已入帳可動用現金。 */
+  /** 完整總資產，與 snapshotTotal() 一致——bank + cash + stock + futures 應該剛好等於 total，
+   *  四格拆分是為了不重複計算，不是為了讓總數對不起來。 */
   total: number;
 }
 
 export function snapshotComposition(s: NetWorthSnapshot): NetWorthComposition {
   return {
     bank: s.bank,
+    cash: settledStockCash(s),
     stock: s.stock_pending_settlement + s.stock_holdings_value,
     futures: s.futures_equity,
     total: snapshotTotal(s),

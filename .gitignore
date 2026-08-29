@@ -120,3 +120,9 @@ data/stock_realized_trades.json
 # === Added 2026-08-28 (資產變化圖：淨資產快照) ===
 # 銀行帳戶＋股市＋期貨的淨資產快照（含銀行餘額，個人財務數字，不進 repo）
 data/networth_snapshots.json
+
+# === Added 2026-08-29 (每月信用卡帳單自動記帳) ===
+# 信用卡帳單金額/繳款日（個人財務數字，不進 repo）
+data/monthly_bills.json
+data/monthly_bills_sync_status.json
+data/bills_fetch.log

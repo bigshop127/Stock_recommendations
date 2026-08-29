@@ -22,6 +22,7 @@
     "marked": "^18.0.3",
     "node-fetch": "^3.3.2",
     "openai": "^6.34.0",
+    "pdfjs-dist": "^6.2.108",
     "playwright": "^1.59.1",
     "playwright-core": "^1.59.1"
   }

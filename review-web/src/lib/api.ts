@@ -600,6 +600,21 @@ export const api = {
       body: JSON.stringify({ images }),
     }),
 
+  // 每月信用卡帳單（gateway 讀寫 data/monthly_bills.json；寫入端是 cron 排程腳本＋手動補登）
+  getMonthlyBills: () => req<MonthlyBillsResp>('/monthly-bills'),
+  saveMonthlyBill: (bill: Partial<MonthlyBill>) =>
+    req<MonthlyBillSaveResp>('/monthly-bills', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(bill),
+    }),
+  deleteMonthlyBill: (id: string) =>
+    req<{ ok: boolean }>(`/monthly-bills/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  // 立即檢查帳單：跟真實同步一樣立即回 202，完成與否輪詢 getMonthlyBillsSyncStatus()
+  triggerMonthlyBillsSync: () =>
+    req<{ ok: boolean; triggered_at: string }>('/monthly-bills/sync-trigger', { method: 'POST' }),
+  getMonthlyBillsSyncStatus: () => req<MonthlyBillsSyncStatus>('/monthly-bills/sync-status'),
+
   // 期貨損益總覽（gateway 讀寫 data/futures_positions.json；報價代抓期交所 OpenAPI）
   getFuturesPositions: () => req<FuturesPositionsResp>('/futures/positions'),
   saveFuturesPositions: (payload: unknown) =>
@@ -1058,6 +1073,40 @@ export interface NetWorthBankOcrResp {
   warnings: string[];
   model: string;
   scanned_at: string;
+}
+
+// 每月信用卡帳單（資產變化圖用；scripts/fetch_credit_card_bills.cjs 排程自動寫入，
+// 也可手動補登/修正——見 routes/monthly_bills.js）
+export interface MonthlyBill {
+  id: string;
+  bank: string;
+  card_name: string | null;
+  card_last4: string | null;
+  statement_date: string | null; // 'YYYY-MM-DD'
+  due_date: string | null;       // 'YYYY-MM-DD'，讀不到給 null（見腳本註解：寧可留白也不亂猜）
+  currency: string;
+  amount_due: number;
+  minimum_due: number;
+  source: 'auto' | 'manual';
+  gmail_message_id: string | null;
+  imported_at: string;
+}
+export interface MonthlyBillsResp {
+  exists: boolean;
+  bills: MonthlyBill[];
+  updated_at: string | null;
+}
+export interface MonthlyBillSaveResp {
+  ok: boolean;
+  bill: MonthlyBill;
+}
+export interface MonthlyBillsSyncStatus {
+  state: 'idle' | 'running' | 'ok' | 'error';
+  started_at?: string | null;
+  finished_at?: string | null;
+  exit_code?: number | null;
+  message?: string | null;
+  log_tail?: string;
 }
 
 // ── 個股／ETF 已實現損益（opt36）─────────────────────────────────────────────
