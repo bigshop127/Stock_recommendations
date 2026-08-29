@@ -15,7 +15,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createChart, ColorType, type Time, type BusinessDay, type HistogramData } from 'lightweight-charts';
 import {
   Wallet, TrendingUp, Activity, Save, Trash2,
-  Cloud, CloudOff, Loader2, Info, AlertTriangle,
+  Cloud, CloudOff, Loader2, Info, AlertTriangle, Filter,
   CreditCard, RefreshCw, Plus, Pencil, X,
 } from 'lucide-react';
 import { api, type FullInventoryPosition, type MonthlyBill } from '../lib/api';
@@ -31,6 +31,7 @@ import {
   type FuturesPosition, type ProductPriceSpec, type ProductConfig,
 } from '../lib/futures';
 import type { FuturesConfig } from '../lib/futuresStore';
+import { monthOf } from '../lib/stockRealized';
 
 const money = (v: number) => `${v < 0 ? '-' : ''}$${Math.abs(Math.round(v)).toLocaleString()}`;
 const pct = (v: number, d = 1) => `${(v * 100).toFixed(d)}%`;
@@ -201,19 +202,45 @@ export const NetWorth: React.FC = () => {
     });
   }, [autoFutures.positions, autoFutures.products]);
 
-  // 每張卡「最新一期」：依銀行分組，取 statement_date 最新那組（同一期帳單可能有多幣別，比如雙幣卡）
-  const latestBillsByBank = useMemo(() => {
-    const byBank = new Map<string, MonthlyBill[]>();
-    for (const b of bills) byBank.set(b.bank, [...(byBank.get(b.bank) ?? []), b]);
-    const groups: MonthlyBill[][] = [];
-    for (const arr of byBank.values()) {
-      const maxDate = arr.reduce<string | null>((m, b) => (b.statement_date && (!m || b.statement_date > m) ? b.statement_date : m), null);
-      groups.push(arr.filter((b) => b.statement_date === maxDate));
-    }
-    return groups.sort((a, b) => (a[0]?.bank ?? '').localeCompare(b[0]?.bank ?? ''));
+  // 月份篩選（比照已實現損益總覽的月份快選）：''＝全部月份，否則是 'YYYY-MM'
+  const [billMonth, setBillMonth] = useState('');
+  const billMonthOptions = useMemo(() => {
+    const set = new Set<string>();
+    bills.forEach((b) => { const m = monthOf(b.statement_date ?? ''); if (m) set.add(m); });
+    return [...set].sort().reverse(); // 新到舊
   }, [bills]);
+  const BILL_RECENT_MONTHS_SHOWN = 6;
+  const billRecentMonths = billMonthOptions.slice(0, BILL_RECENT_MONTHS_SHOWN);
+  const billOlderMonths = billMonthOptions.slice(BILL_RECENT_MONTHS_SHOWN);
+  const billMonthChipLabel = (m: string) => {
+    const [y, mm] = m.split('-');
+    return Number(y) === new Date().getFullYear() ? `${Number(mm)}月` : `${y.slice(2)}/${mm}`;
+  };
 
-  // 月度支出：只加總 TWD（JPY 等外幣幣別不同不能直接相加），依 statement_date 年月分組
+  const filteredBills = useMemo(
+    () => (billMonth ? bills.filter((b) => monthOf(b.statement_date ?? '') === billMonth) : bills),
+    [bills, billMonth],
+  );
+
+  // 依銀行＋幣別分組小計（篩選範圍內），幣別不同不能直接相加，分開列
+  const billBreakdown = useMemo(() => {
+    const map = new Map<string, { bank: string; currency: string; total: number; count: number }>();
+    for (const b of filteredBills) {
+      const key = `${b.bank}|${b.currency}`;
+      const g = map.get(key) ?? { bank: b.bank, currency: b.currency, total: 0, count: 0 };
+      g.total += b.amount_due;
+      g.count += 1;
+      map.set(key, g);
+    }
+    return [...map.values()].sort((a, b) => a.bank.localeCompare(b.bank) || a.currency.localeCompare(b.currency));
+  }, [filteredBills]);
+  const billTwdTotal = useMemo(
+    () => filteredBills.filter((b) => b.currency === 'TWD').reduce((s, b) => s + b.amount_due, 0),
+    [filteredBills],
+  );
+
+  // 每月支出趨勢：故意用全部 bills（不隨月份篩選變動），這樣圖表隨時看得到完整歷史；
+  // 只加總 TWD（JPY 等外幣幣別不同不能直接相加），依 statement_date 年月分組
   const monthlyTwdTotals = useMemo(() => {
     const map = new Map<string, number>();
     for (const b of bills) {
@@ -545,36 +572,80 @@ export const NetWorth: React.FC = () => {
           </p>
         )}
 
-        {/* 各卡最新一期 */}
-        {latestBillsByBank.length > 0 ? (
+        {/* 月份篩選：全部月份 或 單一月份，比照已實現損益總覽的月份快選 */}
+        <div className="flex flex-wrap items-center gap-2 mb-3">
+          <span className="flex items-center gap-1 text-[11px] text-zinc-500 mr-1">
+            <Filter className="w-3.5 h-3.5" /> 月份
+          </span>
+          <button
+            onClick={() => setBillMonth('')}
+            className={`px-3 py-1.5 rounded-lg text-[11px] font-semibold border transition ${
+              billMonth === ''
+                ? 'bg-orange-500/15 text-orange-300 border-orange-500/30'
+                : 'text-zinc-400 border-border hover:text-zinc-200 hover:border-zinc-600'
+            }`}
+          >
+            全部月份
+          </button>
+          {billRecentMonths.map((m) => (
+            <button
+              key={m}
+              onClick={() => setBillMonth(m)}
+              className={`px-3 py-1.5 rounded-lg text-[11px] font-semibold border transition ${
+                billMonth === m
+                  ? 'bg-orange-500/15 text-orange-300 border-orange-500/30'
+                  : 'text-zinc-400 border-border hover:text-zinc-200 hover:border-zinc-600'
+              }`}
+            >
+              {billMonthChipLabel(m)}
+            </button>
+          ))}
+          {billOlderMonths.length > 0 && (
+            <select
+              value={billOlderMonths.includes(billMonth) ? billMonth : ''}
+              onChange={(e) => { if (e.target.value) setBillMonth(e.target.value); }}
+              className="px-2.5 py-1.5 rounded-lg text-[11px] bg-zinc-900 border border-border text-zinc-300"
+            >
+              <option value="">更早月份…</option>
+              {billOlderMonths.map((m) => (
+                <option key={m} value={m}>{m.replace('-', '/')}</option>
+              ))}
+            </select>
+          )}
+        </div>
+
+        {/* 篩選範圍內的小計：TWD 總支出＋筆數＋依銀行/幣別分開列（幣別不同不能直接相加） */}
+        {filteredBills.length > 0 ? (
           <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3 mb-4">
-            {latestBillsByBank.flatMap((group) => group.map((b) => {
-              const label = b.card_name
-                ? `${b.bank}｜${b.card_name}${b.card_last4 ? `（末四碼 ${b.card_last4}）` : ''}`
-                : b.bank;
-              return (
-                <StatTile
-                  key={b.id}
-                  label={label}
-                  value={`${b.currency === 'TWD' ? '' : b.currency + ' '}${money(b.amount_due)}`}
-                  tone="orange"
-                  icon={<CreditCard className="w-3.5 h-3.5" />}
-                  hint={`最低應繳 ${money(b.minimum_due)}｜繳款日 ${b.due_date ?? '未知'}｜來源：${b.source === 'auto' ? '自動' : '手動'}`}
-                  sub={<span className="text-zinc-500">{b.statement_date ?? ''}</span>}
-                />
-              );
-            }))}
+            <StatTile
+              label="TWD 支出小計"
+              value={money(billTwdTotal)}
+              tone="primary"
+              icon={<CreditCard className="w-3.5 h-3.5" />}
+              sub={<span className="text-zinc-500">{billMonth ? billMonthChipLabel(billMonth) : '全部月份合計'}</span>}
+            />
+            <StatTile label="帳單筆數" value={String(filteredBills.length)} tone="zinc" />
+            {billBreakdown.map((g) => (
+              <StatTile
+                key={`${g.bank}|${g.currency}`}
+                label={`${g.bank}（${g.currency}）`}
+                value={`${g.currency === 'TWD' ? '' : g.currency + ' '}${money(g.total)}`}
+                tone="orange"
+                icon={<CreditCard className="w-3.5 h-3.5" />}
+                sub={`${g.count} 筆`}
+              />
+            ))}
           </div>
         ) : (
           <div className="h-16 flex items-center justify-center text-xs text-zinc-600 mb-4">
-            尚無帳單資料，按「立即檢查帳單」試試看
+            {bills.length === 0 ? '尚無帳單資料，按「立即檢查帳單」試試看' : '這個月沒有帳單資料'}
           </div>
         )}
 
-        {/* 每月支出長條圖 */}
+        {/* 每月支出長條圖：故意不隨上面的月份篩選變動，隨時看得到完整歷史趨勢 */}
         <div className="border border-border rounded-xl p-4 bg-zinc-900/40 mb-4">
           <div className="text-[11px] text-zinc-500 mb-1">每月支出（TWD，兩張卡合計）</div>
-          <MonthlyBillsChart data={monthlyTwdTotals} />
+          <MonthlyBillsChart data={monthlyTwdTotals} selectedMonth={billMonth || null} />
         </div>
 
         {/* 帳單明細（可手動新增/編輯/刪除） */}
@@ -610,7 +681,7 @@ export const NetWorth: React.FC = () => {
             </div>
           )}
 
-          {bills.length > 0 ? (
+          {filteredBills.length > 0 ? (
             <div className="overflow-x-auto">
               <table className="w-full text-xs">
                 <thead>
@@ -625,7 +696,7 @@ export const NetWorth: React.FC = () => {
                   </tr>
                 </thead>
                 <tbody>
-                  {[...bills].sort((a, b) => (b.statement_date ?? '').localeCompare(a.statement_date ?? '')).map((b) => (
+                  {[...filteredBills].sort((a, b) => (b.statement_date ?? '').localeCompare(a.statement_date ?? '')).map((b) => (
                     <tr key={b.id} className="border-t border-border/60">
                       <td className="px-3 py-2 text-zinc-300 font-mono whitespace-nowrap">{b.statement_date ?? '—'}</td>
                       <td className="px-3 py-2 text-zinc-300 whitespace-nowrap">{b.bank}{b.card_name ? `｜${b.card_name}` : ''}</td>
@@ -643,7 +714,9 @@ export const NetWorth: React.FC = () => {
               </table>
             </div>
           ) : (
-            <div className="h-12 flex items-center justify-center text-xs text-zinc-600">尚無帳單明細</div>
+            <div className="h-12 flex items-center justify-center text-xs text-zinc-600">
+              {bills.length === 0 ? '尚無帳單明細' : '這個月沒有帳單明細'}
+            </div>
           )}
         </div>
       </Panel>
@@ -734,7 +807,7 @@ const NetWorthHistoryChart: React.FC<{ data: { date: string; total: number }[] }
  * autoSize:true 互動設計——見該元件註解：手動 width/ResizeObserver 會讓 canvas backing
  * buffer 卡在預設 300×150，一定要用 autoSize，這裡不重複贅述）。
  */
-const MonthlyBillsChart: React.FC<{ data: { month: string; total: number }[] }> = ({ data }) => {
+const MonthlyBillsChart: React.FC<{ data: { month: string; total: number }[]; selectedMonth?: string | null }> = ({ data, selectedMonth }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const legendRef = useRef<HTMLDivElement>(null);
 
@@ -781,7 +854,8 @@ const MonthlyBillsChart: React.FC<{ data: { month: string; total: number }[] }> 
         chart.clearCrosshairPosition();
       }
     };
-    selectMonth(data[data.length - 1]);
+    // 有外層月份篩選就跟著它選那根柱子，沒有（全部月份）就預設選最新一個月
+    selectMonth(data.find((d) => d.month === selectedMonth) ?? data[data.length - 1]);
 
     chart.subscribeClick((param) => {
       if (!param.time) return;
@@ -791,7 +865,7 @@ const MonthlyBillsChart: React.FC<{ data: { month: string; total: number }[] }> 
     });
 
     return () => chart.remove();
-  }, [data]);
+  }, [data, selectedMonth]);
 
   if (data.length === 0) {
     return <div className="h-32 flex items-center justify-center text-xs text-zinc-600">尚無資料，按上方「立即檢查帳單」開始累積</div>;
