@@ -35,16 +35,6 @@ const money = (v: number) => `${v < 0 ? '-' : ''}$${Math.abs(Math.round(v)).toLo
 const pct = (v: number, d = 1) => `${(v * 100).toFixed(d)}%`;
 const pnlCls = (v: number) => (v >= 0 ? 'text-bull' : 'text-bear');
 
-/** 距繳款截止日還有幾天（負數＝已逾期）；讀不到日期給 null，前端顯示「未知」不亂猜。 */
-function daysUntil(dateStr: string | null): number | null {
-  if (!dateStr) return null;
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  const d = new Date(`${dateStr}T00:00:00`);
-  if (Number.isNaN(d.getTime())) return null;
-  return Math.round((d.getTime() - today.getTime()) / 86400000);
-}
-
 type NWCategory = 'bank' | 'cash' | 'stock' | 'futures';
 const NW_LABEL: Record<NWCategory, string> = { bank: '銀行', cash: '券商現金', stock: '股市庫存', futures: '期貨' };
 const NW_COLOR: Record<NWCategory, string> = { bank: '#facc15', cash: '#fb923c', stock: '#a78bfa', futures: '#38bdf8' };
@@ -325,7 +315,7 @@ export const NetWorth: React.FC = () => {
             value={money(composition.cash)}
             tone="orange"
             icon={<Wallet className="w-3.5 h-3.5" />}
-            hint="已入帳、不用等交割就能動用的券商現金，跟銀行帳戶是兩筆錢——分開列才不會混在庫存市值裡"
+            hint="證券交易帳戶裡已入帳、不用等交割就能動用的現金餘額——來自「再平衡計算機」真實同步，跟你手動填的「銀行帳戶」是不同帳戶的錢，不會重複計算"
           />
           <StatTile
             label="股市庫存"
@@ -581,11 +571,6 @@ export const NetWorth: React.FC = () => {
         {latestBillsByBank.length > 0 ? (
           <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3 mb-4">
             {latestBillsByBank.flatMap((group) => group.map((b) => {
-              const dLeft = daysUntil(b.due_date);
-              const tone = dLeft === null ? 'zinc' : dLeft < 0 ? 'rose' : dLeft <= 7 ? 'amber' : 'emerald';
-              const dueText = dLeft === null
-                ? '繳款截止日未知，請自行核對帳單'
-                : `${b.due_date}（${dLeft < 0 ? `已逾期 ${-dLeft} 天` : dLeft === 0 ? '今天到期' : `還有 ${dLeft} 天`}）`;
               const label = b.card_name
                 ? `${b.bank}｜${b.card_name}${b.card_last4 ? `（末四碼 ${b.card_last4}）` : ''}`
                 : b.bank;
@@ -594,10 +579,10 @@ export const NetWorth: React.FC = () => {
                   key={b.id}
                   label={label}
                   value={`${b.currency === 'TWD' ? '' : b.currency + ' '}${money(b.amount_due)}`}
-                  tone={tone}
+                  tone="orange"
                   icon={<CreditCard className="w-3.5 h-3.5" />}
-                  hint={`最低應繳 ${money(b.minimum_due)}｜繳款截止 ${b.due_date ?? '未知'}｜來源：${b.source === 'auto' ? '自動' : '手動'}`}
-                  sub={<span className={tone === 'rose' ? 'text-rose-400' : tone === 'amber' ? 'text-amber-400' : 'text-zinc-500'}>{dueText}</span>}
+                  hint={`最低應繳 ${money(b.minimum_due)}｜繳款日 ${b.due_date ?? '未知'}｜來源：${b.source === 'auto' ? '自動' : '手動'}`}
+                  sub={<span className="text-zinc-500">{b.statement_date ?? ''}</span>}
                 />
               );
             }))}
