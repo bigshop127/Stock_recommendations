@@ -38,6 +38,13 @@ const pnlCls = (v: number) => (v >= 0 ? 'text-bull' : 'text-bear');
 
 type Category = 'futures' | 'stock' | 'etf';
 const CATEGORY_LABEL: Record<Category, string> = { futures: '期貨', stock: '個股', etf: 'ETF' };
+type SortMode = 'date_desc' | 'date_asc' | 'amount_desc' | 'amount_asc';
+const SORT_OPTIONS: { value: SortMode; label: string }[] = [
+  { value: 'date_desc', label: '日期新→舊' },
+  { value: 'date_asc', label: '日期舊→新' },
+  { value: 'amount_desc', label: '金額大→小' },
+  { value: 'amount_asc', label: '金額小→大' },
+];
 /** 圓餅圖用的分類色——刻意不用 bull/bear（紅漲綠跌是損益語意，這裡是純分類，混用會誤導） */
 const CATEGORY_COLOR: Record<Category, string> = { futures: '#38bdf8', stock: '#a78bfa', etf: '#34d399' };
 
@@ -255,6 +262,23 @@ export const RealizedPnl: React.FC = () => {
     });
     return [...map.values()].sort((a, b) => (b.latestDate < a.latestDate ? -1 : b.latestDate > a.latestDate ? 1 : 0));
   }, [filteredRows]);
+
+  /** 明細表排序：預設沿用 groupedRows 的日期新→舊，另外三種模式使用者可切換 */
+  const [sortMode, setSortMode] = useState<SortMode>('date_desc');
+  const sortedGroups = useMemo(() => {
+    const arr = [...groupedRows];
+    switch (sortMode) {
+      case 'date_asc': return arr.sort((a, b) => (a.latestDate < b.latestDate ? -1 : a.latestDate > b.latestDate ? 1 : 0));
+      case 'amount_desc': return arr.sort((a, b) => b.net - a.net);
+      case 'amount_asc': return arr.sort((a, b) => a.net - b.net);
+      case 'date_desc':
+      default: return arr; // 已經是日期新→舊
+    }
+  }, [groupedRows, sortMode]);
+
+  /** 明細表預設收合，只顯示排序後最新的 5 檔，避免一長串洗版 */
+  const [showAllGroups, setShowAllGroups] = useState(false);
+  const visibleGroups = showAllGroups ? sortedGroups : sortedGroups.slice(0, 5);
 
   /**
    * 類別占比圓餅圖的資料：用絕對值算占比（損益本身有正有負，直接用淨值算
@@ -598,7 +622,25 @@ export const RealizedPnl: React.FC = () => {
         )}
 
         {/* ── 明細表 ── */}
-        <div className="mt-4 overflow-x-auto">
+        <div className="mt-4 flex flex-wrap items-center justify-between gap-2">
+          <span className="text-[11px] text-zinc-500">明細（共 {groupedRows.length} 檔）</span>
+          <div className="flex flex-wrap items-center gap-1.5">
+            {SORT_OPTIONS.map((opt) => (
+              <button
+                key={opt.value}
+                onClick={() => setSortMode(opt.value)}
+                className={`px-2.5 py-1 rounded-lg text-[10px] font-semibold border transition ${
+                  sortMode === opt.value
+                    ? 'bg-primary/15 text-primary border-primary/30'
+                    : 'text-zinc-500 border-border hover:text-zinc-200 hover:border-zinc-600'
+                }`}
+              >
+                {opt.label}
+              </button>
+            ))}
+          </div>
+        </div>
+        <div className="mt-2 overflow-x-auto">
           <table className="w-full text-xs min-w-[720px]">
             <thead>
               <tr className="text-zinc-500 border-b border-border">
@@ -614,10 +656,10 @@ export const RealizedPnl: React.FC = () => {
               </tr>
             </thead>
             <tbody>
-              {groupedRows.length === 0 && (
+              {visibleGroups.length === 0 && (
                 <tr><td colSpan={showCategoryCol ? 9 : 8} className="py-6 text-center text-zinc-600">沒有符合篩選條件的紀錄</td></tr>
               )}
-              {groupedRows.map((g) => {
+              {visibleGroups.map((g) => {
                 const single = g.rows.length === 1;
                 const expanded = single || groupedRows.length === 1 || expandedGroups.has(g.key);
                 return (
@@ -683,6 +725,14 @@ export const RealizedPnl: React.FC = () => {
             </tbody>
           </table>
         </div>
+        {sortedGroups.length > 5 && (
+          <button
+            onClick={() => setShowAllGroups((v) => !v)}
+            className="mt-2 w-full text-center text-[11px] text-zinc-500 hover:text-zinc-300 py-1.5 border border-border rounded-lg hover:border-zinc-600"
+          >
+            {showAllGroups ? '收合，只顯示最新 5 檔' : `展開全部 ${sortedGroups.length} 檔`}
+          </button>
+        )}
       </Panel>
 
       {/* ── 個股/ETF 管理：手動新增/編輯、費率設定、截圖匯入 ── */}

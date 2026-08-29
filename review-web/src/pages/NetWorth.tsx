@@ -41,6 +41,14 @@ type NWCategory = 'cash' | 'stock' | 'futures';
 const NW_LABEL: Record<NWCategory, string> = { cash: '券商現金', stock: '股市庫存', futures: '期貨' };
 const NW_COLOR: Record<NWCategory, string> = { cash: '#fb923c', stock: '#a78bfa', futures: '#38bdf8' };
 
+type BillSortMode = 'date_desc' | 'date_asc' | 'amount_desc' | 'amount_asc';
+const BILL_SORT_OPTIONS: { value: BillSortMode; label: string }[] = [
+  { value: 'date_desc', label: '日期新→舊' },
+  { value: 'date_asc', label: '日期舊→新' },
+  { value: 'amount_desc', label: '金額大→小' },
+  { value: 'amount_asc', label: '金額小→大' },
+];
+
 interface AutoStock {
   cash: number;
   pendingSettlement: number;
@@ -221,6 +229,23 @@ export const NetWorth: React.FC = () => {
     () => (billMonth ? bills.filter((b) => monthOf(b.statement_date ?? '') === billMonth) : bills),
     [bills, billMonth],
   );
+
+  /** 帳單明細排序：預設日期新→舊，另外三種模式使用者可切換 */
+  const [billSortMode, setBillSortMode] = useState<BillSortMode>('date_desc');
+  const sortedBills = useMemo(() => {
+    const arr = [...filteredBills];
+    switch (billSortMode) {
+      case 'date_asc': return arr.sort((a, b) => (a.statement_date ?? '').localeCompare(b.statement_date ?? ''));
+      case 'amount_desc': return arr.sort((a, b) => b.amount_due - a.amount_due);
+      case 'amount_asc': return arr.sort((a, b) => a.amount_due - b.amount_due);
+      case 'date_desc':
+      default: return arr.sort((a, b) => (b.statement_date ?? '').localeCompare(a.statement_date ?? ''));
+    }
+  }, [filteredBills, billSortMode]);
+
+  /** 帳單明細預設收合，只顯示排序後最新的 5 筆，避免一長串洗版 */
+  const [showAllBills, setShowAllBills] = useState(false);
+  const visibleBills = showAllBills ? sortedBills : sortedBills.slice(0, 5);
 
   // 銀行／卡片＋幣別各自固定一個色調，統計磚跟下面明細表的色點才能對得上；
   // 未來新增銀行/卡片沒對到表也不會壞，就落回原本的橘色
@@ -671,13 +696,29 @@ export const NetWorth: React.FC = () => {
         {/* 帳單明細（可手動新增/編輯/刪除） */}
         <div className="border border-border rounded-xl overflow-hidden">
           <div className="px-3 py-2 flex items-center justify-between bg-zinc-900/60 border-b border-border">
-            <span className="text-[11px] text-zinc-500">帳單明細</span>
+            <span className="text-[11px] text-zinc-500">帳單明細（共 {filteredBills.length} 筆）</span>
             <button
               onClick={() => openBillForm()}
               className="inline-flex items-center gap-1 text-[11px] text-orange-300 hover:text-orange-200"
             >
               <Plus className="w-3.5 h-3.5" /> 手動新增
             </button>
+          </div>
+
+          <div className="px-3 py-2 flex flex-wrap items-center gap-1.5 border-b border-border bg-zinc-950/20">
+            {BILL_SORT_OPTIONS.map((opt) => (
+              <button
+                key={opt.value}
+                onClick={() => setBillSortMode(opt.value)}
+                className={`px-2.5 py-1 rounded-lg text-[10px] font-semibold border transition ${
+                  billSortMode === opt.value
+                    ? 'bg-primary/15 text-primary border-primary/30'
+                    : 'text-zinc-500 border-border hover:text-zinc-200 hover:border-zinc-600'
+                }`}
+              >
+                {opt.label}
+              </button>
+            ))}
           </div>
 
           {billForm.open && (
@@ -716,7 +757,7 @@ export const NetWorth: React.FC = () => {
                   </tr>
                 </thead>
                 <tbody>
-                  {[...filteredBills].sort((a, b) => (b.statement_date ?? '').localeCompare(a.statement_date ?? '')).map((b) => (
+                  {visibleBills.map((b) => (
                     <tr key={b.id} className={`border-t border-border/60 ${TONE[billBankTone(b.bank, b.currency)].bg}`}>
                       <td className="px-3 py-2 text-zinc-300 font-mono whitespace-nowrap">{b.statement_date ?? '—'}</td>
                       <td className="px-3 py-2 whitespace-nowrap">
@@ -742,6 +783,14 @@ export const NetWorth: React.FC = () => {
             <div className="h-12 flex items-center justify-center text-xs text-zinc-600">
               {bills.length === 0 ? '尚無帳單明細' : '這個月沒有帳單明細'}
             </div>
+          )}
+          {sortedBills.length > 5 && (
+            <button
+              onClick={() => setShowAllBills((v) => !v)}
+              className="w-full text-center text-[11px] text-zinc-500 hover:text-zinc-300 py-1.5 border-t border-border hover:bg-zinc-900/40"
+            >
+              {showAllBills ? '收合，只顯示最新 5 筆' : `展開全部 ${sortedBills.length} 筆`}
+            </button>
           )}
         </div>
       </Panel>
