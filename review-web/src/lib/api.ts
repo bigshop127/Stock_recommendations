@@ -220,97 +220,6 @@ export interface BacktestResult {
   [k: string]: unknown;
 }
 
-export interface LlmUsage {
-  provider: string;
-  switched: boolean;
-  elapsed_s: number;
-  est_tokens?: number;
-  error?: string | null;
-}
-
-export interface FactBase {
-  blended_score: number;
-  blended_action: string;
-  conflict: boolean;
-}
-
-export interface AnalystDetail {
-  stance: 'bull' | 'bullish' | 'bear' | 'bearish' | 'neutral';
-  confidence: number | null;
-  summary: string;
-  key_points: string[];
-  llm_failed?: boolean;
-  role: string;
-  _llm?: LlmUsage;
-}
-
-export interface DebateParticipant {
-  side: 'bull' | 'bear';
-  stance: 'bull' | 'bullish' | 'bear' | 'bearish' | 'neutral';
-  confidence: number | null;
-  summary: string;
-  key_points: string[];
-}
-
-export interface TraderDecision {
-  decision: string;
-  confidence: number | null;
-  rationale: string;
-  role: string;
-  _llm?: LlmUsage;
-}
-
-export interface RiskManagement {
-  final_decision: string;
-  confidence: number | null;
-  risk_notes: string;
-  conflict_acknowledged: boolean;
-  role: string;
-  _llm?: LlmUsage;
-}
-
-export interface ConsistencyStatus {
-  blended_direction: string;
-  agent_direction: string;
-  blended_conflict_quant_vs_puhui: boolean;
-  divergent_from_quant: boolean;
-  divergence_flagged: boolean;
-  warning: string | null;
-}
-
-export interface AgentDecision {
-  code: string;
-  name: string;
-  date: string;
-  fact_base: FactBase;
-  analysts: {
-    technical: AnalystDetail;
-    news_sentiment: AnalystDetail;
-    puhui: AnalystDetail;
-  };
-  debate: DebateParticipant[];
-  trader: TraderDecision;
-  risk: RiskManagement;
-  final_decision: string;
-  confidence: number | null;
-  consistency: ConsistencyStatus;
-  degraded?: string[];
-}
-
-export interface DecideResp {
-  date: string;
-  count: number;
-  decisions: AgentDecision[];
-  errors: any[];
-  usage?: Record<string, unknown>;
-  config?: {
-    analysts: string[];
-    debate_rounds: number;
-    primary_provider: string;
-    fallback_provider: string;
-  };
-}
-
 // === Phase 1 新增 API 介面定義 (市場資訊與個股多維度資料) ===
 export interface SparklinePoint {
   t: string;
@@ -546,13 +455,6 @@ export const api = {
     }),
   reportsList: () => req<ReportsList>('/reports/list'),
   report: (date?: string) => req<Report>(`/reports${qs({ date })}`),
-  decide: (codes: string[], date?: string) =>
-    req<DecideResp>('/agents/decide', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ codes, date }),
-    }),
-
   // Phase 1 新增 API 端點
   marketIndices: (o?: { range?: '1d' | '5d' | '1m' }) => req<MarketIndices>(`/market/indices${qs(o)}`),
   marketBreadth: (o?: { date?: string }) => req<MarketBreadth>(`/market/breadth${qs(o)}`),
@@ -662,6 +564,25 @@ export const api = {
       body: JSON.stringify(since ? { since } : {}),
     }),
   getStockRealizedSyncStatus: () => req<StockRealizedSyncStatus>('/stocks/sync-realized-status'),
+
+  // 「個股多維度審查」側邊欄資料夾雲端持久化（2026-08-30 新增，gateway 讀寫 data/stock_folders.json）
+  getStockFolders: () => req<StockFoldersResp>('/stock-folders'),
+  saveStockFolders: (payload: unknown) =>
+    req<StockFoldersSaveResp>('/stock-folders', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    }),
+
+  // 個股價格警示設定（2026-08-30 新增，gateway 讀寫 data/stock_price_alerts.json；
+  // 判斷觸發與寄信在 scripts/stock_price_alert.cjs，這裡只存設定）
+  getStockAlerts: () => req<StockAlertsResp>('/stock-alerts'),
+  saveStockAlerts: (payload: unknown) =>
+    req<StockAlertsSaveResp>('/stock-alerts', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    }),
 };
 
 // 快照列的形狀定義在 lib/futures.ts（純計算層），這裡只轉出去給呼叫端用——
@@ -1086,6 +1007,26 @@ export interface StockRealizedResp {
   saved_at: string | null;
 }
 export interface StockRealizedSaveResp {
+  ok: boolean;
+  data: Record<string, unknown>;
+  saved_at: string;
+}
+export interface StockFoldersResp {
+  exists: boolean;
+  data: { folders: { id: string; label: string }[]; stocks: Record<string, unknown> } | null;
+  saved_at: string | null;
+}
+export interface StockFoldersSaveResp {
+  ok: boolean;
+  data: Record<string, unknown>;
+  saved_at: string;
+}
+export interface StockAlertsResp {
+  exists: boolean;
+  data: { stocks: Record<string, unknown> } | null;
+  saved_at: string | null;
+}
+export interface StockAlertsSaveResp {
   ok: boolean;
   data: Record<string, unknown>;
   saved_at: string;

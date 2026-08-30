@@ -14,6 +14,8 @@ import {
   Plus,
   X,
   MoreHorizontal,
+  Pencil,
+  Check,
   Waves,
   LayoutGrid,
   SlidersHorizontal,
@@ -25,11 +27,15 @@ import { api } from '../lib/api';
 import type { Health } from '../lib/api';
 import {
   getFolders,
+  getFolderList,
+  loadFoldersFromCloud,
   removeFromFolder,
   subscribeFolders,
   moveStock,
   addToFolder,
-  FOLDERS
+  addFolder,
+  renameFolder,
+  deleteFolder
 } from '../lib/userStore';
 import type { FolderId } from '../lib/userStore';
 import { SymbolSearch } from './SymbolSearch';
@@ -55,6 +61,7 @@ export const Layout: React.FC<LayoutProps> = ({ children }) => {
   const [health, setHealth] = useState<Health | null>(null);
   const [loading, setLoading] = useState(true);
   const [folders, setFolders] = useState(() => getFolders());
+  const [folderList, setFolderList] = useState(() => getFolderList());
   const [isStocksMenuOpen, setIsStocksMenuOpen] = useState(() => {
     const stored = localStorage.getItem('review:menu:expanded');
     if (stored !== null) return stored === 'true';
@@ -93,8 +100,14 @@ export const Layout: React.FC<LayoutProps> = ({ children }) => {
   useEffect(() => {
     const unsubscribe = subscribeFolders(() => {
       setFolders(getFolders());
+      setFolderList(getFolderList());
     });
     return unsubscribe;
+  }, []);
+
+  // 頁面啟動時撈一次雲端資料夾設定（成功會覆蓋本地快取並觸發上面的 subscribeFolders）
+  useEffect(() => {
+    void loadFoldersFromCloud();
   }, []);
 
   useEffect(() => {
@@ -107,6 +120,34 @@ export const Layout: React.FC<LayoutProps> = ({ children }) => {
 
   const [activeSearchFolder, setActiveSearchFolder] = useState<FolderId | null>(null);
   const [activeDropdownStock, setActiveDropdownStock] = useState<{ folderId: FolderId; code: string } | null>(null);
+  const [isAddingFolder, setIsAddingFolder] = useState(false);
+  const [newFolderName, setNewFolderName] = useState('');
+  const [renamingFolderId, setRenamingFolderId] = useState<FolderId | null>(null);
+  const [renameValue, setRenameValue] = useState('');
+
+  const submitNewFolder = () => {
+    const label = newFolderName.trim();
+    if (label) addFolder(label);
+    setNewFolderName('');
+    setIsAddingFolder(false);
+  };
+
+  const submitRename = (id: FolderId) => {
+    const label = renameValue.trim();
+    if (label) renameFolder(id, label);
+    setRenamingFolderId(null);
+    setRenameValue('');
+  };
+
+  const handleDeleteFolder = (f: { id: FolderId; label: string }) => {
+    const count = (folders[f.id] || []).length;
+    const msg = count > 0
+      ? `確定要刪除資料夾「${f.label}」嗎？裡面的 ${count} 檔個股會一併移除。`
+      : `確定要刪除資料夾「${f.label}」嗎？`;
+    if (!window.confirm(msg)) return;
+    const ok = deleteFolder(f.id);
+    if (!ok) window.alert('至少要保留一個資料夾，無法刪除最後一個。');
+  };
 
   useEffect(() => {
     const handleGlobalClick = () => {
@@ -256,53 +297,100 @@ export const Layout: React.FC<LayoutProps> = ({ children }) => {
               {/* 資料夾樹與股票列表 */}
               {isStocksMenuOpen && (
                 <div className="pl-4 space-y-2 mt-1 border-l border-zinc-800/80 ml-6">
-                  {FOLDERS.map((f) => {
-                    const isExpanded = expandedFolders[f.id];
+                  {folderList.map((f) => {
+                    const isExpanded = expandedFolders[f.id] ?? true;
                     const stocks = folders[f.id] || [];
+                    const isRenaming = renamingFolderId === f.id;
                     return (
                       <div key={f.id} className="space-y-1">
                         {/* 資料夾標頭 */}
                         <div className="group/folder flex items-center justify-between py-1.5 px-2 rounded hover:bg-zinc-800/20 text-xs font-semibold text-zinc-500 hover:text-zinc-300 transition-colors">
-                          <button
-                            onClick={() => toggleFolder(f.id)}
-                            className="flex-1 flex items-center gap-1.5 text-left"
-                          >
-                            {isExpanded ? (
-                              <FolderOpen className="w-3.5 h-3.5 text-zinc-400" />
-                            ) : (
-                              <Folder className="w-3.5 h-3.5 text-zinc-400" />
-                            )}
-                            <span>
-                              {f.label} ({stocks.length})
-                            </span>
-                          </button>
-                          <div className="flex items-center gap-1">
-                            <button
-                              onClick={(e) => {
-                                e.preventDefault();
-                                e.stopPropagation();
-                                setActiveSearchFolder(activeSearchFolder === f.id ? null : f.id);
-                              }}
-                              className="opacity-0 group-hover/folder:opacity-100 p-0.5 rounded hover:bg-zinc-800 text-zinc-400 hover:text-zinc-200 transition-all duration-150"
-                              title="加入個股"
-                            >
-                              {activeSearchFolder === f.id ? (
-                                <X className="w-3 h-3" />
-                              ) : (
-                                <Plus className="w-3 h-3" />
-                              )}
-                            </button>
+                          {isRenaming ? (
+                            <div className="flex-1 flex items-center gap-1">
+                              <input
+                                autoFocus
+                                value={renameValue}
+                                onChange={(e) => setRenameValue(e.target.value)}
+                                onKeyDown={(e) => {
+                                  if (e.key === 'Enter') submitRename(f.id);
+                                  if (e.key === 'Escape') setRenamingFolderId(null);
+                                }}
+                                className="flex-1 min-w-0 bg-zinc-900 border border-zinc-700 rounded px-1.5 py-0.5 text-xs text-zinc-200"
+                              />
+                              <button onClick={() => submitRename(f.id)} className="text-zinc-400 hover:text-zinc-200 p-0.5">
+                                <Check className="w-3.5 h-3.5" />
+                              </button>
+                              <button onClick={() => setRenamingFolderId(null)} className="text-zinc-500 hover:text-zinc-300 p-0.5">
+                                <X className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
+                          ) : (
                             <button
                               onClick={() => toggleFolder(f.id)}
-                              className="text-zinc-500"
+                              className="flex-1 flex items-center gap-1.5 text-left"
                             >
                               {isExpanded ? (
-                                <ChevronDown className="w-3 h-3 text-zinc-500" />
+                                <FolderOpen className="w-3.5 h-3.5 text-zinc-400" />
                               ) : (
-                                <ChevronRight className="w-3 h-3 text-zinc-500" />
+                                <Folder className="w-3.5 h-3.5 text-zinc-400" />
                               )}
+                              <span>
+                                {f.label} ({stocks.length})
+                              </span>
                             </button>
-                          </div>
+                          )}
+                          {!isRenaming && (
+                            <div className="flex items-center gap-1">
+                              <button
+                                onClick={(e) => {
+                                  e.preventDefault();
+                                  e.stopPropagation();
+                                  setActiveSearchFolder(activeSearchFolder === f.id ? null : f.id);
+                                }}
+                                className="opacity-0 group-hover/folder:opacity-100 p-0.5 rounded hover:bg-zinc-800 text-zinc-400 hover:text-zinc-200 transition-all duration-150"
+                                title="加入個股"
+                              >
+                                {activeSearchFolder === f.id ? (
+                                  <X className="w-3 h-3" />
+                                ) : (
+                                  <Plus className="w-3 h-3" />
+                                )}
+                              </button>
+                              <button
+                                onClick={(e) => {
+                                  e.preventDefault();
+                                  e.stopPropagation();
+                                  setRenamingFolderId(f.id);
+                                  setRenameValue(f.label);
+                                }}
+                                className="opacity-0 group-hover/folder:opacity-100 p-0.5 rounded hover:bg-zinc-800 text-zinc-400 hover:text-zinc-200 transition-all duration-150"
+                                title="重新命名資料夾"
+                              >
+                                <Pencil className="w-3 h-3" />
+                              </button>
+                              <button
+                                onClick={(e) => {
+                                  e.preventDefault();
+                                  e.stopPropagation();
+                                  handleDeleteFolder(f);
+                                }}
+                                className="opacity-0 group-hover/folder:opacity-100 p-0.5 rounded hover:bg-zinc-800 text-zinc-500 hover:text-red-400 transition-all duration-150"
+                                title="刪除資料夾"
+                              >
+                                <Trash2 className="w-3 h-3" />
+                              </button>
+                              <button
+                                onClick={() => toggleFolder(f.id)}
+                                className="text-zinc-500"
+                              >
+                                {isExpanded ? (
+                                  <ChevronDown className="w-3 h-3 text-zinc-500" />
+                                ) : (
+                                  <ChevronRight className="w-3 h-3 text-zinc-500" />
+                                )}
+                              </button>
+                            </div>
+                          )}
                         </div>
 
                         {/* 資料夾內搜尋框 */}
@@ -380,7 +468,7 @@ export const Layout: React.FC<LayoutProps> = ({ children }) => {
                                             <div className="px-2 py-1 text-zinc-500 font-semibold border-b border-zinc-800">
                                               移動至：
                                             </div>
-                                            {FOLDERS.filter(dest => dest.id !== f.id).map(dest => (
+                                            {folderList.filter(dest => dest.id !== f.id).map(dest => (
                                               <button
                                                 key={dest.id}
                                                 onClick={(e) => {
@@ -421,6 +509,37 @@ export const Layout: React.FC<LayoutProps> = ({ children }) => {
                       </div>
                     );
                   })}
+
+                  {/* 新增自訂資料夾 */}
+                  {isAddingFolder ? (
+                    <div className="flex items-center gap-1 py-1 px-2">
+                      <input
+                        autoFocus
+                        value={newFolderName}
+                        onChange={(e) => setNewFolderName(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') submitNewFolder();
+                          if (e.key === 'Escape') { setIsAddingFolder(false); setNewFolderName(''); }
+                        }}
+                        placeholder="資料夾名稱"
+                        className="flex-1 min-w-0 bg-zinc-900 border border-zinc-700 rounded px-1.5 py-0.5 text-xs text-zinc-200"
+                      />
+                      <button onClick={submitNewFolder} className="text-zinc-400 hover:text-zinc-200 p-0.5">
+                        <Check className="w-3.5 h-3.5" />
+                      </button>
+                      <button onClick={() => { setIsAddingFolder(false); setNewFolderName(''); }} className="text-zinc-500 hover:text-zinc-300 p-0.5">
+                        <X className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  ) : (
+                    <button
+                      onClick={() => setIsAddingFolder(true)}
+                      className="w-full flex items-center gap-1.5 py-1.5 px-2 rounded hover:bg-zinc-800/20 text-xs text-zinc-500 hover:text-zinc-300 transition-colors"
+                    >
+                      <Plus className="w-3.5 h-3.5" />
+                      <span>新增資料夾</span>
+                    </button>
+                  )}
                 </div>
               )}
             </div>

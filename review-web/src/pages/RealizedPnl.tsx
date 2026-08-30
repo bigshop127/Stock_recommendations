@@ -560,29 +560,36 @@ export const RealizedPnl: React.FC = () => {
         {/* ── 圖表區：類別占比／每月趨勢／前五大貢獻標的，皆跟著上面的篩選走 ── */}
         {filteredRows.length > 0 && (
           <div className="mt-4 grid grid-cols-1 lg:grid-cols-3 gap-3">
-            <div className="border border-border rounded-xl p-4 bg-zinc-900/40">
+            <div className="border border-border rounded-xl p-4 bg-zinc-900/40 flex flex-col">
               <div className="text-[11px] text-zinc-500 mb-3">類別占比</div>
               {donutData.length > 0 ? (
-                <div className="flex items-center gap-4">
-                  <svg viewBox="0 0 36 36" className="w-20 h-20 -rotate-90 shrink-0">
-                    <circle cx="18" cy="18" r="15.9155" fill="none" stroke="#27272a" strokeWidth="4" />
+                <div className="flex-1 flex flex-col items-center justify-center gap-4">
+                  <div className="relative w-32 h-32 sm:w-36 sm:h-36 shrink-0">
+                    <svg viewBox="0 0 36 36" className="w-full h-full -rotate-90">
+                      <circle cx="18" cy="18" r="15.9155" fill="none" stroke="#27272a" strokeWidth="4" />
+                      {donutData.map((seg) => (
+                        <circle
+                          key={seg.category}
+                          cx="18" cy="18" r="15.9155" fill="none"
+                          stroke={CATEGORY_COLOR[seg.category]}
+                          strokeWidth="4"
+                          strokeDasharray={`${seg.pct * 100} ${100 - seg.pct * 100}`}
+                          strokeDashoffset={-seg.offset * 100}
+                        />
+                      ))}
+                    </svg>
+                    <div className="absolute inset-0 flex flex-col items-center justify-center">
+                      <span className="text-[9px] text-zinc-500">淨損益</span>
+                      <span className={`text-sm font-mono font-bold ${pnlCls(totals.net)}`}>{money(totals.net)}</span>
+                    </div>
+                  </div>
+                  <ul className="space-y-1.5 text-[11px] w-full min-w-0">
                     {donutData.map((seg) => (
-                      <circle
-                        key={seg.category}
-                        cx="18" cy="18" r="15.9155" fill="none"
-                        stroke={CATEGORY_COLOR[seg.category]}
-                        strokeWidth="4"
-                        strokeDasharray={`${seg.pct * 100} ${100 - seg.pct * 100}`}
-                        strokeDashoffset={-seg.offset * 100}
-                      />
-                    ))}
-                  </svg>
-                  <ul className="space-y-1.5 text-[11px] flex-1 min-w-0">
-                    {donutData.map((seg) => (
-                      <li key={seg.category} className="flex items-center gap-1.5" title={money(seg.net)}>
+                      <li key={seg.category} className="flex items-center gap-1.5">
                         <span className="w-2 h-2 rounded-full shrink-0" style={{ background: CATEGORY_COLOR[seg.category] }} />
                         <span className="text-zinc-400 truncate">{CATEGORY_LABEL[seg.category]}</span>
-                        <span className="ml-auto font-mono font-semibold text-zinc-300">{Math.round(seg.pct * 100)}%</span>
+                        <span className={`ml-auto font-mono font-semibold ${pnlCls(seg.net)}`}>{money(seg.net)}</span>
+                        <span className="text-zinc-500 font-mono">{Math.round(seg.pct * 100)}%</span>
                       </li>
                     ))}
                   </ul>
@@ -608,8 +615,11 @@ export const RealizedPnl: React.FC = () => {
                       </span>
                       <div className="flex-1 h-4 rounded bg-zinc-950 overflow-hidden">
                         <div
-                          className={`h-full ${g.net >= 0 ? 'bg-bull/80' : 'bg-bear/80'}`}
-                          style={{ width: `${(Math.abs(g.net) / maxAbsContributor) * 100}%` }}
+                          className="h-full opacity-80"
+                          style={{
+                            width: `${(Math.abs(g.net) / maxAbsContributor) * 100}%`,
+                            background: CATEGORY_COLOR[g.category],
+                          }}
                         />
                       </div>
                       <span className={`w-20 shrink-0 text-right font-mono font-semibold ${pnlCls(g.net)}`}>{money(g.net)}</span>

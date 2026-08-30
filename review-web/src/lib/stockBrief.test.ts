@@ -126,13 +126,22 @@ describe('buildStockBrief', () => {
     expect(brief.headline).not.toContain('null');
     expect(brief.headline).toContain('台積電');
 
-    // Checkpoints
-    expect(brief.checkpoints.length).toBe(4);
+    // Checkpoints（4 個既有 + 2 個 KD 觀察點，mockDailyOhlcv 65 筆足以算出 KD）
+    expect(brief.checkpoints.length).toBe(6);
     expect(brief.checkpoints[0].label).toBe('守住 60 日均線');
     expect(brief.checkpoints[0].pass).toBe(true);
 
-    // Invalidation
+    // KD 觀察點：均線與收盤持續走高的 fixture，K/D 應同步走高呈多頭排列
+    const kdCross = brief.checkpoints.find(c => c.label === 'KD 呈多頭排列（K>D）');
+    expect(kdCross).toBeDefined();
+    expect(kdCross!.current).toMatch(/^K -?\d+\.\d \/ D -?\d+\.\d$/);
+    const kdOverbought = brief.checkpoints.find(c => c.label === 'KD 未進入超買鈍化');
+    expect(kdOverbought).toBeDefined();
+
+    // Invalidation（含既有兩則 + KD 高檔死叉／低檔死叉兩則）
     expect(brief.invalidation.length).toBeGreaterThan(0);
+    expect(brief.invalidation.some(t => t.includes('KD 高檔死亡交叉'))).toBe(true);
+    expect(brief.invalidation.some(t => t.includes('KD 低檔死亡交叉'))).toBe(true);
   });
 
   it('handles degraded state when blended is missing or unavailable', () => {

@@ -1,4 +1,5 @@
 import type { StockSignal, OhlcvRow, StockChips, StockFundamentals, StockNews } from './api';
+import { calculateKD } from './indicators';
 
 export interface StockBriefInput {
   blended: StockSignal | null;            // signalState.data?.blended
@@ -529,6 +530,29 @@ export function buildStockBrief(input: StockBriefInput): StockBrief {
       });
       invalidation.push('法人轉為連續賣超（5 日累積轉為負值）');
     }
+  }
+
+  // KD(9,3,3)，超買 80／超賣 20——業界標準參數，跟 PriceChart.tsx 圖表上顯示的
+  // KD 指標同一套定義（calculateKD 本身就是這組參數），確保全站 KD 判讀一致。
+  const kd = calculateKD(sortedDaily, false);
+  if (kd.k.length > 0 && kd.d.length > 0) {
+    const lastK = kd.k[kd.k.length - 1].value;
+    const lastD = kd.d[kd.d.length - 1].value;
+
+    checkpoints.push({
+      label: 'KD 呈多頭排列（K>D）',
+      pass: lastK > lastD,
+      current: `K ${lastK.toFixed(1)} / D ${lastD.toFixed(1)}`,
+      target: 'K > D',
+    });
+    checkpoints.push({
+      label: 'KD 未進入超買鈍化',
+      pass: lastK < 80,
+      current: `K ${lastK.toFixed(1)}`,
+      target: '< 80',
+    });
+    invalidation.push('KD 高檔死亡交叉（K、D 同時 >80 後死亡交叉，過熱反轉風險）');
+    invalidation.push('KD 低檔死亡交叉且持續破底（弱勢續跌確認）');
   }
 
   return {

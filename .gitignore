@@ -126,3 +126,11 @@ data/networth_snapshots.json
 data/monthly_bills.json
 data/monthly_bills_sync_status.json
 data/bills_fetch.log
+
+# === Added 2026-08-30 (個股資料夾雲端持久化＋價格警示 Email 通知) ===
+# 個人自訂資料夾清單與個股分類（個人使用資料，不進 repo）
+data/stock_folders.json
+# 個股價格警示設定與去重狀態、告警 log（含個人財務數字）
+data/stock_price_alerts.json
+data/stock_price_alert_state.json
+data/stock_price_alert.log

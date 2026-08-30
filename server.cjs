@@ -42,6 +42,8 @@ app.use(require('./routes/futures'));
 app.use(require('./routes/futures_ocr'));
 app.use(require('./routes/stock_realized'));
 app.use(require('./routes/stock_realized_ocr'));
+app.use(require('./routes/stock_folders'));
+app.use(require('./routes/stock_alerts'));
 
 // 階段 8：serve review-web 前端 build（review-web/dist）在子路徑 /review
 const reviewDist = path.join(__dirname, 'review-web', 'dist');
