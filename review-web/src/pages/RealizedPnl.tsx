@@ -574,36 +574,53 @@ export const RealizedPnl: React.FC = () => {
             <div className="border border-border rounded-xl p-4 bg-zinc-900/40 flex flex-col">
               <div className="text-[11px] text-zinc-500 mb-3">類別占比</div>
               {donutData.length > 0 ? (
-                <div className="flex-1 flex flex-row items-center justify-center gap-4">
-                  <div className="relative w-32 h-32 sm:w-36 sm:h-36 shrink-0">
-                    <svg viewBox="0 0 36 36" className="w-full h-full -rotate-90">
-                      <circle cx="18" cy="18" r="15.9155" fill="none" stroke="#27272a" strokeWidth="4" />
-                      {donutData.map((seg) => (
-                        <circle
-                          key={seg.category}
-                          cx="18" cy="18" r="15.9155" fill="none"
-                          stroke={CATEGORY_COLOR[seg.category]}
-                          strokeWidth="4"
-                          strokeDasharray={`${seg.pct * 100} ${100 - seg.pct * 100}`}
-                          strokeDashoffset={-seg.offset * 100}
-                        />
-                      ))}
-                    </svg>
-                    <div className="absolute inset-0 flex flex-col items-center justify-center">
-                      <span className="text-[9px] text-zinc-500">淨損益</span>
-                      <span className={`text-sm font-mono font-bold ${pnlCls(totals.net)}`}>{money(totals.net)}</span>
+                <div className="flex-1 flex items-center justify-center py-2">
+                  <div className="relative w-full max-w-[300px] h-[180px]">
+                    <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-20 h-20 sm:w-24 sm:h-24">
+                      <svg viewBox="0 0 36 36" className="w-full h-full -rotate-90">
+                        <circle cx="18" cy="18" r="15.9155" fill="none" stroke="#27272a" strokeWidth="4" />
+                        {donutData.map((seg) => (
+                          <circle
+                            key={seg.category}
+                            cx="18" cy="18" r="15.9155" fill="none"
+                            stroke={CATEGORY_COLOR[seg.category]}
+                            strokeWidth="4"
+                            strokeDasharray={`${seg.pct * 100} ${100 - seg.pct * 100}`}
+                            strokeDashoffset={-seg.offset * 100}
+                          />
+                        ))}
+                      </svg>
+                      <div className="absolute inset-0 flex flex-col items-center justify-center">
+                        <span className="text-[8px] text-zinc-500">淨損益</span>
+                        <span className={`text-[11px] font-mono font-bold ${pnlCls(totals.net)}`}>{money(totals.net)}</span>
+                      </div>
                     </div>
+                    {/* 每一塊的圖例直接標在自己那塊旁邊（角度＝該塊弧線中點），不再另外堆一份清單 */}
+                    {donutData.map((seg) => {
+                      const angle = (seg.offset + seg.pct / 2) * 2 * Math.PI;
+                      const sinA = Math.sin(angle);
+                      const left = 50 + 46 * sinA;
+                      const top = 50 - 42 * Math.cos(angle);
+                      const side = sinA > 0.15 ? 'start' : sinA < -0.15 ? 'end' : 'center';
+                      return (
+                        <div
+                          key={seg.category}
+                          className="absolute text-[11px] leading-tight whitespace-nowrap"
+                          style={{
+                            left: `${left}%`, top: `${top}%`,
+                            transform: `translate(${side === 'start' ? '0%' : side === 'end' ? '-100%' : '-50%'}, -50%)`,
+                            textAlign: side === 'start' ? 'left' : side === 'end' ? 'right' : 'center',
+                          }}
+                        >
+                          <div className="flex items-center gap-1">
+                            <span className="w-2 h-2 rounded-sm shrink-0" style={{ background: CATEGORY_COLOR[seg.category] }} />
+                            <span className="text-zinc-400">{CATEGORY_LABEL[seg.category]}</span>
+                          </div>
+                          <div className={`font-mono font-semibold ${pnlCls(seg.net)}`}>{money(seg.net)}</div>
+                        </div>
+                      );
+                    })}
                   </div>
-                  <ul className="space-y-1.5 text-[11px] flex-1 min-w-0">
-                    {donutData.map((seg) => (
-                      <li key={seg.category} className="flex items-center gap-1.5">
-                        <span className="w-2 h-2 rounded-full shrink-0" style={{ background: CATEGORY_COLOR[seg.category] }} />
-                        <span className="text-zinc-400 truncate">{CATEGORY_LABEL[seg.category]}</span>
-                        <span className={`ml-auto font-mono font-semibold ${pnlCls(seg.net)}`}>{money(seg.net)}</span>
-                        <span className="text-zinc-500 font-mono">{Math.round(seg.pct * 100)}%</span>
-                      </li>
-                    ))}
-                  </ul>
                 </div>
               ) : (
                 <div className="h-20 flex items-center justify-center text-xs text-zinc-600">尚無資料</div>
