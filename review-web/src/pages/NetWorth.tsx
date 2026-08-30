@@ -420,9 +420,9 @@ export const NetWorth: React.FC = () => {
           <div className="lg:col-span-1 border border-border rounded-xl p-4 bg-zinc-900/40 h-full flex flex-col">
             <div className="text-[11px] text-zinc-500 mb-3">目前組成</div>
             {donutData.length > 0 ? (
-              <div className="flex-1 flex items-center justify-center py-2">
-                <div className="relative w-full max-w-[340px] h-[220px]">
-                  <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-28 h-28 sm:w-32 sm:h-32">
+              <div className="flex-1 flex items-center justify-center">
+                <div className="relative w-full h-full min-h-[220px]">
+                  <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-32 h-32 sm:w-36 sm:h-36">
                     <svg viewBox="0 0 36 36" className="w-full h-full -rotate-90">
                       <circle cx="18" cy="18" r="15.9155" fill="none" stroke="#27272a" strokeWidth="3.5" />
                       {donutData.map((seg) => (

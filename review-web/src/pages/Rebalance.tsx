@@ -98,11 +98,13 @@ function useFuturesExposure() {
 
 // 分頁（像個股頁一樣，點開才看該區塊內容，不用整頁滑）
 // 【2026-07-13 合併】持倉現況＋建倉&交易紀錄合成一頁；Beta儀表＋偏離分析&建議合成一頁；整體邏輯放最後
-type RebalanceTab = 'holdings' | 'beta' | 'logic';
+// 【2026-08-30】宏觀 regime 指標原本不分頁常駐顯示、太占版面，改成獨立分頁放整體邏輯後面
+type RebalanceTab = 'holdings' | 'beta' | 'logic' | 'macro';
 const REBALANCE_TABS: { id: RebalanceTab; label: string }[] = [
   { id: 'holdings', label: '持倉現況 & 交易紀錄' },
   { id: 'beta', label: 'Beta 儀表 & 偏離分析' },
   { id: 'logic', label: '整體邏輯' },
+  { id: 'macro', label: '宏觀 Regime 指標' },
 ];
 const DEFAULT_REBALANCE_TAB: RebalanceTab = 'beta';
 
@@ -1218,133 +1220,6 @@ export function Rebalance() {
         )}
       </div>
 
-      {/* 宏觀 regime 指標（決定股災變現先賣哪一檔）【regime-aware 2026-07-25】 */}
-      <div className="bg-card border border-border rounded-xl p-5 shadow-sm space-y-4">
-        <div className="flex items-center justify-between border-b border-border/60 pb-3">
-          <h2 className="text-sm font-semibold text-zinc-200 flex items-center gap-2">
-            <Activity className="w-4 h-4 text-primary" />
-            宏觀 regime 指標
-          </h2>
-          <button
-            onClick={() => void syncMacroIndicators()}
-            disabled={macroSync.status === 'loading'}
-            className="text-[11px] text-primary hover:text-primary/80 disabled:text-zinc-600 flex items-center gap-1 transition-colors"
-            title="抓取 Fed 利率(^IRX)、長天期美債殖利率(^TYX)、美元台幣匯率(TWD=X) 最新值——公開市場資料，不碰任何交易帳戶"
-          >
-            {macroSync.status === 'loading' ? <Loader2 className="w-3 h-3 animate-spin" /> : <RefreshCw className="w-3 h-3" />}
-            同步指標
-          </button>
-        </div>
-
-        {macroSync.status !== 'idle' && (
-          <div className="text-[11px] flex items-center gap-1.5 -mt-2">
-            {macroSync.status === 'loading' && (
-              <span className="text-primary flex items-center gap-1"><Loader2 className="w-3.5 h-3.5 animate-spin" /> 抓取宏觀指標中…</span>
-            )}
-            {macroSync.status === 'done' && (
-              <span className="text-emerald-400 flex items-center gap-1"><Cloud className="w-3.5 h-3.5" /> 已更新{macroSync.msg ? ` ${new Date(macroSync.msg).toLocaleString('zh-TW', { hour12: false })}` : ''}</span>
-            )}
-            {macroSync.status === 'error' && (
-              <span className="text-amber-400 flex items-center gap-1"><CloudOff className="w-3.5 h-3.5" /> {macroSync.msg || '抓取失敗'}</span>
-            )}
-          </div>
-        )}
-
-        {/* 結果摘要：目前 regime + 股災會先賣哪一檔 */}
-        {(() => {
-          const rc = result.bond_regime.regime === 'rate_crash';
-          const first = result.bond_sell_first ? assetName(result.bond_sell_first) : BOND_ETFS[1].name;
-          return (
-            <div className={`rounded-lg border p-3 text-xs leading-relaxed ${rc ? 'border-[#e34948]/40 bg-[#e34948]/10 text-red-300' : 'border-emerald-500/25 bg-emerald-500/5 text-emerald-300'}`}>
-              {config.bond_priority === 'regime_aware' ? (
-                rc ? (
-                  <><strong>升息型崩盤徵兆（{result.bond_regime.tripped_count} 項指標達標）</strong>：股災需要變現時改為<strong>優先賣 {first}</strong>——此時美債自己也會跌，不宜留。</>
-                ) : (
-                  <><strong>平時模式</strong>：三項指標都在門檻內。股災需要變現時<strong>優先賣 {first}</strong>、保留 {BOND_ETFS[0].name} 當火藥（避險上漲、留到谷底才賣）。</>
-                )
-              ) : (
-                <>目前為<strong>手動指定</strong>順序（{config.bond_priority === 'bond1_first' ? '先賣美債' : `先賣 ${BOND_ETFS[1].code}`}）：股災變現時優先賣 {first}。改回「自動（依指標）」可讓宏觀指標接管。</>
-              )}
-            </div>
-          );
-        })()}
-
-        {/* 三個指標 */}
-        <div className="space-y-2">
-          {MACRO_META.map((m) => {
-            const sig = result.bond_regime.signals.find((s) => s.key === m.key);
-            const hasData = !!sig && sig.available;
-            return (
-              <div key={m.key} className={`flex flex-wrap items-center gap-x-3 gap-y-1.5 rounded-lg border p-2.5 ${sig?.tripped ? 'border-[#e34948]/40 bg-[#e34948]/5' : 'border-border/60 bg-zinc-800/20'}`}>
-                <div className="flex-1 min-w-[128px]">
-                  <div className="text-xs text-zinc-200 font-medium">{m.label}</div>
-                  <div className="text-[10px] text-zinc-500 font-mono">{m.symbol}</div>
-                </div>
-                <div className="text-right min-w-[86px]">
-                  <div className="text-sm font-mono text-zinc-100">{hasData && sig ? m.fmtVal(sig.current as number) : '—'}</div>
-                  <div className={`text-[10px] font-mono ${sig && sig.delta !== null && sig.delta >= sig.threshold ? 'text-[#e34948]' : 'text-zinc-500'}`}>
-                    近{m.key === 'fed_rate' ? '6' : '3'}月 {sig ? fmtDelta(sig.delta, m.deltaUnit) : '—'}
-                  </div>
-                </div>
-                <div className="flex items-center gap-1.5">
-                  <span className="text-[10px] text-zinc-500">門檻 ≥</span>
-                  <input
-                    type="number"
-                    inputMode="decimal"
-                    step="0.05"
-                    value={thrStrs[m.thrKey] ?? ''}
-                    onChange={(e) => handleThrChange(m.thrKey, e.target.value)}
-                    className="w-14 bg-zinc-900 border border-border rounded px-1.5 py-1 text-xs text-right text-zinc-200 font-mono focus:outline-none focus:border-primary"
-                  />
-                  <span className="text-[10px] text-zinc-500 w-4">{m.deltaUnit}</span>
-                </div>
-                <div className="w-12 text-right">
-                  {sig?.tripped ? (
-                    <span className="text-[10px] font-semibold text-[#e34948]">達標</span>
-                  ) : hasData ? (
-                    <span className="text-[10px] text-zinc-500">觀察</span>
-                  ) : (
-                    <span className="text-[10px] text-zinc-600">無資料</span>
-                  )}
-                </div>
-              </div>
-            );
-          })}
-        </div>
-
-        {/* 判定邏輯 + 手動覆寫 */}
-        <div className="flex flex-wrap items-center justify-between gap-3 pt-1 border-t border-border/40 text-[11px]">
-          <div className="flex items-center gap-2">
-            <span className="text-zinc-500">觸發條件</span>
-            <select
-              value={config.macro.combination ?? 'any'}
-              onChange={(e) => updateMacroCombination(e.target.value as MacroCombination)}
-              className="bg-zinc-900 border border-border rounded px-2 py-1 text-xs text-zinc-200 focus:outline-none focus:border-primary"
-            >
-              <option value="any">任一達標即切</option>
-              <option value="majority">過半達標</option>
-              <option value="all">全部達標</option>
-            </select>
-          </div>
-          <div className="flex items-center gap-2">
-            <span className="text-zinc-500">變現順序</span>
-            <select
-              value={config.bond_priority}
-              onChange={(e) => updateBondPriority(e.target.value as BondPriority)}
-              className="bg-zinc-900 border border-border rounded px-2 py-1 text-xs text-zinc-200 focus:outline-none focus:border-primary"
-            >
-              <option value="regime_aware">自動（依指標）</option>
-              <option value="bond2_first">固定先賣 {BOND_ETFS[1].code}</option>
-              <option value="bond1_first">固定先賣美債</option>
-            </select>
-          </div>
-        </div>
-
-        <p className="text-[10px] text-zinc-500 leading-relaxed">
-          回測（2000–2026）：股災往下探時 {BOND_ETFS[0].name} 避險上漲、{BOND_ETFS[1].name} 跟跌，故平時「先賣 {BOND_ETFS[1].name}、留美債當火藥」較優（6 次股災贏 5 次）；唯一反例是升息型崩盤（如 2022），此時上面三項指標任一達標就自動改回先賣美債。指標為公開市場資料，按「同步指標」抓取，平時只顯示參考、達門檻才接管變現順序。
-        </p>
-      </div>
-
       {/* 分頁導覽（像個股頁：今天想看什麼再點開什麼） */}
       <div className="border-b border-border/80">
         <div className="flex items-center gap-2 overflow-x-auto pb-2 scrollbar-none">
@@ -1481,6 +1356,135 @@ export function Rebalance() {
               </li>
             </ul>
           </div>
+        </div>
+      )}
+
+      {/* 宏觀 regime 指標（決定股災變現先賣哪一檔）【regime-aware 2026-07-25，2026-08-30 從常駐顯示改成獨立分頁】 */}
+      {activeTab === 'macro' && (
+        <div className="bg-card border border-border rounded-xl p-5 shadow-sm space-y-4">
+          <div className="flex items-center justify-between border-b border-border/60 pb-3">
+            <h2 className="text-sm font-semibold text-zinc-200 flex items-center gap-2">
+              <Activity className="w-4 h-4 text-primary" />
+              宏觀 regime 指標
+            </h2>
+            <button
+              onClick={() => void syncMacroIndicators()}
+              disabled={macroSync.status === 'loading'}
+              className="text-[11px] text-primary hover:text-primary/80 disabled:text-zinc-600 flex items-center gap-1 transition-colors"
+              title="抓取 Fed 利率(^IRX)、長天期美債殖利率(^TYX)、美元台幣匯率(TWD=X) 最新值——公開市場資料，不碰任何交易帳戶"
+            >
+              {macroSync.status === 'loading' ? <Loader2 className="w-3 h-3 animate-spin" /> : <RefreshCw className="w-3 h-3" />}
+              同步指標
+            </button>
+          </div>
+
+          {macroSync.status !== 'idle' && (
+            <div className="text-[11px] flex items-center gap-1.5 -mt-2">
+              {macroSync.status === 'loading' && (
+                <span className="text-primary flex items-center gap-1"><Loader2 className="w-3.5 h-3.5 animate-spin" /> 抓取宏觀指標中…</span>
+              )}
+              {macroSync.status === 'done' && (
+                <span className="text-emerald-400 flex items-center gap-1"><Cloud className="w-3.5 h-3.5" /> 已更新{macroSync.msg ? ` ${new Date(macroSync.msg).toLocaleString('zh-TW', { hour12: false })}` : ''}</span>
+              )}
+              {macroSync.status === 'error' && (
+                <span className="text-amber-400 flex items-center gap-1"><CloudOff className="w-3.5 h-3.5" /> {macroSync.msg || '抓取失敗'}</span>
+              )}
+            </div>
+          )}
+
+          {/* 結果摘要：目前 regime + 股災會先賣哪一檔 */}
+          {(() => {
+            const rc = result.bond_regime.regime === 'rate_crash';
+            const first = result.bond_sell_first ? assetName(result.bond_sell_first) : BOND_ETFS[1].name;
+            return (
+              <div className={`rounded-lg border p-3 text-xs leading-relaxed ${rc ? 'border-[#e34948]/40 bg-[#e34948]/10 text-red-300' : 'border-emerald-500/25 bg-emerald-500/5 text-emerald-300'}`}>
+                {config.bond_priority === 'regime_aware' ? (
+                  rc ? (
+                    <><strong>升息型崩盤徵兆（{result.bond_regime.tripped_count} 項指標達標）</strong>：股災需要變現時改為<strong>優先賣 {first}</strong>——此時美債自己也會跌，不宜留。</>
+                  ) : (
+                    <><strong>平時模式</strong>：三項指標都在門檻內。股災需要變現時<strong>優先賣 {first}</strong>、保留 {BOND_ETFS[0].name} 當火藥（避險上漲、留到谷底才賣）。</>
+                  )
+                ) : (
+                  <>目前為<strong>手動指定</strong>順序（{config.bond_priority === 'bond1_first' ? '先賣美債' : `先賣 ${BOND_ETFS[1].code}`}）：股災變現時優先賣 {first}。改回「自動（依指標）」可讓宏觀指標接管。</>
+                )}
+              </div>
+            );
+          })()}
+
+          {/* 三個指標 */}
+          <div className="space-y-2">
+            {MACRO_META.map((m) => {
+              const sig = result.bond_regime.signals.find((s) => s.key === m.key);
+              const hasData = !!sig && sig.available;
+              return (
+                <div key={m.key} className={`flex flex-wrap items-center gap-x-3 gap-y-1.5 rounded-lg border p-2.5 ${sig?.tripped ? 'border-[#e34948]/40 bg-[#e34948]/5' : 'border-border/60 bg-zinc-800/20'}`}>
+                  <div className="flex-1 min-w-[128px]">
+                    <div className="text-xs text-zinc-200 font-medium">{m.label}</div>
+                    <div className="text-[10px] text-zinc-500 font-mono">{m.symbol}</div>
+                  </div>
+                  <div className="text-right min-w-[86px]">
+                    <div className="text-sm font-mono text-zinc-100">{hasData && sig ? m.fmtVal(sig.current as number) : '—'}</div>
+                    <div className={`text-[10px] font-mono ${sig && sig.delta !== null && sig.delta >= sig.threshold ? 'text-[#e34948]' : 'text-zinc-500'}`}>
+                      近{m.key === 'fed_rate' ? '6' : '3'}月 {sig ? fmtDelta(sig.delta, m.deltaUnit) : '—'}
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-[10px] text-zinc-500">門檻 ≥</span>
+                    <input
+                      type="number"
+                      inputMode="decimal"
+                      step="0.05"
+                      value={thrStrs[m.thrKey] ?? ''}
+                      onChange={(e) => handleThrChange(m.thrKey, e.target.value)}
+                      className="w-14 bg-zinc-900 border border-border rounded px-1.5 py-1 text-xs text-right text-zinc-200 font-mono focus:outline-none focus:border-primary"
+                    />
+                    <span className="text-[10px] text-zinc-500 w-4">{m.deltaUnit}</span>
+                  </div>
+                  <div className="w-12 text-right">
+                    {sig?.tripped ? (
+                      <span className="text-[10px] font-semibold text-[#e34948]">達標</span>
+                    ) : hasData ? (
+                      <span className="text-[10px] text-zinc-500">觀察</span>
+                    ) : (
+                      <span className="text-[10px] text-zinc-600">無資料</span>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+
+          {/* 判定邏輯 + 手動覆寫 */}
+          <div className="flex flex-wrap items-center justify-between gap-3 pt-1 border-t border-border/40 text-[11px]">
+            <div className="flex items-center gap-2">
+              <span className="text-zinc-500">觸發條件</span>
+              <select
+                value={config.macro.combination ?? 'any'}
+                onChange={(e) => updateMacroCombination(e.target.value as MacroCombination)}
+                className="bg-zinc-900 border border-border rounded px-2 py-1 text-xs text-zinc-200 focus:outline-none focus:border-primary"
+              >
+                <option value="any">任一達標即切</option>
+                <option value="majority">過半達標</option>
+                <option value="all">全部達標</option>
+              </select>
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="text-zinc-500">變現順序</span>
+              <select
+                value={config.bond_priority}
+                onChange={(e) => updateBondPriority(e.target.value as BondPriority)}
+                className="bg-zinc-900 border border-border rounded px-2 py-1 text-xs text-zinc-200 focus:outline-none focus:border-primary"
+              >
+                <option value="regime_aware">自動（依指標）</option>
+                <option value="bond2_first">固定先賣 {BOND_ETFS[1].code}</option>
+                <option value="bond1_first">固定先賣美債</option>
+              </select>
+            </div>
+          </div>
+
+          <p className="text-[10px] text-zinc-500 leading-relaxed">
+            回測（2000–2026）：股災往下探時 {BOND_ETFS[0].name} 避險上漲、{BOND_ETFS[1].name} 跟跌，故平時「先賣 {BOND_ETFS[1].name}、留美債當火藥」較優（6 次股災贏 5 次）；唯一反例是升息型崩盤（如 2022），此時上面三項指標任一達標就自動改回先賣美債。指標為公開市場資料，按「同步指標」抓取，平時只顯示參考、達門檻才接管變現順序。
+          </p>
         </div>
       )}
 

@@ -574,9 +574,9 @@ export const RealizedPnl: React.FC = () => {
             <div className="border border-border rounded-xl p-4 bg-zinc-900/40 flex flex-col">
               <div className="text-[11px] text-zinc-500 mb-3">類別占比</div>
               {donutData.length > 0 ? (
-                <div className="flex-1 flex items-center justify-center py-2">
-                  <div className="relative w-full max-w-[300px] h-[180px]">
-                    <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-20 h-20 sm:w-24 sm:h-24">
+                <div className="flex-1 flex items-center justify-center">
+                  <div className="relative w-full h-full min-h-[200px]">
+                    <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-24 h-24 sm:w-28 sm:h-28">
                       <svg viewBox="0 0 36 36" className="w-full h-full -rotate-90">
                         <circle cx="18" cy="18" r="15.9155" fill="none" stroke="#27272a" strokeWidth="4" />
                         {donutData.map((seg) => (
