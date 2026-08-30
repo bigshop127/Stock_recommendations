@@ -18,12 +18,14 @@ from app.core.config import settings
 _session = requests.Session()
 
 
-class TransientHTTPError(Exception):
-    """可重試的暫時性錯誤（429 / 5xx）。"""
-
-
 class DataSourceError(RuntimeError):
-    """數據源回傳的不可重試錯誤（金鑰、參數、找不到資料）。"""
+    """數據源回傳的錯誤（金鑰、參數、找不到資料，或重試耗盡的暫時性錯誤）。"""
+
+
+class TransientHTTPError(DataSourceError):
+    """可重試的暫時性錯誤（429 / 5xx）；重試耗盡後仍是 DataSourceError，
+    讓既有的 `except DataSourceError` 優雅降級邏輯（regime/daytrade 等）也能接住，
+    而不會整個訊號計算失敗變 502。"""
 
 
 def _should_retry_status(code: int) -> bool:
