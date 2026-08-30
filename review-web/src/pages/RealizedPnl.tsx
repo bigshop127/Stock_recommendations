@@ -461,19 +461,30 @@ export const RealizedPnl: React.FC = () => {
             <span className="flex items-center gap-1 text-[11px] text-zinc-500 mr-1">
               <Filter className="w-3.5 h-3.5" /> 篩選
             </span>
-            {(['all', 'futures', 'stock', 'etf'] as const).map((c) => (
-              <button
-                key={c}
-                onClick={() => changeCategory(c)}
-                className={`px-3 py-1.5 rounded-lg text-[11px] font-semibold border transition ${
-                  category === c
-                    ? 'bg-primary/15 text-primary border-primary/30'
-                    : 'text-zinc-400 border-border hover:text-zinc-200 hover:border-zinc-600'
-                }`}
-              >
-                {c === 'all' ? '全部類別' : CATEGORY_LABEL[c]}
-              </button>
-            ))}
+            {(['all', 'futures', 'stock', 'etf'] as const).map((c) => {
+              const color = c === 'all' ? null : CATEGORY_COLOR[c];
+              const active = category === c;
+              return (
+                <button
+                  key={c}
+                  onClick={() => changeCategory(c)}
+                  className={`px-3 py-1.5 rounded-lg text-[11px] font-semibold border transition ${
+                    color
+                      ? ''
+                      : active
+                        ? 'bg-primary/15 text-primary border-primary/30'
+                        : 'text-zinc-400 border-border hover:text-zinc-200 hover:border-zinc-600'
+                  }`}
+                  style={color ? {
+                    color: active ? color : '#a1a1aa',
+                    borderColor: `${color}${active ? '4d' : '26'}`,
+                    background: `${color}${active ? '26' : '0d'}`,
+                  } : undefined}
+                >
+                  {c === 'all' ? '全部類別' : CATEGORY_LABEL[c]}
+                </button>
+              );
+            })}
 
             <select
               value={symbol}

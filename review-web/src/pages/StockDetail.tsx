@@ -1,13 +1,14 @@
 import React, { useEffect, useState, useMemo } from 'react';
 import { useParams, Link, useSearchParams } from 'react-router-dom';
 import { api } from '../lib/api';
-import type { StockDetail as IStockDetail, StockChips, StockFundamentals, StockNews, Book, OhlcvRow, CompanyProfile, ShareholdingDispersion, StockHeatmap } from '../lib/api';
+import type { StockDetail as IStockDetail, StockChips, StockFundamentals, StockNews, Book, OhlcvRow, CompanyProfile, ShareholdingDispersion, StockHeatmap, HeatmapStock } from '../lib/api';
 import { RefreshCw, BarChart2, TrendingUp, Cpu, Newspaper, DollarSign, Users, Info, ArrowLeft, Bell, Trash2 } from 'lucide-react';
 import { PriceChart } from '../components/PriceChart';
 import { ChipsCharts } from '../components/ChipsCharts';
 import { StockBriefCard } from '../components/StockBriefCard';
 import { buildStockBrief } from '../lib/stockBrief';
 import type { StockBriefInput } from '../lib/stockBrief';
+import { CODE_TO_GROUP } from '../lib/stockGroups';
 
 export type StockTab = 'basic' | 'industry' | 'financials' | 'chips' | 'etf' | 'technical' | 'news';
 
@@ -29,10 +30,40 @@ const STOCK_TABS: TabItem[] = [
 
 const DEFAULT_STOCK_TAB: StockTab = 'technical';
 
+type AlertConditionType =
+  | 'price_above' | 'price_below'
+  | 'kd_golden_cross' | 'kd_death_cross'
+  | 'ma5_break_below' | 'ma5_break_above'
+  | 'ma10_break_below' | 'ma10_break_above'
+  | 'ma20_break_below' | 'ma20_break_above'
+  | 'ma60_break_below' | 'ma60_break_above';
+
+const ALERT_CONDITION_LABEL: Record<AlertConditionType, string> = {
+  price_above: '收盤高於',
+  price_below: '收盤低於',
+  kd_golden_cross: 'KD 黃金交叉（K 由下往上穿越 D）',
+  kd_death_cross: 'KD 死亡交叉（K 由上往下穿越 D）',
+  ma5_break_below: '跌破 5 日均線',
+  ma5_break_above: '站回 5 日均線',
+  ma10_break_below: '跌破 10 日均線',
+  ma10_break_above: '站回 10 日均線',
+  ma20_break_below: '跌破 月線 (20MA)',
+  ma20_break_above: '站回 月線 (20MA)',
+  ma60_break_below: '跌破 季線 (60MA)',
+  ma60_break_above: '站回 季線 (60MA)',
+};
+
+const isPriceCondition = (c: AlertConditionType) => c === 'price_above' || c === 'price_below';
+
+const describeAlert = (a: StockAlertItem): string =>
+  isPriceCondition(a.conditionType)
+    ? `${ALERT_CONDITION_LABEL[a.conditionType]} ${a.price}`
+    : ALERT_CONDITION_LABEL[a.conditionType];
+
 interface StockAlertItem {
   id: string;
-  direction: 'above' | 'below';
-  price: number;
+  conditionType: AlertConditionType;
+  price?: number;
   enabled: boolean;
   note?: string;
 }
@@ -97,7 +128,7 @@ export const StockDetail: React.FC = () => {
   const [fundHoverIdx, setFundHoverIdx] = useState<number | null>(null);
   const [alertsConfig, setAlertsConfig] = useState<StockAlertsConfig>({});
   const [alertsSaveStatus, setAlertsSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
-  const [alertForm, setAlertForm] = useState<{ direction: 'above' | 'below'; price: string }>({ direction: 'above', price: '' });
+  const [alertForm, setAlertForm] = useState<{ conditionType: AlertConditionType; price: string }>({ conditionType: 'price_above', price: '' });
 
   useEffect(() => {
     setFundHoverIdx(null);
@@ -131,18 +162,22 @@ export const StockDetail: React.FC = () => {
   };
 
   const addAlert = () => {
-    const price = parseFloat(alertForm.price);
-    if (!Number.isFinite(price) || price <= 0) return;
+    const { conditionType } = alertForm;
+    let price: number | undefined;
+    if (isPriceCondition(conditionType)) {
+      price = parseFloat(alertForm.price);
+      if (!Number.isFinite(price) || price <= 0) return;
+    }
     const entry = alertsConfig[activeCode] || { name: signalState.data?.name || activeCode, alerts: [] };
     const newAlert: StockAlertItem = {
-      id: `a_${alertForm.direction}_${price}_${Date.now()}`,
-      direction: alertForm.direction,
-      price,
+      id: `a_${conditionType}_${price ?? ''}_${Date.now()}`,
+      conditionType,
+      ...(price !== undefined ? { price } : {}),
       enabled: true,
     };
     const nextEntry: StockAlertEntry = { ...entry, alerts: [...entry.alerts, newAlert] };
     void saveAlertsConfig({ ...alertsConfig, [activeCode]: nextEntry });
-    setAlertForm({ direction: 'above', price: '' });
+    setAlertForm({ conditionType: 'price_above', price: '' });
   };
 
   const toggleAlertEnabled = (id: string) => {
@@ -853,7 +888,7 @@ export const StockDetail: React.FC = () => {
           {sortedAsks.map((ask: any, idx: number) => {
             const pct = ((ask.size || 0) / maxVol) * 100;
             return (
-              <div key={`ask-${idx}`} className="relative flex justify-between items-center text-xs py-1 px-2 rounded hover:bg-zinc-800/40">
+              <div key={`ask-${idx}`} className="relative flex justify-between items-center text-xs py-0.5 px-2 rounded hover:bg-zinc-800/40">
                 <div className="absolute right-0 top-0 bottom-0 bg-bear/10 transition-all duration-300" style={{ width: `${pct}%`, zIndex: 0 }} />
                 <span className="text-zinc-500 z-10 font-mono">賣 {sortedAsks.length - idx}</span>
                 <span className={`${getPriceColor(ask.price)} z-10 font-mono`}>{ask.price?.toFixed(1) || '--'}</span>
@@ -877,7 +912,7 @@ export const StockDetail: React.FC = () => {
           {bids.map((bid: any, idx: number) => {
             const pct = ((bid.size || 0) / maxVol) * 100;
             return (
-              <div key={`bid-${idx}`} className="relative flex justify-between items-center text-xs py-1 px-2 rounded hover:bg-zinc-800/40">
+              <div key={`bid-${idx}`} className="relative flex justify-between items-center text-xs py-0.5 px-2 rounded hover:bg-zinc-800/40">
                 <div className="absolute right-0 top-0 bottom-0 bg-bull/10 transition-all duration-300" style={{ width: `${pct}%`, zIndex: 0 }} />
                 <span className="text-zinc-500 z-10 font-mono">買 {idx + 1}</span>
                 <span className={`${getPriceColor(bid.price)} z-10 font-mono`}>{bid.price?.toFixed(1) || '--'}</span>
@@ -987,7 +1022,7 @@ export const StockDetail: React.FC = () => {
             const pbLabel = getPercentileLabel(pb, valuation.map(v => v.pb_ratio));
 
             const svgWidth = 520;
-            const svgHeight = 300;
+            const svgHeight = 420;
             const paddingLeft = 45;
             const paddingRight = 15;
             const paddingTop = 15;
@@ -1007,10 +1042,10 @@ export const StockDetail: React.FC = () => {
 
             return (
               <div className="space-y-4">
-                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-                  <div className="bg-zinc-950/40 p-3 rounded-lg border border-border/30">
-                    <div className="text-[10px] text-zinc-500 font-medium">本益比 (PE)</div>
-                    <div className="text-sm font-semibold mt-1 font-mono text-zinc-100 flex items-baseline gap-1.5 flex-wrap">
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                  <div className="bg-zinc-950/40 p-2 rounded-lg border border-border/30">
+                    <div className="text-[9px] text-zinc-500 font-medium">本益比 (PE)</div>
+                    <div className="text-xs font-semibold mt-1 font-mono text-zinc-100 flex items-baseline gap-1.5 flex-wrap">
                       {pe !== null ? `${pe.toFixed(1)}x` : '—'}
                       {peLabel && (
                         <span className={`text-[9px] px-1.5 py-0.5 rounded border leading-none ${peLabel.color}`}>
@@ -1019,9 +1054,9 @@ export const StockDetail: React.FC = () => {
                       )}
                     </div>
                   </div>
-                  <div className="bg-zinc-950/40 p-3 rounded-lg border border-border/30">
-                    <div className="text-[10px] text-zinc-500 font-medium">股淨比 (PB)</div>
-                    <div className="text-sm font-semibold mt-1 font-mono text-zinc-100 flex items-baseline gap-1.5 flex-wrap">
+                  <div className="bg-zinc-950/40 p-2 rounded-lg border border-border/30">
+                    <div className="text-[9px] text-zinc-500 font-medium">股淨比 (PB)</div>
+                    <div className="text-xs font-semibold mt-1 font-mono text-zinc-100 flex items-baseline gap-1.5 flex-wrap">
                       {pb !== null ? `${pb.toFixed(1)}x` : '—'}
                       {pbLabel && (
                         <span className={`text-[9px] px-1.5 py-0.5 rounded border leading-none ${pbLabel.color}`}>
@@ -1030,21 +1065,21 @@ export const StockDetail: React.FC = () => {
                       )}
                     </div>
                   </div>
-                  <div className="bg-zinc-950/40 p-3 rounded-lg border border-border/30">
-                    <div className="text-[10px] text-zinc-500 font-medium">殖利率</div>
-                    <div className="text-sm font-semibold mt-1 font-mono text-zinc-100">
+                  <div className="bg-zinc-950/40 p-2 rounded-lg border border-border/30">
+                    <div className="text-[9px] text-zinc-500 font-medium">殖利率</div>
+                    <div className="text-xs font-semibold mt-1 font-mono text-zinc-100">
                       {dy !== null ? `${dy.toFixed(2)}%` : '—'}
                     </div>
                   </div>
-                  <div className="bg-zinc-950/40 p-3 rounded-lg border border-border/30">
-                    <div className="text-[10px] text-zinc-500 font-medium">市值</div>
-                    <div className="text-sm font-semibold mt-1 font-mono text-zinc-100">
+                  <div className="bg-zinc-950/40 p-2 rounded-lg border border-border/30">
+                    <div className="text-[9px] text-zinc-500 font-medium">市值</div>
+                    <div className="text-xs font-semibold mt-1 font-mono text-zinc-100">
                       {formatMC(mc)}
                     </div>
                   </div>
                 </div>
 
-                <div className="relative bg-zinc-950/30 rounded-xl border border-border/40 p-2 h-[320px]">
+                <div className="relative bg-zinc-950/30 rounded-xl border border-border/40 p-2 h-[440px]">
                   <svg
                     width="100%"
                     height="100%"
@@ -1053,7 +1088,8 @@ export const StockDetail: React.FC = () => {
                     className="overflow-visible select-none cursor-crosshair"
                     onMouseMove={(e) => {
                       const svgRect = e.currentTarget.getBoundingClientRect();
-                      const mouseX = e.clientX - svgRect.left - paddingLeft;
+                      const scale = svgWidth / svgRect.width;
+                      const mouseX = (e.clientX - svgRect.left) * scale - paddingLeft;
                       if (mouseX < -stepX / 2 || mouseX > plotWidth + stepX / 2) {
                         setFundHoverIdx(null);
                         return;
@@ -1193,7 +1229,7 @@ export const StockDetail: React.FC = () => {
             };
 
             const svgWidth = 520;
-            const svgHeight = 300;
+            const svgHeight = 420;
             const paddingLeft = 45;
             const paddingRight = 40;
             const paddingTop = 15;
@@ -1217,28 +1253,28 @@ export const StockDetail: React.FC = () => {
 
             return (
               <div className="space-y-4">
-                <div className="grid grid-cols-3 gap-3">
-                  <div className="bg-zinc-950/40 p-3 rounded-lg border border-border/30">
-                    <div className="text-[10px] text-zinc-500 font-medium">當月營收 ({latest.month})</div>
-                    <div className="text-sm font-semibold mt-1 font-mono text-zinc-100">
+                <div className="grid grid-cols-3 gap-2">
+                  <div className="bg-zinc-950/40 p-2 rounded-lg border border-border/30">
+                    <div className="text-[9px] text-zinc-500 font-medium">當月營收 ({latest.month})</div>
+                    <div className="text-xs font-semibold mt-1 font-mono text-zinc-100">
                       {formatRev(revVal)}
                     </div>
                   </div>
-                  <div className="bg-zinc-950/40 p-3 rounded-lg border border-border/30">
-                    <div className="text-[10px] text-zinc-500 font-medium">年增率 (YoY)</div>
-                    <div className={`text-sm font-semibold mt-1 font-mono flex items-center gap-1 ${yoyVal === null ? 'text-zinc-400' : (yoyVal >= 0 ? 'text-bull' : 'text-bear')}`}>
+                  <div className="bg-zinc-950/40 p-2 rounded-lg border border-border/30">
+                    <div className="text-[9px] text-zinc-500 font-medium">年增率 (YoY)</div>
+                    <div className={`text-xs font-semibold mt-1 font-mono flex items-center gap-1 ${yoyVal === null ? 'text-zinc-400' : (yoyVal >= 0 ? 'text-bull' : 'text-bear')}`}>
                       {yoyVal !== null ? `${yoyVal >= 0 ? '▲' : '▼'} ${Math.abs(yoyVal).toFixed(2)}%` : '—'}
                     </div>
                   </div>
-                  <div className="bg-zinc-950/40 p-3 rounded-lg border border-border/30">
-                    <div className="text-[10px] text-zinc-500 font-medium">月增率 (MoM)</div>
-                    <div className={`text-sm font-semibold mt-1 font-mono flex items-center gap-1 ${momVal === null ? 'text-zinc-400' : (momVal >= 0 ? 'text-bull' : 'text-bear')}`}>
+                  <div className="bg-zinc-950/40 p-2 rounded-lg border border-border/30">
+                    <div className="text-[9px] text-zinc-500 font-medium">月增率 (MoM)</div>
+                    <div className={`text-xs font-semibold mt-1 font-mono flex items-center gap-1 ${momVal === null ? 'text-zinc-400' : (momVal >= 0 ? 'text-bull' : 'text-bear')}`}>
                       {momVal !== null ? `${momVal >= 0 ? '▲' : '▼'} ${Math.abs(momVal).toFixed(2)}%` : '—'}
                     </div>
                   </div>
                 </div>
 
-                <div className="relative bg-zinc-950/30 rounded-xl border border-border/40 p-2 h-[320px]">
+                <div className="relative bg-zinc-950/30 rounded-xl border border-border/40 p-2 h-[440px]">
                   <svg
                     width="100%"
                     height="100%"
@@ -1247,7 +1283,8 @@ export const StockDetail: React.FC = () => {
                     className="overflow-visible select-none cursor-crosshair"
                     onMouseMove={(e) => {
                       const svgRect = e.currentTarget.getBoundingClientRect();
-                      const mouseX = e.clientX - svgRect.left - paddingLeft;
+                      const scale = svgWidth / svgRect.width;
+                      const mouseX = (e.clientX - svgRect.left) * scale - paddingLeft;
                       if (mouseX < -stepX / 2 || mouseX > plotWidth + stepX / 2) {
                         setFundHoverIdx(null);
                         return;
@@ -1427,7 +1464,7 @@ export const StockDetail: React.FC = () => {
             const nm = latest.net_margin;
 
             const svgWidth = 520;
-            const svgHeight = 300;
+            const svgHeight = 420;
             const paddingLeft = 40;
             const paddingRight = 40;
             const paddingTop = 15;
@@ -1475,7 +1512,7 @@ export const StockDetail: React.FC = () => {
                   </div>
                 </div>
 
-                <div className="relative bg-zinc-950/30 rounded-xl border border-border/40 p-2 h-[320px]">
+                <div className="relative bg-zinc-950/30 rounded-xl border border-border/40 p-2 h-[440px]">
                   <svg
                     width="100%"
                     height="100%"
@@ -1484,7 +1521,8 @@ export const StockDetail: React.FC = () => {
                     className="overflow-visible select-none cursor-crosshair"
                     onMouseMove={(e) => {
                       const svgRect = e.currentTarget.getBoundingClientRect();
-                      const mouseX = e.clientX - svgRect.left - paddingLeft;
+                      const scale = svgWidth / svgRect.width;
+                      const mouseX = (e.clientX - svgRect.left) * scale - paddingLeft;
                       if (mouseX < -stepX / 2 || mouseX > plotWidth + stepX / 2) {
                         setFundHoverIdx(null);
                         return;
@@ -1662,7 +1700,7 @@ export const StockDetail: React.FC = () => {
             const latest = dividend[dividend.length - 1];
 
             const svgWidth = 520;
-            const svgHeight = 300;
+            const svgHeight = 420;
             const paddingLeft = 45;
             const paddingRight = 15;
             const paddingTop = 15;
@@ -1679,23 +1717,23 @@ export const StockDetail: React.FC = () => {
 
             return (
               <div className="space-y-4">
-                <div className="grid grid-cols-2 gap-3">
-                  <div className="bg-zinc-950/40 p-3 rounded-lg border border-border/30">
-                    <div className="text-[10px] text-zinc-500 font-medium">當前年度股利分配 ({latest.year})</div>
-                    <div className="text-sm font-semibold mt-1 font-mono text-zinc-100 flex gap-4">
+                <div className="grid grid-cols-2 gap-2">
+                  <div className="bg-zinc-950/40 p-2 rounded-lg border border-border/30">
+                    <div className="text-[9px] text-zinc-500 font-medium">當前年度股利分配 ({latest.year})</div>
+                    <div className="text-xs font-semibold mt-1 font-mono text-zinc-100 flex gap-4">
                       <span>現金: {latest.cash_dividend !== null ? `${latest.cash_dividend.toFixed(2)}元` : '—'}</span>
                       <span>股票: {latest.stock_dividend !== null ? `${latest.stock_dividend.toFixed(2)}股` : '—'}</span>
                     </div>
                   </div>
-                  <div className="bg-zinc-950/40 p-3 rounded-lg border border-border/30">
-                    <div className="text-[10px] text-zinc-500 font-medium">總股利合計</div>
-                    <div className="text-sm font-semibold mt-1 font-mono text-primary">
+                  <div className="bg-zinc-950/40 p-2 rounded-lg border border-border/30">
+                    <div className="text-[9px] text-zinc-500 font-medium">總股利合計</div>
+                    <div className="text-xs font-semibold mt-1 font-mono text-primary">
                       {latest.cash_dividend !== null && latest.stock_dividend !== null ? `${(latest.cash_dividend + latest.stock_dividend).toFixed(2)} 元` : '—'}
                     </div>
                   </div>
                 </div>
 
-                <div className="relative bg-zinc-950/30 rounded-xl border border-border/40 p-2 h-[320px]">
+                <div className="relative bg-zinc-950/30 rounded-xl border border-border/40 p-2 h-[440px]">
                   <svg
                     width="100%"
                     height="100%"
@@ -1704,7 +1742,8 @@ export const StockDetail: React.FC = () => {
                     className="overflow-visible select-none cursor-crosshair"
                     onMouseMove={(e) => {
                       const svgRect = e.currentTarget.getBoundingClientRect();
-                      const mouseX = e.clientX - svgRect.left - paddingLeft;
+                      const scale = svgWidth / svgRect.width;
+                      const mouseX = (e.clientX - svgRect.left) * scale - paddingLeft;
                       if (mouseX < -stepX / 2 || mouseX > plotWidth + stepX / 2) {
                         setFundHoverIdx(null);
                         return;
@@ -1949,6 +1988,7 @@ export const StockDetail: React.FC = () => {
 
     return (
       <div className="space-y-6">
+        <div className="grid grid-cols-1 lg:grid-cols-[1fr_300px] gap-4 items-stretch">
         <div className="bg-zinc-950/40 rounded-xl border border-border/40 p-4">
           <div className="flex items-center justify-between mb-3 text-xs flex-wrap gap-2">
             <div className="flex items-center gap-4 text-[11px]">
@@ -2071,46 +2111,65 @@ export const StockDetail: React.FC = () => {
           ];
           const total = segs.reduce((s, seg) => s + Math.max(0, seg.pct), 0);
           if (total <= 0) return null;
-          let cursor = 0;
+
+          // 累積角度：從 12 點鐘方向（-90°）順時針展開，SVG y 軸朝下所以角度遞增＝順時針
+          let angleCursor = -90;
           const arcs = segs.map((seg) => {
             const norm = (Math.max(0, seg.pct) / total) * 100;
-            const arc = { ...seg, norm, offset: cursor };
-            cursor += norm;
-            return arc;
+            const startAngle = angleCursor;
+            const sweep = (norm / 100) * 360;
+            const endAngle = startAngle + sweep;
+            angleCursor = endAngle;
+            return { ...seg, norm, startAngle, endAngle, midAngle: startAngle + sweep / 2 };
           });
 
+          const cx = 50, cy = 50, r = 38, explode = 4;
+          const toRad = (deg: number) => (deg * Math.PI) / 180;
+          const pointAt = (angleDeg: number, radius: number, ox: number, oy: number): [number, number] => {
+            const rad = toRad(angleDeg);
+            return [cx + ox + radius * Math.cos(rad), cy + oy + radius * Math.sin(rad)];
+          };
+
           return (
-            <div className="bg-zinc-950/40 rounded-xl border border-border/40 p-4">
-              <div className="flex items-center justify-between mb-3">
-                <h4 className="font-semibold text-xs text-zinc-300">持股比例三大分佈（{pieRow.date} 週報）</h4>
-              </div>
-              <div className="flex items-center gap-6">
-                <svg viewBox="0 0 36 36" className="w-28 h-28 -rotate-90 shrink-0">
-                  <circle cx="18" cy="18" r="15.9155" fill="none" stroke="#27272a" strokeWidth="4" />
-                  {arcs.map((seg) => (
-                    <circle
-                      key={seg.key}
-                      cx="18" cy="18" r="15.9155" fill="none"
-                      stroke={seg.color}
-                      strokeWidth="4"
-                      strokeDasharray={`${seg.norm} ${100 - seg.norm}`}
-                      strokeDashoffset={-seg.offset}
-                    />
-                  ))}
+            <div className="bg-zinc-950/40 rounded-xl border border-border/40 p-4 flex flex-col">
+              <h4 className="font-semibold text-xs text-zinc-300 mb-2">持股比例三大分佈（{pieRow.date} 週報）</h4>
+              <div className="flex-1 flex items-center justify-center py-2">
+                <svg viewBox="0 0 100 100" className="w-full max-w-[210px] aspect-square">
+                  {arcs.map((seg) => {
+                    const midRad = toRad(seg.midAngle);
+                    const ox = Math.cos(midRad) * explode;
+                    const oy = Math.sin(midRad) * explode;
+                    const [x1, y1] = pointAt(seg.startAngle, r, ox, oy);
+                    const [x2, y2] = pointAt(seg.endAngle, r, ox, oy);
+                    const largeArcFlag = seg.endAngle - seg.startAngle > 180 ? 1 : 0;
+                    const d = `M ${cx + ox} ${cy + oy} L ${x1} ${y1} A ${r} ${r} 0 ${largeArcFlag} 1 ${x2} ${y2} Z`;
+                    const [lx, ly] = pointAt(seg.midAngle, r * 0.6, ox, oy);
+                    return (
+                      <g key={seg.key}>
+                        <path d={d} fill={seg.color} stroke="#09090b" strokeWidth="1.5" />
+                        {seg.norm >= 12 && (
+                          <text x={lx} y={ly} textAnchor="middle" dominantBaseline="middle" fontSize="8.5" fontWeight="700" fill="#fff">
+                            {seg.pct.toFixed(1)}%
+                          </text>
+                        )}
+                      </g>
+                    );
+                  })}
                 </svg>
-                <ul className="space-y-2 text-[11px] flex-1 min-w-0">
-                  {arcs.map((seg) => (
-                    <li key={seg.key} className="flex items-center gap-2">
-                      <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: seg.color }} />
-                      <span className="text-zinc-400 truncate">{seg.label}</span>
-                      <span className="ml-auto font-mono font-semibold text-zinc-200">{seg.pct.toFixed(1)}%</span>
-                    </li>
-                  ))}
-                </ul>
+              </div>
+              <div className="flex flex-col gap-1.5 text-[10px] mt-1">
+                {arcs.map((seg) => (
+                  <div key={seg.key} className="flex items-center gap-1.5">
+                    <span className="w-2 h-2 rounded-full shrink-0" style={{ background: seg.color }} />
+                    <span className="text-zinc-400 truncate">{seg.label}</span>
+                    <span className="ml-auto font-mono font-semibold text-zinc-200">{seg.pct.toFixed(1)}%</span>
+                  </div>
+                ))}
               </div>
             </div>
           );
         })()}
+        </div>
 
         <div className="space-y-3">
           <div className="flex items-center justify-between flex-wrap gap-2">
@@ -2181,14 +2240,32 @@ export const StockDetail: React.FC = () => {
 
   const renderIndustryTab = () => {
     const heatmap = peersState.data;
-    // 同儕清單來自 heatmap.sector，故 targetSector 必須同源：優先取 heatmap 裡本股那筆的 sector，
-    // 保證本股一定落在自己的同儕圈並可高亮；本股不在 heatmap 時才退回 profile.industry。
-    // （heatmap 與 profile 是兩套產業詞彙，直接用 profile.industry 會導致本股被濾掉，例如 2330＝電子工業 vs 半導體業）
-    const selfSector = heatmap?.stocks.find(s => s.code === activeCode)?.sector;
-    const targetSector = selfSector || profileState.data?.industry || '';
-
     const allStocks = heatmap?.stocks || [];
-    const peerStocks = allStocks.filter(s => !!targetSector && s.sector === targetSector);
+
+    // 優先用自建的細分族群表（stockGroups.ts，如「封測」），比 TWSE 官方產業別（如「電子工業」）
+    // 更貼近實際同業比較；該股不在 523 檔族群 universe 內時（如上櫃股），退回官方產業別、不限筆數。
+    const groupRef = CODE_TO_GROUP.get(activeCode);
+
+    let targetSector: string;
+    let peerStocks: HeatmapStock[];
+
+    if (groupRef) {
+      targetSector = groupRef.group;
+      const groupPeers = allStocks.filter(s => CODE_TO_GROUP.get(s.code)?.group === groupRef.group);
+      const self = groupPeers.find(s => s.code === activeCode);
+      const others = groupPeers
+        .filter(s => s.code !== activeCode)
+        .sort((a, b) => (b.turnover ?? -Infinity) - (a.turnover ?? -Infinity))
+        .slice(0, self ? 4 : 5);
+      peerStocks = self ? [self, ...others] : others;
+    } else {
+      // 同儕清單來自 heatmap.sector，故 targetSector 必須同源：優先取 heatmap 裡本股那筆的 sector，
+      // 保證本股一定落在自己的同儕圈並可高亮；本股不在 heatmap 時才退回 profile.industry。
+      // （heatmap 與 profile 是兩套產業詞彙，直接用 profile.industry 會導致本股被濾掉，例如 2330＝電子工業 vs 半導體業）
+      const selfSector = allStocks.find(s => s.code === activeCode)?.sector;
+      targetSector = selfSector || profileState.data?.industry || '';
+      peerStocks = allStocks.filter(s => !!targetSector && s.sector === targetSector);
+    }
 
     const peerCount = peerStocks.length;
     const validChanges = peerStocks.map(s => s.change_pct).filter((v): v is number => v !== null && v !== undefined);
@@ -2610,7 +2687,7 @@ export const StockDetail: React.FC = () => {
                     />
                   </label>
                   <span className={`text-xs flex-1 ${a.enabled ? 'text-zinc-200' : 'text-zinc-600 line-through'}`}>
-                    收盤價{a.direction === 'above' ? '高於' : '低於'} <span className="font-mono font-semibold">{a.price}</span>
+                    {describeAlert(a)}
                   </span>
                   <button
                     onClick={() => deleteAlert(a.id)}
@@ -2626,21 +2703,39 @@ export const StockDetail: React.FC = () => {
 
           <div className="flex items-center gap-2 flex-wrap">
             <select
-              value={alertForm.direction}
-              onChange={(e) => setAlertForm((prev) => ({ ...prev, direction: e.target.value as 'above' | 'below' }))}
+              value={alertForm.conditionType}
+              onChange={(e) => setAlertForm((prev) => ({ ...prev, conditionType: e.target.value as AlertConditionType }))}
               className="px-2.5 py-1.5 rounded-lg text-xs bg-zinc-900 border border-border text-zinc-300"
             >
-              <option value="above">收盤高於</option>
-              <option value="below">收盤低於</option>
+              <optgroup label="收盤價">
+                <option value="price_above">收盤高於</option>
+                <option value="price_below">收盤低於</option>
+              </optgroup>
+              <optgroup label="KD 反轉">
+                <option value="kd_golden_cross">KD 黃金交叉</option>
+                <option value="kd_death_cross">KD 死亡交叉</option>
+              </optgroup>
+              <optgroup label="均線">
+                <option value="ma5_break_below">跌破 5 日均線</option>
+                <option value="ma5_break_above">站回 5 日均線</option>
+                <option value="ma10_break_below">跌破 10 日均線</option>
+                <option value="ma10_break_above">站回 10 日均線</option>
+                <option value="ma20_break_below">跌破 月線 (20MA)</option>
+                <option value="ma20_break_above">站回 月線 (20MA)</option>
+                <option value="ma60_break_below">跌破 季線 (60MA)</option>
+                <option value="ma60_break_above">站回 季線 (60MA)</option>
+              </optgroup>
             </select>
-            <input
-              type="number"
-              value={alertForm.price}
-              onChange={(e) => setAlertForm((prev) => ({ ...prev, price: e.target.value }))}
-              onKeyDown={(e) => { if (e.key === 'Enter') addAlert(); }}
-              placeholder="價位"
-              className="w-28 px-2.5 py-1.5 rounded-lg text-xs bg-zinc-900 border border-border text-zinc-300"
-            />
+            {isPriceCondition(alertForm.conditionType) && (
+              <input
+                type="number"
+                value={alertForm.price}
+                onChange={(e) => setAlertForm((prev) => ({ ...prev, price: e.target.value }))}
+                onKeyDown={(e) => { if (e.key === 'Enter') addAlert(); }}
+                placeholder="價位"
+                className="w-28 px-2.5 py-1.5 rounded-lg text-xs bg-zinc-900 border border-border text-zinc-300"
+              />
+            )}
             <button
               onClick={addAlert}
               className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-primary/10 text-primary border border-primary/20 hover:bg-primary/20 transition"
@@ -2827,9 +2922,9 @@ export const StockDetail: React.FC = () => {
         )}
 
         {activeTab === 'technical' && (
-          <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
+          <div className="grid grid-cols-1 xl:grid-cols-4 gap-6">
             {/* K-line Chart */}
-            <div className="xl:col-span-2 bg-card border border-border rounded-xl p-6 flex flex-col justify-between min-h-[560px]">
+            <div className="xl:col-span-3 bg-card border border-border rounded-xl p-6 flex flex-col justify-between min-h-[560px]">
               <div className="flex items-center justify-between border-b border-border/60 pb-3 mb-4 flex-wrap gap-2">
                 <div className="flex items-center gap-2">
                   <BarChart2 className="w-5 h-5 text-primary" />
@@ -2876,10 +2971,10 @@ export const StockDetail: React.FC = () => {
             {/* Right Column: AI Decision & Order Book */}
             <div className="flex flex-col gap-6">
               {/* AI Decision */}
-              <div className="bg-card border border-border rounded-xl p-6 flex flex-col">
-                <div className="flex items-center gap-2 mb-4 border-b border-border/60 pb-3">
-                  <Cpu className="w-5 h-5 text-primary" />
-                  <h3 className="font-semibold text-sm text-zinc-200">AI 交易決策訊號</h3>
+              <div className="bg-card border border-border rounded-xl p-4 flex flex-col">
+                <div className="flex items-center gap-2 mb-3 border-b border-border/60 pb-2">
+                  <Cpu className="w-4 h-4 text-primary" />
+                  <h3 className="font-semibold text-xs text-zinc-200">AI 交易決策訊號</h3>
                 </div>
                 {signalState.loading ? (
                   <div className="text-xs text-zinc-500 animate-pulse text-center py-8">載入交易決策中...</div>
@@ -2889,26 +2984,26 @@ export const StockDetail: React.FC = () => {
                     <button onClick={fetchSignal} className="mt-2 px-3 py-1 bg-zinc-800 hover:bg-zinc-750 rounded text-[10px] text-zinc-300">重試</button>
                   </div>
                 ) : signalState.data ? (
-                  <div className="space-y-4 flex-1 flex flex-col justify-between">
-                    <div className="space-y-3">
-                      <div className="flex justify-between items-center p-3 rounded-lg bg-zinc-950/40 border border-border/30">
+                  <div className="space-y-2 flex-1 flex flex-col justify-between">
+                    <div className="space-y-2">
+                      <div className="flex justify-between items-center p-2.5 rounded-lg bg-zinc-950/40 border border-border/30">
                         <span className="text-xs text-zinc-400">波段決策 (Swing)</span>
                         <span className={`text-xs font-semibold px-2 py-0.5 rounded ${signalState.data.swing.action === 'BUY' ? 'bg-bull/10 text-bull' : signalState.data.swing.action === 'SELL' ? 'bg-bear/10 text-bear' : 'bg-zinc-800 text-zinc-400'}`}>
                           {signalState.data.swing.action} ({signalState.data.swing.score}分)
                         </span>
                       </div>
-                      <div className="flex justify-between items-center p-3 rounded-lg bg-zinc-950/40 border border-border/30">
+                      <div className="flex justify-between items-center p-2.5 rounded-lg bg-zinc-950/40 border border-border/30">
                         <span className="text-xs text-zinc-400">當沖決策 (Daytrade)</span>
                         <span className={`text-xs font-semibold px-2 py-0.5 rounded ${signalState.data.daytrade.action === 'BUY' ? 'bg-bull/10 text-bull' : signalState.data.daytrade.action === 'SELL' ? 'bg-bear/10 text-bear' : 'bg-zinc-800 text-zinc-400'}`}>
                           {signalState.data.daytrade.action} ({signalState.data.daytrade.score}分)
                         </span>
                       </div>
-                      <div className="flex justify-between items-center p-3.5 rounded-lg bg-primary/5 border border-primary/20">
+                      <div className="flex justify-between items-center p-2.5 rounded-lg bg-primary/5 border border-primary/20">
                         <span className="text-xs font-semibold text-zinc-200">融合訊號 (Blended)</span>
                         <span className="text-sm font-bold text-primary font-mono">{signalState.data.blended.action} ({signalState.data.blended.score}分)</span>
                       </div>
                     </div>
-                    <div className="mt-4 pt-3 border-t border-border/40 text-[10px] text-zinc-500 font-mono text-right">
+                    <div className="mt-2 pt-2 border-t border-border/40 text-[10px] text-zinc-500 font-mono text-right">
                       更新於: {new Date(signalState.data.generated_at || '').toLocaleString()}
                     </div>
                   </div>
@@ -2918,11 +3013,11 @@ export const StockDetail: React.FC = () => {
               </div>
 
               {/* Best 5 Order Book */}
-              <div className="bg-card border border-border rounded-xl p-6 flex flex-col flex-1">
-                <div className="flex items-center justify-between border-b border-border/60 pb-3 mb-4">
+              <div className="bg-card border border-border rounded-xl p-4 flex flex-col flex-1">
+                <div className="flex items-center justify-between border-b border-border/60 pb-2 mb-3">
                   <div className="flex items-center gap-2">
-                    <TrendingUp className="w-5 h-5 text-primary" />
-                    <h3 className="font-semibold text-sm text-zinc-200">即時最佳五檔</h3>
+                    <TrendingUp className="w-4 h-4 text-primary" />
+                    <h3 className="font-semibold text-xs text-zinc-200">即時最佳五檔</h3>
                   </div>
                   <label className="flex items-center gap-1.5 cursor-pointer text-[10px] text-zinc-400 select-none">
                     <input

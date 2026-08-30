@@ -32,15 +32,31 @@ function safeCode(v) {
   return str(v).trim().toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 12);
 }
 
+// 12 種警示條件：收盤價 2 種（需要 price）＋ KD 反轉 2 種＋ 5/10/20/60 日均線跌破/站回 8 種（皆不需要 price）
+const CONDITION_TYPES = new Set([
+  'price_above', 'price_below',
+  'kd_golden_cross', 'kd_death_cross',
+  'ma5_break_below', 'ma5_break_above',
+  'ma10_break_below', 'ma10_break_above',
+  'ma20_break_below', 'ma20_break_above',
+  'ma60_break_below', 'ma60_break_above',
+]);
+const PRICE_CONDITIONS = new Set(['price_above', 'price_below']);
+
 function safeAlert(v, i) {
   if (!v || typeof v !== 'object') return null;
-  const price = num(v.price, NaN);
-  if (!Number.isFinite(price) || price <= 0) return null;
-  const direction = v.direction === 'below' ? 'below' : 'above';
-  const id = str(v.id) || `a_${direction}_${price}_${i}`;
+  const conditionType = str(v.conditionType);
+  if (!CONDITION_TYPES.has(conditionType)) return null;
+  const isPrice = PRICE_CONDITIONS.has(conditionType);
+  let price;
+  if (isPrice) {
+    price = num(v.price, NaN);
+    if (!Number.isFinite(price) || price <= 0) return null;
+  }
+  const id = str(v.id) || `a_${conditionType}_${price ?? ''}_${i}`;
   const enabled = v.enabled !== false;
   const note = str(v.note).slice(0, 100);
-  return { id, direction, price, enabled, ...(note ? { note } : {}) };
+  return { id, conditionType, ...(isPrice ? { price } : {}), enabled, ...(note ? { note } : {}) };
 }
 
 function sanitizeAlerts(body) {
