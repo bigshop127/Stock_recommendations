@@ -1,16 +1,17 @@
-import React, { useEffect, useState, useMemo } from 'react';
+import React, { useEffect, useState, useMemo, useCallback } from 'react';
 import { useParams, Link, useSearchParams } from 'react-router-dom';
 import { api } from '../lib/api';
 import type { StockDetail as IStockDetail, StockChips, StockFundamentals, StockNews, Book, OhlcvRow, CompanyProfile, ShareholdingDispersion, StockHeatmap, HeatmapStock } from '../lib/api';
-import { RefreshCw, BarChart2, TrendingUp, Cpu, Newspaper, DollarSign, Users, Info, ArrowLeft, Bell, Trash2 } from 'lucide-react';
+import { BarChart2, TrendingUp, Cpu, Newspaper, DollarSign, Users, Info, ArrowLeft, Bell, Trash2 } from 'lucide-react';
 import { PriceChart } from '../components/PriceChart';
 import { ChipsCharts } from '../components/ChipsCharts';
 import { StockBriefCard } from '../components/StockBriefCard';
+import { FolderPickerButton } from '../components/FolderPickerButton';
 import { buildStockBrief } from '../lib/stockBrief';
 import type { StockBriefInput } from '../lib/stockBrief';
 import { CODE_TO_GROUP } from '../lib/stockGroups';
 
-export type StockTab = 'basic' | 'industry' | 'financials' | 'chips' | 'etf' | 'technical' | 'news';
+export type StockTab = 'basic' | 'industry' | 'financials' | 'chips' | 'technical' | 'news';
 
 interface TabItem {
   id: StockTab;
@@ -23,7 +24,6 @@ const STOCK_TABS: TabItem[] = [
   { id: 'industry', label: '產業分析' },
   { id: 'financials', label: '財務分析' },
   { id: 'chips', label: '籌碼分析' },
-  { id: 'etf', label: 'ETF 持倉', isSoon: true },
   { id: 'technical', label: '技術分析' },
   { id: 'news', label: '相關新聞' },
 ];
@@ -73,22 +73,6 @@ interface StockAlertEntry {
 }
 type StockAlertsConfig = Record<string, StockAlertEntry>;
 
-const ComingSoon: React.FC<{ label: string }> = ({ label }) => {
-  return (
-    <div className="bg-card border border-border rounded-xl p-12 flex flex-col items-center justify-center text-center min-h-[320px]">
-      <div className="w-12 h-12 rounded-2xl bg-primary/10 border border-primary/20 flex items-center justify-center mb-4 text-primary">
-        <Info className="w-6 h-6" />
-      </div>
-      <h3 className="text-base font-semibold text-zinc-200 mb-1">
-        〔{label}〕資料整理中，敬請期待
-      </h3>
-      <p className="text-xs text-zinc-500 max-w-sm">
-        資料將走自家 TWSE / FinMind，非爬取他站
-      </p>
-    </div>
-  );
-};
-
 export const StockDetail: React.FC = () => {
   const { code } = useParams<{ code: string }>();
   const activeCode = code || '2330';
@@ -123,9 +107,30 @@ export const StockDetail: React.FC = () => {
   const [chipsSubTab, setChipsSubTab] = useState<'dispersion' | 'inst' | 'margin'>('dispersion');
   const [dispersionMode, setDispersionMode] = useState<'people' | 'pct'>('people');
   const [dispHoverIdx, setDispHoverIdx] = useState<number | null>(null);
+  // 大戶/散戶結構折線圖也用實際量測像素當 viewBox，理由同 fundChartSize（避免 letterbox 導致滑鼠座標對不上）
+  const [dispChartSize, setDispChartSize] = useState({ w: 600, h: 220 });
+  const dispChartRef = useCallback((node: HTMLDivElement | null) => {
+    if (!node) return;
+    const update = () => setDispChartSize({ w: node.clientWidth, h: node.clientHeight });
+    update();
+    const ro = new ResizeObserver(update);
+    ro.observe(node);
+    return () => ro.disconnect();
+  }, []);
   const [newsState, setNewsState] = useState<{ data: StockNews | null; loading: boolean; error: string | null }>({ data: null, loading: true, error: null });
   const [fundTab, setFundTab] = useState<'valuation' | 'revenue' | 'financials' | 'dividend'>('valuation');
   const [fundHoverIdx, setFundHoverIdx] = useState<number | null>(null);
+  // 基本面 4 張圖表共用一組實際量測到的容器像素尺寸，讓 SVG viewBox 與畫面 1:1 對應，
+  // 滑鼠座標才不會因 preserveAspectRatio 縮放置中（letterbox）而跟 viewBox 座標系對不上。
+  const [fundChartSize, setFundChartSize] = useState({ w: 880, h: 520 });
+  const fundChartRef = useCallback((node: HTMLDivElement | null) => {
+    if (!node) return;
+    const update = () => setFundChartSize({ w: node.clientWidth, h: node.clientHeight });
+    update();
+    const ro = new ResizeObserver(update);
+    ro.observe(node);
+    return () => ro.disconnect();
+  }, []);
   const [alertsConfig, setAlertsConfig] = useState<StockAlertsConfig>({});
   const [alertsSaveStatus, setAlertsSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
   const [alertForm, setAlertForm] = useState<{ conditionType: AlertConditionType; price: string }>({ conditionType: 'price_above', price: '' });
@@ -794,6 +799,7 @@ export const StockDetail: React.FC = () => {
               )}
             </div>
           </div>
+          <FolderPickerButton code={activeCode} name={name} />
         </div>
 
         <div className="grid grid-cols-2 sm:grid-cols-7 gap-x-4 gap-y-2 border-t sm:border-t-0 sm:border-l border-border/80 pt-3 sm:pt-0 sm:pl-6 text-xs font-mono w-full sm:w-auto">
@@ -1021,8 +1027,8 @@ export const StockDetail: React.FC = () => {
             const peLabel = getPercentileLabel(pe, valuation.map(v => v.pe_ratio));
             const pbLabel = getPercentileLabel(pb, valuation.map(v => v.pb_ratio));
 
-            const svgWidth = 520;
-            const svgHeight = 420;
+            const svgWidth = fundChartSize.w;
+            const svgHeight = fundChartSize.h;
             const paddingLeft = 45;
             const paddingRight = 15;
             const paddingTop = 15;
@@ -1079,17 +1085,16 @@ export const StockDetail: React.FC = () => {
                   </div>
                 </div>
 
-                <div className="relative bg-zinc-950/30 rounded-xl border border-border/40 p-2 h-[440px]">
+                <div ref={fundChartRef} className="relative bg-zinc-950/30 rounded-xl border border-border/40 p-2 h-[520px]">
                   <svg
                     width="100%"
                     height="100%"
                     viewBox={`0 0 ${svgWidth} ${svgHeight}`}
-                    preserveAspectRatio="xMidYMid meet"
+                    preserveAspectRatio="none"
                     className="overflow-visible select-none cursor-crosshair"
                     onMouseMove={(e) => {
                       const svgRect = e.currentTarget.getBoundingClientRect();
-                      const scale = svgWidth / svgRect.width;
-                      const mouseX = (e.clientX - svgRect.left) * scale - paddingLeft;
+                      const mouseX = (e.clientX - svgRect.left) - paddingLeft;
                       if (mouseX < -stepX / 2 || mouseX > plotWidth + stepX / 2) {
                         setFundHoverIdx(null);
                         return;
@@ -1228,8 +1233,8 @@ export const StockDetail: React.FC = () => {
               return `${val.toLocaleString()} 元`;
             };
 
-            const svgWidth = 520;
-            const svgHeight = 420;
+            const svgWidth = fundChartSize.w;
+            const svgHeight = fundChartSize.h;
             const paddingLeft = 45;
             const paddingRight = 40;
             const paddingTop = 15;
@@ -1274,17 +1279,16 @@ export const StockDetail: React.FC = () => {
                   </div>
                 </div>
 
-                <div className="relative bg-zinc-950/30 rounded-xl border border-border/40 p-2 h-[440px]">
+                <div ref={fundChartRef} className="relative bg-zinc-950/30 rounded-xl border border-border/40 p-2 h-[520px]">
                   <svg
                     width="100%"
                     height="100%"
                     viewBox={`0 0 ${svgWidth} ${svgHeight}`}
-                    preserveAspectRatio="xMidYMid meet"
+                    preserveAspectRatio="none"
                     className="overflow-visible select-none cursor-crosshair"
                     onMouseMove={(e) => {
                       const svgRect = e.currentTarget.getBoundingClientRect();
-                      const scale = svgWidth / svgRect.width;
-                      const mouseX = (e.clientX - svgRect.left) * scale - paddingLeft;
+                      const mouseX = (e.clientX - svgRect.left) - paddingLeft;
                       if (mouseX < -stepX / 2 || mouseX > plotWidth + stepX / 2) {
                         setFundHoverIdx(null);
                         return;
@@ -1463,8 +1467,8 @@ export const StockDetail: React.FC = () => {
             const om = latest.operating_margin;
             const nm = latest.net_margin;
 
-            const svgWidth = 520;
-            const svgHeight = 420;
+            const svgWidth = fundChartSize.w;
+            const svgHeight = fundChartSize.h;
             const paddingLeft = 40;
             const paddingRight = 40;
             const paddingTop = 15;
@@ -1512,17 +1516,16 @@ export const StockDetail: React.FC = () => {
                   </div>
                 </div>
 
-                <div className="relative bg-zinc-950/30 rounded-xl border border-border/40 p-2 h-[440px]">
+                <div ref={fundChartRef} className="relative bg-zinc-950/30 rounded-xl border border-border/40 p-2 h-[520px]">
                   <svg
                     width="100%"
                     height="100%"
                     viewBox={`0 0 ${svgWidth} ${svgHeight}`}
-                    preserveAspectRatio="xMidYMid meet"
+                    preserveAspectRatio="none"
                     className="overflow-visible select-none cursor-crosshair"
                     onMouseMove={(e) => {
                       const svgRect = e.currentTarget.getBoundingClientRect();
-                      const scale = svgWidth / svgRect.width;
-                      const mouseX = (e.clientX - svgRect.left) * scale - paddingLeft;
+                      const mouseX = (e.clientX - svgRect.left) - paddingLeft;
                       if (mouseX < -stepX / 2 || mouseX > plotWidth + stepX / 2) {
                         setFundHoverIdx(null);
                         return;
@@ -1699,8 +1702,8 @@ export const StockDetail: React.FC = () => {
             }
             const latest = dividend[dividend.length - 1];
 
-            const svgWidth = 520;
-            const svgHeight = 420;
+            const svgWidth = fundChartSize.w;
+            const svgHeight = fundChartSize.h;
             const paddingLeft = 45;
             const paddingRight = 15;
             const paddingTop = 15;
@@ -1733,17 +1736,16 @@ export const StockDetail: React.FC = () => {
                   </div>
                 </div>
 
-                <div className="relative bg-zinc-950/30 rounded-xl border border-border/40 p-2 h-[440px]">
+                <div ref={fundChartRef} className="relative bg-zinc-950/30 rounded-xl border border-border/40 p-2 h-[520px]">
                   <svg
                     width="100%"
                     height="100%"
                     viewBox={`0 0 ${svgWidth} ${svgHeight}`}
-                    preserveAspectRatio="xMidYMid meet"
+                    preserveAspectRatio="none"
                     className="overflow-visible select-none cursor-crosshair"
                     onMouseMove={(e) => {
                       const svgRect = e.currentTarget.getBoundingClientRect();
-                      const scale = svgWidth / svgRect.width;
-                      const mouseX = (e.clientX - svgRect.left) * scale - paddingLeft;
+                      const mouseX = (e.clientX - svgRect.left) - paddingLeft;
                       if (mouseX < -stepX / 2 || mouseX > plotWidth + stepX / 2) {
                         setFundHoverIdx(null);
                         return;
@@ -1948,8 +1950,8 @@ export const StockDetail: React.FC = () => {
 
     const weekly = disp.weekly;
     const isSingleWeek = weekly.length === 1;
-    const svgWidth = 600;
-    const svgHeight = 220;
+    const svgWidth = dispChartSize.w;
+    const svgHeight = dispChartSize.h;
     const padL = 60;
     const padR = 60;
     const padT = 20;
@@ -1988,7 +1990,7 @@ export const StockDetail: React.FC = () => {
 
     return (
       <div className="space-y-6">
-        <div className="grid grid-cols-1 lg:grid-cols-[1fr_300px] gap-4 items-stretch">
+        <div className="grid grid-cols-1 lg:grid-cols-[1fr_280px] gap-3 items-stretch">
         <div className="bg-zinc-950/40 rounded-xl border border-border/40 p-4">
           <div className="flex items-center justify-between mb-3 text-xs flex-wrap gap-2">
             <div className="flex items-center gap-4 text-[11px]">
@@ -2017,16 +2019,16 @@ export const StockDetail: React.FC = () => {
             </div>
           </div>
 
-          <div className="relative h-[220px]">
+          <div ref={dispChartRef} className="relative h-[220px]">
             <svg
               width="100%"
               height="100%"
               viewBox={`0 0 ${svgWidth} ${svgHeight}`}
-              preserveAspectRatio="xMidYMid meet"
+              preserveAspectRatio="none"
               className="overflow-visible select-none cursor-crosshair"
               onMouseMove={(e) => {
                 const rect = e.currentTarget.getBoundingClientRect();
-                const mouseX = ((e.clientX - rect.left) / rect.width) * svgWidth - padL;
+                const mouseX = (e.clientX - rect.left) - padL;
                 const idx = isSingleWeek ? 0 : Math.max(0, Math.min(weekly.length - 1, Math.round(mouseX / stepX)));
                 setDispHoverIdx(idx);
               }}
@@ -2131,10 +2133,10 @@ export const StockDetail: React.FC = () => {
           };
 
           return (
-            <div className="bg-zinc-950/40 rounded-xl border border-border/40 p-4 flex flex-col">
-              <h4 className="font-semibold text-xs text-zinc-300 mb-2">持股比例三大分佈（{pieRow.date} 週報）</h4>
-              <div className="flex-1 flex items-center justify-center py-2">
-                <svg viewBox="0 0 100 100" className="w-full max-w-[210px] aspect-square">
+            <div className="bg-zinc-950/40 rounded-xl border border-border/40 p-3 flex flex-col">
+              <h4 className="font-semibold text-xs text-zinc-300 mb-1.5">持股比例三大分佈（{pieRow.date} 週報）</h4>
+              <div className="flex-1 flex items-center justify-center py-1">
+                <svg viewBox="0 0 100 100" className="w-full max-w-[248px] aspect-square">
                   {arcs.map((seg) => {
                     const midRad = toRad(seg.midAngle);
                     const ox = Math.cos(midRad) * explode;
@@ -2764,31 +2766,11 @@ export const StockDetail: React.FC = () => {
             <h1 className="text-lg font-bold text-zinc-300">個股多維度審查</h1>
           </div>
         </div>
-        <div className="flex items-center gap-3">
-          <div className="flex bg-zinc-950/60 p-1 rounded-lg border border-border/80 text-xs">
-            <Link to="/stock/2330" className={`px-3 py-1 rounded-md transition ${activeCode === '2330' ? 'bg-primary text-white font-semibold' : 'text-zinc-400 hover:text-zinc-200'}`}>
-              台積電 (2330)
-            </Link>
-            <Link to="/stock/2454" className={`px-3 py-1 rounded-md transition ${activeCode === '2454' ? 'bg-primary text-white font-semibold' : 'text-zinc-400 hover:text-zinc-200'}`}>
-              聯發科 (2454)
-            </Link>
-            <Link to="/stock/2317" className={`px-3 py-1 rounded-md transition ${activeCode === '2317' ? 'bg-primary text-white font-semibold' : 'text-zinc-400 hover:text-zinc-200'}`}>
-              鴻海 (2317)
-            </Link>
-          </div>
-          {useMock && (
-            <span className="text-[10px] bg-neutral/10 border border-neutral/20 text-neutral px-2 py-1 rounded-md font-mono">
-              Mock Mode (DEV)
-            </span>
-          )}
-          <button
-            onClick={() => fetchAllData()}
-            className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-zinc-800 text-xs hover:bg-zinc-700 text-zinc-300 font-semibold"
-          >
-            <RefreshCw className="w-3.5 h-3.5" />
-            整理
-          </button>
-        </div>
+        {useMock && (
+          <span className="text-[10px] bg-neutral/10 border border-neutral/20 text-neutral px-2 py-1 rounded-md font-mono">
+            Mock Mode (DEV)
+          </span>
+        )}
       </div>
 
       {/* Quote Header */}
@@ -2835,7 +2817,6 @@ export const StockDetail: React.FC = () => {
       <div className="space-y-6">
         {activeTab === 'basic' && renderBasicTab()}
         {activeTab === 'industry' && renderIndustryTab()}
-        {activeTab === 'etf' && <ComingSoon label="ETF 持倉" />}
 
         {activeTab === 'financials' && (
           <div className="bg-card border border-border rounded-xl p-6">

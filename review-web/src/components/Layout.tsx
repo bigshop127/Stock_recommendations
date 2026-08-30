@@ -464,9 +464,9 @@ export const Layout: React.FC<LayoutProps> = ({ children }) => {
                                           <MoreHorizontal className="w-3.5 h-3.5" />
                                         </button>
                                         {activeDropdownStock?.code === stock.code && activeDropdownStock?.folderId === f.id && (
-                                          <div className="absolute right-0 top-6 z-50 bg-zinc-900 border border-zinc-800 rounded shadow-xl py-1 w-28 text-[11px]">
+                                          <div className="absolute right-0 top-6 z-50 bg-zinc-900 border border-zinc-800 rounded shadow-xl py-1 w-44 text-[11px]">
                                             <div className="px-2 py-1 text-zinc-500 font-semibold border-b border-zinc-800">
-                                              移動至：
+                                              移動至（單選）：
                                             </div>
                                             {folderList.filter(dest => dest.id !== f.id).map(dest => (
                                               <button
@@ -482,6 +482,29 @@ export const Layout: React.FC<LayoutProps> = ({ children }) => {
                                                 {dest.label}
                                               </button>
                                             ))}
+                                            <div className="px-2 py-1 text-zinc-500 font-semibold border-t border-b border-zinc-800 mt-1">
+                                              同時加入（可複選）：
+                                            </div>
+                                            {folderList.filter(dest => dest.id !== f.id).map(dest => {
+                                              const checked = (folders[dest.id] || []).some(s => s.code === stock.code);
+                                              return (
+                                                <button
+                                                  key={`copy-${dest.id}`}
+                                                  onClick={(e) => {
+                                                    e.preventDefault();
+                                                    e.stopPropagation();
+                                                    if (checked) removeFromFolder(dest.id, stock.code);
+                                                    else addToFolder(dest.id, { code: stock.code, name: stock.name, added_at: new Date().toISOString() });
+                                                  }}
+                                                  className="w-full flex items-center justify-between px-2 py-1 hover:bg-zinc-800/60 text-left text-zinc-300 transition-colors"
+                                                >
+                                                  <span className="truncate">{dest.label}</span>
+                                                  <span className={`w-3.5 h-3.5 rounded border shrink-0 flex items-center justify-center ${checked ? 'bg-primary border-primary' : 'border-zinc-600'}`}>
+                                                    {checked && <Check className="w-2.5 h-2.5 text-white" />}
+                                                  </span>
+                                                </button>
+                                              );
+                                            })}
                                           </div>
                                         )}
                                       </div>

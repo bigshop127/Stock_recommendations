@@ -476,9 +476,9 @@ export const RealizedPnl: React.FC = () => {
                         : 'text-zinc-400 border-border hover:text-zinc-200 hover:border-zinc-600'
                   }`}
                   style={color ? {
-                    color: active ? color : '#a1a1aa',
-                    borderColor: `${color}${active ? '4d' : '26'}`,
-                    background: `${color}${active ? '26' : '0d'}`,
+                    color: active ? color : `${color}b3`,
+                    borderColor: `${color}${active ? '80' : '55'}`,
+                    background: `${color}${active ? '40' : '26'}`,
                   } : undefined}
                 >
                   {c === 'all' ? '全部類別' : CATEGORY_LABEL[c]}

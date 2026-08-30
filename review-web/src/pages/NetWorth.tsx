@@ -899,7 +899,8 @@ const MonthlyBillsChart: React.FC<{ data: { month: string; total: number }[]; se
         tickMarkFormatter: (t: Time) => (typeof t === 'object' ? `${(t as BusinessDay).month}月` : String(t)),
       },
       crosshair: { mode: 0 },
-      handleScroll: false,
+      // 月份一多，fitContent() 在窄容器裡會把較舊的月份擠出可視範圍，開放橫向拖曳/觸控滑動才能補看
+      handleScroll: { mouseWheel: false, pressedMouseMove: true, horzTouchDrag: true, vertTouchDrag: false },
       handleScale: false,
     });
 
