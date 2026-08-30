@@ -733,11 +733,20 @@ export interface TaiexResp {
   stale_reason?: string;
 }
 
+/** 指數期貨保證金（電子/金融/半導體30…）——固定金額，跟 TX/MTX/TMF 同一份 indexMarging 資料 */
+export interface IndexMarginInfo {
+  name: string;
+  initial: number;
+  maintenance: number;
+  clearing: number;
+}
+
 export interface FuturesMarginsResp {
   date: string;
   source: string;
   fetched_at: string;
-  margins: Record<string, FuturesMarginInfo>;
+  margins: Record<string, FuturesMarginInfo>;  // key＝已知代碼（TX/MTX/TMF）或期交所商品全名，兩種都查得到
+  index_contracts: IndexMarginInfo[];          // 供「新增商品」搜尋清單用；不含選擇權風險保證金列
   unmapped: string[];
   cached?: boolean;
   stale?: boolean;

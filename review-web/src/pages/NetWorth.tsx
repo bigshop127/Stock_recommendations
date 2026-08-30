@@ -420,7 +420,7 @@ export const NetWorth: React.FC = () => {
           <div className="lg:col-span-1 border border-border rounded-xl p-4 bg-zinc-900/40 h-full flex flex-col">
             <div className="text-[11px] text-zinc-500 mb-3">目前組成</div>
             {donutData.length > 0 ? (
-              <div className="flex-1 flex flex-col items-center justify-center gap-5">
+              <div className="flex-1 flex flex-row items-center justify-center gap-5">
                 <div className="relative w-36 h-36 sm:w-44 sm:h-44 shrink-0">
                   <svg viewBox="0 0 36 36" className="w-full h-full -rotate-90">
                     <circle cx="18" cy="18" r="15.9155" fill="none" stroke="#27272a" strokeWidth="3.5" />
@@ -441,7 +441,7 @@ export const NetWorth: React.FC = () => {
                     <span className="text-sm sm:text-base font-bold font-mono text-emerald-300">{money(total)}</span>
                   </div>
                 </div>
-                <ul className="space-y-2 text-xs w-full max-w-[220px]">
+                <ul className="space-y-2 text-xs flex-1 min-w-0 max-w-[220px]">
                   {donutData.map((seg) => (
                     <li key={seg.category} className="flex items-center gap-2" title={money(seg.value)}>
                       <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: NW_COLOR[seg.category] }} />

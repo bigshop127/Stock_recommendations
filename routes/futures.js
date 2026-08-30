@@ -846,6 +846,7 @@ router.get('/api/futures/margins', async (req, res) => {
     }
 
     const margins = {};
+    const indexContracts = [];
     const unmappedSet = new Set();
     const dates = [];
 
@@ -853,32 +854,30 @@ router.get('/api/futures/margins', async (req, res) => {
       const name = str(r.Contract).trim();
       if (!name) continue;
 
-      const code = MARGIN_NAME_TO_CODE[name];
       const initial = parseFloat(r.InitialMargin);
       const maintenance = parseFloat(r.MaintenanceMargin);
       const clearing = parseFloat(r.ClearingMargin);
       const dateStr = parseTaifexDate(r.Date);
 
-      if (code) {
-        if (!Number.isFinite(initial) || !Number.isFinite(maintenance) || !Number.isFinite(clearing)) {
-          continue;
-        }
-        if (initial < maintenance) {
-          unmappedSet.add(name);
-          continue;
-        }
-        margins[code] = {
-          initial,
-          maintenance,
-          clearing,
-          contract_name: name,
-        };
-        if (dateStr) {
-          dates.push(dateStr);
-        }
-      } else {
+      if (!Number.isFinite(initial) || !Number.isFinite(maintenance) || !Number.isFinite(clearing) || initial < maintenance) {
         unmappedSet.add(name);
+        continue;
       }
+
+      const entry = { initial, maintenance, clearing, contract_name: name };
+      const code = MARGIN_NAME_TO_CODE[name];
+      if (code) margins[code] = entry;
+
+      // 這頁（indexMarging 的 OpenAPI 版）其實涵蓋所有指數類期貨，不是只有 TX/MTX/TMF；
+      // 「選擇權風險保證金(A/B/C)值」不是可建倉的期貨商品，排除在外，其餘一律再用
+      // 期交所公告的「商品全名」多存一份 key——之後使用者新增任何其他指數期貨（電子/
+      // 金融/半導體30…）不必等我們手動加代碼映射，用全名就能自動比對到、也能之後
+      // 用同一個名字重新「同步保證金」。
+      if (!name.includes('選擇權風險保證金')) {
+        margins[name] = entry;
+        indexContracts.push({ name, initial, maintenance, clearing });
+      }
+      if (dateStr) dates.push(dateStr);
     }
 
     if (Object.keys(margins).length === 0) {
@@ -894,6 +893,7 @@ router.get('/api/futures/margins', async (req, res) => {
       source: 'taifex-openapi',
       fetched_at: new Date().toISOString(),
       margins,
+      index_contracts: indexContracts,
       unmapped: [...unmappedSet],
     };
 

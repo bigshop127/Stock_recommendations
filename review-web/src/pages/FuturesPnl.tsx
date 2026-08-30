@@ -4126,6 +4126,9 @@ const SettingsTab: React.FC<{
   const newProductLookupCode = (newProduct.quote_contract.trim() || newProduct.code.trim()).toUpperCase();
   const newProductEtfMatch = stockMargins?.etfs[newProductLookupCode];
   const newProductStockMatch = !newProductEtfMatch ? stockMargins?.stocks[newProductLookupCode] : undefined;
+  // 指數期貨（電子/金融/半導體30…）：quote_contract 直接填期交所商品全名也對得到號
+  // （margins 現在同時用代碼與全名做 key，見 routes/futures.js），不必透過上面的搜尋清單。
+  const newProductIndexMatch = (!newProductEtfMatch && !newProductStockMatch) ? apiMargins?.margins[newProductLookupCode] : undefined;
   const applyNewProductEtfMargin = () => {
     if (!newProductEtfMatch) return;
     setNewProduct((f) => ({ ...f, initial_margin: String(newProductEtfMatch.initial), maintenance_margin: String(newProductEtfMatch.maintenance) }));
@@ -4141,13 +4144,19 @@ const SettingsTab: React.FC<{
       maintenance_margin: String(Math.round(price * size * newProductStockMatch.maintenance_pct)),
     }));
   };
+  const applyNewProductIndexMargin = () => {
+    if (!newProductIndexMatch) return;
+    setNewProduct((f) => ({ ...f, initial_margin: String(newProductIndexMatch.initial), maintenance_margin: String(newProductIndexMatch.maintenance) }));
+  };
 
   /**
-   * 「搜尋標的」下拉的候選清單——直接從已經載入的 stockMargins 表建，不用另打一次 API。
+   * 「搜尋標的」下拉的候選清單——直接從已經載入的 stockMargins／apiMargins 表建，不用另打一次 API。
    * name 欄位是「聯電期貨」這種帶「期貨」字尾的商品簡稱，顯示跟比對前先把字尾拿掉。
+   * 指數期貨（電子/金融/半導體30…）沒有股票代號，用商品全名當 code——之後存進
+   * quote_contract 的也是這個全名，「同步保證金」靠同一個名字回頭比對 indexMarging 資料。
    */
   const productSearchIndex = useMemo(() => {
-    const list: { code: string; label: string; stockCode: string; kind: 'stock' | 'etf' }[] = [];
+    const list: { code: string; label: string; stockCode: string; kind: 'stock' | 'etf' | 'index' }[] = [];
     if (stockMargins) {
       for (const [code, m] of Object.entries(stockMargins.stocks)) {
         list.push({ code, label: m.name.replace(/期貨$/, '').trim() || m.name, stockCode: m.stock_code, kind: 'stock' });
@@ -4156,8 +4165,13 @@ const SettingsTab: React.FC<{
         list.push({ code, label: m.name.replace(/期貨$/, '').trim() || m.name, stockCode: m.stock_code, kind: 'etf' });
       }
     }
+    if (apiMargins) {
+      for (const ic of apiMargins.index_contracts) {
+        list.push({ code: ic.name, label: ic.name.replace(/期貨$/, '').trim() || ic.name, stockCode: '', kind: 'index' });
+      }
+    }
     return list;
-  }, [stockMargins]);
+  }, [stockMargins, apiMargins]);
 
   const productSearchResults = useMemo(() => {
     const q = productQuery.trim();
@@ -4173,8 +4187,25 @@ const SettingsTab: React.FC<{
    * 算好填上——跟人工流程用的是同一套資料（stockMargins／stockContracts），只是不用
    * 使用者自己找代碼、自己查現價、自己算比例。算完的欄位還是一般 input，有問題可以
    * 直接手動改，或改「期交所行情代碼」／「目前參考價」後再按一次「套用」重算。
+   *
+   * 指數期貨（kind='index'）保證金跟 ETF 期貨一樣是固定金額，不必等報價就能直接套用；
+   * quote_contract 存的是期交所商品全名（不是英文代碼），沒有 MIS 即時報價可抓，也不會
+   * 覆寫「商品代碼」欄位——那是帳戶內部代號，使用者自己取即可。
    */
-  const pickProductSearchResult = (entry: { code: string; label: string; stockCode: string; kind: 'stock' | 'etf' }) => {
+  const pickProductSearchResult = (entry: { code: string; label: string; stockCode: string; kind: 'stock' | 'etf' | 'index' }) => {
+    if (entry.kind === 'index') {
+      const info = apiMargins?.margins[entry.code];
+      setProductQuery('');
+      setNewProduct((f) => ({
+        ...f,
+        name: /期(貨)?$/.test(entry.label) ? entry.label : `${entry.label}期`,
+        quote_contract: entry.code,
+        underlying: entry.label,
+        ...(info ? { initial_margin: String(info.initial), maintenance_margin: String(info.maintenance) } : {}),
+      }));
+      return;
+    }
+
     const rootCode = entry.code.replace(/F$/, '');
     const sizeFromList = entry.kind === 'stock' ? stockContracts?.contracts[rootCode]?.contract_size : undefined;
     const etfMatch = stockMargins?.etfs[entry.code];
@@ -4282,11 +4313,11 @@ const SettingsTab: React.FC<{
               </div>
 
               <div className="relative">
-                <Field label="搜尋標的" hint="輸入股名或代號，例如「聯電」或「2303」，選一個之後下面欄位（含兩種保證金）會自動帶入，有問題再手動改">
+                <Field label="搜尋標的" hint="輸入股名／代號／指數期貨名稱，例如「聯電」「2303」或「電子期貨」，選一個之後下面欄位（含保證金）會自動帶入，有問題再手動改">
                   <input
                     value={productQuery}
                     onChange={(e) => setProductQuery(e.target.value)}
-                    placeholder="聯電 / 2303 / 0050"
+                    placeholder="聯電 / 2303 / 電子期貨"
                     className="w-full bg-zinc-900 border border-border rounded-lg px-3 py-2 text-sm text-zinc-100"
                   />
                 </Field>
@@ -4294,7 +4325,7 @@ const SettingsTab: React.FC<{
                   <div className="absolute z-10 mt-1 w-full max-h-56 overflow-y-auto rounded-lg border border-border bg-zinc-950/95 shadow-lg divide-y divide-border/60">
                     {productSearchResults.length === 0 ? (
                       <div className="p-3 text-center text-[11px] text-zinc-500">
-                        {stockMargins ? '查無符合的期貨標的' : '期交所資料載入中…'}
+                        {stockMargins && apiMargins ? '查無符合的期貨標的' : '期交所資料載入中…'}
                       </div>
                     ) : productSearchResults.map((entry) => (
                       <button
@@ -4305,9 +4336,11 @@ const SettingsTab: React.FC<{
                       >
                         <span>
                           <span className="text-xs font-semibold text-zinc-200 mr-2">{entry.label}</span>
-                          <span className="text-[10px] text-zinc-500 font-mono">{entry.stockCode}</span>
+                          {entry.stockCode && <span className="text-[10px] text-zinc-500 font-mono">{entry.stockCode}</span>}
                         </span>
-                        <span className="text-[10px] text-zinc-500 font-mono">{entry.code}{entry.kind === 'etf' ? '．ETF' : ''}</span>
+                        <span className="text-[10px] text-zinc-500 font-mono">
+                          {entry.kind === 'index' ? '指數期貨' : `${entry.code}${entry.kind === 'etf' ? '．ETF' : ''}`}
+                        </span>
                       </button>
                     ))}
                   </div>
@@ -4366,6 +4399,16 @@ const SettingsTab: React.FC<{
                     抓到期交所現行值（{newProductLookupCode}，{stockMargins?.etf_date}）：原始 {money(newProductEtfMatch.initial)} ／ 維持 {money(newProductEtfMatch.maintenance)}
                   </div>
                   <button type="button" onClick={applyNewProductEtfMargin} className="px-3 py-1.5 bg-emerald-500/20 border border-emerald-500/40 text-emerald-300 text-[11px] font-semibold rounded-lg hover:bg-emerald-500/30 transition">
+                    套用到上面的保證金欄位
+                  </button>
+                </div>
+              )}
+              {newProductIndexMatch && (
+                <div className="bg-emerald-500/10 border border-emerald-500/30 rounded-lg p-3 space-y-2">
+                  <div className="text-[11px] text-emerald-300">
+                    抓到期交所 indexMarging 現行值（{newProductLookupCode}，{apiMargins?.date}）：原始 {money(newProductIndexMatch.initial)} ／ 維持 {money(newProductIndexMatch.maintenance)}
+                  </div>
+                  <button type="button" onClick={applyNewProductIndexMargin} className="px-3 py-1.5 bg-emerald-500/20 border border-emerald-500/40 text-emerald-300 text-[11px] font-semibold rounded-lg hover:bg-emerald-500/30 transition">
                     套用到上面的保證金欄位
                   </button>
                 </div>

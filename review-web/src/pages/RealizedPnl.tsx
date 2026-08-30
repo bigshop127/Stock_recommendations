@@ -574,7 +574,7 @@ export const RealizedPnl: React.FC = () => {
             <div className="border border-border rounded-xl p-4 bg-zinc-900/40 flex flex-col">
               <div className="text-[11px] text-zinc-500 mb-3">類別占比</div>
               {donutData.length > 0 ? (
-                <div className="flex-1 flex flex-col items-center justify-center gap-4">
+                <div className="flex-1 flex flex-row items-center justify-center gap-4">
                   <div className="relative w-32 h-32 sm:w-36 sm:h-36 shrink-0">
                     <svg viewBox="0 0 36 36" className="w-full h-full -rotate-90">
                       <circle cx="18" cy="18" r="15.9155" fill="none" stroke="#27272a" strokeWidth="4" />
@@ -594,7 +594,7 @@ export const RealizedPnl: React.FC = () => {
                       <span className={`text-sm font-mono font-bold ${pnlCls(totals.net)}`}>{money(totals.net)}</span>
                     </div>
                   </div>
-                  <ul className="space-y-1.5 text-[11px] w-full min-w-0">
+                  <ul className="space-y-1.5 text-[11px] flex-1 min-w-0">
                     {donutData.map((seg) => (
                       <li key={seg.category} className="flex items-center gap-1.5">
                         <span className="w-2 h-2 rounded-full shrink-0" style={{ background: CATEGORY_COLOR[seg.category] }} />
