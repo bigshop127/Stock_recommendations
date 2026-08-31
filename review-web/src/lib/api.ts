@@ -3,6 +3,7 @@
 import type { FuturesEquityRow } from './futures';
 import type { ScanScreen } from './futuresImport';
 import type { StockScanScreen } from './stockRealizedImport';
+import type { HoldingsScanScreen } from './rebalanceHoldingsImport';
 
 const BASE = '/api';
 
@@ -485,6 +486,13 @@ export const api = {
   getRealSyncStatus: () => req<RealSyncStatus>('/rebalance/sync-holdings-status'),
   // 宏觀 regime 指標同步（Yahoo：^IRX / ^TYX / TWD=X）——公開市場資料、不碰交易帳戶【regime-aware】
   getMacroIndicators: () => req<MacroIndicatorsResp>('/rebalance/macro-indicators'),
+  /** 券商 App「庫存查詢」截圖辨識，比照 scanStockRealizedScreens 的做法，用來帶入期初部位 */
+  scanRebalanceHoldingsScreens: (images: { mime: string; data: string }[]) =>
+    req<RebalanceHoldingsOcrResp>('/rebalance/holdings-ocr', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ images }),
+    }),
 
   // 資產變化圖／淨資產快照（gateway 讀寫 data/networth_snapshots.json）
   getNetWorth: () => req<NetWorthResp>('/networth'),
@@ -876,6 +884,13 @@ export interface RebalanceHoldingsSaveResp {
   holdings: RebalanceHoldingsPayload;
   saved_at: string;
   full_inventory?: FullInventory | null;
+}
+export interface RebalanceHoldingsOcrResp {
+  ok: boolean;
+  screens: HoldingsScanScreen[];
+  warnings: string[];
+  model: string;
+  scanned_at: string;
 }
 
 export interface SymbolHit {
