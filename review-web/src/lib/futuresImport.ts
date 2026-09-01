@@ -327,7 +327,10 @@ export function buildImportPlan(
       ops.push({ kind: 'closed_skip', text: `已匯入過，略過：${label}` });
       continue;
     }
-    const hit = closed.find((t) => !matchedExisting.has(t.id) && sameClosed(t, r));
+    // 只拿「沒有 ref 的舊紀錄」（手動輸入的）做內容比對：已經有 ref 的紀錄早就靠
+    // ref 去重過一輪了，若截圖裡有好幾列數值真的完全相同（同一張委託單被交易所拆成
+    // 多筆配對），內容比對會把它們誤判成同一筆而漏掉——ref 的序號後綴才分得出來。
+    const hit = closed.find((t) => !matchedExisting.has(t.id) && !t.ref && sameClosed(t, r));
     if (hit) {
       matchedExisting.add(hit.id);
       ops.push({ kind: 'closed_skip', text: `已有相同紀錄，略過：${label}` });

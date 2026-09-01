@@ -109,6 +109,78 @@ describe('匯入平倉查詢', () => {
     expect(again.ops.every((o) => o.kind === 'closed_skip')).toBe(true);
   });
 
+  it('平倉查詢裡好幾列數值完全相同（同一張委託單被拆成多筆配對）不會被誤判成重複而漏記', () => {
+    // 真實案例：小型元大台灣50ETF 202609 平倉查詢 4 列，序號 1/2/4 委託書號、口數、
+    // 價格、日期全部一樣（都是 61007 / 61649），只有序號 3 是 2 口；總損益 3,080。
+    // 若去重指紋沒有把「第幾次出現」算進去，序號 2、4 會被誤判成序號 1 的重複而漏掉，
+    // 只剩 1 口 + 2 口 = 3 口（這正是使用者回報的症狀）。
+    const dupBase = {
+      product: '小型元大台灣50ETF 202609', month: '202609', side: 'long' as const,
+      entry_price: 105.75, entry_date: '2026-08-31', exit_price: 106.45, exit_date: '2026-09-01',
+      pnl: 700, fee: 80, tax: 4, net_pnl: 616, // 兩腿手續費 40+40、交易稅 2+2 合計後的數字
+    };
+    // 第一次出現的指紋不加序號（維持舊格式），第二次起才補 |1、|2……
+    const rows: ScanClosedRow[] = [
+      { ...dupBase, lots: 1, ref: 'c|2026-09-01|61007|61649|1|105.75|106.45' },
+      { ...dupBase, lots: 1, ref: 'c|2026-09-01|61007|61649|1|105.75|106.45|1' },
+      { ...dupBase, lots: 2, pnl: 1400, fee: 160, tax: 8, net_pnl: 1232, ref: 'c|2026-09-01|61007|61649|2|105.75|106.45' },
+      { ...dupBase, lots: 1, ref: 'c|2026-09-01|61007|61649|1|105.75|106.45|2' },
+    ];
+    const screen4 = screen({ kind: 'closed', title: '期權-平倉查詢', closed_rows: rows, totals: { pnl: 3080, count: 4 } });
+    const plan = buildImportPlan(emptyState(), [screen4], spec, 'SRF', { today: TODAY });
+    expect(plan.next.closed).toHaveLength(4);
+    expect(plan.next.closed.reduce((s, t) => s + t.lots, 0)).toBe(5); // 1+1+2+1
+    expect(plan.cash_delta).toBeCloseTo(3080, 0);
+
+    // 同一張截圖再匯一次也要正確去重（不會因為序號後綴而永遠當成新的）
+    const again = buildImportPlan(plan.next, [screen4], spec, 'SRF', { today: TODAY });
+    expect(again.changed).toBe(false);
+    expect(again.next.closed).toHaveLength(4);
+  });
+
+  it('修好之前就已經漏記過的舊帳（第一次出現用舊格式指紋）：重新匯入同一張截圖只補回漏掉的那 2 口，不會把已經記對的 2 口重複計帳', () => {
+    // 模擬使用者實際遇到的情況：改版前用舊的（會撞號的）邏輯匯過一次，序號 1、3
+    // correctly 進了帳，序號 2、4 被誤判成重複而漏掉。改版後重新匯入同一張截圖，
+    // 序號 1、3 的 ref 沒有序號後綴、跟舊帳裡的 ref 完全一樣 → 應該被認出「已匯入過」；
+    // 序號 2、4 的 ref 帶了新的序號後綴、之前沒出現過 → 應該被新增進去。
+    const priorClosed: ClosedTrade[] = [
+      {
+        id: 'c_old_1', product: 'SRF', month: '202609', side: 'long', lots: 1,
+        entry_price: 105.75, entry_date: '2026-08-31', exit_price: 106.45, exit_date: '2026-09-01',
+        fee: 80, tax: 4, ref: 'c|2026-09-01|61007|61649|1|105.75|106.45',
+      },
+      {
+        id: 'c_old_3', product: 'SRF', month: '202609', side: 'long', lots: 2,
+        entry_price: 105.75, entry_date: '2026-08-31', exit_price: 106.45, exit_date: '2026-09-01',
+        fee: 160, tax: 8, ref: 'c|2026-09-01|61007|61649|2|105.75|106.45',
+      },
+    ];
+    const priorState = emptyState({
+      closed: priorClosed,
+      cash: 616 + 1232, // 舊邏輯只記到序號 1、3 的損益
+      imported_refs: priorClosed.map((t) => t.ref as string),
+    });
+
+    const dupBase = {
+      product: '小型元大台灣50ETF 202609', month: '202609', side: 'long' as const,
+      entry_price: 105.75, entry_date: '2026-08-31', exit_price: 106.45, exit_date: '2026-09-01',
+      pnl: 700, fee: 80, tax: 4, net_pnl: 616,
+    };
+    const rows: ScanClosedRow[] = [
+      { ...dupBase, lots: 1, ref: 'c|2026-09-01|61007|61649|1|105.75|106.45' },
+      { ...dupBase, lots: 1, ref: 'c|2026-09-01|61007|61649|1|105.75|106.45|1' },
+      { ...dupBase, lots: 2, pnl: 1400, fee: 160, tax: 8, net_pnl: 1232, ref: 'c|2026-09-01|61007|61649|2|105.75|106.45' },
+      { ...dupBase, lots: 1, ref: 'c|2026-09-01|61007|61649|1|105.75|106.45|2' },
+    ];
+    const screen4 = screen({ kind: 'closed', title: '期權-平倉查詢', closed_rows: rows, totals: { pnl: 3080, count: 4 } });
+    const plan = buildImportPlan(priorState, [screen4], spec, 'SRF', { today: TODAY });
+
+    expect(plan.next.closed).toHaveLength(4); // 原本 2 筆 + 補回的 2 筆
+    expect(plan.next.closed.reduce((s, t) => s + t.lots, 0)).toBe(5);
+    expect(plan.cash_delta).toBeCloseTo(1232, 0); // 只補回序號 2、4 漏掉的 616+616
+    expect(plan.ops.filter((o) => o.kind === 'closed_skip')).toHaveLength(2); // 序號 1、3 認得出已匯入過
+  });
+
   it('沒有 ref 的舊紀錄靠內容比對也認得出來，不會變成第二筆', () => {
     const manual: ClosedTrade = {
       id: 'c_manual', product: 'SRF', month: '202608', side: 'long', lots: 3,

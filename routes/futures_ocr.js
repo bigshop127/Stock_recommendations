@@ -205,6 +205,10 @@ function leg(raw) {
 
 function normalizeClosed(raw, warnings) {
   const out = [];
+  // 同一張截圖可能有好幾列數值完全相同（交易所把同一張委託單的成交拆成多筆配對列，
+  // 委託書號／價格／口數／日期全部一樣）——這時光靠內容組出來的指紋會撞號，
+  // 用「這個指紋在這張截圖裡是第幾次出現」補一段序號，才不會把真實的不同筆吃成一筆。
+  const seen = new Map();
   for (const r of Array.isArray(raw) ? raw : []) {
     const product = str(r && r.product);
     const month = monthOf(r && r.month, product);
@@ -232,6 +236,13 @@ function normalizeClosed(raw, warnings) {
     const fee = open.fee !== null || close.fee !== null ? (open.fee || 0) + (close.fee || 0) : null;
     const tax = open.tax !== null || close.tax !== null ? (open.tax || 0) + (close.tax || 0) : null;
     const exit_date = closeDate || close.date || open.date;
+    // 去重指紋：平倉日 + 兩張委託書號 + 口數 + 兩腿價格，同一列再截一次圖也會一樣；
+    // 撞號（見上）就補上這張截圖裡的出現序號（第一次出現不加，保留舊格式——這樣
+    // 舊資料已經吃過的指紋不會失效，重掃同一張圖只會把當初漏掉的重複列補回來，
+    // 不會把第一次就吃對的那筆再算一次）。
+    const baseRef = `c|${exit_date}|${close.order_id}|${open.order_id}|${lots}|${open.price}|${close.price}`;
+    const occurrence = seen.get(baseRef) || 0;
+    seen.set(baseRef, occurrence + 1);
     out.push({
       product,
       month,
@@ -245,8 +256,7 @@ function normalizeClosed(raw, warnings) {
       fee,
       tax,
       net_pnl: num(r.net_pnl),
-      // 去重指紋：平倉日 + 兩張委託書號 + 口數 + 兩腿價格，同一列再截一次圖也會一樣
-      ref: `c|${exit_date}|${close.order_id}|${open.order_id}|${lots}|${open.price}|${close.price}`,
+      ref: occurrence > 0 ? `${baseRef}|${occurrence}` : baseRef,
     });
   }
   return out;
