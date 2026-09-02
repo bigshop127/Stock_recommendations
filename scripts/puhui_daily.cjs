@@ -67,23 +67,13 @@ const [Y, M, D] = TARGET_DATE.split('-');
 const DATE_DISPLAY = `${Y}/${M}/${D}`;
 
 // 計算月份內的週數（week-of-month）用於資料夾組織
-// 規則：日期所在 ISO 週的星期一決定歸屬月份；W = 該月第幾個星期一
-// 例：5/04 (Mon) → 2026-05/W1；5/22 (Fri, Mon=5/18) → 2026-05/W3；
-//     5/01 (Fri, Mon=4/27) → 2026-04/W4（孤兒日跟 Monday 走）
+// 規則：純日曆月——日期自己的月份決定歸屬，W1=1~7 日、W2=8~14 日...以此類推。
+// 2026-09-02：舊規則曾用「日期所在 ISO 週的星期一決定歸屬月份」，導致 9/1（週二，
+// 週一=8/31）整週仍歸在 2026-08/W5、月初沒有自動開新資料夾，使用者確認改回純日曆月。
 function getMonthWeek(dateStr) {
   const [y, m, d] = dateStr.split('-').map(Number);
-  const date = new Date(Date.UTC(y, m - 1, d));
-  const dayOfWeek = date.getUTCDay() || 7; // Sun=7
-  const monday = new Date(date);
-  monday.setUTCDate(date.getUTCDate() - dayOfWeek + 1);
-  const year = monday.getUTCFullYear();
-  const month = monday.getUTCMonth() + 1;
-  const mondayDay = monday.getUTCDate();
-  const firstOfMonth = new Date(Date.UTC(year, month - 1, 1));
-  const firstDow = firstOfMonth.getUTCDay() || 7;
-  const firstMondayDay = firstDow === 1 ? 1 : (1 + (8 - firstDow));
-  const weekOfMonth = Math.floor((mondayDay - firstMondayDay) / 7) + 1;
-  return { year, month, weekOfMonth };
+  const weekOfMonth = Math.floor((d - 1) / 7) + 1;
+  return { year: y, month: m, weekOfMonth };
 }
 
 const { year: targetYear, month: targetMonth, weekOfMonth } = getMonthWeek(TARGET_DATE);
@@ -1375,6 +1365,15 @@ async function main() {
   }
   // 清除 UTF-8 替換字元（API 截斷導致的亂碼）
   markdown = markdown.replace(/�/g, '');
+
+  // LLM（尤其 Claude CLI）偶爾會把整篇輸出包在 ```markdown 圍籬裡。若照樣寫入，
+  // 整篇筆記在 Obsidian 會被當成一個大 code block：標題/引用因巢狀語法高亮還看得出格式，
+  // 但表格與內嵌 HTML color span 全變成逐字顯示（2026-09-01 事故，8/27 也中過招）。
+  const fenceMatch = markdown.match(/^```(?:markdown)?\s*\n([\s\S]*?)\n```\s*$/i);
+  if (fenceMatch) {
+    markdown = fenceMatch[1].trim();
+    log('偵測到 AI 輸出整個包在 ```markdown 圍籬中，已自動拆除');
+  }
 
   // 若 AI 沒有加原文連結，補上
   if (articleUrl && !markdown.includes(articleUrl)) {
