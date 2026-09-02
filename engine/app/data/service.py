@@ -7,6 +7,7 @@ live-only（富果，不快取或僅快取歷史日）：book、intraday。
 from __future__ import annotations
 
 import datetime
+import logging
 from datetime import date as _date
 
 import pandas as pd
@@ -24,6 +25,9 @@ from app.data import (
     twse_openapi_client,
     yfinance_client,
 )
+from app.data.http import DataSourceError
+
+log = logging.getLogger(__name__)
 
 
 def _records(df: pd.DataFrame) -> list[dict]:
@@ -383,14 +387,26 @@ def _book_source() -> str:
 
 
 def get_book(code: str) -> dict:
-    """即時最佳五檔（live snapshot，不可回測）。預設 TWSE MIS（免金鑰、官方）。"""
+    """即時最佳五檔（live snapshot，不可回測）。預設 TWSE MIS（免金鑰、官方）。
+
+    book_source=auto 時富果失敗（常見為 429 頻率限制）自動退回 MIS，
+    避免單一數據源被限流就整頁 502（book_source 明確指定 mis/fugle 則不退回，尊重明確指定）。
+    """
     src = _book_source()
-    if src == "fugle":
-        quote = fugle_client.get_quote(code)
-        source = "富果 Fugle intraday/quote"
-    else:
+    if src == "mis":
         quote = twse_mis_client.get_quote(code)
         source = "TWSE MIS getStockInfo（官方、免金鑰）"
+    elif (settings.book_source or "auto").lower() == "auto":
+        try:
+            quote = fugle_client.get_quote(code)
+            source = "富果 Fugle intraday/quote"
+        except DataSourceError as exc:
+            log.warning("Fugle book 失敗（%s），退回 TWSE MIS：%s", code, exc)
+            quote = twse_mis_client.get_quote(code)
+            source = "TWSE MIS getStockInfo（官方、免金鑰；富果限流退回）"
+    else:
+        quote = fugle_client.get_quote(code)
+        source = "富果 Fugle intraday/quote"
     return {
         "code": code,
         "source": source,

@@ -2,7 +2,7 @@ import React, { useEffect, useState, useMemo, useCallback } from 'react';
 import { useParams, Link, useSearchParams } from 'react-router-dom';
 import { api } from '../lib/api';
 import type { StockDetail as IStockDetail, StockChips, StockFundamentals, StockNews, Book, OhlcvRow, CompanyProfile, ShareholdingDispersion, StockHeatmap, HeatmapStock } from '../lib/api';
-import { BarChart2, TrendingUp, Cpu, Newspaper, DollarSign, Users, Info, ArrowLeft, Bell, Trash2 } from 'lucide-react';
+import { BarChart2, TrendingUp, Newspaper, DollarSign, Users, Info, ArrowLeft, Bell, Trash2 } from 'lucide-react';
 import { PriceChart } from '../components/PriceChart';
 import { ChipsCharts } from '../components/ChipsCharts';
 import { StockBriefCard } from '../components/StockBriefCard';
@@ -212,9 +212,6 @@ export const StockDetail: React.FC = () => {
   useEffect(() => {
     setDailyRows(null);
   }, [activeCode]);
-
-  // Refresh & Polling
-  const [autoPoll, setAutoPoll] = useState(false);
 
   // Check if mock mode is requested in Dev env
   const isDev = import.meta.env.DEV;
@@ -705,15 +702,6 @@ export const StockDetail: React.FC = () => {
     }
   };
 
-  // Auto-polling for Book (only active when technical tab is mounted)
-  useEffect(() => {
-    if (!autoPoll || activeTab !== 'technical') return;
-    const interval = setInterval(() => {
-      fetchHeaderAndBook();
-    }, 5000);
-    return () => clearInterval(interval);
-  }, [autoPoll, activeTab, activeCode, useMock]);
-
   // Initial Fetch（換股一律以日K載入，確保摘要卡動能軸/觀察點有日K快照可算；請求數不變）
   useEffect(() => {
     fetchAllData('daily');
@@ -844,98 +832,6 @@ export const StockDetail: React.FC = () => {
             <div className="text-zinc-300 font-semibold mt-0.5">
               {book?.total?.trade_volume !== undefined && book?.total?.trade_volume !== null ? `${book.total.trade_volume.toLocaleString()} 張` : '--'}
             </div>
-          </div>
-        </div>
-      </div>
-    );
-  };
-
-  // Render Order Book
-  const renderOrderBook = () => {
-    if (headerBookState.loading && !headerBookState.data) {
-      return <div className="text-xs text-zinc-500 animate-pulse text-center py-8">載入五檔中...</div>;
-    }
-    if (headerBookState.error) {
-      return (
-        <div className="p-4 border border-bull/20 bg-bull/5 rounded-lg text-center text-xs text-bull">
-          <div>{headerBookState.error}</div>
-          <button onClick={fetchHeaderAndBook} className="mt-2 px-3 py-1 bg-zinc-800 hover:bg-zinc-700 rounded text-[10px] text-zinc-300">重試</button>
-        </div>
-      );
-    }
-    const book = headerBookState.data?.book as any;
-    if (!book) return <div className="text-xs text-zinc-500 text-center py-8">無五檔資料</div>;
-
-    const bids = book.bids || [];
-    const asks = book.asks || [];
-    const prevClose = book.day?.prev_close || 0;
-
-    const allVols = [...bids.map((b: any) => (b.size || 0)), ...asks.map((a: any) => (a.size || 0))];
-    const maxVol = Math.max(...allVols, 1);
-
-    const getPriceColor = (price: number | null) => {
-      if (!price || !prevClose) return 'text-zinc-300';
-      if (price > prevClose) return 'text-bull font-semibold';
-      if (price < prevClose) return 'text-bear font-semibold';
-      return 'text-zinc-400';
-    };
-
-    const totalBidVol = bids.reduce((sum: number, b: any) => sum + (b.size || 0), 0);
-    const totalAskVol = asks.reduce((sum: number, a: any) => sum + (a.size || 0), 0);
-    const totalVol = totalBidVol + totalAskVol || 1;
-    const bidPct = (totalBidVol / totalVol) * 100;
-    const askPct = (totalAskVol / totalVol) * 100;
-
-    const sortedAsks = [...asks].reverse();
-
-    return (
-      <div className="space-y-3 flex-1 flex flex-col justify-between">
-        <div className="space-y-1">
-          {sortedAsks.map((ask: any, idx: number) => {
-            const pct = ((ask.size || 0) / maxVol) * 100;
-            return (
-              <div key={`ask-${idx}`} className="relative flex justify-between items-center text-xs py-0.5 px-2 rounded hover:bg-zinc-800/40">
-                <div className="absolute right-0 top-0 bottom-0 bg-bear/10 transition-all duration-300" style={{ width: `${pct}%`, zIndex: 0 }} />
-                <span className="text-zinc-500 z-10 font-mono">賣 {sortedAsks.length - idx}</span>
-                <span className={`${getPriceColor(ask.price)} z-10 font-mono`}>{ask.price?.toFixed(1) || '--'}</span>
-                <span className="text-zinc-400 z-10 font-mono">{ask.size?.toLocaleString() || '--'}</span>
-              </div>
-            );
-          })}
-        </div>
-
-        <div className="border-t border-b border-border/80 py-1.5 px-2 flex justify-between items-center bg-zinc-950/40 font-mono text-xs my-1">
-          <span className="text-zinc-500">成交</span>
-          <span className={`${getPriceColor(book.last_price || null)} font-bold text-sm`}>
-            {book.last_price?.toFixed(1) || '--'}
-          </span>
-          <span className="text-zinc-500">
-            量: {book.total?.trade_volume?.toLocaleString() || '--'}
-          </span>
-        </div>
-
-        <div className="space-y-1">
-          {bids.map((bid: any, idx: number) => {
-            const pct = ((bid.size || 0) / maxVol) * 100;
-            return (
-              <div key={`bid-${idx}`} className="relative flex justify-between items-center text-xs py-0.5 px-2 rounded hover:bg-zinc-800/40">
-                <div className="absolute right-0 top-0 bottom-0 bg-bull/10 transition-all duration-300" style={{ width: `${pct}%`, zIndex: 0 }} />
-                <span className="text-zinc-500 z-10 font-mono">買 {idx + 1}</span>
-                <span className={`${getPriceColor(bid.price)} z-10 font-mono`}>{bid.price?.toFixed(1) || '--'}</span>
-                <span className="text-zinc-400 z-10 font-mono">{bid.size?.toLocaleString() || '--'}</span>
-              </div>
-            );
-          })}
-        </div>
-
-        <div className="pt-2 border-t border-border/60 mt-2">
-          <div className="flex justify-between text-[10px] text-zinc-500 mb-1 font-mono">
-            <span>委買比 (買氣): {bidPct.toFixed(1)}%</span>
-            <span>委賣比 (賣氣): {askPct.toFixed(1)}%</span>
-          </div>
-          <div className="w-full h-1.5 rounded-full bg-zinc-800 flex overflow-hidden">
-            <div className="bg-bull h-full transition-all duration-300" style={{ width: `${bidPct}%` }} />
-            <div className="bg-bear h-full transition-all duration-300" style={{ width: `${askPct}%` }} />
           </div>
         </div>
       </div>
@@ -2903,9 +2799,9 @@ export const StockDetail: React.FC = () => {
         )}
 
         {activeTab === 'technical' && (
-          <div className="grid grid-cols-1 xl:grid-cols-4 gap-6">
+          <div className="grid grid-cols-1 gap-6">
             {/* K-line Chart */}
-            <div className="xl:col-span-3 bg-card border border-border rounded-xl p-6 flex flex-col justify-between min-h-[560px]">
+            <div className="bg-card border border-border rounded-xl p-6 flex flex-col justify-between min-h-[560px]">
               <div className="flex items-center justify-between border-b border-border/60 pb-3 mb-4 flex-wrap gap-2">
                 <div className="flex items-center gap-2">
                   <BarChart2 className="w-5 h-5 text-primary" />
@@ -2946,71 +2842,6 @@ export const StockDetail: React.FC = () => {
                 ) : (
                   <div className="text-center py-16 text-zinc-500 text-xs">無圖表資料</div>
                 )}
-              </div>
-            </div>
-
-            {/* Right Column: AI Decision & Order Book */}
-            <div className="flex flex-col gap-6">
-              {/* AI Decision */}
-              <div className="bg-card border border-border rounded-xl p-4 flex flex-col">
-                <div className="flex items-center gap-2 mb-3 border-b border-border/60 pb-2">
-                  <Cpu className="w-4 h-4 text-primary" />
-                  <h3 className="font-semibold text-xs text-zinc-200">AI 交易決策訊號</h3>
-                </div>
-                {signalState.loading ? (
-                  <div className="text-xs text-zinc-500 animate-pulse text-center py-8">載入交易決策中...</div>
-                ) : signalState.error ? (
-                  <div className="p-4 border border-bull/20 bg-bull/5 rounded-lg text-center text-xs text-bull">
-                    <div>{signalState.error}</div>
-                    <button onClick={fetchSignal} className="mt-2 px-3 py-1 bg-zinc-800 hover:bg-zinc-750 rounded text-[10px] text-zinc-300">重試</button>
-                  </div>
-                ) : signalState.data ? (
-                  <div className="space-y-2 flex-1 flex flex-col justify-between">
-                    <div className="space-y-2">
-                      <div className="flex justify-between items-center p-2.5 rounded-lg bg-zinc-950/40 border border-border/30">
-                        <span className="text-xs text-zinc-400">波段決策 (Swing)</span>
-                        <span className={`text-xs font-semibold px-2 py-0.5 rounded ${signalState.data.swing.action === 'BUY' ? 'bg-bull/10 text-bull' : signalState.data.swing.action === 'SELL' ? 'bg-bear/10 text-bear' : 'bg-zinc-800 text-zinc-400'}`}>
-                          {signalState.data.swing.action} ({signalState.data.swing.score}分)
-                        </span>
-                      </div>
-                      <div className="flex justify-between items-center p-2.5 rounded-lg bg-zinc-950/40 border border-border/30">
-                        <span className="text-xs text-zinc-400">當沖決策 (Daytrade)</span>
-                        <span className={`text-xs font-semibold px-2 py-0.5 rounded ${signalState.data.daytrade.action === 'BUY' ? 'bg-bull/10 text-bull' : signalState.data.daytrade.action === 'SELL' ? 'bg-bear/10 text-bear' : 'bg-zinc-800 text-zinc-400'}`}>
-                          {signalState.data.daytrade.action} ({signalState.data.daytrade.score}分)
-                        </span>
-                      </div>
-                      <div className="flex justify-between items-center p-2.5 rounded-lg bg-primary/5 border border-primary/20">
-                        <span className="text-xs font-semibold text-zinc-200">融合訊號 (Blended)</span>
-                        <span className="text-sm font-bold text-primary font-mono">{signalState.data.blended.action} ({signalState.data.blended.score}分)</span>
-                      </div>
-                    </div>
-                    <div className="mt-2 pt-2 border-t border-border/40 text-[10px] text-zinc-500 font-mono text-right">
-                      更新於: {new Date(signalState.data.generated_at || '').toLocaleString()}
-                    </div>
-                  </div>
-                ) : (
-                  <div className="text-xs text-zinc-500 text-center py-8">無決策資料</div>
-                )}
-              </div>
-
-              {/* Best 5 Order Book */}
-              <div className="bg-card border border-border rounded-xl p-4 flex flex-col flex-1">
-                <div className="flex items-center justify-between border-b border-border/60 pb-2 mb-3">
-                  <div className="flex items-center gap-2">
-                    <TrendingUp className="w-4 h-4 text-primary" />
-                    <h3 className="font-semibold text-xs text-zinc-200">即時最佳五檔</h3>
-                  </div>
-                  <label className="flex items-center gap-1.5 cursor-pointer text-[10px] text-zinc-400 select-none">
-                    <input
-                      type="checkbox"
-                      checked={autoPoll}
-                      onChange={(e) => setAutoPoll(e.target.checked)}
-                      className="rounded border-zinc-800 bg-zinc-950 text-primary focus:ring-0 focus:ring-offset-0 w-3 h-3"
-                    />
-                    <span>自動更新(5s)</span>
-                  </label>
-                </div>
-                {renderOrderBook()}
               </div>
             </div>
           </div>

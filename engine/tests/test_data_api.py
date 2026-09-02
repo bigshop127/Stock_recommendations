@@ -139,6 +139,28 @@ def test_book_uses_fugle_when_forced(monkeypatch):
     assert body["book"]["bids"][0]["price"] == 611
 
 
+def test_book_auto_falls_back_to_mis_when_fugle_fails(monkeypatch):
+    # auto 模式下富果失敗（如 429 限流）→ 自動退回 MIS，不整頁 502
+    from app.data.http import DataSourceError
+
+    monkeypatch.setattr(settings, "book_source", "auto")
+    monkeypatch.setattr(settings, "fugle_api_key", "dummy")
+
+    def _boom(code):
+        raise DataSourceError("429 from https://api.fugle.tw/...")
+    monkeypatch.setattr(fugle_client, "get_quote", _boom)
+    monkeypatch.setattr(
+        twse_mis_client, "get_quote",
+        lambda code: {"code": code, "last_price": 973.0, "bids": [{"price": 972, "size": 5}],
+                      "asks": [{"price": 973, "size": 3}], "live_only": True},
+    )
+    r = client.get("/data/book", params={"code": "3037"})
+    assert r.status_code == 200
+    body = r.json()
+    assert "MIS" in body["source"]
+    assert body["book"]["last_price"] == 973.0
+
+
 def test_market_snapshot(monkeypatch):
     monkeypatch.setattr(
         yfinance_client, "get_market_snapshot",

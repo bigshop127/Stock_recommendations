@@ -497,8 +497,9 @@ function liveTimeFromClock(ctime, nowMs = Date.now()) {
 }
 
 function monthToSymbol(contract, monthStr) {
-  const misCode = CONTRACT_TO_MIS[contract];
-  if (!misCode) return null;
+  // 有明確對應表就用（TX/MTX 等日報代碼跟 MIS 根碼不同）；查無表則假設兩者相同——
+  // 個股期貨（如 GRF）日報 Contract 本身就是 MIS 根碼，經 GRFI6-F 實測核對過。
+  const misCode = CONTRACT_TO_MIS[contract] || contract;
   const year = parseInt(monthStr.slice(0, 4), 10);
   const monthNum = parseInt(monthStr.slice(4, 6), 10);
   if (!Number.isFinite(year) || !Number.isFinite(monthNum) || monthNum < 1 || monthNum > 12) return null;
@@ -565,11 +566,11 @@ function parseRows(rows, contract) {
 // GET /api/futures/quote?contract=SRF
 // 回傳該商品所有到期月份的每日行情與即時報價。前端拿來填現價、列到期月份選單、算轉倉價差。
 router.get('/api/futures/quote', async (req, res) => {
-  const contract = (str(req.query.contract, 'SRF') || 'SRF').toUpperCase().slice(0, 6);
+  const rawContract = (str(req.query.contract, 'SRF') || 'SRF').toUpperCase().slice(0, 6);
   const now = Date.now();
 
-  // 1. Cache hit check
-  const cached = liveQuoteCache[contract];
+  // 1. Cache hit check（快取鍵用使用者輸入的原始代碼，不管後面解析成哪個實際 Contract）
+  const cached = liveQuoteCache[rawContract];
   if (cached) {
     const cachedTpe = new Date(cached.at + 8 * 3600 * 1000);
     const currentTpe = new Date(now + 8 * 3600 * 1000);
@@ -590,6 +591,7 @@ router.get('/api/futures/quote', async (req, res) => {
 
   let months = [];
   let date = '';
+  let contract = rawContract;
 
   // 2. Fetch or reuse daily market report
   try {
@@ -606,13 +608,26 @@ router.get('/api/futures/quote', async (req, res) => {
       dailyRawCache = { at: now, rows: await r.json() };
     }
 
-    months = parseRows(dailyRawCache.rows, contract);
+    months = parseRows(dailyRawCache.rows, rawContract);
+
+    // 個股期貨：taifex.com.tw/cht/2/stockLists 給的「商品代碼」是 2 碼根碼（如 GR），
+    // 但 DailyMarketReportFut／MIS 的 Contract 實際上是根碼＋'F'（GRF，經 GRFI6-F 實測核對）。
+    // 使用者存的 quote_contract 可能是任一種，這裡兩種都試，先直接命中者優先。
+    if (!months.length && !rawContract.endsWith('F')) {
+      const withF = `${rawContract}F`;
+      const monthsWithF = parseRows(dailyRawCache.rows, withF);
+      if (monthsWithF.length > 0) {
+        months = monthsWithF;
+        contract = withF;
+      }
+    }
+
     if (months.length > 0) {
       date = months[0].date;
     }
 
     if (!months.length) {
-      return sendError(res, httpError(404, 'TAIFEX', `期交所今日行情沒有 ${contract} 的資料`));
+      return sendError(res, httpError(404, 'TAIFEX', `期交所今日行情沒有 ${rawContract} 的資料`));
     }
   } catch (err) {
     return sendError(res, httpError(502, 'TAIFEX', '抓取期交所行情失敗: ' + err.message));
@@ -630,8 +645,8 @@ router.get('/api/futures/quote', async (req, res) => {
     live_ask: null
   }));
 
-  // 3. Fetch live details from MIS
-  const misCode = CONTRACT_TO_MIS[contract];
+  // 3. Fetch live details from MIS（同 monthToSymbol：查無明確對應表就假設日報 Contract＝MIS 根碼）
+  const misCode = CONTRACT_TO_MIS[contract] || contract;
   if (misCode) {
     try {
       const symbolIDs = [];
@@ -765,8 +780,8 @@ router.get('/api/futures/quote', async (req, res) => {
     fetched_at: new Date().toISOString(),
   };
 
-  // Store to cache
-  liveQuoteCache[contract] = {
+  // Store to cache（鍵用 rawContract，跟命中檢查對齊，個股期貨 GR→GRF 解析後才不會每次都被當快取未命中）
+  liveQuoteCache[rawContract] = {
     at: now,
     data,
     live_as_of

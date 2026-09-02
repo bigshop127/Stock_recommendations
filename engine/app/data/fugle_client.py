@@ -68,6 +68,12 @@ def get_quote(code: str) -> dict:
             "trade_value": total.get("tradeValue"),
         },
         "inner_outer": {"at_bid": inner, "at_ask": outer},
+        "day": {
+            "open": payload.get("openPrice"),
+            "high": payload.get("highPrice"),
+            "low": payload.get("lowPrice"),
+            "prev_close": payload.get("previousClose"),
+        },
         "is_intraday": payload.get("isIntraday"),
         "live_only": True,
         "raw": payload,
