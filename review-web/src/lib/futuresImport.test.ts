@@ -181,6 +181,53 @@ describe('匯入平倉查詢', () => {
     expect(plan.ops.filter((o) => o.kind === 'closed_skip')).toHaveLength(2); // 序號 1、3 認得出已匯入過
   });
 
+  it('委託書號這次沒讀到、ref 對不上舊紀錄時，內容比對安全網要接住，不能重複計帳（2026-09-02 事故重現）', () => {
+    // 真實事故：舊帳的 3 筆紀錄委託書號辨識正常、ref 帶著 61007/61649。同一張截圖
+    // 隔天重新匯入，這次委託書號整欄辨識成空白，ref 因此完全不一樣（見
+    // routes/futures_ocr.js 已經拿掉委託書號當指紋，但舊資料庫裡還留著舊格式的
+    // ref，這個情境就是在模擬「舊格式 ref 對不上新格式 ref」）。若安全網仍然只認
+    // 「沒有 ref 的舊紀錄」，這 3 筆會被當成全新交易，現金餘額多記一次 3,080。
+    const priorClosed: ClosedTrade[] = [
+      {
+        id: 'c_old_1', product: 'SRF', month: '202609', side: 'long', lots: 1,
+        entry_price: 105.75, entry_date: '2026-08-31', exit_price: 106.45, exit_date: '2026-09-01',
+        fee: 80, tax: 4, ref: 'c|2026-09-01|61007|61649|1|105.75|106.45',
+      },
+      {
+        id: 'c_old_2', product: 'SRF', month: '202609', side: 'long', lots: 1,
+        entry_price: 105.75, entry_date: '2026-08-31', exit_price: 106.45, exit_date: '2026-09-01',
+        fee: 80, tax: 4, ref: 'c|2026-09-01|61007|61649|1|105.75|106.45|1',
+      },
+      {
+        id: 'c_old_3', product: 'SRF', month: '202609', side: 'long', lots: 2,
+        entry_price: 105.75, entry_date: '2026-08-31', exit_price: 106.45, exit_date: '2026-09-01',
+        fee: 160, tax: 8, ref: 'c|2026-09-01|61007|61649|2|105.75|106.45',
+      },
+    ];
+    const priorState = emptyState({
+      closed: priorClosed,
+      cash: 616 + 616 + 1232,
+      imported_refs: priorClosed.map((t) => t.ref as string),
+    });
+
+    const dupBase = {
+      product: '小型元大台灣50ETF 202609', month: '202609', side: 'long' as const,
+      entry_price: 105.75, entry_date: '2026-08-31', exit_price: 106.45, exit_date: '2026-09-01',
+      pnl: 700, fee: 80, tax: 4, net_pnl: 616,
+    };
+    const rows: ScanClosedRow[] = [
+      { ...dupBase, lots: 1, ref: 'c|2026-09-01|||1|105.75|106.45' },
+      { ...dupBase, lots: 1, ref: 'c|2026-09-01|||1|105.75|106.45|1' },
+      { ...dupBase, lots: 2, pnl: 1400, fee: 160, tax: 8, net_pnl: 1232, ref: 'c|2026-09-01|||2|105.75|106.45' },
+    ];
+    const screen5 = screen({ kind: 'closed', title: '期權-平倉查詢', closed_rows: rows, totals: { pnl: 3080, count: 3 } });
+    const plan = buildImportPlan(priorState, [screen5], spec, 'SRF', { today: TODAY });
+
+    expect(plan.next.closed).toHaveLength(3); // 內容比對接住，不會變成 6 筆
+    expect(plan.cash_delta).toBe(0);
+    expect(plan.ops.filter((o) => o.kind === 'closed_skip')).toHaveLength(3);
+  });
+
   it('沒有 ref 的舊紀錄靠內容比對也認得出來，不會變成第二筆', () => {
     const manual: ClosedTrade = {
       id: 'c_manual', product: 'SRF', month: '202608', side: 'long', lots: 3,
@@ -427,7 +474,9 @@ describe('gateway 截圖辨識的正規化', () => {
       exit_price: 104.15, exit_date: '2026-08-11',
       fee: 240, tax: 12, net_pnl: 798,
     });
-    expect(s.closed_rows[0].ref).toContain('61303');
+    // ref 刻意不含委託書號（61303/63077）——那欄位辨識最不穩，指紋只靠模型讀得穩的
+    // 日期／口數／價格組成，見 normalizeClosed() 上方註解與 2026-09-02 事故記錄。
+    expect(s.closed_rows[0].ref).toBe('c|2026-08-11|2026-08-04|3|103.8|104.15');
   });
 
   it('平倉查詢：先賣後買＝空單', () => {

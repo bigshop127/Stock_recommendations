@@ -17,7 +17,10 @@
  *   兩者對不起來時**不默默選一邊**，而是把差異攤在畫面上，讓使用者決定要不要以快照覆寫。
  *
  * 重複匯入是常態（同一天可能截好幾次圖），所以每一步都要能問「這筆我吃過了嗎」：
- *   優先比對 `ref`（成交時間＋委託書號組成的指紋），沒有 ref 才退回內容比對。
+ *   優先比對 `ref`（成交時間或平倉日＋口數＋價格組成的指紋），對不上再退回內容比對
+ *   （月份／方向／口數／日期／價格容差內相同）當安全網——ref 靠 OCR 讀對每個欄位，
+ *   OCR 偶爾會漏讀（委託書號最常見），指紋對不上不代表真的是新交易，內容比對兜底
+ *   才不會讓辨識不穩定變成重複記帳。
  */
 import {
   closeLots, closedPnl, positionPnl, findPreset,
@@ -319,18 +322,29 @@ export function buildImportPlan(
     .slice()
     .sort((a, b) => (a.exit_date < b.exit_date ? -1 : a.exit_date > b.exit_date ? 1 : 0));
 
+  // ref 比對是主要路徑（快、準），內容比對只是安全網——但安全網要對「這次匯入前
+  // 已經存在的紀錄」找，不能對這次迴圈中途才 push 進去的新紀錄找：截圖裡若有好幾列
+  // 數值真的完全相同（同一張委託單被交易所拆成多筆配對），這些新記錄彼此內容相同，
+  // 對著同一份會被邊跑邊長大的陣列找內容比對，會把第 2、3 筆誤判成第 1 筆的重複而
+  // 漏記——這是 2026-09-01 那次修復過的舊 bug，重點是「安全網只認匯入前的舊帳」。
+  const existingClosed = closed.slice();
   const matchedExisting = new Set<string>();
   for (const r of closedRows) {
     const label = `${mLabel(r.month)} ${sLabel(r.side)} ${r.lots} 口 ${px(r.entry_price)} → ${px(r.exit_price)}（${r.exit_date}）`;
 
     if (r.ref && refsInUse.has(r.ref)) {
+      // 這筆是靠 ref 認出來的，把它對應的既有紀錄也標記起來——不然底下的內容比對
+      // 安全網不知道這筆已經被 ref 路徑吃過，可能把後面另一列新交易誤判成它的重複。
+      const already = existingClosed.find((t) => t.ref === r.ref);
+      if (already) matchedExisting.add(already.id);
       ops.push({ kind: 'closed_skip', text: `已匯入過，略過：${label}` });
       continue;
     }
-    // 只拿「沒有 ref 的舊紀錄」（手動輸入的）做內容比對：已經有 ref 的紀錄早就靠
-    // ref 去重過一輪了，若截圖裡有好幾列數值真的完全相同（同一張委託單被交易所拆成
-    // 多筆配對），內容比對會把它們誤判成同一筆而漏掉——ref 的序號後綴才分得出來。
-    const hit = closed.find((t) => !matchedExisting.has(t.id) && !t.ref && sameClosed(t, r));
+    // 內容比對現在不管舊紀錄有沒有 ref 都會比：ref 對不上不代表這筆真的是新交易，
+    // 也可能是委託書號這種辨識不穩的欄位這次沒讀到、指紋因此變了（2026-09-02
+    // 「已實現損益重複計算」事故的根因）——安全網要接住這種情況，不能因為舊紀錄
+    // 已經有 ref 就假設它一定跟 ref 相符的才算數。
+    const hit = existingClosed.find((t) => !matchedExisting.has(t.id) && sameClosed(t, r));
     if (hit) {
       matchedExisting.add(hit.id);
       ops.push({ kind: 'closed_skip', text: `已有相同紀錄，略過：${label}` });

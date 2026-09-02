@@ -208,6 +208,13 @@ function normalizeClosed(raw, warnings) {
   // 同一張截圖可能有好幾列數值完全相同（交易所把同一張委託單的成交拆成多筆配對列，
   // 委託書號／價格／口數／日期全部一樣）——這時光靠內容組出來的指紋會撞號，
   // 用「這個指紋在這張截圖裡是第幾次出現」補一段序號，才不會把真實的不同筆吃成一筆。
+  //
+  // ⚠️ 指紋刻意不放委託書號：委託書號是這張截圖裡辨識最不穩的欄位（實測同一張圖
+  // 重掃會忽而讀到完整號碼、忽而截斷、忽而整欄空白），一旦當成指紋的一部分，
+  // 只要某次沒讀到就會產生一組全新指紋、把整批交易的已實現損益再記一次——這正是
+  // 2026-09-02 那次「已實現損益重複計算」事故的根因（同一批交易被記了兩三次，
+  // 現金餘額灌水 7 萬多元）。日期／口數／價格是模型讀得穩的欄位，光靠它們＋出現
+  // 序號就足夠分辨「同一張委託單拆出的多筆配對列」，不需要委託書號。
   const seen = new Map();
   for (const r of Array.isArray(raw) ? raw : []) {
     const product = str(r && r.product);
@@ -236,11 +243,11 @@ function normalizeClosed(raw, warnings) {
     const fee = open.fee !== null || close.fee !== null ? (open.fee || 0) + (close.fee || 0) : null;
     const tax = open.tax !== null || close.tax !== null ? (open.tax || 0) + (close.tax || 0) : null;
     const exit_date = closeDate || close.date || open.date;
-    // 去重指紋：平倉日 + 兩張委託書號 + 口數 + 兩腿價格，同一列再截一次圖也會一樣；
+    // 去重指紋：平倉日 + 建倉日 + 口數 + 兩腿價格，同一列再截一次圖也會一樣；
     // 撞號（見上）就補上這張截圖裡的出現序號（第一次出現不加，保留舊格式——這樣
     // 舊資料已經吃過的指紋不會失效，重掃同一張圖只會把當初漏掉的重複列補回來，
     // 不會把第一次就吃對的那筆再算一次）。
-    const baseRef = `c|${exit_date}|${close.order_id}|${open.order_id}|${lots}|${open.price}|${close.price}`;
+    const baseRef = `c|${exit_date}|${open.date || ''}|${lots}|${open.price}|${close.price}`;
     const occurrence = seen.get(baseRef) || 0;
     seen.set(baseRef, occurrence + 1);
     out.push({
