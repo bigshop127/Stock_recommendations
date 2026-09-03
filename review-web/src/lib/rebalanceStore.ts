@@ -1,7 +1,6 @@
 import {
   aggregatePortfolio,
   BOND_ETFS,
-  DEFAULT_BOND_SPLIT,
   DEFAULT_CASH_RESERVE,
   DEFAULT_BOND_PRIORITY,
   DEFAULT_MACRO_THRESHOLDS,
@@ -37,8 +36,7 @@ export interface RebalanceConfig {
   cash: number;                  // 閒置現金（衍生：期初現金 − 全部買進 ＋ 全部賣出，clamp≥0，唯讀）【增修H/I】
   bonds: BondHolding[];          // 防守端債券 ETF（00687B / 00953B）【增修I】
   cash_reserve: number;          // 固定保留現金（預設 100,000）【增修I】
-  bond_split: number;            // 債券池中 00687B 佔比（預設 0.6 → 6:4）【增修I】
-  bond_priority: BondPriority;   // 變現優先順序（預設 'regime_aware'）【regime-aware】
+  bond_priority: BondPriority;   // 變現／回補優先順序（預設 'regime_aware'）【regime-aware／2026-09 單一優先回補】
   macro: MacroState;             // 宏觀 regime 指標（Fed 利率 / 長天期美債殖利率 / 匯率）【regime-aware】
   target_beta: number;           // 預設 1.3
   tolerance_mode: 'pct' | 'abs'; // 容忍口徑，預設 'abs'
@@ -46,9 +44,9 @@ export interface RebalanceConfig {
   threshold_abs: number;         // 預設 0.1
   etf_beta: number;              // 預設 2.0
   tier1_dd: number;              // 預設 0.10
-  tier2_dd: number;              // 預設 0.15
-  tier3_dd: number;              // 預設 0.20
-  beta_mid: number;              // 小股災中繼目標 β，預設 1.75
+  tier2_dd: number;              // 預設 0.25【2026-09 優化兩階】
+  tier3_dd: number;              // 預設 0.28【2026-09 優化兩階】
+  beta_mid: number;              // 小股災中繼目標 β，預設 1.6【2026-09 優化兩階】
   // 買賣報價單機制（多資產：trade.code 缺省＝00631L）
   opening: { shares: number; avg_cost: number; cash: number; bonds: OpeningBond[] }; // 期初部位【增修H/I】
   trades: Trade[];               // 買賣紀錄（可增刪）
@@ -62,7 +60,6 @@ const SEED_CONFIG: RebalanceConfig = {
   cash: 0,
   bonds: BOND_ETFS.map((b) => ({ code: b.code, shares: 0, avg_cost: 0, price: 0 })),
   cash_reserve: DEFAULT_CASH_RESERVE,
-  bond_split: DEFAULT_BOND_SPLIT,
   bond_priority: DEFAULT_BOND_PRIORITY,
   macro: { thresholds: { ...DEFAULT_MACRO_THRESHOLDS }, combination: 'any' },
   target_beta: 1.3,
@@ -71,9 +68,9 @@ const SEED_CONFIG: RebalanceConfig = {
   threshold_abs: 0.1,
   etf_beta: 2.0,
   tier1_dd: 0.10,
-  tier2_dd: 0.15,
-  tier3_dd: 0.20,
-  beta_mid: 1.75,
+  tier2_dd: 0.25,
+  tier3_dd: 0.28,
+  beta_mid: 1.6,
   opening: {
     shares: 0,
     avg_cost: 0,
@@ -262,7 +259,6 @@ function normalizeConfig(parsed: Record<string, unknown>): RebalanceConfig {
     cash: Math.max(0, agg.cash), // 衍生【增修H/I】（負值 clamp 0，UI 另行警示）
     bonds,
     cash_reserve: Math.max(0, safeNumber(parsed.cash_reserve, DEFAULT_CASH_RESERVE)),
-    bond_split: Math.min(1, Math.max(0, safeNumber(parsed.bond_split, DEFAULT_BOND_SPLIT))),
     bond_priority: safeBondPriority(parsed.bond_priority),
     macro: sanitizeMacro(parsed.macro),
     target_beta: safeNumber(parsed.target_beta, SEED_CONFIG.target_beta),

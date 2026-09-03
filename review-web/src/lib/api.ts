@@ -813,8 +813,7 @@ export interface RebalanceHoldingsPayload {
   cash: number;         // 衍生【增修H】（期初現金 − 買進 ＋ 賣出，伺服端會再重算）
   bonds: RebalanceBondHolding[]; // 防守端債券 ETF（00687B / 00953B）【增修I】
   cash_reserve: number; // 固定保留現金【增修I】
-  bond_split: number;   // 債券池 00687B 佔比【增修I】
-  bond_priority?: 'bond1_first' | 'bond2_first' | 'regime_aware'; // 變現優先順序【regime-aware】
+  bond_priority?: 'bond1_first' | 'bond2_first' | 'regime_aware'; // 變現／回補優先順序【regime-aware／2026-09 單一優先回補】
   macro?: {             // 宏觀 regime 指標與門檻【regime-aware】
     fed_rate?: { current: number | null; reference: number | null; as_of?: string; ref_date?: string };
     treasury_yield?: { current: number | null; reference: number | null; as_of?: string; ref_date?: string };

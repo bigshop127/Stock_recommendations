@@ -458,7 +458,7 @@
 
 ### 2.13 再平衡持倉雲端同步 `/api/rebalance/holdings`
 * **Method**: `GET` / `POST`
-* **Description**: 個人「00631L 正2＋防守端」再平衡持倉的雲端持久化。gateway 純檔案讀寫 `data/rebalance_holdings.json`（不經 engine），**與背景告警腳本 `scripts/rebalance_alert.cjs` 讀的是同一份檔**。POST 一律伺服端 sanitize＋重算衍生 `shares`/`avg_cost`/`cash`/`bonds[].shares`/`bonds[].avg_cost`（＝`aggregatePortfolio`：期初部位＋trades 全域按日累算——均價各檔加權平均；**【增修H/I】現金為全資產共用池＝期初現金 − 買進金額 ＋ 賣出金額**（任一標的買扣賣加、未計手續費，負值 clamp 0），並以原子寫入（`.tmp`→rename）避免告警腳本讀到寫一半的檔。**【增修I】防守端**：固定保留現金 `cash_reserve`（預設 100,000）＋剩餘依 `bond_split` 分配債券池（00687B 佔比，預設 0.6 → 00687B:00953B＝6:4）；β 計算時現金與債券市值皆視為 β=0。**遷移**：`opening` 無 `cash` 欄位的舊檔以頂層 `cash` 作為期初現金；無 `bonds` 欄位補零持倉；trades 缺 `code` 視為 `00631L`。免登入個人自用、僅走內網/`ssh -L`；持倉檔已 gitignore（含財務數字不進版控）。`locked` 純供前端顯示鎖定狀態用，告警腳本 `rebalance_alert.cjs` 不讀取此欄位、其每日試算不受鎖定影響。
+* **Description**: 個人「00631L 正2＋防守端」再平衡持倉的雲端持久化。gateway 純檔案讀寫 `data/rebalance_holdings.json`（不經 engine），**與背景告警腳本 `scripts/rebalance_alert.cjs` 讀的是同一份檔**。POST 一律伺服端 sanitize＋重算衍生 `shares`/`avg_cost`/`cash`/`bonds[].shares`/`bonds[].avg_cost`（＝`aggregatePortfolio`：期初部位＋trades 全域按日累算——均價各檔加權平均；**【增修H/I】現金為全資產共用池＝期初現金 − 買進金額 ＋ 賣出金額**（任一標的買扣賣加、未計手續費，負值 clamp 0），並以原子寫入（`.tmp`→rename）避免告警腳本讀到寫一半的檔。**【增修I／2026-09 單一優先回補】防守端**：固定保留現金 `cash_reserve`（預設 100,000）＋剩餘單一優先回補（只買一檔，優先順序與 `bond_priority` 的變現順序方向相反；另一檔僅在優先檔被鎖定時才承接）；β 計算時現金與債券市值皆視為 β=0。**遷移**：`opening` 無 `cash` 欄位的舊檔以頂層 `cash` 作為期初現金；無 `bonds` 欄位補零持倉；trades 缺 `code` 視為 `00631L`。免登入個人自用、僅走內網/`ssh -L`；持倉檔已 gitignore（含財務數字不進版控）。`locked` 純供前端顯示鎖定狀態用，告警腳本 `rebalance_alert.cjs` 不讀取此欄位、其每日試算不受鎖定影響。
 * **GET Response (200 OK)**：
 ```json
 {
@@ -469,7 +469,7 @@
       { "code": "00687B", "shares": 5000, "avg_cost": 28.1, "price": 28.07 },
       { "code": "00953B", "shares": 6000, "avg_cost": 9.6, "price": 9.63 }
     ],
-    "cash_reserve": 100000, "bond_split": 0.6,
+    "cash_reserve": 100000,
     "locked": { "cash": false, "bonds": { "00687B": false, "00953B": false } },
     "target_beta": 1.3, "tolerance_mode": "abs", "threshold_abs": 0.1,
     "threshold_pct": 10, "etf_beta": 2.0,

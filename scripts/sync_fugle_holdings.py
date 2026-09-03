@@ -242,7 +242,6 @@ def build_payload(positions, cash, prior, settlement=None, full_inventory=None):
         "price": etf_pos["market_price"] or prior.get("price", 0),
         "bonds": bonds_payload,
         "cash_reserve": prior.get("cash_reserve", 100000),
-        "bond_split": prior.get("bond_split", 0.6),
         "target_beta": prior.get("target_beta", 1.3),
         "tolerance_mode": prior.get("tolerance_mode", "abs"),
         "threshold_pct": prior.get("threshold_pct", 10),

@@ -32,7 +32,6 @@ const BOND_ETFS = [
   { code: '00953B', name: '群益優選非投等債' },
 ];
 const DEFAULT_CASH_RESERVE = 100000;
-const DEFAULT_BOND_SPLIT = 0.6;
 // 【regime-aware 2026-07-25】宏觀 regime 門檻預設（與 review-web/src/lib/rebalance.ts 對齊）
 const DEFAULT_MACRO_THRESHOLDS = { fed_rate_rise: 1.0, treasury_yield_rise: 0.75, fx_rise_pct: 5 };
 
@@ -260,7 +259,6 @@ function sanitizeHoldings(body) {
     cash: Math.max(0, agg.cash), // 衍生【增修H/I】（告警腳本讀這個；負值 clamp 0）
     bonds,                       // 【增修I】告警腳本也讀（β 分母含債券市值）
     cash_reserve: Math.max(0, safeNum(b.cash_reserve, DEFAULT_CASH_RESERVE)),
-    bond_split: Math.min(1, Math.max(0, safeNum(b.bond_split, DEFAULT_BOND_SPLIT))),
     bond_priority: safeBondPriority(b.bond_priority),
     macro: sanitizeMacro(b.macro),
     locked: {

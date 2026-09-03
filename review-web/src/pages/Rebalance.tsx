@@ -554,7 +554,6 @@ export function Rebalance() {
         cash: cfg.cash,
         bonds: cfg.bonds,
         cash_reserve: cfg.cash_reserve,
-        bond_split: cfg.bond_split,
         bond_priority: cfg.bond_priority,
         macro: cfg.macro,
         locked: cfg.locked,
@@ -729,7 +728,7 @@ export function Rebalance() {
     });
   };
 
-  // 即時計算結果（config.bonds 形狀即 BondInput[]，cash_reserve / bond_split 一併傳入）
+  // 即時計算結果（config.bonds 形狀即 BondInput[]，cash_reserve 一併傳入）
   const result: RebalanceResult = useMemo(() => {
     return computeRebalance(config);
   }, [config]);
@@ -848,7 +847,7 @@ export function Rebalance() {
     applyConfig({ opening: plan.next_opening });
   };
 
-  // updateConfig：供上方兩張卡（目標β/容忍/etf_beta/bond_split）沿用
+  // updateConfig：供上方兩張卡（目標β/容忍/etf_beta）沿用
   const updateConfig = (partial: Partial<RebalanceConfig>) => {
     applyConfig(partial);
   };
@@ -994,7 +993,7 @@ export function Rebalance() {
             00631L「正2 + 防守端」再平衡計算機
           </h1>
           <p className="text-xs text-zinc-400 mt-1">
-            透過 00631L（β≈2.0）與防守端（固定現金 ${config.cash_reserve.toLocaleString()} ＋ 債券池 {BOND_ETFS[0].code}:{BOND_ETFS[1].code}＝{Math.round(config.bond_split * 100)}:{Math.round((1 - config.bond_split) * 100)}，皆視為 β=0）控管投組風險。不擇時，僅於 Beta 偏離過大時進行高賣低買再平衡。
+            透過 00631L（β≈2.0）與防守端（固定現金 ${config.cash_reserve.toLocaleString()} ＋ 債券池 {BOND_ETFS[0].code}/{BOND_ETFS[1].code}，優先回補 {result.bond_buy_first ?? '—'}，皆視為 β=0）控管投組風險。不擇時，僅於 Beta 偏離過大時進行高賣低買再平衡。
           </p>
         </div>
       </div>
@@ -1218,7 +1217,7 @@ export function Rebalance() {
                     <li>尊重 opt19 資產鎖定設定，不會自動覆蓋——若有鎖定，上方會提示你考慮解鎖</li>
                     <li>維持鎖定不解的話，可用「現金注入模式」補足（cash_injection_needed 照常顯示）</li>
                     <li>停止手動再平衡，抱到 TAIEX 創新高再回到平常的目標 β</li>
-                    <li>創新高後依 bond_split 重建防守端（把 target_beta 滑桿改回平常數值即可觸發）</li>
+                    <li>創新高後依優先回補順序重建防守端（把 target_beta 滑桿改回平常數值即可觸發）</li>
                   </ol>
                 </div>
               </div>
@@ -1279,7 +1278,11 @@ export function Rebalance() {
             </h2>
             <ul className="text-xs text-zinc-300 leading-relaxed space-y-2 list-disc list-inside">
               <li>固定保留現金 <strong className="text-zinc-100">$100,000</strong>（不投入市場的緩衝，隨時可動用）。</li>
-              <li>扣掉保留現金後的防守端資金，依 <strong className="text-zinc-100">6:4</strong> 分配到 {BOND_ETFS[0].code}／{BOND_ETFS[1].code}。</li>
+              <li>
+                <strong className="text-zinc-100">回補（買）＝單一優先順序（2026-09 改版）</strong>：扣掉保留現金後的防守端資金只買一檔——
+                優先加碼<strong className="text-zinc-100">當下 regime 判定較值得留著避險的那一檔</strong>（與下方變現順序方向相反：平時優先買 {BOND_ETFS[0].code}、升息型崩盤時改優先買 {BOND_ETFS[1].code}）；
+                另一檔<strong className="text-zinc-100">只有在優先檔被鎖定（沒有補充空間）時才會被建議買進</strong>，不再固定依比例兩檔都買。
+              </li>
               <li>
                 <strong className="text-zinc-100">變現順序＝regime-aware（2026-07 改版）</strong>：需要縮減防守端補錢買 00631L 時，
                 <strong className="text-zinc-100">平時優先賣 {BOND_ETFS[1].code}</strong>（非投等債股災跟跌，先出掉；留 {BOND_ETFS[0].code} 美債當火藥、避險上漲留到谷底才變現）；
@@ -1307,11 +1310,11 @@ export function Rebalance() {
                 <span>TAIEX 自高點回撤達 10%，<strong className="text-zinc-100">純觀察、不動作</strong>——歷史上碰觸這條線的次數裡只有約半數真的惡化成股災，其餘自行止跌回頭，誤報率高不宜貿然動作。</span>
               </div>
               <div className="flex gap-3">
-                <span className="shrink-0 px-2 py-0.5 rounded-md bg-[#e34948]/15 text-[#e34948] text-[11px] font-semibold h-fit whitespace-nowrap">小股災 −15%</span>
-                <span>加碼到中繼 <strong className="text-zinc-100">β＝1.75</strong>（00631L 佔比約 87.5%）——回測顯示股災直接升槓桿到 β2.0 比全程維持 β1.3 多賺約 16～19%；但中繼 β 選在 1.75 而非直接衝滿 2.0，只比全程衝滿 2.0 少賺約 6～7%，換取「小股災」與「股災來臨」兩層真正有區隔（若中繼 β 直接設 2.0，兩層等於做同一件事，分層形同虛設）。</span>
+                <span className="shrink-0 px-2 py-0.5 rounded-md bg-[#e34948]/15 text-[#e34948] text-[11px] font-semibold h-fit whitespace-nowrap">小股災 −25%</span>
+                <span>加碼到中繼 <strong className="text-zinc-100">β＝1.6</strong>（00631L 佔比約 80%）——2026-09 重新回測（2015–2026 真實 00631L 資料，target_beta=1.3）：股災機制加碼比全程維持 β1.3 年化多賺約 30%（33.7% vs 25.9%，Calmar 0.86 vs 0.68）；但中繼 β 選在 1.6 而非直接衝滿 2.0，只比全程衝滿 2.0 少賺約 6%，換取「小股災」與「股災來臨」兩層真正有區隔（若中繼 β 直接設 2.0，兩層等於做同一件事，分層形同虛設）。門檻從舊制 −15%/−20% 上修到 −25%/−28%，是因為回測顯示訊號設太淺（−15%）誤觸次數多、頻繁進出反而侵蝕報酬（12 次事件、Calmar 僅 0.73），拉深到 −25%/−28% 後事件數降到 3 次、Calmar 提升到 0.86；−28% 已貼近 2025 關稅衝擊的實際回撤深度（28.7%），再往上調到 −29% 會直接漏掉這次事件，故不宜再取整數上修。</span>
               </div>
               <div className="flex gap-3">
-                <span className="shrink-0 px-2 py-0.5 rounded-md bg-[#e34948] text-white text-[11px] font-semibold h-fit whitespace-nowrap">股災來臨 −20%</span>
+                <span className="shrink-0 px-2 py-0.5 rounded-md bg-[#e34948] text-white text-[11px] font-semibold h-fit whitespace-nowrap">股災來臨 −28%</span>
                 <span>
                   防守端<strong className="text-zinc-100">全數轉入 00631L 拉滿 β＝2.0</strong>：沿用 regime-aware waterfall 順序（平時先賣 {BOND_ETFS[1].code}、升息型崩盤先賣美債，見「宏觀 regime 指標」卡）、尊重資產鎖定（不會自動覆蓋——若有鎖定，市場狀態卡會提示你考慮解鎖，維持鎖定則改用現金注入模式補足）。
                   <strong className="text-zinc-100">一次到位、不分批</strong>——用 1999/2000/2020/2022/2025 五次真實股災事件測過分批進場，V 型急跌急彈事件（如 2020、2025）分批全部打平或小輸，只有緩跌型的 2022 股災分批略勝，但事件當下無法預先判斷屬於哪一種，故維持一次到位。
@@ -1320,7 +1323,7 @@ export function Rebalance() {
               <div className="flex gap-3">
                 <span className="shrink-0 px-2 py-0.5 rounded-md bg-zinc-800 text-zinc-300 text-[11px] font-semibold h-fit whitespace-nowrap">退出</span>
                 <span>
-                  停止手動再平衡，<strong className="text-zinc-100">抱到 TAIEX 創新高</strong>才退出——同五次事件測過提前鎖利（回到 −15%/−10%/−5% 就出場），結果全部單調變差且無一例外（分別少賺約 11.4%／7.7%／3.6%），因為 2 倍槓桿部位在創新高前最後一段複利效果最強，提前下車等於主動放棄報酬最肥的一段。創新高後依 6:4 重建防守端（把目標 β 滑桿調回平常數值即觸發）。
+                  停止手動再平衡，<strong className="text-zinc-100">抱到 TAIEX 創新高</strong>才退出——同五次事件測過提前鎖利（回到 −15%/−10%/−5% 就出場），結果全部單調變差且無一例外（分別少賺約 11.4%／7.7%／3.6%），因為 2 倍槓桿部位在創新高前最後一段複利效果最強，提前下車等於主動放棄報酬最肥的一段。創新高後依優先回補順序重建防守端（把目標 β 滑桿調回平常數值即觸發）。
                 </span>
               </div>
             </div>
@@ -1337,8 +1340,8 @@ export function Rebalance() {
                 <li><strong className="text-zinc-100">股災一次全倉勝過分批進場</strong>：見上方「股災來臨」說明，五次真實事件裡一次到位在四次勝出或打平。</li>
                 <li><strong className="text-zinc-100">美債避險別等它漲</strong>：股災確認當下立即出清美債換 00631L，優於等美債漲 5%/10%/15% 才出清（門檻越高，長期報酬越差）——用兩種不同確認條件重新測過都指向同一結論：等待美債續漲的訊號本身已經偏晚，晚出手長期更差。</li>
                 <li><strong className="text-zinc-100">退出別提前</strong>：抱到創新高退出全面優於任何提前鎖利方案（見上方三層燈號「退出」說明）。</li>
-                <li><strong className="text-zinc-100">TAIEX 三層訊號優於舊制 0050 單一 −28% 訊號</strong>：舊訊號 9 年只觸發 2 次，完全漏掉 2025 關稅衝擊那次股災；新制 −20% 訊號 9 年觸發 3 次，能捕捉到該事件。</li>
-                <li><strong className="text-zinc-100">中繼 β 設 1.75，不直接拉滿 2.0</strong>：讓「小股災」與「股災來臨」兩層有意義區隔，僅比理論最優（全程 β2.0）少賺約 6～7%。</li>
+                <li><strong className="text-zinc-100">TAIEX 三層訊號優於舊制 0050 單一 −28% 訊號</strong>：舊訊號只認 0050 自身走勢、無分層預警，曾漏掉 2025 關稅衝擊那次股災；新制以 TAIEX 為觸發源，−28% 這關在 2015–2026 這 11.6 年精準捕捉到 2020 COVID／2022–2024 熊市／2025 關稅衝擊三次真正股災，且 −25% 的小股災中繼層還能提前一步加碼卡位，不必等到最深那一下才動作。</li>
+                <li><strong className="text-zinc-100">2026-09 門檻由 −15%/−20% 上修到 −25%/−28%、中繼 β 由 1.75 降到 1.6</strong>：舊門檻誤觸率高（11.6 年 12 次事件、Calmar 0.73），拉深後事件數降到 3 次、Calmar 提升到 0.86；同時測過細分四階（−15/−20/−25/−28%）沒有比調校過的兩階更好，判定「門檻要夠深」比「切幾階」更關鍵，維持兩階即可。</li>
               </ul>
             </div>
           </div>
@@ -1404,26 +1407,15 @@ export function Rebalance() {
                 />
               </div>
               <p className="text-[11px] text-zinc-500">預設 2.0 (元大台灣50正2)。一般無須修改。</p>
-              <div className="flex items-center justify-between pt-2 border-t border-zinc-800/70">
-                <label className="text-zinc-300 font-medium">債券池 {BOND_ETFS[0].code} 佔比</label>
-                <div className="flex items-center gap-2">
-                  <input
-                    type="range"
-                    min="0"
-                    max="100"
-                    step="5"
-                    value={Math.round(config.bond_split * 100)}
-                    onChange={(e) => updateConfig({ bond_split: parseInt(e.target.value, 10) / 100 })}
-                    className="w-24 h-1.5 bg-zinc-800 rounded-lg appearance-none cursor-pointer accent-cyan-500"
-                  />
-                  <span className="font-mono font-bold text-zinc-100 w-16 text-right">
-                    {Math.round(config.bond_split * 100)}:{Math.round((1 - config.bond_split) * 100)}
-                  </span>
+              <div className="pt-2 border-t border-zinc-800/70">
+                <div className="flex items-center justify-between">
+                  <label className="text-zinc-300 font-medium">防守端目前優先回補</label>
+                  <span className="font-mono font-bold text-zinc-100">{result.bond_buy_first ?? '—'}</span>
                 </div>
+                <p className="text-[11px] text-zinc-500 border-b border-zinc-800 pb-2 pt-1">
+                  2026-09 改版：回補（買）只買一檔，另一檔只有在優先檔被鎖定時才會列入建議。優先順序方向與下方「變現順序」連動（regime-aware，見「持倉現況」分頁的宏觀 regime 指標卡），本頁不單獨可調。
+                </p>
               </div>
-              <p className="text-[11px] text-zinc-500 border-b border-zinc-800 pb-2">
-                防守端扣掉保留現金後的債券池分配：{BOND_ETFS[0].code} {Math.round(config.bond_split * 100)}% / {BOND_ETFS[1].code} {Math.round((1 - config.bond_split) * 100)}%。預設 6:4。
-              </p>
 
               {/* 三層門檻與中繼 Beta */}
               <div className="flex items-center justify-between pt-1">
@@ -1458,7 +1450,7 @@ export function Rebalance() {
                   className="w-20 px-2 py-1 bg-zinc-950 border border-zinc-800 rounded text-right font-mono text-zinc-100 focus:outline-none focus:border-primary"
                 />
               </div>
-              <p className="text-[11px] text-zinc-500">TAIEX自高點回撤門檻。預設 0.15 (15%)。一鍵加碼至中繼 β。</p>
+              <p className="text-[11px] text-zinc-500">TAIEX自高點回撤門檻。預設 0.25 (25%)。一鍵加碼至中繼 β。</p>
 
               <div className="flex items-center justify-between pt-1">
                 <label className="text-zinc-300 font-medium">股災確認門檻 (深紅)</label>
@@ -1475,7 +1467,7 @@ export function Rebalance() {
                   className="w-20 px-2 py-1 bg-zinc-950 border border-zinc-800 rounded text-right font-mono text-zinc-100 focus:outline-none focus:border-primary"
                 />
               </div>
-              <p className="text-[11px] text-zinc-500">TAIEX自高點回撤門檻。預設 0.20 (20%)。一鍵出清防守端滿倉。</p>
+              <p className="text-[11px] text-zinc-500">TAIEX自高點回撤門檻。預設 0.28 (28%)。一鍵出清防守端滿倉。</p>
 
               <div className="flex items-center justify-between pt-2 border-t border-zinc-800/70">
                 <label className="text-zinc-300 font-medium">小股災中繼目標 β</label>
@@ -1492,7 +1484,7 @@ export function Rebalance() {
                   className="w-20 px-2 py-1 bg-zinc-950 border border-zinc-800 rounded text-right font-mono text-zinc-100 focus:outline-none focus:border-primary"
                 />
               </div>
-              <p className="text-[11px] text-zinc-500">小股災觸發時，供一鍵加碼套用的目標投組 β。預設 1.75。</p>
+              <p className="text-[11px] text-zinc-500">小股災觸發時，供一鍵加碼套用的目標投組 β。預設 1.6。</p>
             </div>
           )}
 
@@ -1866,7 +1858,7 @@ export function Rebalance() {
                 </div>
               )}
 
-              {/* 【增修I】防守端配置：固定現金 + 債券池 6:4 的應買賣 */}
+              {/* 【增修I／2026-09 單一優先回補】防守端配置：固定現金 + 債券池單一優先順序的應買賣 */}
               {hasDefensiveMoves && (
                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
                   {/* 現金調整 */}
@@ -2027,20 +2019,21 @@ export function Rebalance() {
             </div>
           )}
 
-          {/* 結果摘要：目前 regime + 股災會先賣哪一檔 */}
+          {/* 結果摘要：目前 regime + 股災會先賣哪一檔／平時優先回補哪一檔 */}
           {(() => {
             const rc = result.bond_regime.regime === 'rate_crash';
             const first = result.bond_sell_first ? assetName(result.bond_sell_first) : BOND_ETFS[1].name;
+            const buyFirst = result.bond_buy_first ? assetName(result.bond_buy_first) : BOND_ETFS[0].name;
             return (
               <div className={`rounded-lg border p-3 text-xs leading-relaxed ${rc ? 'border-[#e34948]/40 bg-[#e34948]/10 text-red-300' : 'border-emerald-500/25 bg-emerald-500/5 text-emerald-300'}`}>
                 {config.bond_priority === 'regime_aware' ? (
                   rc ? (
-                    <><strong>升息型崩盤徵兆（{result.bond_regime.tripped_count} 項指標達標）</strong>：股災需要變現時改為<strong>優先賣 {first}</strong>——此時美債自己也會跌，不宜留。</>
+                    <><strong>升息型崩盤徵兆（{result.bond_regime.tripped_count} 項指標達標）</strong>：股災需要變現時改為<strong>優先賣 {first}</strong>——此時美債自己也會跌，不宜留；回補（買）方向同步反轉為<strong>優先買 {buyFirst}</strong>。</>
                   ) : (
-                    <><strong>平時模式</strong>：三項指標都在門檻內。股災需要變現時<strong>優先賣 {first}</strong>、保留 {BOND_ETFS[0].name} 當火藥（避險上漲、留到谷底才賣）。</>
+                    <><strong>平時模式</strong>：三項指標都在門檻內。股災需要變現時<strong>優先賣 {first}</strong>、保留 {BOND_ETFS[0].name} 當火藥（避險上漲、留到谷底才賣）；回補（買）時<strong>優先買 {buyFirst}</strong>。</>
                   )
                 ) : (
-                  <>目前為<strong>手動指定</strong>順序（{config.bond_priority === 'bond1_first' ? '先賣美債' : `先賣 ${BOND_ETFS[1].code}`}）：股災變現時優先賣 {first}。改回「自動（依指標）」可讓宏觀指標接管。</>
+                  <>目前為<strong>手動指定</strong>順序（{config.bond_priority === 'bond1_first' ? '先賣美債' : `先賣 ${BOND_ETFS[1].code}`}）：股災變現時優先賣 {first}、回補時優先買 {buyFirst}。改回「自動（依指標）」可讓宏觀指標接管。</>
                 )}
               </div>
             );
@@ -2438,7 +2431,7 @@ export function Rebalance() {
                 ) : null}
                 <p className="text-zinc-500 leading-tight font-sans">
                   防守端先保留這筆現金；加碼 00631L 需要抽錢時依 regime-aware 順序變現（平時先賣 {BOND_ETFS[1].code}、升息型崩盤先賣美債，見「宏觀 regime 指標」卡）。
-                  獲利了結回補時依 {Math.round(config.bond_split * 100)}:{Math.round((1 - config.bond_split) * 100)} 配到 {BOND_ETFS[0].code}/{BOND_ETFS[1].code}。
+                  獲利了結回補時只買一檔（目前優先 {result.bond_buy_first ?? '—'}），另一檔僅在優先檔被鎖定時才會列入建議。
                   {config.locked?.cash && (
                     <span className="block mt-0.5 text-primary/80">
                       已鎖定：只保護這筆 ${config.cash_reserve.toLocaleString()} 保留額，閒置現金超出的部分仍會照常參與再平衡。
@@ -2664,7 +2657,7 @@ export function Rebalance() {
         <div>
           <strong className="text-zinc-400 font-medium">系統聲明與警語：</strong>
           <p className="mt-0.5 leading-relaxed">
-            本工具為個人資產配置輔助試算。各標的持有股數、平均成本與閒置現金由「期初部位＋買賣報價單」自動累算（均價採加權平均法、賣出只減股數不改均價；現金＝期初現金 − 全部買進金額 ＋ 全部賣出金額，未計手續費/交易稅）；各標的現價可「抓最新價」自動帶入<strong className="text-zinc-400">現在最新成交價（即時報價）</strong>（TWSE MIS 官方報價，經 <span className="font-mono">/api</span> 讀取，盤中約數秒～數十秒延遲、非交易時段回最近一筆成交，可手動覆寫）；未實現損益依累算均價計算，僅供參考、不影響再平衡；投組 Beta 以 00631L β=2.0、防守端（現金＋{BOND_ETFS[0].code}＋{BOND_ETFS[1].code}）β=0 計算——債券 ETF 實際仍有利率/信用風險，β=0 為簡化假設。防守端配置＝固定保留現金 ${config.cash_reserve.toLocaleString()}，剩餘依 {Math.round(config.bond_split * 100)}:{Math.round((1 - config.bond_split) * 100)} 分配 {BOND_ETFS[0].code}/{BOND_ETFS[1].code}。按「送出並同步雲端」或新增/刪除交易時，持倉會存到伺服器（<span className="font-mono">data/rebalance_holdings.json</span>，與每日再平衡 Email 告警同一份），僅供個人內網自用。非投資建議。
+            本工具為個人資產配置輔助試算。各標的持有股數、平均成本與閒置現金由「期初部位＋買賣報價單」自動累算（均價採加權平均法、賣出只減股數不改均價；現金＝期初現金 − 全部買進金額 ＋ 全部賣出金額，未計手續費/交易稅）；各標的現價可「抓最新價」自動帶入<strong className="text-zinc-400">現在最新成交價（即時報價）</strong>（TWSE MIS 官方報價，經 <span className="font-mono">/api</span> 讀取，盤中約數秒～數十秒延遲、非交易時段回最近一筆成交，可手動覆寫）；未實現損益依累算均價計算，僅供參考、不影響再平衡；投組 Beta 以 00631L β=2.0、防守端（現金＋{BOND_ETFS[0].code}＋{BOND_ETFS[1].code}）β=0 計算——債券 ETF 實際仍有利率/信用風險，β=0 為簡化假設。防守端配置＝固定保留現金 ${config.cash_reserve.toLocaleString()}，剩餘單一優先回補（目前優先 {result.bond_buy_first ?? '—'}）{BOND_ETFS[0].code}/{BOND_ETFS[1].code}。按「送出並同步雲端」或新增/刪除交易時，持倉會存到伺服器（<span className="font-mono">data/rebalance_holdings.json</span>，與每日再平衡 Email 告警同一份），僅供個人內網自用。非投資建議。
           </p>
         </div>
       </div>

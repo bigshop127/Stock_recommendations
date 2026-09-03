@@ -1,17 +1,20 @@
 // ── 標的定義【增修I】────────────────────────────────────────────
 export const ETF_CODE = '00631L';
-// 防守端債券 ETF：閒置資金＝固定現金保留額＋債券池（00687B:00953B＝6:4），皆視為 β=0
+// 防守端債券 ETF：閒置資金＝固定現金保留額＋債券池（00687B/00953B，皆視為 β=0）。
+// 【2026-09 單一優先回補】回補（買）方向不再依比例分兩檔，改成單一優先順序——見下方 BondPriority。
 export const BOND_ETFS = [
   { code: '00687B', name: '國泰20年美債' },
   { code: '00953B', name: '群益優選非投等債' },
 ] as const;
 export const DEFAULT_CASH_RESERVE = 100_000; // 固定保留現金（TWD）
-export const DEFAULT_BOND_SPLIT = 0.6;       // 債券池中 00687B 佔比（00953B＝1−split）
 
-// ── 賣債優先順序 ＋ 宏觀 regime 偵測【regime-aware 2026-07-25】────────────────
+// ── 債券優先順序（賣＋買）＋ 宏觀 regime 偵測【regime-aware 2026-07-25／單一優先回補 2026-09】────
 // 回測（2000–2026 代理數據）結論：股災往下探時 20年美債避險上漲、00953B（非投等債）跟跌，
 // 故「部分變現、留倉到谷底」時應**先賣 00953B、留美債當火藥**（6/6 股災 5 次勝、平均多留 +9.4pp）。
 // 唯一反例＝升息型崩盤（2022 美債同步大跌）→ 由三個宏觀指標任一達標偵測，改回「先賣美債」。
+// 【2026-09】回補（買）方向沿用同一優先順序、方向相反：優先加碼「非優先變現」的那一檔（平時＝
+// 00687B，rate_crash＝00953B）——留著當火藥的那檔本來就是當下 regime 判定較值得加碼的避險主力；
+// 另一檔只有在優先檔被鎖定（無法再買）時才會被建議買進，不再依固定比例兩檔都買。
 export type BondPriority = 'bond1_first' | 'bond2_first' | 'regime_aware';
 export const DEFAULT_BOND_PRIORITY: BondPriority = 'regime_aware';
 
@@ -313,8 +316,7 @@ export interface RebalanceInput {
   // 【增修I】防守端＝固定現金保留額＋債券池（00687B:00953B）
   bonds?: BondInput[];      // 債券 ETF 持倉（缺省＝無債券，退回純現金模型）
   cash_reserve?: number;    // 固定保留現金（預設 100,000）
-  bond_split?: number;      // 債券池中第一檔（00687B）佔比（預設 0.6）
-  bond_priority?: BondPriority; // 變現優先順序（預設 'regime_aware'）【regime-aware】
+  bond_priority?: BondPriority; // 變現／回補優先順序（預設 'regime_aware'）【regime-aware／單一優先回補】
   macro?: MacroState;       // 宏觀指標（regime_aware 用；缺＝視為 normal 先賣 00953B）【regime-aware】
   locked?: {
     cash?: boolean;
@@ -350,10 +352,11 @@ export interface RebalanceResult {
   deviation_pct: number | null; // (current_beta − target)/target；target=0 → null
   status: 'empty' | 'sell' | 'buy' | 'normal';
   action_label: string;         // §2.3
-  // 【regime-aware】變現優先順序解析結果（供 UI 顯示「現在會先賣哪一檔、為什麼」）
+  // 【regime-aware／單一優先回補】變現／回補優先順序解析結果（供 UI 顯示「現在會先賣/先買哪一檔、為什麼」）
   bond_priority: BondPriority;      // echo 輸入（預設 'regime_aware'）
   bond_regime: BondRegime;          // 宏觀 regime 偵測結果（含各指標明細）
   bond_sell_first: string | null;   // 縮水時優先變現的債券 code（防守端只有一檔債券則恆為該檔；無債券→null）
+  bond_buy_first: string | null;    // 擴張（回補）時優先買進的債券 code（＝非 bond_sell_first 的那一檔；無債券→null）
   // 精確達標（保持總資產不變，在 00631L↔現金 間搬錢使 β=target）
   target_etf_value: number | null;
   etf_value_delta: number | null; // target_etf_value − etf_value（+買 −賣）；不可解→null
@@ -418,20 +421,18 @@ export interface DefensiveAllocation {
  *     依 currentBondValues 陣列順序（index 0 優先），先把第一檔賣到 0，賣不夠才動下一檔。
  *     這是報告「美債優先變現」的核心：index 0 放最適合在股災時變現的資產（如 00687B，
  *     具避險溢價），保留其餘資產（如 00953B 月配息）繼續供息。
- *   - 擴張或不變（bondPool ≥ 現有債券總值，例如賣 00631L 獲利了結回補防守端）：
- *     依 bondSplit 比例 snap 到目標值（第一檔佔 bondSplit、其餘平分剩下 1−bondSplit）——
- *     報告只對「變現方向」主張優先順序，回補方向維持等比例。
+ *   - 擴張或不變（bondPool ≥ 現有債券總值，例如賣 00631L 獲利了結回補防守端）：【2026-09】
+ *     單一優先回補——index 0（同一檔「優先保留」的資產）吃下全部 bondPool，index 1 為 0；
+ *     只買一檔，不再依比例兩檔都買。
  * 純函式、全路徑防 NaN；currentBondValues 僅支援 1~2 檔（本站防守端固定兩檔債券）。
  */
 export function allocateDefensive(
   targetDefensiveValue: number,
   currentBondValues: number[],
   cashReserve: number,
-  bondSplit: number,
 ): DefensiveAllocation {
   const target = Math.max(0, safeNum(targetDefensiveValue, 0));
   const reserve = Math.max(0, safeNum(cashReserve, 0));
-  const split = clamp(safeNum(bondSplit, DEFAULT_BOND_SPLIT), 0, 1);
   const values = (Array.isArray(currentBondValues) ? currentBondValues : []).map((v) => Math.max(0, safeNum(v, 0)));
 
   const cash = clamp(reserve, 0, target);
@@ -449,20 +450,18 @@ export function allocateDefensive(
       return v - sell;
     });
   } else {
-    // 擴張或不變：依 bondSplit 比例 snap 到目標值（僅支援兩檔，第三檔以上均分剩餘 0）
-    const splits = values.map((_, i) => (i === 0 ? split : i === 1 ? 1 - split : 0));
-    bond_values = splits.map((s) => bondPool * s);
+    // 擴張或不變：單一優先回補，index 0 吃下全部 bondPool（僅支援兩檔，第三檔以上恆 0）
+    bond_values = values.map((_, i) => (i === 0 ? bondPool : 0));
   }
 
   return { cash, bond_values };
 }
 
-// ── 防守端內部鎖定配置【優化專案 19】──────────────────────────────────
+// ── 防守端內部鎖定配置【優化專案 19／2026-09 單一優先回補】──────────────────────────────────
 export interface DefensiveAllocationLockedInput {
   targetDefensiveValue: number;
   cash: { value: number; reserve: number; locked: boolean };
-  bonds: { code: string; value: number; locked: boolean }[]; // 固定為 [00687B, 00953B]，bondSplit 綁 index0
-  bondSplit: number;
+  bonds: { code: string; value: number; locked: boolean }[]; // 固定為 [00687B, 00953B]
   liquidationFirstCode?: string; // 【regime-aware】縮水時優先賣到 0 的債券 code；缺＝沿用 bonds 輸入順序(index0 先)
 }
 
@@ -477,7 +476,10 @@ export function allocateDefensiveWithLocks(
   const targetDef = Math.max(0, safeNum(input.targetDefensiveValue, 0));
   const cashVal = Math.max(0, safeNum(input.cash.value, 0));
   const cashReserve = Math.max(0, safeNum(input.cash.reserve, 0));
-  const bondSplit = clamp(safeNum(input.bondSplit, DEFAULT_BOND_SPLIT), 0, 1);
+  // 【2026-09 單一優先回補】回補方向永遠與變現方向相反：liquidationFirstCode 是「優先變現」那檔，
+  // 回補時優先加碼「另一檔」（缺省時 liquidationFirstCode 未給＝優先變現預設 index0，回補預設就是 index1）。
+  const sellFirstCode = input.liquidationFirstCode ?? input.bonds[0]?.code;
+  const buyFirstCode = input.bonds.find((b) => b.code !== sellFirstCode)?.code ?? input.bonds[0]?.code;
 
   // 【bugfix】鎖定現金＝只保護「現金保留額」這筆固定額度（min(現有現金, 保留額)），
   // 不是把當下全部閒置現金都凍結——超出保留額的閒置現金仍視同未鎖定，正常參與再平衡調撥。
@@ -521,9 +523,10 @@ export function allocateDefensiveWithLocks(
         bondValuesMap.set(b.code, b.value - sell);
       }
     } else {
-      // 擴張（回補）：一律依 bondSplit 綁定 input.bonds 順序(index0=00687B=bondSplit)，與變現順序無關。
-      unlockedBonds.forEach((b, i) => {
-        bondValuesMap.set(b.code, i === 0 ? bondPool * bondSplit : bondPool * (1 - bondSplit));
+      // 擴張（回補）：單一優先回補——buyFirstCode 那檔吃下全部 bondPool，另一檔為 0；
+      // 只有 buyFirstCode 被鎖定（不在 unlockedBonds 內）時才會落到下面 length===1 分支改買另一檔。
+      unlockedBonds.forEach((b) => {
+        bondValuesMap.set(b.code, b.code === buyFirstCode ? bondPool : 0);
       });
     }
   } else if (unlockedBonds.length === 1) {
@@ -564,7 +567,6 @@ export function computeRebalance(input: RebalanceInput): RebalanceResult {
   const etf_beta = safeNum(input?.etf_beta, 2.0);
   // 【增修I】防守端參數
   const cash_reserve = Math.max(0, safeNum(input?.cash_reserve, DEFAULT_CASH_RESERVE));
-  const bond_split = clamp(safeNum(input?.bond_split, DEFAULT_BOND_SPLIT), 0, 1);
   const bonds: BondInput[] = (Array.isArray(input?.bonds) ? input.bonds : [])
     .filter((b): b is BondInput => !!b && typeof b.code === 'string' && b.code !== '')
     .map((b) => ({
@@ -590,6 +592,9 @@ export function computeRebalance(input: RebalanceInput): RebalanceResult {
           : bond_regime.regime === 'rate_crash'
             ? BOND_ETFS[0].code
             : BOND_ETFS[1].code;
+  // 【2026-09 單一優先回補】回補（買）方向＝優先變現方向的相反那一檔（留著當避險火藥的那檔）。
+  const bond_buy_first: string | null =
+    bonds.length === 0 ? null : bond_sell_first === BOND_ETFS[0].code ? BOND_ETFS[1].code : BOND_ETFS[0].code;
 
   const etf_value = shares * price;
   const bond_value = bonds.reduce((sum, b) => sum + b.shares * b.price, 0);
@@ -679,6 +684,7 @@ export function computeRebalance(input: RebalanceInput): RebalanceResult {
       bond_priority,
       bond_regime,
       bond_sell_first,
+      bond_buy_first,
       target_etf_value: null,
       etf_value_delta: null,
       cash_delta: null,
@@ -719,7 +725,8 @@ export function computeRebalance(input: RebalanceInput): RebalanceResult {
   let cash_delta: number | null = null;
   let trade_shares: number | null = null;
 
-  // 【增修I】防守端內部配置：固定保留 cash_reserve 現金，剩餘依 bond_split 分配到債券池
+  // 【增修I／2026-09 單一優先回補】防守端內部配置：固定保留 cash_reserve 現金，剩餘（bondPool）
+  // 只買 bond_buy_first 那一檔，另一檔只有在 bond_buy_first 被鎖定時才會承接
   let target_defensive_value: number | null = null;
   let target_cash_value: number | null = null;
   let cash_adjust_delta: number | null = null;
@@ -782,7 +789,6 @@ export function computeRebalance(input: RebalanceInput): RebalanceResult {
         value: b.shares * b.price,
         locked: input.locked?.bonds?.[b.code] === true,
       })),
-      bondSplit: bond_split,
       liquidationFirstCode: bond_sell_first ?? undefined,
     };
 
@@ -890,6 +896,7 @@ export function computeRebalance(input: RebalanceInput): RebalanceResult {
     bond_priority,
     bond_regime,
     bond_sell_first,
+    bond_buy_first,
     target_etf_value,
     etf_value_delta,
     cash_delta,
@@ -1014,8 +1021,8 @@ export function computeFundFlows(result: RebalanceResult): FundFlowBreakdown {
 export interface MarketStatusInput {
   closes: { date: string; close: number }[]; // 升冪排序；建議至少抓 3~5 年歷史以取得有意義的高點
   tier1_dd: number; // 第一警戒門檻，預設 0.10
-  tier2_dd: number; // 小股災門檻，預設 0.15
-  tier3_dd: number; // 股災來臨門檻，預設 0.20
+  tier2_dd: number; // 小股災門檻，預設 0.25【2026-09 優化兩階】
+  tier3_dd: number; // 股災來臨門檻，預設 0.28【2026-09 優化兩階】
 }
 
 export interface MarketStatus {
@@ -1064,8 +1071,8 @@ export function computeMarketStatus(input: MarketStatusInput): MarketStatus | nu
 
   // 4. 門檻守衛
   const t1 = clamp(safeNum(input.tier1_dd, 0.10), 0, 1);
-  const t2 = clamp(safeNum(input.tier2_dd, 0.15), 0, 1);
-  const t3 = clamp(safeNum(input.tier3_dd, 0.20), 0, 1);
+  const t2 = clamp(safeNum(input.tier2_dd, 0.25), 0, 1);
+  const t3 = clamp(safeNum(input.tier3_dd, 0.28), 0, 1);
 
   // 5. 判斷 tier
   let tier: 0 | 1 | 2 | 3 = 0;
