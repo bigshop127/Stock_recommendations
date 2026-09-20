@@ -654,6 +654,57 @@ def test_hidden_bottom_level() -> None:
     check("剛好 2 步（搬開三顆 → 問號顯現 → 湊滿）", world.game.steps == 2, f"{world.game.steps} 步")
 
 
+def test_only_move_ignored() -> None:
+    print("[19] 整盤唯一的一步遊戲不接受（9/20 實機 2-5 第 19 步）：不能講成「找不到解」，要多試幾輪、最後講清楚")
+    from PIL import Image
+    data = os.path.join(os.path.dirname(os.path.abspath(__file__)), "testdata")
+    img = np.array(Image.open(os.path.join(data, "lvl2-5_only_move_ignored.png")).convert("RGB"))
+
+    # 19a 真辨識＋畫面永遠不變（遊戲一直忽略點擊）。舊版：點 2 次沒反應→禁用→無路→「找不到解（所有可能的世界都走不通）」
+    frames = [img]
+    holds = []
+    eng, clock, clicks = _real_engine(frames)
+    eng._click = lambda x, y, hold=0.06: (clicks.append((x, y)), holds.append(hold))   # 記下每次按多久
+    eng.start_autoplay()
+    msgs = []
+    for _ in range(1200):
+        st = eng.step()
+        msgs.append(st.message)
+        clock.t += 0.3
+        if not eng.autoplay:
+            break
+    check("最後停手（不是無限重試）", not eng.autoplay and st.kind == "stopped", f"{st.kind}: {st.message}")
+    check("全程沒有出現「所有可能的世界都走不通」（那是誤報，這盤明明有解）",
+          not any("所有可能的世界" in m for m in msgs), next((m for m in msgs if "所有可能的世界" in m), ""))
+    check("停手訊息講清楚是「點了沒反應」、並請使用者手動試那一步", "沒反應" in st.message and "手動" in st.message, st.message)
+    check("試了 3 輪 × 每輪 2 次 ＝ 6 組點擊（12 下）", len(clicks) == 12, f"{len(clicks)} 下")
+    pairs = {(round(clicks[i][0]), round(clicks[i + 1][0])) for i in range(0, len(clicks) - 1, 2)}
+    check("每一輪都是同一步（第1排第4根 → 第1排第3根）", len(pairs) == 1, str(pairs))
+    check("重試時按得比較久（放慢節奏）", holds[-1] > holds[0], f"{holds[0]} → {holds[-1]}")
+    check("有存下畫面", "debug/" in st.message)
+
+    # 19b 沒接受只是暫時的（漏接、動畫擋住）：等一下再試就成功 → 要繼續玩，不能停手
+    #     唯一合法的第一步 (0,1)：[b,a,a] 的兩顆 a 搬到 [a,a]；接著 b 歸位
+    pz = S.Puzzle(kinds=["normal"] * 3, cells=[["b", "a", "a"], ["a", "a"], ["b", "b", "b"]])
+    clock = Clock()
+    world = FakeWorld(clock, [SG.from_puzzle(pz, [])])
+    world.drop = 4                                         # 第一輪的 2 組點擊全被吃掉
+    eng = make_engine(world, clock)
+    eng.start_autoplay()
+    msgs = []
+    st = None
+    for _ in range(600):
+        st = eng.step()
+        msgs.append(st.message)
+        clock.t += 0.15
+        if st.kind in ("solved", "stopped", "stuck"):
+            break
+    check("等一下再試 → 過關", st.kind == "solved" and world.game.solved(), f"{st.kind}: {st.message}")
+    check("沒有停手、也沒講「找不到解」", eng.autoplay and not any("所有可能的世界" in m for m in msgs))
+    check("講的是「點了沒反應，等一下再試」", any("沒反應" in m for m in msgs))
+    check("只花 2 步", world.game.steps == 2, f"{world.game.steps} 步")
+
+
 def test_predict_and_compatible() -> None:
     print("[11] 預測與驗收函式")
     cells = [["a", "b", "b"], ["c", "b"], []]
@@ -749,6 +800,7 @@ def main() -> int:
     test_move_verify_ignores_jitter()
     test_jar_hidden_level()
     test_hidden_bottom_level()
+    test_only_move_ignored()
     test_predict_and_compatible()
     test_real_frames()
     print(f"\n{_passed} 項通過，{_failed} 項失敗")

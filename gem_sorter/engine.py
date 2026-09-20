@@ -49,6 +49,7 @@ class Config:
     move_settle: float = 0.8               # 點完目標管後，至少等這麼久才去看結果（搬移動畫）
     move_timeout: float = 6.0              # 點完之後畫面一直沒變化，多久算這一步沒生效
     max_retries: int = 1                   # 同一步沒生效最多重試幾次，再不行就列入黑名單改走別的
+    ban_cooldown: float = 5.0              # 黑名單害得沒路可走時，等這麼久就原諒那一步、再試一輪（連 3 輪都沒反應才停手）
     unknown_timeout: float = 60.0          # 自動操控時連續認不得畫面多久就停手
     problem_timeout: float = 12.0          # 盤面有疑點（讀不準）持續多久就停手；看似無解也先等這麼久再停
     layout_settle: float = 3.0             # 管子排列變了要穩定撐多久才承認是換關（光效會讓某根管子暫時偵測不到）
@@ -267,6 +268,7 @@ class Engine:
         self._layout_cand: Optional[tuple] = None      # 跟這一關不一樣的新排列（還在觀察，撐夠久才承認換關）
         self._layout_cand_since = 0.0
         self._nosol_since: Optional[float] = None      # 開始「看似無解」的時間
+        self._ban_since: Optional[float] = None        # 開始「只因為黑名單而沒路」的時間
         self._level_moves = 0
         self._consec_bans = 0
         self._last_sig: Optional[tuple] = None
@@ -532,6 +534,24 @@ class Engine:
 
         plan = self._planner.plan(pz, avoid=tuple(self._banned))
         self.palette.commit()          # 盤面通過所有檢查、連續穩定 → 新顏色可以轉正
+        if (not plan.ok or plan.first is None) and self._banned:
+            # 沒路是因為「點了沒反應」的那步被禁用了，不是真的無解（9/20 實機 2-5：整盤唯一的一步被遊戲忽略兩次，
+            # 禁用後就只剩「找不到解」的誤導訊息）。不禁用的話走得通 → 這是「點擊沒被遊戲接受」，不是無解。
+            free = S.plan(pz, samples=self.cfg.samples, time_limit=self.cfg.plan_time)
+            if free.ok and free.first is not None:
+                s, d = free.first
+                label = f"{board.tubes[s].label()} → {board.tubes[d].label()}"
+                if not self.autoplay:
+                    return self._status("stuck", f"{label} 是可以走的，但剛才點了都沒反應——遊戲沒接受這一步", plan=free, **common)
+                if self._ban_since is None:
+                    self._ban_since = now
+                if now - self._ban_since < self.cfg.ban_cooldown:
+                    self._last_sig, self._same = None, 0
+                    return self._status("settling", f"{label} 點了沒反應，等一下再試一次…", plan=free, **common)
+                self._banned.clear()           # 原諒那一步，重新來一輪（連續沒反應太多輪 _check_pending 會停手）
+                self._ban_since = None
+                self._last_sig, self._same = None, 0
+                return self._status("settling", f"再試一次：{label}", plan=free, **common)
         if not plan.ok or plan.first is None:
             if self.autoplay:
                 # 看似無解不一定真的無解：合成的光效/動畫中途讀到的盤面常常是殘缺的（少一根管子、罐子還沒解鎖）。
@@ -548,6 +568,7 @@ class Engine:
                                     plan=plan, **common)
             return self._status("stuck", plan.message, plan=plan, **common)
         self._nosol_since = None
+        self._ban_since = None
 
         move = plan.first
         common.update(move=move, plan=plan)
@@ -589,10 +610,12 @@ class Engine:
                 if blocked:
                     self.stop_autoplay()
                     return self._status("stopped", blocked, **common)
+        # 點了沒反應而重試／再來一輪時放慢節奏：按久一點、兩次點擊間隔久一點（可能是遊戲漏接了太快的點擊）
+        slow = 1.0 + attempts + 0.5 * self._consec_bans
         try:
-            self._click(pts[0][0], pts[0][1], hold=self.cfg.click_hold)
-            self._sleep(self.cfg.select_delay)
-            self._click(pts[1][0], pts[1][1], hold=self.cfg.click_hold)
+            self._click(pts[0][0], pts[0][1], hold=self.cfg.click_hold * slow)
+            self._sleep(self.cfg.select_delay * slow)
+            self._click(pts[1][0], pts[1][1], hold=self.cfg.click_hold * slow)
         except C.InputError as e:
             self.stop_autoplay()
             return self._status("error", str(e), **common)
@@ -634,9 +657,10 @@ class Engine:
             if self._consec_bans >= 3:
                 self.stop_autoplay()
                 path = self._dump(img, "noeffect")
-                return self._status("stopped", f"連續 {self._consec_bans} 步點了都沒反應，自動操控已停止——"
-                                    f"請確認模擬器在最上層、沒被擋住，或遊戲的操作方式跟預期不同。"
-                                    + self._dbg(path), **common)
+                return self._status("stopped", f"{board.tubes[s].label()} → {board.tubes[d].label()} 這類步驟連續 "
+                                    f"{self._consec_bans} 輪點了遊戲都沒反應，自動操控已停止——"
+                                    f"請確認模擬器在最上層、沒被擋住；也可以手動點一次這一步，看遊戲接不接受"
+                                    f"（不接受＝遊戲有我不知道的規則）。" + self._dbg(path), **common)
             return self._status("settling", note, acted=note, **common)
         # 畫面變了：黑名單只針對「當時那個盤面」，盤面一變就作廢（同一步之後可能就合法了）
         self._pending = None

@@ -74,6 +74,9 @@ ERROR = "#e05c5c"
 PREVIEW_W, PREVIEW_H = 372, 224    # 面板裡的即時預覽框；範圍等比例縮進去
 LOG_LINES = 6                      # 「最近動作」一次看得到幾行
 LOG_KEEP = 300                     # 最多保留幾則（可以往上捲回去看）
+ACTION_LOG_FILE = "action_log.txt"  # 「最近動作」的檔案版（面板重開就沒了，這個留著事後查）
+ACTION_LOG_MAX = 512 * 1024        # 超過就只留最後 ACTION_LOG_KEEP 位元組
+ACTION_LOG_KEEP = 200 * 1024
 GC_EVERY = 3.0                     # 主執行緒多久手動回收一次垃圾（秒），原因見 AssistApp.__init__
 
 
@@ -266,6 +269,8 @@ class AssistApp(tk.Tk):
         self._flash_until = 0.0
         self._photo: Optional[ImageTk.PhotoImage] = None
         self._last_note = ""             # 上一則狀態訊息（同一句連續重複只記一次）
+        self._action_log_path = os.path.join(E.APP_DIR, ACTION_LOG_FILE)
+        self._open_action_log()
 
         # 垃圾回收只准在主執行緒做。對話框、遮罩關掉後留下的 Tk 物件（StringVar、PhotoImage）
         # 會互相參照成循環垃圾，等循環 GC 來收；而循環 GC 是「誰剛好配置記憶體就在誰的執行緒
@@ -534,6 +539,30 @@ class AssistApp(tk.Tk):
         t.config(state="disabled")
         if at_bottom:
             t.yview_moveto(1.0)                     # 比 see("end") 可靠（行高還沒算完時 see 會偏）
+        self._append_action_log(f"{time.strftime('%H:%M:%S')} {text}")
+
+    def _open_action_log(self) -> None:
+        """「最近動作」也寫進檔案（action_log.txt）：面板只留最近 300 則、重開就沒了，
+        9/20 實機 2-5 停手時「點了沒反應」那行早就捲走，事後沒法查。太大就只留後面一段。"""
+        path = self._action_log_path
+        try:
+            if os.path.exists(path) and os.path.getsize(path) > ACTION_LOG_MAX:
+                with open(path, "rb") as f:
+                    f.seek(-ACTION_LOG_KEEP, os.SEEK_END)
+                    tail = f.read()
+                tail = tail.split(b"\n", 1)[-1]            # 丟掉被切到一半的第一行
+                with open(path, "wb") as f:
+                    f.write(tail)
+        except OSError:
+            pass
+        self._append_action_log(f"===== {time.strftime('%Y-%m-%d %H:%M:%S')} 啟動 =====")
+
+    def _append_action_log(self, line: str) -> None:
+        try:
+            with open(self._action_log_path, "a", encoding="utf-8") as f:
+                f.write(line + "\n")
+        except OSError:
+            pass
 
     def log_contents(self) -> str:
         return self.log_text.get("1.0", "end-1c")

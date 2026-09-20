@@ -132,6 +132,23 @@ def main() -> int:
     check(f"最多保留 {A.LOG_KEEP} 則、舊的自動丟掉", len(app.log_contents().splitlines()) == A.LOG_KEEP,
           str(len(app.log_contents().splitlines())))
 
+    print("[2c] 「最近動作」也寫進 action_log.txt（9/20 實機停手時那行早就捲走，事後沒法查）")
+    logp = os.path.join(_TMP, A.ACTION_LOG_FILE)
+    with open(logp, "r", encoding="utf-8") as f:
+        body = f.read()
+    check("檔案裡有啟動標記", "啟動 =====" in body.splitlines()[0], body.splitlines()[0])
+    check("推進面板的動作都有寫進檔案（含很久以前已被面板丟掉的）", "動作 0\n" in body and "灌水 " + str(A.LOG_KEEP + 49) in body)
+    check("每行都帶時間", all(len(ln) > 9 and ln[2] == ":" for ln in body.splitlines()[1:]))
+    with open(logp, "wb") as f:
+        f.write(("很舊的一行\n" * 100000).encode("utf-8"))              # 遠超過上限
+    app._open_action_log()
+    size = os.path.getsize(logp)
+    with open(logp, "r", encoding="utf-8") as f:
+        lines = f.read().splitlines()
+    check("檔案太大會只留後面一段", size < A.ACTION_LOG_MAX, f"{size} bytes")
+    check("切掉的是前面、留下的每行都完整（不會有被切一半的行）", all(ln in ("很舊的一行",) or "啟動" in ln for ln in lines),
+          str([ln for ln in lines if ln not in ("很舊的一行",) and "啟動" not in ln][:2]))
+
     print("[3] 設定與防呆")
     app.max_var.set("5")
     app._on_max_levels()
