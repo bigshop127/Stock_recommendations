@@ -1,0 +1,7 @@
+__pycache__/
+config.json
+config.json.tmp
+palette.json
+palette.json.tmp
+app_log.txt
+debug/

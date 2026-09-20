@@ -1,0 +1,289 @@
+"""Windows 輸入模擬：把規劃好的動作真的點到模擬器上。
+
+從 eternal_night_dungeon/control.py 移植（同一台模擬器、同一套底層 API，已在真 BlueStacks 驗證過）。
+這個遊戲只需要「點一下」：選來源管、點目標管、點結算畫面的按鈕。
+
+安全設計：
+  * 這個模組只提供動作，不自己決定何時動作。要不要自動玩由 engine.py 控制。
+  * panic_pressed() 讓呼叫端隨時能問「使用者是不是按了緊急停止鍵」（GetAsyncKeyState，不需要視窗焦點）。
+  * click() 做完會把滑鼠移回原位，不然使用者的游標會被丟在遊戲畫面中間。
+"""
+
+from __future__ import annotations
+
+import ctypes
+import time
+from ctypes import wintypes
+from typing import Dict, Optional, Tuple
+
+user32 = ctypes.WinDLL("user32", use_last_error=True)
+
+ULONG_PTR = ctypes.c_ulonglong if ctypes.sizeof(ctypes.c_void_p) == 8 else ctypes.c_ulong
+
+INPUT_MOUSE = 0
+INPUT_KEYBOARD = 1
+
+MOUSEEVENTF_MOVE = 0x0001
+MOUSEEVENTF_LEFTDOWN = 0x0002
+MOUSEEVENTF_LEFTUP = 0x0004
+MOUSEEVENTF_ABSOLUTE = 0x8000
+MOUSEEVENTF_VIRTUALDESK = 0x4000
+
+KEYEVENTF_EXTENDEDKEY = 0x0001
+KEYEVENTF_KEYUP = 0x0002
+KEYEVENTF_SCANCODE = 0x0008
+
+SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN = 76, 77
+SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN = 78, 79
+
+MAPVK_VK_TO_VSC = 0
+
+# 緊急停止鍵候選（設定檔用名字指定）
+PANIC_KEYS: Dict[str, int] = {
+    "F7": 0x76, "F8": 0x77, "F9": 0x78, "F10": 0x79,
+    "F11": 0x7A, "F12": 0x7B, "ESC": 0x1B, "SCROLLLOCK": 0x91,
+}
+DEFAULT_PANIC_KEY = "F8"
+
+VK_LBUTTON, VK_RBUTTON = 0x01, 0x02   # 滑鼠左右鍵（GetAsyncKeyState 用）
+
+GA_ROOT = 2  # GetAncestor 用：一路往上找到最上層的視窗
+
+
+class MOUSEINPUT(ctypes.Structure):
+    _fields_ = [("dx", wintypes.LONG), ("dy", wintypes.LONG),
+                ("mouseData", wintypes.DWORD), ("dwFlags", wintypes.DWORD),
+                ("time", wintypes.DWORD), ("dwExtraInfo", ULONG_PTR)]
+
+
+class KEYBDINPUT(ctypes.Structure):
+    _fields_ = [("wVk", wintypes.WORD), ("wScan", wintypes.WORD),
+                ("dwFlags", wintypes.DWORD), ("time", wintypes.DWORD),
+                ("dwExtraInfo", ULONG_PTR)]
+
+
+class _InputUnion(ctypes.Union):
+    _fields_ = [("mi", MOUSEINPUT), ("ki", KEYBDINPUT)]
+
+
+class INPUT(ctypes.Structure):
+    _anonymous_ = ("u",)
+    _fields_ = [("type", wintypes.DWORD), ("u", _InputUnion)]
+
+
+class POINT(ctypes.Structure):
+    _fields_ = [("x", wintypes.LONG), ("y", wintypes.LONG)]
+
+
+class InputError(RuntimeError):
+    """SendInput 被擋下來了（多半是遊戲以系統管理員身分執行）。"""
+
+
+user32.WindowFromPoint.restype = wintypes.HWND
+user32.WindowFromPoint.argtypes = [POINT]
+user32.GetAncestor.restype = wintypes.HWND
+user32.GetAncestor.argtypes = [wintypes.HWND, wintypes.UINT]
+user32.FindWindowW.restype = wintypes.HWND
+user32.FindWindowW.argtypes = [wintypes.LPCWSTR, wintypes.LPCWSTR]
+user32.GetWindowRect.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.RECT)]
+user32.GetWindowTextW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
+user32.GetWindowTextLengthW.argtypes = [wintypes.HWND]
+user32.IsIconic.argtypes = [wintypes.HWND]
+user32.GetWindowThreadProcessId.restype = wintypes.DWORD
+user32.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
+
+
+def _send(*inputs: INPUT) -> None:
+    array = (INPUT * len(inputs))(*inputs)
+    sent = user32.SendInput(len(inputs), ctypes.byref(array), ctypes.sizeof(INPUT))
+    if sent != len(inputs):
+        err = ctypes.get_last_error()
+        raise InputError(
+            f"SendInput 只送出 {sent}/{len(inputs)} 個事件（WinError {err}）。"
+            f"如果模擬器是用「以系統管理員身分執行」開的，這個輔助器也要用系統管理員身分開才送得進去。"
+        )
+
+
+def virtual_screen() -> Tuple[int, int, int, int]:
+    return (
+        user32.GetSystemMetrics(SM_XVIRTUALSCREEN),
+        user32.GetSystemMetrics(SM_YVIRTUALSCREEN),
+        user32.GetSystemMetrics(SM_CXVIRTUALSCREEN),
+        user32.GetSystemMetrics(SM_CYVIRTUALSCREEN),
+    )
+
+
+def _normalize(x: int, y: int) -> Tuple[int, int]:
+    """螢幕座標 → SendInput 要的 0..65535 虛擬桌面正規化座標。"""
+    vx, vy, vw, vh = virtual_screen()
+    nx = int(round((x - vx) * 65535 / max(1, vw - 1)))
+    ny = int(round((y - vy) * 65535 / max(1, vh - 1)))
+    return max(0, min(65535, nx)), max(0, min(65535, ny))
+
+
+def cursor_position() -> Tuple[int, int]:
+    pt = POINT()
+    user32.GetCursorPos(ctypes.byref(pt))
+    return pt.x, pt.y
+
+
+# ---------------------------------------------------------------- 視窗追蹤
+# 給「校準之後把模擬器視窗挪走／換位置也不用重新框」用：校準當下記住是哪個
+# 視窗、框選範圍跟那個視窗左上角差多少，之後每次擷取前用標題重新找一次
+# 視窗現在的位置，位移量套回去就好。
+
+def window_at(x: int, y: int) -> Optional[int]:
+    """畫面上這個點屬於哪個「最上層」視窗，回傳 handle；沒有就回 None。
+
+    WindowFromPoint 找到的常常是子控制項（例如模擬器畫面本身的子視窗），
+    用 GetAncestor(GA_ROOT) 一路往上走到真正的頂層視窗，標題跟位置才穩定。
+    """
+    hwnd = user32.WindowFromPoint(POINT(x, y))
+    if not hwnd:
+        return None
+    root = user32.GetAncestor(hwnd, GA_ROOT)
+    return int(root or hwnd)
+
+
+def window_title(hwnd: int) -> str:
+    length = user32.GetWindowTextLengthW(hwnd)
+    if length <= 0:
+        return ""
+    buf = ctypes.create_unicode_buffer(length + 1)
+    user32.GetWindowTextW(hwnd, buf, length + 1)
+    return buf.value
+
+
+def window_is_minimized(hwnd: int) -> bool:
+    return bool(user32.IsIconic(hwnd))
+
+
+def window_pid(hwnd: int) -> int:
+    """這個視窗屬於哪個行程。點擊前拿來確認「目標點沒被自己的視窗蓋住」。"""
+    pid = wintypes.DWORD(0)
+    user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+    return int(pid.value)
+
+
+def window_rect(hwnd: int) -> Optional[Tuple[int, int, int, int]]:
+    """(left, top, right, bottom)；視窗代碼失效就回 None。"""
+    rect = wintypes.RECT()
+    if not user32.GetWindowRect(hwnd, ctypes.byref(rect)):
+        return None
+    return rect.left, rect.top, rect.right, rect.bottom
+
+
+def find_window(title: str) -> Optional[int]:
+    """依標題找現在的視窗代碼。同標題有好幾個視窗時抓到哪個算哪個——
+    模擬器通常只會開一份，這裡不特別處理多開的情況。"""
+    hwnd = user32.FindWindowW(None, title)
+    return int(hwnd) if hwnd else None
+
+
+def _mouse(flags: int, x: Optional[int] = None, y: Optional[int] = None) -> INPUT:
+    dx, dy = (0, 0)
+    if x is not None and y is not None:
+        dx, dy = _normalize(x, y)
+        flags |= MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK
+    inp = INPUT(type=INPUT_MOUSE)
+    inp.mi = MOUSEINPUT(dx, dy, 0, flags, 0, 0)
+    return inp
+
+
+def move_to(x: int, y: int) -> None:
+    _send(_mouse(MOUSEEVENTF_MOVE, x, y))
+
+
+def panic_pressed(key: str = DEFAULT_PANIC_KEY) -> bool:
+    """使用者現在有沒有按著緊急停止鍵。不需要視窗焦點。"""
+    vk = PANIC_KEYS.get(key.upper())
+    if vk is None:
+        return False
+    return bool(user32.GetAsyncKeyState(vk) & 0x8000)
+
+
+def mouse_button_down() -> bool:
+    """使用者現在有沒有按著滑鼠左鍵或右鍵（例如正在拖地圖）。不需要視窗焦點。
+
+    GetAsyncKeyState 讀的是「實體」按鍵；左右鍵對調的滑鼠，主鍵會落在 VK_RBUTTON，
+    所以兩個都看，寧可多讓一次也不要在使用者拖曳到一半插進去點擊。"""
+    return bool((user32.GetAsyncKeyState(VK_LBUTTON) | user32.GetAsyncKeyState(VK_RBUTTON)) & 0x8000)
+
+
+def swipe(
+    x0: int, y0: int, x1: int, y1: int,
+    duration: float = 0.14,
+    steps: int = 14,
+    restore_cursor: bool = True,
+) -> None:
+    """從 (x0,y0) 按住拖到 (x1,y1) 再放開。
+
+    按下之後、放開之前都刻意停一下：觸控手勢的辨識通常要看得到「按住 → 移動 → 放開」
+    三個階段，太快的話會被當成點擊而不是滑動。
+    """
+    origin = cursor_position() if restore_cursor else None
+    steps = max(2, steps)
+    per_step = max(0.0, duration) / steps
+
+    try:
+        move_to(x0, y0)
+        time.sleep(0.02)
+        _send(_mouse(MOUSEEVENTF_LEFTDOWN))
+        time.sleep(0.03)
+
+        for i in range(1, steps + 1):
+            t = i / steps
+            move_to(int(round(x0 + (x1 - x0) * t)), int(round(y0 + (y1 - y0) * t)))
+            time.sleep(per_step)
+
+        time.sleep(0.03)
+        _send(_mouse(MOUSEEVENTF_LEFTUP))
+    finally:
+        if origin is not None:
+            try:
+                move_to(*origin)
+            except InputError:
+                pass
+
+
+def tap_key(vk: int, extended: bool = True, hold: float = 0.04) -> None:
+    scan = user32.MapVirtualKeyW(vk, MAPVK_VK_TO_VSC)
+    flags = KEYEVENTF_SCANCODE | (KEYEVENTF_EXTENDEDKEY if extended else 0)
+
+    down = INPUT(type=INPUT_KEYBOARD)
+    down.ki = KEYBDINPUT(0, scan, flags, 0, 0)
+    up = INPUT(type=INPUT_KEYBOARD)
+    up.ki = KEYBDINPUT(0, scan, flags | KEYEVENTF_KEYUP, 0, 0)
+
+    _send(down)
+    time.sleep(max(0.0, hold))
+    _send(up)
+
+
+def click(x: int, y: int, hold: float = 0.06, restore_cursor: bool = True) -> None:
+    """在螢幕座標 (x, y) 點一下左鍵。
+
+    先移過去再按放，中間留一點停頓——太快的按放某些模擬器會吃不到，
+    跟 swipe() 一樣做完把游標移回原位。
+    """
+    origin = cursor_position() if restore_cursor else None
+    try:
+        move_to(x, y)
+        time.sleep(0.02)
+        _send(_mouse(MOUSEEVENTF_LEFTDOWN))
+        time.sleep(max(0.0, hold))
+        _send(_mouse(MOUSEEVENTF_LEFTUP))
+    finally:
+        if origin is not None:
+            try:
+                move_to(*origin)
+            except InputError:
+                pass
+
+
+__all__ = [
+    "InputError", "click", "swipe", "tap_key", "move_to",
+    "cursor_position", "panic_pressed", "mouse_button_down", "virtual_screen",
+    "window_at", "window_title", "window_is_minimized", "window_rect", "window_pid", "find_window",
+    "PANIC_KEYS", "DEFAULT_PANIC_KEY",
+]
