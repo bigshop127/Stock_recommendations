@@ -9,6 +9,9 @@
   * 鎖球空管（sealed）：只有「解鎖空匣」道具能開，一律當它不存在。
   * 黑色問號 / 藍罐鎖頭底下的寶石：**看不見**，但每種顏色總數是 4 的倍數 →
     用「各色缺幾顆」推算它們可能是什麼，抽幾種可能的世界各解一次，投票選第一步。
+  * **問號在變成「最上面一顆」之前一直是問號**（使用者 9/20 在 1-6 當面確認）：它被壓著的時候，
+    不會跟上面那串一起搬、也不算進合成——`[?, 紫, 紫, 紫]` 就算問號其實也是紫，遊戲也不會合成，
+    要先把上面三顆搬去別處、問號顯現後再湊。世界裡用「顏色編號 + HID」標記還沒顯現的寶石。
 
 「世界」＝把看不見的寶石都指定了顏色的完整盤面；在世界裡所有資訊都是已知的，可以放心搜尋。
 真的走了一步之後，engine 會重新讀畫面、重新規劃（有新的問號顯現就多知道一點）。
@@ -26,6 +29,7 @@ GROUP = 4                 # 4 顆同色合成
 HIDDEN = "?"
 COVERED = "#"
 UNKNOWN_CELLS = (HIDDEN, COVERED)
+HID = 1000                # 世界裡「還沒顯現的問號寶石」＝顏色編號 + HID（跟同色的看得見寶石是不同的東西）
 
 Move = Tuple[int, int]    # (來源管索引, 目標管索引)
 
@@ -112,7 +116,14 @@ def make_world(p: Puzzle, fill: Sequence[str], policy: str = "reading",
         cells[i][j] = name
     names = sorted({c for t in cells for c in t})
     idx = {n: k for k, n in enumerate(names)}
-    tubes = tuple(tuple(idx[c] for c in t) for t in cells)
+    rows = []
+    for i, t in enumerate(cells):
+        # 問號（HIDDEN）是「還沒顯現」；藍罐鎖頭底下的（COVERED）解鎖後就看得見，當一般寶石
+        row = [idx[c] + (HID if p.cells[i][j] == HIDDEN else 0) for j, c in enumerate(t)]
+        if row and row[-1] >= HID:
+            row[-1] -= HID                       # 最上面一顆問號＝已經顯現
+        rows.append(tuple(row))
+    tubes = tuple(rows)
     jars = [i for i, k in enumerate(p.kinds) if k == "jar"]
     if policy == "reverse":
         jars.reverse()
@@ -199,6 +210,8 @@ def apply_move(w: World, st: State, mv: Tuple[int, int, int]) -> State:
     s, d, k = mv
     ts, td = tubes[s], tubes[d]
     new_s = ts[:len(ts) - k]
+    if new_s and new_s[-1] >= HID:
+        new_s = new_s[:-1] + (new_s[-1] - HID,)          # 壓在上面的搬開了 → 最上面的問號顯現
     new_d = td + ts[len(ts) - k:]
     lst = list(tubes)
     lst[s], lst[d] = new_s, new_d
@@ -231,16 +244,22 @@ def _heuristic(w: World, st: State) -> int:
     tubes, _ = st
     runs: Dict[int, int] = {}
     total: Dict[int, int] = {}
+    h = 0
     for i, t in enumerate(tubes):
         if not t or _done(t, w.cap):
             continue
         prev = -1
+        hidden = False
         for c in t:
+            if c >= HID:
+                c -= HID
+                hidden = True
             total[c] = total.get(c, 0) + 1
             if c != prev:
                 runs[c] = runs.get(c, 0) + 1
                 prev = c
-    h = 0
+        if hidden:
+            h += 1                                       # 壓著問號的管子，上面的至少要搬開一次它才會顯現
     for c, r in runs.items():
         groups = (total[c] + w.cap - 1) // w.cap
         if r > groups:
@@ -354,6 +373,67 @@ def plan(p: Puzzle, samples: int = 4, max_nodes: int = 40000, time_limit: float 
     return _plan_full(p, samples, max_nodes, time_limit, seed, avoid)[0]
 
 
+SAFE_NODES = 4000         # 安全檢查每次搜尋的上限（只是評分用，不必找到最佳解）
+SAFE_TIME = 0.15
+SAFE_MAX_CANDS = 8
+SAFE_WORLDS = 24          # 安全檢查用的世界數：比「規劃用的抽樣」多很多——真相世界常常不在那幾個抽樣裡
+
+
+def _after(w: World, st: State) -> World:
+    """走完一步之後的世界：盤面換成 st，已解鎖的藍罐從解鎖順序拿掉。"""
+    return World(w.cap, w.kinds, st[0], w.jar_order[st[1]:], w.names, w.partial, w.banned)
+
+
+def _safe_count(worlds: List[World], mv: Move) -> int:
+    """在幾個世界裡，走了 mv 這一步之後盤面仍然解得出來。"""
+    safe = 0
+    for w in worlds:
+        start = (w.tubes, 0)
+        mv3 = next((m for m in gen_moves(w, start) if (m[0], m[1]) == mv), None)
+        if mv3 is None:
+            continue                                      # 這個世界裡這步不合法（或被必然有利的一步蓋掉）→ 不算安全
+        ns = apply_move(w, start, mv3)
+        if is_goal(w, ns) or search(_after(w, ns), max_nodes=SAFE_NODES, time_limit=SAFE_TIME) is not None:
+            safe += 1
+    return safe
+
+
+def _check_worlds(p: Puzzle, cons: Consistency, seed: int, avoid: Sequence[Move], has_jar: bool) -> List[World]:
+    """安全檢查用的一批世界（看不見的寶石各種可能的真相）。"""
+    extra = _fills(p, cons, SAFE_WORLDS, random.Random(seed + 1))
+    return [make_world(p, f, "reverse" if (has_jar and i % 2 == 1) else "reading", banned=avoid)
+            for i, f in enumerate(extra)]
+
+
+def _safest_first(worlds: List[World], tally: Dict[Move, list], preferred: Move) -> Optional[Move]:
+    """候選第一步 = 有世界的解用到的 + 第一個世界的所有合法第一步（最多 SAFE_MAX_CANDS 個）。
+    每個候選在每個抽樣世界裡走一步，看剩下的盤面是否仍解得出來；回傳「所有世界都還有解」最多的那個。
+    分數相同時偏好原本得票最高的 preferred，再來是得票數。"""
+    cand: List[Move] = list(tally.keys())
+    w0 = worlds[0]
+    for m in gen_moves(w0, (w0.tubes, 0)):
+        if (m[0], m[1]) not in cand:
+            cand.append((m[0], m[1]))
+    cand = cand[:max(SAFE_MAX_CANDS, len(tally))]
+    if len(cand) <= 1:
+        return preferred
+
+    def safe_count(mv: Move) -> int:
+        return _safe_count(worlds, mv)
+
+    n_pref = safe_count(preferred)
+    if n_pref == len(worlds):
+        return preferred                                  # 常見情況：首選在每個世界都安全，不必再比
+    best, best_key = preferred, (n_pref, True, len(tally.get(preferred, [])))
+    for mv in cand:
+        if mv == preferred:
+            continue
+        key = (safe_count(mv), False, len(tally.get(mv, [])))
+        if key > best_key:
+            best, best_key = mv, key
+    return best
+
+
 def _plan_full(p: Puzzle, samples: int, max_nodes: int, time_limit: float, seed: int,
                avoid: Sequence[Move]) -> Tuple[Plan, Optional[World], Optional[Solution]]:
     cons = check_consistency(p)
@@ -365,11 +445,13 @@ def _plan_full(p: Puzzle, samples: int, max_nodes: int, time_limit: float, seed:
     fills = _fills(p, cons, samples, rng)
     has_jar = any(k == "jar" for k in p.kinds)
     results: List[Tuple[World, Solution]] = []
+    worlds: List[World] = []
     for i, fill in enumerate(fills):
         # 第一個世界照「由左到右、由上到下」的解鎖順序；有藍罐時，其餘世界輪流換成反向，
         # 讓第一步不要押在某個沒驗證過的解鎖順序上
         policy = "reverse" if (has_jar and i % 2 == 1) else "reading"
         w = make_world(p, fill, policy, banned=avoid)
+        worlds.append(w)
         sol = search(w, max_nodes=max_nodes, time_limit=time_limit)
         if sol is not None and sol.moves:
             results.append((w, sol))
@@ -381,6 +463,30 @@ def _plan_full(p: Puzzle, samples: int, max_nodes: int, time_limit: float, seed:
     for w, sol in results:
         tally.setdefault(sol.moves[0], []).append((w, sol))
     first, cands = max(tally.items(), key=lambda kv: (len(kv[1]), -min(len(c[1].moves) for c in kv[1])))
+    if len(worlds) > 1:
+        # 有看不見的寶石＝第一步是在資訊不足下的賭注。世界抽樣只有幾個，剛好全都覺得某一步好、真相卻是死路的事會發生
+        # （實測 2-1：兩個合法的第一步，抽到的 4 個世界都選較短的 (6,5)，真相世界走完就整盤全滿、無路可走）。
+        # 所以候選步驟要在「所有抽樣世界」裡各走一步、看還解不解得出來，挑最安全的（同分才看票數、步數）。
+        check_worlds = _check_worlds(p, cons, seed, avoid, has_jar) or worlds
+        safe_first = _safest_first(check_worlds, tally, first)
+        if safe_first is not None and safe_first != first:
+            first = safe_first
+            cands = tally.get(first) or []
+            if not cands:                       # 沒有世界的解是這樣開頭的：挑一個世界從這一步之後重新解
+                for w in worlds:
+                    start = (w.tubes, 0)
+                    mv3 = next((m for m in gen_moves(w, start) if (m[0], m[1]) == first), None)
+                    if mv3 is None:
+                        continue
+                    ns = apply_move(w, start, mv3)
+                    rest = search(_after(w, ns), max_nodes=max_nodes, time_limit=time_limit)
+                    if rest is not None:
+                        sol = Solution([first] + rest.moves, [start] + rest.states)
+                        cands = [(w, sol)]
+                        break
+                if not cands:
+                    first = max(tally.items(), key=lambda kv: (len(kv[1]), -min(len(c[1].moves) for c in kv[1])))[0]
+                    cands = tally[first]
     world, chosen = min(cands, key=lambda c: len(c[1].moves))
     return (Plan(True, "", moves=chosen.moves, first=first, worlds_total=total,
                  worlds_solved=len(results), votes=len(cands), unknown_count=len(p.unknown_slots())),
@@ -417,9 +523,23 @@ class Planner:
             if kind != exp or len(cells) != len(tubes[i]):
                 return False
             for j, c in enumerate(cells):
-                if c not in UNKNOWN_CELLS and w.names[tubes[i][j]] != c:
+                if c not in UNKNOWN_CELLS and w.names[tubes[i][j] % HID] != c:
                     return False
         return True
+
+    def _still_safe(self, p: Puzzle, mv: Move, avoid: Sequence[Move]) -> bool:
+        """有看不見的寶石時，黏住的計畫這一步在「各種可能的真相」下是不是都還走得下去。
+        （沒有看不見的寶石＝計畫本身就是完整資訊下排的，不用再檢查。）"""
+        if not p.unknown_slots():
+            return True
+        cons = check_consistency(p)
+        if not cons.ok:
+            return True
+        has_jar = any(k == "jar" for k in p.kinds)
+        worlds = _check_worlds(p, cons, self.seed, avoid, has_jar)
+        if len(worlds) <= 1:
+            return True
+        return _safe_count(worlds, mv) == len(worlds)
 
     @staticmethod
     def legal_visible(p: Puzzle, mv: Move) -> bool:
@@ -456,10 +576,12 @@ class Planner:
             for j in range(self._i, len(self._sol.states)):
                 if self._matches(p, self._sol.states[j]):
                     if j < len(self._sol.moves) and tuple(self._sol.moves[j]) not in set(map(tuple, avoid))                             and self.legal_visible(p, tuple(self._sol.moves[j])):
-                        self._i = j
-                        return Plan(True, "", moves=self._sol.moves[j:], first=self._sol.moves[j],
-                                    worlds_total=1, worlds_solved=1, votes=1,
-                                    unknown_count=len(p.unknown_slots()))
+                        if self._still_safe(p, tuple(self._sol.moves[j]), avoid):
+                            self._i = j
+                            return Plan(True, "", moves=self._sol.moves[j:], first=self._sol.moves[j],
+                                        worlds_total=1, worlds_solved=1, votes=1,
+                                        unknown_count=len(p.unknown_slots()))
+                        # 黏住的計畫是為「某一個猜的世界」排的；這一步在別的可能真相下會走進死路 → 放棄舊計畫重新規劃
                     break
         plan, world, sol = _plan_full(p, self.samples, self.max_nodes, self.time_limit, self.seed, avoid)
         self.replans += 1
@@ -471,4 +593,4 @@ class Planner:
 
 
 __all__ = ["Puzzle", "Plan", "Planner", "plan", "check_consistency", "Consistency", "make_world", "search",
-           "gen_moves", "apply_move", "is_goal", "World", "GROUP", "HIDDEN", "COVERED"]
+           "gen_moves", "apply_move", "is_goal", "World", "GROUP", "HIDDEN", "COVERED", "HID"]

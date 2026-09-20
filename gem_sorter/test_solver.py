@@ -220,6 +220,64 @@ def test_random_boards() -> None:
           tried > 0 and solved >= tried - 1, f"{solved}/{tried}")
 
 
+def test_hidden_bottom_not_merged() -> None:
+    print("[6] 問號被壓著時不算合成（9/20 實機 1-6：[?, 紫, 紫, 紫]，使用者當面確認要先搬開上面三顆）")
+    # 6a 用實機那張截圖的盤面：問號其實也是紫，但要先搬開上面三顆、問號顯現後再湊
+    pz = puzzle_from_expect("lvl1-6_1_hidden_bottom_under_three.png")
+    check("這個盤面還沒解完（問號沒顯現就不算合成）", not pz.is_solved())
+    p = S.plan(pz)
+    empties = [i for i, t in enumerate(pz.cells) if not t]
+    check("求解器找得到解（舊版把 ? 代入紫就當已合成 → 0 步 → 誤判無解）", p.ok and p.first is not None, p.message)
+    if p.ok and p.first:
+        src = [i for i, t in enumerate(pz.cells) if t and t[0] == "?"][0]
+        check("第一步：把問號上面的三顆紫搬去空管", p.first[0] == src and p.first[1] in empties, f"{p.first}")
+        check("只要 2 步（搬開三顆 → 問號顯現 → 湊成 4 顆）", len(p.moves) == 2, f"{len(p.moves)} 步：{p.moves}")
+    # 6b 世界模型：壓著的問號不跟著上面那串一起搬、也不能拿來湊成一組
+    w = S.make_world(pz, ["violet"])
+    st = (w.tubes, 0)
+    check("世界裡這根管子不算合成", not S.is_goal(w, st))
+    mv = {(a, b): k for a, b, k in S.gen_moves(w, st)}
+    src = [i for i, t in enumerate(pz.cells) if t and t[0] == "?"][0]
+    check("上面那串只搬 3 顆（不含底下沒顯現的）", any(a == src and k == 3 for (a, b), k in mv.items()), str(mv))
+    s1 = S.apply_move(w, st, (src, empties[0], 3))
+    check("搬開之後問號顯現（變成看得見的紫）", len(s1[0][src]) == 1 and s1[0][src][0] < S.HID, str(s1[0][src]))
+    # 6c 把三顆放回問號上面（世界裡）不會被當成「湊滿一組」而優先/解鎖藍罐
+    check("問號沒顯現前，湊滿 4 顆也不會解鎖藍罐", S.apply_move(
+        S.make_world(S.Puzzle(kinds=["normal", "normal", "jar"], cells=[["?", "violet", "violet"], ["violet"], ["#", "blue"]]),
+                     ["violet", "blue"]),
+        (S.make_world(S.Puzzle(kinds=["normal", "normal", "jar"], cells=[["?", "violet", "violet"], ["violet"], ["#", "blue"]]),
+                      ["violet", "blue"]).tubes, 0), (1, 0, 1))[1] == 0)
+
+
+def test_safe_under_uncertainty() -> None:
+    print("[7] 看不見的寶石：第一步是賭注，要挑「各種可能真相下都走得下去」的（2-1 隨機真相）")
+    pz = puzzle_from_expect("lvl2-1_start.png")
+    cons = S.check_consistency(pz)
+    pool = []
+    for c, n in cons.deficits.items():
+        pool += [c] * n
+    jars = [i for i, k in enumerate(pz.kinds) if k == "jar"]
+    # 種子 2024 的前 200 局裡，沒有安全檢查時這 8 局會走進「整盤全滿、無路可走」的死局（第 8 步兩個合法的
+    # 第一步，抽樣世界全都覺得較短的那個好、真相卻是死路）。亂數照常推進 200 局，但只實際打這 8 局＋前 30 局。
+    hard = {37, 67, 79, 99, 113, 125, 127, 179}
+    rng = random.Random(2024)
+    wins, played, worst, fails = 0, 0, 0.0, []
+    for r in range(200):
+        fill = pool[:]
+        rng.shuffle(fill)
+        if r >= 30 and r not in hard:
+            continue
+        game = SG.from_puzzle(pz, fill, jar_order=(list(reversed(jars)) if r % 2 else None))
+        ok, steps, slow, msg, rej = play(game)
+        played += 1
+        wins += ok
+        worst = max(worst, slow)
+        if not ok:
+            fails.append(f"真相{r}: {msg} (走了{steps}步)")
+    check(f"{played} 局（含 8 個已知難局）全部過關（單次規劃最慢 {worst:.2f}s）", wins == played, "; ".join(fails[:5]))
+    check("單次規劃 < 1 秒（安全檢查不能把規劃拖慢）", worst < 1.0, f"{worst:.2f}s")
+
+
 def main() -> int:
     try:
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -230,6 +288,8 @@ def main() -> int:
     test_user_game()
     test_real_boards()
     test_random_boards()
+    test_hidden_bottom_not_merged()
+    test_safe_under_uncertainty()
     print(f"\n{_passed} 項通過，{_failed} 項失敗")
     return 1 if _failed else 0
 

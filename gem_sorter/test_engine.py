@@ -346,11 +346,18 @@ def test_layout_change() -> None:
     eng._banned.add((0, 1))
     world.cur = 1                            # 直接跳到另一關（沒經過結算畫面）
     world.solved_at = None
-    for _ in range(4):
+    clicks0 = len(world.clicks)
+    for _ in range(int((eng.cfg.layout_settle - 0.5) / 0.15)):
+        eng.step()
+        clock.t += 0.15
+    check("新排列還沒撐夠久：先不承認換關、也不點擊（可能只是光效讓管子暫時偵測不到）",
+          eng._banned == {(0, 1)} and len(world.clicks) == clicks0, f"banned={eng._banned} 多點了 {len(world.clicks) - clicks0} 下")
+    for _ in range(int(1.5 / 0.15)):
         eng.step()
         clock.t += 0.15
     new_gems = sum(len(t.cells) for t in world.game.observe_board().tubes)
-    check("換關後黑名單清空、基準寶石數重設成新關的數量", eng._banned == set() and eng._total_gems == new_gems,
+    check("撐過 layout_settle 秒才算換關：黑名單清空、基準寶石數重設成新關的數量",
+          eng._banned == set() and eng._total_gems == new_gems,
           f"banned={eng._banned} total={eng._total_gems} 新關={new_gems}")
     st, n = run(eng, clock, lambda s: s.kind == "solved")
     check("新的一關照常走完", st.kind == "solved" and world.game.solved(), f"{st.kind}: {st.message}")
@@ -477,6 +484,176 @@ def test_real_banner_frames() -> None:
               f"autoplay={eng.autoplay} clicks={len(clicks)} {st.kind}: {st.message}")
 
 
+def _real_engine(frames, **cfg_kw):
+    """用「一連串真實截圖」當畫面來源的引擎（真辨識）。frames 是可變 list：測試中途可以換掉目前那一張。"""
+    clock = Clock()
+    clicks = []
+
+    class G:
+        def grab(self, region):
+            return frames[0]
+
+    cfg = E.Config()
+    cfg.region = {"left": 0, "top": 0, "width": 1090, "height": 615}
+    for k, v in cfg_kw.items():
+        setattr(cfg, k, v)
+    eng = E.Engine(cfg, grabber=G(), clicker=lambda x, y, hold=0.06: clicks.append((x, y)), guard=None,
+                   busy=lambda: False, sleep=clock.sleep, clock=clock.now, palette=V.Palette())
+    return eng, clock, clicks
+
+
+def test_flame_frame() -> None:
+    print("[15] 9/20 實機：紅寶石湊滿的火焰讓一根管子偵測不到 → 不能當成換關、不能判無解停手")
+    from PIL import Image
+    data = os.path.join(os.path.dirname(os.path.abspath(__file__)), "testdata")
+    load_img = lambda n: np.array(Image.open(os.path.join(data, n)).convert("RGB"))   # noqa: E731
+    flame = load_img("lvl1-3_3_flame_tube_missing.png")       # 只偵測到 6 根（紅管不見）、藍罐還鎖著
+    clean = load_img("lvl1-3_2_unlocked_after_flame.png")     # 7 根、藍罐已解鎖
+
+    # 15a 已經在玩：先看到正常畫面（建立這一關的記憶），火焰那幾幀不能清掉記憶、不能停手、不能點
+    frames = [clean]
+    eng, clock, clicks = _real_engine(frames)
+    for _ in range(6):                                        # 先半自動（不點）建立這一關的記憶
+        eng.step()
+        clock.t += 0.15
+    planner, gems = eng._planner, eng._total_gems
+    check("正常畫面：讀得到、有基準寶石數", gems is not None and gems > 0, f"{gems}")
+    eng.start_autoplay()
+    frames[0] = flame
+    st = None
+    for _ in range(int(2.0 / 0.15)):                          # 火焰持續 2 秒
+        st = eng.step()
+        clock.t += 0.15
+    check("火焰期間：不停手、不換關（規劃器與基準還在）、顯示等一下",
+          eng.autoplay and eng._planner is planner and eng._total_gems == gems and st.kind == "settling",
+          f"autoplay={eng.autoplay} same_planner={eng._planner is planner} total={eng._total_gems} {st.kind}: {st.message}")
+    n_clicks = len(clicks)
+    frames[0] = clean
+    st = None
+    for _ in range(12):
+        st = eng.step()
+        clock.t += 0.15
+        if len(clicks) > n_clicks:
+            break
+    check("火焰過去後照常規劃並點擊（不是停在無解）", eng.autoplay and len(clicks) > n_clicks,
+          f"autoplay={eng.autoplay} {st.kind}: {st.message}")
+    check("而且點的是對的：藍色那顆搬去藍色 3 顆的管子（第1排第3根 → 第1排第1根）",
+          len(clicks) >= 2 and abs(clicks[-2][0] - 645) < 25 and abs(clicks[-1][0] - 456) < 25, f"{clicks[-2:]}")
+
+    # 15b 一開始看到的就是火焰那一幀（引擎沒有前面的記憶可比）：判無解前先等一等，不立刻停手
+    frames = [flame]
+    eng, clock, clicks = _real_engine(frames, problem_timeout=8.0)
+    eng.start_autoplay()
+    for _ in range(int(4.0 / 0.15)):
+        st = eng.step()
+        clock.t += 0.15
+    check("看似無解：等待中，不立刻停手、不點擊", eng.autoplay and not clicks and st.kind == "settling",
+          f"autoplay={eng.autoplay} clicks={len(clicks)} {st.kind}: {st.message}")
+    frames[0] = clean
+    n_clicks = len(clicks)
+    for _ in range(60):                                       # 新排列要撐過 3 秒才承認，再規劃、點擊
+        st = eng.step()
+        clock.t += 0.15
+        if len(clicks) > n_clicks:
+            break
+    check("等待期間畫面恢復正常 → 照常走", eng.autoplay and len(clicks) > n_clicks, f"{st.kind}: {st.message}")
+    # 15c 一直都是無解 → 等到逾時才停手，且存下畫面、講清楚原因
+    frames = [flame]
+    eng, clock, clicks = _real_engine(frames, problem_timeout=8.0)
+    eng.start_autoplay()
+    t0 = clock.t
+    st, n = run(eng, clock, lambda s: s.kind in ("stopped", "stuck"), max_iters=400)
+    check("真的無解 → 等滿 problem_timeout 才停手、沒點過、訊息講清楚",
+          not eng.autoplay and not clicks and "找不到解" in st.message and clock.t - t0 >= 8.0,
+          f"{st.kind}: {st.message} (等了 {clock.t - t0:.1f}s)")
+
+
+def test_move_verify_ignores_jitter() -> None:
+    print("[16] 驗收上一步只看內容，不看位置（動畫抖動不能被當成「這一步生效了」）")
+    clock = Clock()
+    world = FakeWorld(clock, [game_from("lvl1-2_0_start.png", ["violet"])])
+    world.drop = 2                                   # 第一步的兩下點擊都被遊戲吃掉＝盤面內容沒變
+    eng = make_engine(world, clock)
+    real = world.analyze
+    tick = {"n": 0}
+
+    def jitter(img, palette):
+        info = real(img, palette)
+        if info.kind == "level":
+            tick["n"] += 1
+            for t in info.board.tubes:
+                t.py += 8.0 if (tick["n"] // 3) % 2 else 0.0    # 管子上下抖動 8px（升起/光環動畫），每 3 幀變一次
+        return info
+
+    eng._analyze = jitter
+    eng.start_autoplay()
+    st, n = run(eng, clock, lambda s: s.kind in ("solved", "stopped", "stuck"))
+    check("最後過關", st.kind == "solved" and world.game.solved(), f"{st.kind}: {st.message}")
+    check("引擎計的步數 = 遊戲真正走的步數（抖動沒有被算成一步）", eng.moves_done == world.game.steps,
+          f"引擎 {eng.moves_done} vs 遊戲 {world.game.steps}")
+
+
+def test_jar_hidden_level() -> None:
+    print("[17] 1-6（藍罐裡有問號 [鎖,?,紫,紫]、共 4 顆看不見）：12 種可能的真相全部自動過關")
+    import itertools
+    pz = puzzle_from_expect("lvl1-6_0_start_jar_hidden.png")
+    cons = S.check_consistency(pz)
+    pool = []
+    for c, n in cons.deficits.items():
+        pool += [c] * n
+    fails, worst = [], 0
+    truths = sorted(set(itertools.permutations(pool)))
+    for fill in truths:
+        clock = Clock()
+        world = FakeWorld(clock, [SG.from_puzzle(pz, list(fill))])
+        eng = make_engine(world, clock)
+        eng.start_autoplay()
+        st, n = run(eng, clock, lambda s: s.kind in ("solved", "stopped", "stuck"), max_iters=4000)
+        worst = max(worst, world.game.steps)
+        if not (st.kind == "solved" and world.game.solved()):
+            fails.append(f"{fill}: {st.kind} {st.message[:60]}")
+    check(f"{len(truths)} 種真相全部過關（最多 {worst} 步）", not fails and len(truths) == 12, "; ".join(fails))
+
+
+def test_hidden_bottom_level() -> None:
+    print("[18] 問號被三顆壓著 [?, 紫, 紫, 紫]（9/20 實機 1-6 第 17 步）：要先搬開上面三顆，不是判無解")
+    from PIL import Image
+    data = os.path.join(os.path.dirname(os.path.abspath(__file__)), "testdata")
+    img = np.array(Image.open(os.path.join(data, "lvl1-6_1_hidden_bottom_under_three.png")).convert("RGB"))
+
+    # 18a 真辨識：引擎讀到這一幀，自動操控要點「問號那根 → 某根空管」（舊版：找不到解、停手）
+    frames = [img]
+    eng, clock, clicks = _real_engine(frames)
+    eng.start_autoplay()
+    st = None
+    for _ in range(12):
+        st = eng.step()
+        clock.t += 0.15
+        if len(clicks) >= 2:
+            break
+    board = st.board
+    src = next(t for t in board.tubes if t.cells and t.cells[0] == "?")
+    check("有點擊、沒停手", eng.autoplay and len(clicks) >= 2, f"autoplay={eng.autoplay} clicks={len(clicks)} {st.kind}: {st.message}")
+    if len(clicks) >= 2:
+        # 兩下點擊的座標要對得上「問號那根」跟「一根空管」（這個測試的 region 左上角是 (0,0)）
+        near = lambda pt, t: abs(pt[0] - t.px) < 3 and abs(pt[1] - t.py) < 3   # noqa: E731
+        dst = [t for t in board.tubes if near(clicks[1], t)]
+        check("第一下點問號那根", near(clicks[0], src), f"{clicks[0]} vs ({src.px:.0f},{src.py:.0f})")
+        check("第二下點一根空管", len(dst) == 1 and not dst[0].cells and dst[0].kind == "normal",
+              f"{[t.label() for t in dst]}")
+
+    # 18b 模擬遊戲（新規則：問號被壓著不顯現、也不算合成）：全程自動過關，只要 2 步
+    pz = S.Puzzle(kinds=[t.kind for t in board.tubes], cells=[list(t.cells) for t in board.tubes])
+    clock = Clock()
+    world = FakeWorld(clock, [SG.from_puzzle(pz, ["violet"])])
+    check("模擬遊戲：這個盤面一開始還沒解完（壓著的問號不算合成）", not world.game.solved())
+    eng = make_engine(world, clock)
+    eng.start_autoplay()
+    st, n = run(eng, clock, lambda s: s.kind in ("solved", "stopped", "stuck"))
+    check("自動過關", st.kind == "solved" and world.game.solved(), f"{st.kind}: {st.message}")
+    check("剛好 2 步（搬開三顆 → 問號顯現 → 湊滿）", world.game.steps == 2, f"{world.game.steps} 步")
+
+
 def test_predict_and_compatible() -> None:
     print("[11] 預測與驗收函式")
     cells = [["a", "b", "b"], ["c", "b"], []]
@@ -568,6 +745,10 @@ def main() -> int:
     test_banner_covers_gem()
     test_layout_jitter()
     test_real_banner_frames()
+    test_flame_frame()
+    test_move_verify_ignores_jitter()
+    test_jar_hidden_level()
+    test_hidden_bottom_level()
     test_predict_and_compatible()
     test_real_frames()
     print(f"\n{_passed} 項通過，{_failed} 項失敗")

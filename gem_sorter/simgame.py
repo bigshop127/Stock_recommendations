@@ -35,16 +35,15 @@ class SimGame:
         return set(self.jar_order[self.unlocked:])
 
     def _reveal(self) -> None:
-        for i, t in enumerate(self.gems):
+        # 問號寶石只有在「變成最上面一顆」時才顯現。被壓著的時候一直是問號——即使它其實跟上面同色，
+        # 遊戲也不會自動合成、不會幫你攤開（使用者 9/20 在 1-6 [?,紫,紫,紫] 當面確認：要先把上面三顆搬去空管）。
+        for t in self.gems:
             if t and t[-1][1]:
-                t[-1][1] = False            # 最上面的問號寶石顯現，之後一直是看得見的
-            if self.is_done_tube(i):
-                for g in t:
-                    g[1] = False            # 合成完的管子：4 顆都攤開（截圖上合成完的管子全是看得見的同色寶石）
+                t[-1][1] = False
 
     def is_done_tube(self, i: int) -> bool:
         t = self.gems[i]
-        return len(t) == self.cap and all(g[0] == t[0][0] for g in t)
+        return len(t) == self.cap and all(g[0] == t[0][0] and not g[1] for g in t)   # 還有沒顯現的就不算
 
     def can_move(self, s: int, d: int) -> Optional[int]:
         """可以的話回傳會搬幾顆，否則 None。"""
@@ -58,7 +57,7 @@ class SimGame:
         ts, td = self.gems[s], self.gems[d]
         c = ts[-1][0]
         k = 1
-        while k < len(ts) and ts[-1 - k][0] == c:
+        while k < len(ts) and ts[-1 - k][0] == c and not ts[-1 - k][1]:    # 沒顯現的問號不跟著一起搬
             k += 1
         if td:
             if td[-1][0] != c:

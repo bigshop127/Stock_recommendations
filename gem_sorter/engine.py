@@ -50,7 +50,8 @@ class Config:
     move_timeout: float = 6.0              # 點完之後畫面一直沒變化，多久算這一步沒生效
     max_retries: int = 1                   # 同一步沒生效最多重試幾次，再不行就列入黑名單改走別的
     unknown_timeout: float = 60.0          # 自動操控時連續認不得畫面多久就停手
-    problem_timeout: float = 12.0          # 盤面有疑點（讀不準）持續多久就停手
+    problem_timeout: float = 12.0          # 盤面有疑點（讀不準）持續多久就停手；看似無解也先等這麼久再停
+    layout_settle: float = 3.0             # 管子排列變了要穩定撐多久才承認是換關（光效會讓某根管子暫時偵測不到）
     overlay_interval: float = 1.2          # 獎勵/結算畫面：兩次點擊之間至少隔多久
     overlay_retry_after: float = 4.0       # 點了之後畫面沒變，隔多久再點一次
     overlay_max_retries: int = 3
@@ -263,6 +264,9 @@ class Engine:
         self._pending: Optional[_Pending] = None
         self._total_gems: Optional[int] = None
         self._layout: Optional[tuple] = None
+        self._layout_cand: Optional[tuple] = None      # 跟這一關不一樣的新排列（還在觀察，撐夠久才承認換關）
+        self._layout_cand_since = 0.0
+        self._nosol_since: Optional[float] = None      # 開始「看似無解」的時間
         self._level_moves = 0
         self._consec_bans = 0
         self._last_sig: Optional[tuple] = None
@@ -458,12 +462,22 @@ class Engine:
             self._ov_acted_at = 0.0
             self._ov_retry_label = None
             self._ov_counted = False
+        common = dict(screen="level", board=board, image=img)
         layout = board.layout_signature()
         if self._layout is not None and not V.layouts_match(layout, self._layout):
-            self._reset_level()          # 管子排列變了＝換關（或視窗大小變了）；動畫造成的幾像素抖動不算
-        self._layout = layout
-
-        common = dict(screen="level", board=board, image=img)
+            # 管子排列跟這一關不一樣：可能真的換關（或視窗大小變了），也可能只是光效讓某根管子暫時偵測不到
+            # （9/20 實機：紅寶石湊滿的火焰讓那根管子消失，引擎當成換關、清掉記憶，拿缺一根管子的殘缺盤面
+            # 當新的一關 → 藍罐還鎖著、看起來無解 → 停手）。所以不立刻承認：新排列要穩定撐過 layout_settle
+            # 秒才算換關，期間不規劃、不點擊；排列回到原樣就當什麼都沒發生。
+            if self._layout_cand is None or not V.layouts_match(layout, self._layout_cand):
+                self._layout_cand, self._layout_cand_since = layout, now
+            if now - self._layout_cand_since < self.cfg.layout_settle:
+                self._last_sig, self._same = None, 0
+                return self._status("settling", "管子排列跟剛才不一樣（動畫或光效？），等一下再看…", **common)
+            self._reset_level()          # 撐夠久了：真的換關
+        else:
+            self._layout_cand = None
+        self._layout = layout            # 排列一致時跟著慢慢漂移（動畫的幾像素抖動不算變）
 
         # ---- 盤面有疑點 ----
         if not board.ok:
@@ -520,12 +534,20 @@ class Engine:
         self.palette.commit()          # 盤面通過所有檢查、連續穩定 → 新顏色可以轉正
         if not plan.ok or plan.first is None:
             if self.autoplay:
+                # 看似無解不一定真的無解：合成的光效/動畫中途讀到的盤面常常是殘缺的（少一根管子、罐子還沒解鎖）。
+                # 先等 problem_timeout 秒、每次重新確認重新規劃；一直無解才停手（並存下畫面）。
+                if self._nosol_since is None:
+                    self._nosol_since = now
+                if now - self._nosol_since <= self.cfg.problem_timeout:
+                    self._last_sig, self._same = None, 0
+                    return self._status("settling", f"{plan.message}——先等等看是不是動畫中途的畫面…", plan=plan, **common)
                 self.stop_autoplay()
                 path = self._dump(img, "nosolution")
                 return self._status("stuck", f"{plan.message}。自動操控已停止。"
                                     + self._dbg(path),
                                     plan=plan, **common)
             return self._status("stuck", plan.message, plan=plan, **common)
+        self._nosol_since = None
 
         move = plan.first
         common.update(move=move, plan=plan)
@@ -578,7 +600,8 @@ class Engine:
             self.stop_autoplay()
             return self._status("error", f"送出點擊失敗：{e}", **common)
         expected = predict_cells(cells, kinds, move, board.cap, self.cfg.partial)
-        self._pending = _Pending(move=move, before_sig=sig, expected=expected, expected_kinds=list(kinds),
+        self._pending = _Pending(move=move, before_sig=board.content_signature(), expected=expected,
+                                 expected_kinds=list(kinds),
                                  t=self._now(), attempts=attempts)
         self._same = 0
         self._last_sig = None
@@ -593,7 +616,7 @@ class Engine:
         elapsed = now - p.t
         if elapsed < self.cfg.move_settle:
             return self._status("settling", "等待搬移動畫…", **common)
-        if sig == p.before_sig:
+        if board.content_signature() == p.before_sig:      # 只比內容：位置抖動不算「盤面變了」
             if elapsed < self.cfg.move_timeout:
                 return self._status("settling", "等待畫面更新…", **common)
             # 這一步沒生效

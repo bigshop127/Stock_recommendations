@@ -322,6 +322,10 @@ GEM_FRAC = 0.30         # 取樣小塊裡寶石像素占比達這個就算「有
 DARK_VAL = 0.15         # 問號寶石是黑的
 DARK_FRAC = 0.35
 MARK_VAL = 0.66         # 鎖球（亮白圓）平均亮度下限；空管背景約 0.4~0.6、鎖球約 0.83
+# 藍罐（有霜）裡的問號寶石：霜光把黑色洗成灰色（V 平均 ~0.5、最暗只到 ~0.2），黑色門檻抓不到。
+# 但它是「暗灰本體＋白色問號」，對比高（V 標準差 ~0.19）；罐子裡真正的空格是平滑的霜光（標準差 ~0.05、最暗 ~0.45）。
+FROST_HIDDEN_VSTD = 0.12    # V 標準差下限
+FROST_HIDDEN_DARK = 0.05    # V < 0.35 的像素占比下限
 
 
 class SlotObs(NamedTuple):
@@ -385,6 +389,9 @@ def read_slot(img: np.ndarray, tube: Tube, k: int) -> SlotObs:
         hue = robust_hue(h, s, v)
         if hue is not None:
             return SlotObs("gem", hue, float(s[body].mean()), float(v[body].mean()))
+    if (tube.kind == "jar" and float(s.mean()) < 0.30 and float(v.std()) >= FROST_HIDDEN_VSTD
+            and float((v < 0.35).mean()) >= FROST_HIDDEN_DARK):
+        return SlotObs("hidden")            # 藍罐裡被霜光洗成灰色的問號寶石
     if float(v.mean()) > MARK_VAL and float(s.mean()) < 0.30:
         return SlotObs("mark", -1.0, float(s.mean()), float(v.mean()))
     return SlotObs("empty")
@@ -498,6 +505,11 @@ class Board:
         """給「連續兩次讀到一樣」用：每根管的（位置、種類、內容）。位置取整數避免抖動。"""
         return tuple((t.row, t.col, t.kind, tuple(t.cells), int(round(t.px / 4)), int(round(t.py / 4)))
                      for t in self.tubes)
+
+    def content_signature(self) -> tuple:
+        """只看每根管的（排、根、種類、內容），不含位置——判斷「這一步有沒有生效」用，
+        動畫造成的位置抖動不該被當成盤面變了。"""
+        return tuple((t.row, t.col, t.kind, tuple(t.cells)) for t in self.tubes)
 
     def layout_signature(self) -> tuple:
         """每根管的（排、根、點擊位置、管寬）。要比對請用 layouts_match，不要直接 ==。"""
