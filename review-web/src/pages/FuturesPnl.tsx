@@ -7,6 +7,7 @@ import {
   ShieldCheck, Wallet, ListOrdered, CalendarSync, SlidersHorizontal, BookOpen,
   LineChart, Flame, Ruler, ArrowDownCircle, ArrowUpCircle, ArrowLeftRight,
   ChevronDown, ChevronUp, Eraser, History, Compass, Filter,
+  Archive, RotateCcw,
 } from 'lucide-react';
 import { Panel, StatTile, RiskMeter, ThreatCard, LevelCard, Row, Chip, type Tone } from '../components/futures/ui';
 import { ScreenshotImport } from '../components/futures/ScreenshotImport';
@@ -25,6 +26,7 @@ import {
   leverageLadder, entryPlan, rollCostEstimate, CALIBRATED_PLAN,
   type FuturesPosition, type ClosedTrade, type CashFlow, type FuturesSpec, type StressRow,
   type PriceInput, type EquityPoint, type ProductConfig, type ProductPriceSpec,
+  type AccountSummary, type ProductSummaryRow,
 } from '../lib/futures';
 import {
   getFuturesConfig, saveFuturesConfig, subscribeFutures,
@@ -285,6 +287,7 @@ export function FuturesPnl() {
     let next: FuturesConfig | null = null;
     for (const code of Object.keys(cur0.products)) {
       const p = cur0.products[code];
+      if (p.archived) continue; // 已封存商品不再使用，不用浪費一次報價請求
       try {
         const resp = await api.getFuturesQuote(p.quote_contract || p.code || CONTRACT_CODE);
         if (code === code0) {
@@ -312,7 +315,12 @@ export function FuturesPnl() {
   // 在部位新增表單／建倉試算頁預設操作哪個商品」的 UI 狀態；總覽/壓力測試/轉倉這些
   // 帳戶層級的分頁一律看全部商品加總（productsMap／specsMap），不受它影響。
   const products = config.products;
-  const activeCode = config.products[config.active_product] ? config.active_product : Object.keys(products)[0];
+  // 封存商品不能被選為「目前操作」對象——active_product 若指到已封存或已消失的商品，
+  // 退回第一個還在使用中的商品（萬一全部都封存了，退無可退才用第一個，理論上不會發生：
+  // removeProduct 擋著最後一個使用中商品不給封存）。
+  const activeCode = (config.products[config.active_product] && !config.products[config.active_product].archived)
+    ? config.active_product
+    : (Object.keys(products).find((k) => !products[k].archived) ?? Object.keys(products)[0]);
   const activeProduct = products[activeCode];
   const spec = activeProduct.spec;
   const preset = useMemo(() => findPreset(activeCode), [activeCode]);
@@ -3273,6 +3281,208 @@ const StressTab: React.FC<{
   );
 };
 
+// ── 帳戶情境模擬 ────────────────────────────────────────────────────────────
+/**
+ * 原本的分批進場試算只服務「目前操作」那一個商品，帳戶同時有多個商品時沒辦法
+ * 一次看「京元電子期漲、聯發科期跌」這種跨商品組合會怎樣。這裡一鍵把帳戶目前
+ * 所有真實部位帶進來，每個商品各自給一個假設價格（不是每一筆部位分開給，同一
+ * 商品同一時間只有一個市場價格，跟其他分頁的「單一商品一個價格」假設一致），
+ * 重用 `summarizeAccountAll` 算出這個情境下的整體權益/風險指標，跟總覽頁同一套
+ * 公式不會兩邊對不起來。純前端試算，不寫回雲端——跟壓力測試的跌幅矩陣一樣是
+ * 「按一下看結果」的工具，不是要保存的部位規劃。
+ */
+const ScenarioPanel: React.FC<{
+  config: FuturesConfig;
+  products: Record<string, ProductConfig>;
+  summary: AccountSummary;
+}> = ({ config, products, summary }) => {
+  const heldCodes = useMemo(() => {
+    const set = new Set<string>();
+    for (const pos of config.positions) {
+      if (Math.max(0, pos.lots) > 0 && products[pos.product]) set.add(pos.product);
+    }
+    return [...set].sort();
+  }, [config.positions, products]);
+
+  const [scenario, setScenario] = useState<Record<string, number>>({});
+  const [priceText, setPriceText] = useState<Record<string, string>>({});
+
+  // 找這個商品口數最多的月份當代表價，跟總覽頁「參考月份」選法一致
+  const referencePrice = (code: string): number => {
+    const p = products[code];
+    const byMonth = new Map<string, number>();
+    for (const pos of config.positions) {
+      if (pos.product !== code || !(pos.lots > 0)) continue;
+      byMonth.set(pos.month, (byMonth.get(pos.month) ?? 0) + pos.lots);
+    }
+    let refMonth = '';
+    let refLots = -1;
+    for (const [m, l] of byMonth) { if (l > refLots) { refLots = l; refMonth = m; } }
+    return priceOf({ byMonth: p.prices, fallback: p.price }, refMonth);
+  };
+
+  const importHoldings = () => {
+    const nextScenario: Record<string, number> = {};
+    const nextText: Record<string, string> = {};
+    for (const code of heldCodes) {
+      const price = referencePrice(code);
+      nextScenario[code] = price;
+      nextText[code] = price > 0 ? price.toFixed(2) : '';
+    }
+    setScenario(nextScenario);
+    setPriceText(nextText);
+  };
+
+  const setRowPrice = (code: string, raw: string) => {
+    setPriceText((t) => ({ ...t, [code]: raw }));
+    const v = parseFloat(raw);
+    setScenario((s) => {
+      const n = { ...s };
+      if (Number.isFinite(v) && v > 0) n[code] = v; else delete n[code];
+      return n;
+    });
+  };
+
+  const removeRow = (code: string) => {
+    setScenario((s) => { const n = { ...s }; delete n[code]; return n; });
+    setPriceText((t) => { const n = { ...t }; delete n[code]; return n; });
+  };
+
+  const clearAll = () => { setScenario({}); setPriceText({}); };
+
+  const simProducts = useMemo<Record<string, ProductPriceSpec>>(() => {
+    const m: Record<string, ProductPriceSpec> = {};
+    for (const [code, p] of Object.entries(products)) {
+      const override = scenario[code];
+      m[code] = {
+        spec: p.spec,
+        price: override !== undefined ? { byMonth: {}, fallback: override } : { byMonth: p.prices, fallback: p.price },
+        beta: p.index_linked ? 1 : p.beta,
+        index_ref: p.index_ref,
+      };
+    }
+    return m;
+  }, [products, scenario]);
+
+  const scenarioActive = Object.keys(scenario).length > 0;
+  const simSummary = useMemo(
+    () => summarizeAccountAll(config.positions, simProducts, config.cash, config.closed),
+    [config.positions, simProducts, config.cash, config.closed],
+  );
+
+  const rowOf = (rows: ProductSummaryRow[] | undefined, code: string) => rows?.find((r) => r.product === code);
+
+  if (heldCodes.length === 0) {
+    return (
+      <Panel title="帳戶情境模擬" icon={<Compass className="w-4 h-4" />} tone="primary">
+        <p className="text-xs text-zinc-500">目前沒有任何商品有未平倉部位，沒有東西可以模擬。先到「部位 &amp; 平倉紀錄」新增。</p>
+      </Panel>
+    );
+  }
+
+  const equityDelta = simSummary.equity - summary.equity;
+
+  return (
+    <Panel
+      title="帳戶情境模擬"
+      icon={<Compass className="w-4 h-4" />}
+      tone="primary"
+      desc="一鍵導入目前所有真實部位，每個商品各自假設一個價格，看整個帳戶（不只單一商品）的權益與風險指標會怎麼變。"
+      right={
+        <div className="flex items-center gap-2">
+          {scenarioActive && (
+            <button onClick={clearAll} className="text-[11px] text-zinc-500 hover:text-zinc-300 transition">清空情境</button>
+          )}
+          <button
+            onClick={importHoldings}
+            className="flex items-center gap-1.5 px-3 py-1.5 bg-primary/15 border border-primary/30 text-primary text-[11px] font-semibold rounded-lg hover:bg-primary/25 transition"
+          >
+            <RefreshCw className="w-3.5 h-3.5" /> 導入目前所有部位
+          </button>
+        </div>
+      }
+    >
+      <div className="space-y-4">
+        <div className="overflow-x-auto -mx-1 px-1">
+          <table className="w-full text-[11px] min-w-[560px]">
+            <thead>
+              <tr className="text-zinc-500 border-b border-border/60">
+                <th className="text-left font-medium py-1.5 pr-2">商品</th>
+                <th className="text-right font-medium py-1.5 px-2">口數</th>
+                <th className="text-right font-medium py-1.5 px-2">現價</th>
+                <th className="text-right font-medium py-1.5 px-2">假設價格</th>
+                <th className="text-right font-medium py-1.5 px-2">漲跌</th>
+                <th className="text-right font-medium py-1.5 px-2">這個商品的未實現損益</th>
+                <th className="w-6"></th>
+              </tr>
+            </thead>
+            <tbody className="font-mono">
+              {heldCodes.map((code) => {
+                const p = products[code];
+                const cur = referencePrice(code);
+                const override = scenario[code];
+                const row = rowOf(simSummary.by_product, code);
+                const baseRow = rowOf(summary.by_product, code);
+                const diffPct = override !== undefined && cur > 0 ? override / cur - 1 : null;
+                return (
+                  <tr key={code} className="border-b border-border/30">
+                    <td className="py-1.5 pr-2 text-zinc-300 font-sans">{p?.name ?? code}</td>
+                    <td className="text-right px-2 text-zinc-400">{baseRow?.lots ?? 0}</td>
+                    <td className="text-right px-2 text-zinc-500">{cur > 0 ? px(cur) : '—'}</td>
+                    <td className="text-right px-2">
+                      <input
+                        type="number" inputMode="decimal" step="0.01"
+                        value={priceText[code] ?? ''}
+                        onChange={(e) => setRowPrice(code, e.target.value)}
+                        placeholder={cur > 0 ? px(cur) : '0.00'}
+                        className="w-24 text-right bg-zinc-900/60 border border-border rounded px-1.5 py-1 text-zinc-100 font-mono"
+                      />
+                    </td>
+                    <td className={`text-right px-2 ${diffPct === null ? 'text-zinc-600' : diffPct > 0 ? 'text-emerald-400' : diffPct < 0 ? 'text-rose-400' : 'text-zinc-500'}`}>
+                      {diffPct === null ? '—' : `${diffPct >= 0 ? '+' : ''}${pct(diffPct, 1)}`}
+                    </td>
+                    <td className={`text-right px-2 ${row && row.unrealized >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                      {row ? money(row.unrealized) : '—'}
+                    </td>
+                    <td className="text-center">
+                      {override !== undefined && (
+                        <button onClick={() => removeRow(code)} title="這個商品不再套用假設價格，改用現價" className="text-zinc-600 hover:text-rose-400">
+                          <Eraser className="w-3 h-3" />
+                        </button>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+          <StatCard label="情境權益" value={money(simSummary.equity)}
+            sub={scenarioActive ? `現況 ${money(summary.equity)}` : '尚未套用任何假設價格'}
+            cls={equityDelta > 0 ? 'text-emerald-400' : equityDelta < 0 ? 'text-rose-400' : undefined}
+            icon={<Wallet className="w-3 h-3" />} />
+          <StatCard label="權益變化" value={`${equityDelta >= 0 ? '+' : ''}${money(equityDelta)}`}
+            cls={equityDelta > 0 ? 'text-emerald-400' : equityDelta < 0 ? 'text-rose-400' : 'text-zinc-500'}
+            icon={equityDelta >= 0 ? <TrendingUp className="w-3 h-3" /> : <TrendingDown className="w-3 h-3" />} />
+          <StatCard label="情境風險指標" value={simSummary.risk_indicator === null ? '—' : pct(simSummary.risk_indicator, 0)}
+            sub={`現況 ${summary.risk_indicator === null ? '—' : pct(summary.risk_indicator, 0)}`}
+            cls={simSummary.status === 'danger' ? 'text-rose-400' : simSummary.status === 'call' ? 'text-orange-400' : simSummary.status === 'warn' ? 'text-amber-400' : 'text-emerald-400'}
+            icon={<Gauge className="w-3 h-3" />} />
+          <StatCard label="情境狀態" value={STRESS_TONE[simSummary.status]?.label ?? simSummary.status}
+            cls={STRESS_TONE[simSummary.status]?.cls}
+            icon={<ShieldCheck className="w-3 h-3" />} />
+        </div>
+        <p className="text-[10px] text-zinc-600">
+          沒填假設價格的商品照現價算，只是墊背不影響結果。「情境風險指標」跟總覽頁同一套公式，但因為每個商品各自假設不同價格，
+          這裡不換算單一的追繳/斷頭價位——要看單一商品的追繳/斷頭價位變化，切到那個商品分頁看壓力測試。
+        </p>
+      </div>
+    </Panel>
+  );
+};
+
 // ── 建倉 & 出場試算 ─────────────────────────────────────────────────────────
 
 const PlannerTab: React.FC<{
@@ -3428,6 +3638,8 @@ const PlannerTab: React.FC<{
 
   return (
     <div className="space-y-5">
+      <ScenarioPanel config={config} products={products} summary={summary} />
+
       {/*
         歷史校準（槓桿體檢／加碼減碼計畫）是拿 0050 從 2000 年至今的歷史價格回測出來的
         （見 futures.ts 的 CALIBRATED_PLAN／HISTORICAL_CRASHES／LEVERAGE_CALIBRATION），
@@ -3985,6 +4197,9 @@ const SettingsTab: React.FC<{
   activeCode: string;
 }> = ({ config, preset, patch, saveToCloud, products, activeCode }) => {
   const activeProductCfg = products[activeCode];
+  const activeEntries = useMemo(() => Object.entries(products).filter(([, prod]) => !prod.archived), [products]);
+  const archivedEntries = useMemo(() => Object.entries(products).filter(([, prod]) => prod.archived), [products]);
+  const [showArchived, setShowArchived] = useState(false);
   const [addingCustom, setAddingCustom] = useState(false);
   const [newProduct, setNewProduct] = useState(NEW_PRODUCT_FORM_SEED);
   const [apiMargins, setApiMargins] = useState<FuturesMarginsResp | null>(null);
@@ -4223,7 +4438,13 @@ const SettingsTab: React.FC<{
     const p = findPreset(code);
     if (!p) return;
     void saveToCloud(patch((c) => {
-      if (c.products[code]) return { ...c, active_product: code };
+      if (c.products[code]) {
+        return {
+          ...c,
+          products: c.products[code].archived ? { ...c.products, [code]: { ...c.products[code], archived: false } } : c.products,
+          active_product: code,
+        };
+      }
       const product: ProductConfig = {
         code, name: p.name, quote_contract: p.code, underlying: p.underlying,
         spec: { ...p.spec }, beta: 1, index_ref: 0, index_linked: p.index_linked,
@@ -4247,7 +4468,12 @@ const SettingsTab: React.FC<{
     const maintenance = parseFloat(newProduct.maintenance_margin);
     const size = parseFloat(newProduct.contract_size);
     if (!code || !name || !(size > 0) || !(initial > 0) || !(maintenance > 0)) return;
-    if (products[code]) { window.alert(`商品代碼 ${code} 已經存在`); return; }
+    if (products[code]) {
+      window.alert(products[code].archived
+        ? `商品代碼 ${code} 之前封存過（${products[code].name}），到下面「已封存商品」按「還原」即可，不用重新新增。`
+        : `商品代碼 ${code} 已經存在`);
+      return;
+    }
     const product: ProductConfig = {
       code, name,
       quote_contract: (newProduct.quote_contract.trim().toUpperCase() || code),
@@ -4278,20 +4504,35 @@ const SettingsTab: React.FC<{
   };
 
   /**
-   * 商品還有部位/平倉紀錄引用就不給刪，避免資料變成孤兒。分開算兩種數量再各別報——
-   * 使用者常常只看「未平倉部位」分頁的當前部位，忘了平倉紀錄（已結算的歷史交易）
-   * 也算引用，籠統的一句「未平倉部位或平倉紀錄」會讓人以為系統誤判、白繞一圈。
+   * 商品有未平倉部位就不給動，規格不能在部位還活著時消失。只有平倉紀錄（沒有未平倉
+   * 部位）時改成「封存」而非真刪除：規格留在 config.products 裡（archived: true），
+   * 只從「使用中」清單／新增部位對象隱藏——平倉紀錄、已實現損益換算時仍查得到自己的
+   * 契約規格。真刪除的話，closedBreakdown 找不到商品會退回目前作用中商品的 spec，
+   * 契約單位/費率一旦不同，歷史損益金額會悄悄算錯而不是報錯，比擋刪除更危險。
+   * 完全沒有任何引用（未平倉、平倉紀錄皆 0）才允許徹底刪除，沒有歷史資料可保留。
    */
   const removeProduct = (code: string) => {
-    if (Object.keys(products).length <= 1) { window.alert('帳戶至少要保留一個商品'); return; }
+    const activeCount = Object.values(products).filter((p) => !p.archived).length;
+    if (activeCount <= 1) { window.alert('帳戶至少要保留一個使用中的商品'); return; }
     const openCount = config.positions.filter((p) => p.product === code).length;
     const closedCount = config.closed.filter((t) => t.product === code).length;
-    if (openCount > 0 || closedCount > 0) {
-      const parts = [
-        openCount > 0 ? `${openCount} 筆未平倉部位` : null,
-        closedCount > 0 ? `${closedCount} 筆平倉紀錄` : null,
-      ].filter(Boolean).join('、');
-      window.alert(`這個商品還有 ${parts}，到「部位 & 平倉紀錄」分頁清空後才能移除。`);
+    if (openCount > 0) {
+      window.alert(`這個商品還有 ${openCount} 筆未平倉部位，到「部位 & 平倉紀錄」分頁清空後才能移除。`);
+      return;
+    }
+    if (closedCount > 0) {
+      const ok = window.confirm(
+        `商品「${products[code]?.name ?? code}」還有 ${closedCount} 筆平倉紀錄，無法完全刪除。\n`
+        + `改成「封存」：從商品清單隱藏，平倉紀錄與已實現損益都會保留，之後可以在下面「已封存商品」還原。要封存嗎？`,
+      );
+      if (!ok) return;
+      void saveToCloud(patch((c) => ({
+        ...c,
+        products: { ...c.products, [code]: { ...c.products[code], archived: true } },
+        active_product: c.active_product === code
+          ? (Object.keys(c.products).find((k) => k !== code && !c.products[k].archived) ?? c.active_product)
+          : c.active_product,
+      })));
       return;
     }
     if (!window.confirm(`移除商品「${products[code]?.name ?? code}」？`)) return;
@@ -4308,6 +4549,14 @@ const SettingsTab: React.FC<{
         active_product: c.active_product === code ? (codes[0] ?? code) : c.active_product,
       };
     }));
+  };
+
+  /** 還原封存商品——重新出現在「使用中」清單，可以再被選為新部位的對象 */
+  const restoreProduct = (code: string) => {
+    void saveToCloud(patch((c) => ({
+      ...c,
+      products: { ...c.products, [code]: { ...c.products[code], archived: false } },
+    })));
   };
 
   /** 新增商品表單填的「期交所行情代碼」若在剛抓回來的 stockMargins 表裡對得到號，就能直接抓現行值套用，不用使用者自己手算比例 */
@@ -4444,7 +4693,7 @@ const SettingsTab: React.FC<{
         </div>
 
         <div className="flex flex-wrap gap-2">
-          {Object.entries(products).map(([code, prod]) => (
+          {Object.entries(products).filter(([, prod]) => !prod.archived).map(([code, prod]) => (
             <div key={code} className={`flex items-center gap-1.5 rounded-xl border px-3 py-2 transition ${
               code === activeCode ? 'bg-primary/10 border-primary/50' : 'bg-zinc-900/40 border-border hover:border-zinc-500'
             }`}>
@@ -4452,7 +4701,7 @@ const SettingsTab: React.FC<{
                 <div className={`text-xs font-semibold ${code === activeCode ? 'text-primary' : 'text-zinc-200'}`}>{prod.name}</div>
                 <div className="text-[10px] text-zinc-500 font-mono">{code}{prod.is_custom ? '．自建' : ''}</div>
               </button>
-              {Object.keys(products).length > 1 && (
+              {activeEntries.length > 1 && (
                 <button onClick={() => removeProduct(code)} title="移除這個商品" className="text-zinc-600 hover:text-rose-400 ml-1">
                   <Trash2 className="w-3 h-3" />
                 </button>
@@ -4460,6 +4709,34 @@ const SettingsTab: React.FC<{
             </div>
           ))}
         </div>
+
+        {archivedEntries.length > 0 && (
+          <div className="pt-2 border-t border-border/50">
+            <button
+              onClick={() => setShowArchived((v) => !v)}
+              className="flex items-center gap-1.5 text-[11px] text-zinc-500 hover:text-zinc-300 transition"
+            >
+              <Archive className="w-3.5 h-3.5" />
+              已封存商品（{archivedEntries.length}）
+              {showArchived ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+            </button>
+            {showArchived && (
+              <div className="flex flex-wrap gap-2 mt-2">
+                {archivedEntries.map(([code, prod]) => (
+                  <div key={code} className="flex items-center gap-1.5 rounded-xl border border-border/50 bg-zinc-900/20 px-3 py-2">
+                    <div>
+                      <div className="text-xs font-semibold text-zinc-500">{prod.name}</div>
+                      <div className="text-[10px] text-zinc-600 font-mono">{code}．平倉紀錄保留中</div>
+                    </div>
+                    <button onClick={() => restoreProduct(code)} title="還原這個商品" className="text-zinc-500 hover:text-emerald-400 ml-1 flex items-center gap-1 text-[10px]">
+                      <RotateCcw className="w-3 h-3" /> 還原
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
 
         <div className="pt-2 border-t border-border/50">
           <div className="text-[11px] text-zinc-500 mb-2">從常用清單加入</div>
@@ -4473,7 +4750,9 @@ const SettingsTab: React.FC<{
                 }`}
               >
                 <div className="text-xs font-semibold text-zinc-200">
-                  {p.name}{products[p.code] && <span className="text-[10px] text-emerald-400 ml-1.5">已持有</span>}
+                  {p.name}
+                  {products[p.code] && !products[p.code].archived && <span className="text-[10px] text-emerald-400 ml-1.5">已持有</span>}
+                  {products[p.code]?.archived && <span className="text-[10px] text-amber-400 ml-1.5">已封存，點擊還原</span>}
                 </div>
                 <div className="text-[10px] text-zinc-500 mt-1 font-mono">
                   {p.code}．一口 {p.spec.contract_size.toLocaleString()} {p.unit_label}

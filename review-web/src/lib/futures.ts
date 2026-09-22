@@ -1001,6 +1001,12 @@ export interface ProductConfig {
   price_as_of: string;
   price_source: 'live' | 'daily' | 'manual';
   is_custom: boolean;          // true＝使用者自建（個股期貨等），false＝SYMBOL_PRESETS 內建
+  /**
+   * true＝已封存。商品還有平倉紀錄（無未平倉部位）想移除時，不真的刪除規格——
+   * 平倉損益換算永遠要查得到自己的契約單位/費率，刪了會退回別的商品規格算錯金額。
+   * 封存只是從「使用中」清單／新增部位對象隱藏，資料原封不動，可以還原。
+   */
+  archived?: boolean;
 }
 
 /** summarizeAccountAll／stressTest 需要的最小資訊：這個商品現在怎麼估價、規格是什麼 */
