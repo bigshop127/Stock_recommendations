@@ -12,7 +12,7 @@ import { Panel, StatTile, RiskMeter, ThreatCard, LevelCard, Row, Chip, type Tone
 import { ScreenshotImport } from '../components/futures/ScreenshotImport';
 import type { AccountImportState, ProductLookup } from '../lib/futuresImport';
 import { api } from '../lib/api';
-import type { FuturesMonthQuote, FuturesEquityHistoryResp, FuturesMarginsResp, FuturesStockMarginsResp, FuturesStockContractsResp, TaiexResp } from '../lib/api';
+import type { FuturesMonthQuote, FuturesQuoteResp, FuturesEquityHistoryResp, FuturesMarginsResp, FuturesStockMarginsResp, FuturesStockContractsResp, TaiexResp } from '../lib/api';
 import {
   CONTRACT_CODE, CONTRACT_NAME, UNDERLYING_CODE,
   SYMBOL_PRESETS, findPreset,
@@ -232,62 +232,80 @@ export function FuturesPnl() {
   };
 
   /**
-   * 抓期交所每日行情。**每個月份的價格都存下來**（`prices`）——不同到期月份是不同
-   * 合約、不同價格，同時持有兩個月份時全部套同一個數字會讓損益與追繳價一起偏掉。
-   * 另外挑一個「參考月份」填進 `price`，作為沒有行情的月份的退路與各處的顯示基準。
+   * 把一個商品的最新行情套進它自己的 prices/price/price_source。**每個月份的價格都
+   * 存下來**（`prices`）——不同到期月份是不同合約、不同價格，同時持有兩個月份時全部
+   * 套同一個數字會讓損益與追繳價一起偏掉。另外挑一個「參考月份」填進 `price`，作為
+   * 沒有行情的月份的退路與各處的顯示基準。沒抓到任何有效價格就回傳 null，不動這個商品。
+   */
+  const applyQuote = (code: string, resp: FuturesQuoteResp) => {
+    // 優先使用即時價，沒有才退回結算價、最後成交價
+    const prices: Record<string, number> = {};
+    for (const m of resp.months) {
+      const p = m.live ?? m.settlement ?? m.last ?? 0;
+      if (p > 0) prices[m.month] = p;
+    }
+    if (Object.keys(prices).length === 0) return null;
+
+    const cur = getFuturesConfig();
+    // 參考月份：有部位就用口數最多的持倉月份，沒有就用成交量最大的（＝主力月）
+    const refMonth = referenceMonthOf(cur.positions.filter((p) => p.product === code));
+    const target = resp.months.find((m) => m.month === refMonth)
+      ?? resp.months.slice().sort((a, b) => (b.volume ?? 0) - (a.volume ?? 0))[0];
+    const price = target ? (prices[target.month] ?? 0) : 0;
+
+    return patch((c) => {
+      const p = c.products[code];
+      if (!p) return c;
+      const nextP = {
+        ...p,
+        prices: { ...p.prices, ...prices },
+        ...(price > 0 ? { price, price_month: target!.month } : {}),
+        // live_source 只代表「MIS 這次請求有通」，不代表參考月份真的拿到即時價
+        // （休市日、或只持有沒成交的遠月，MIS 會回 200 但每個月份都是空的）。
+        // 這兩格描述的是「存下來的 price 是哪來的」，所以只能看參考月份自己。
+        ...(target && target.live !== null && target.live !== undefined
+          ? { price_as_of: target.live_time ?? resp.live_as_of ?? resp.date, price_source: 'live' as const }
+          : { price_as_of: resp.date, price_source: 'daily' as const }),
+      };
+      return { ...c, products: { ...c.products, [code]: nextP } };
+    });
+  };
+
+  /**
+   * 抓期交所最新行情，**帳戶裡每個商品都要抓**——不能只抓目前分頁選到的那個，否則
+   * 沒切換過去看的商品損益會一直卡在舊報價，跟券商 App 對不起來（曾經發生：三個
+   * 商品裡只有目前選到的那個更新，另外兩個一直停在建倉當天的價格）。頁面上顯示的
+   * 月份/狀態列（`quote` state）仍然只反映「目前選到的商品」——轉倉、建倉試算等
+   * 單商品工具只看這個。其他商品抓失敗不影響已經抓到的商品，照樣存回去。
    */
   const fetchQuote = async (persist = true) => {
     setQuote((q) => ({ ...q, status: 'loading', msg: null }));
-    try {
-      const cur0 = getFuturesConfig();
-      const code0 = cur0.active_product;
-      const activeP0 = cur0.products[code0];
-      const resp = await api.getFuturesQuote(activeP0.quote_contract || activeP0.code || CONTRACT_CODE);
-      setQuote({
-        status: 'done',
-        msg: resp.date,
-        months: resp.months,
-        live_source: resp.live_source,
-        live_as_of: resp.live_as_of,
-        intraday: resp.intraday,
-        live_error: resp.live_error,
-      });
-
-      // 優先使用即時價，沒有才退回結算價、最後成交價
-      const prices: Record<string, number> = {};
-      for (const m of resp.months) {
-        const p = m.live ?? m.settlement ?? m.last ?? 0;
-        if (p > 0) prices[m.month] = p;
+    const cur0 = getFuturesConfig();
+    const code0 = cur0.active_product;
+    let next: FuturesConfig | null = null;
+    for (const code of Object.keys(cur0.products)) {
+      const p = cur0.products[code];
+      try {
+        const resp = await api.getFuturesQuote(p.quote_contract || p.code || CONTRACT_CODE);
+        if (code === code0) {
+          setQuote({
+            status: 'done',
+            msg: resp.date,
+            months: resp.months,
+            live_source: resp.live_source,
+            live_as_of: resp.live_as_of,
+            intraday: resp.intraday,
+            live_error: resp.live_error,
+          });
+        }
+        next = applyQuote(code, resp) ?? next;
+      } catch (e) {
+        if (code === code0) {
+          setQuote((q) => ({ ...q, status: 'error', msg: e instanceof Error ? e.message : '抓取失敗' }));
+        }
       }
-      if (Object.keys(prices).length === 0) return;
-
-      const cur = getFuturesConfig();
-      // 參考月份：有部位就用口數最多的持倉月份，沒有就用成交量最大的（＝主力月）
-      const refMonth = referenceMonthOf(cur.positions.filter((p) => p.product === code0));
-      const target = resp.months.find((m) => m.month === refMonth)
-        ?? resp.months.slice().sort((a, b) => (b.volume ?? 0) - (a.volume ?? 0))[0];
-      const price = target ? (prices[target.month] ?? 0) : 0;
-
-      const next = patch((c) => {
-        const p = c.products[code0];
-        if (!p) return c;
-        const nextP = {
-          ...p,
-          prices: { ...p.prices, ...prices },
-          ...(price > 0 ? { price, price_month: target!.month } : {}),
-          // live_source 只代表「MIS 這次請求有通」，不代表參考月份真的拿到即時價
-          // （休市日、或只持有沒成交的遠月，MIS 會回 200 但每個月份都是空的）。
-          // 這兩格描述的是「存下來的 price 是哪來的」，所以只能看參考月份自己。
-          ...(target && target.live !== null && target.live !== undefined
-            ? { price_as_of: target.live_time ?? resp.live_as_of ?? resp.date, price_source: 'live' as const }
-            : { price_as_of: resp.date, price_source: 'daily' as const }),
-        };
-        return { ...c, products: { ...c.products, [code0]: nextP } };
-      });
-      if (persist) void saveToCloud(next);
-    } catch (e) {
-      setQuote((q) => ({ ...q, status: 'error', msg: e instanceof Error ? e.message : '抓取失敗' }));
     }
+    if (persist && next) void saveToCloud(next);
   };
 
   // 帳戶可能同時持有多個商品（例如 SRF ETF 期貨＋個股期貨）。`activeCode` 是「目前
@@ -4259,11 +4277,23 @@ const SettingsTab: React.FC<{
     setAddingCustom(false);
   };
 
-  /** 商品還有部位/平倉紀錄引用就不給刪，避免資料變成孤兒 */
+  /**
+   * 商品還有部位/平倉紀錄引用就不給刪，避免資料變成孤兒。分開算兩種數量再各別報——
+   * 使用者常常只看「未平倉部位」分頁的當前部位，忘了平倉紀錄（已結算的歷史交易）
+   * 也算引用，籠統的一句「未平倉部位或平倉紀錄」會讓人以為系統誤判、白繞一圈。
+   */
   const removeProduct = (code: string) => {
     if (Object.keys(products).length <= 1) { window.alert('帳戶至少要保留一個商品'); return; }
-    const inUse = config.positions.some((p) => p.product === code) || config.closed.some((t) => t.product === code);
-    if (inUse) { window.alert('這個商品還有未平倉部位或平倉紀錄，先清空才能移除。'); return; }
+    const openCount = config.positions.filter((p) => p.product === code).length;
+    const closedCount = config.closed.filter((t) => t.product === code).length;
+    if (openCount > 0 || closedCount > 0) {
+      const parts = [
+        openCount > 0 ? `${openCount} 筆未平倉部位` : null,
+        closedCount > 0 ? `${closedCount} 筆平倉紀錄` : null,
+      ].filter(Boolean).join('、');
+      window.alert(`這個商品還有 ${parts}，到「部位 & 平倉紀錄」分頁清空後才能移除。`);
+      return;
+    }
     if (!window.confirm(`移除商品「${products[code]?.name ?? code}」？`)) return;
     void saveToCloud(patch((c) => {
       const nextProducts = { ...c.products };
