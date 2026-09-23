@@ -887,16 +887,10 @@ async function fetchArticleUrlByDate(dateDisplay) {
           result.push({ url: a.href, text: a.textContent.trim().substring(0, 80) });
         }
       }
-      // 若當日無命中，把最新一篇當 fallback
-      if (result.length === 0) {
-        for (const a of anchors) {
-          if (projectPattern.test(a.href) && !seen.has(a.href)) {
-            seen.add(a.href);
-            result.push({ url: a.href, text: a.textContent.trim().substring(0, 80) });
-            break;
-          }
-        }
-      }
+      // 故意不 fallback 到「最新一篇」：2026-09-04／09-17 兩次事故證實，老王當天文章
+      // 若在 12:30 還沒發布，這裡會把前一天的舊文章當成候選、寫進當天報告卻標成當天日期
+      // （標題日期與檔名日期對不上），後續 12:45/13:00 的重試因「輸出已存在」而永遠不會
+      // 修正。維持 result 為空，讓呼叫端走「今日無發文」分支，之後的 cron 重試才有意義。
       return result;
     }, dateDisplay);
 
