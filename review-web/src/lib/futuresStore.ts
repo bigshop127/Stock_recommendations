@@ -260,7 +260,9 @@ function sanitizeBatches(v: unknown): EntryBatch[] {
   const arr = Array.isArray(v) ? v : [];
   const out: EntryBatch[] = arr.slice(0, 6).map((b) => {
     const o = (b && typeof b === 'object' ? b : {}) as Record<string, unknown>;
-    return { price: Math.max(0, num(o.price, 0)), lots: Math.max(0, num(o.lots, 0)) };
+    const out1: EntryBatch = { price: Math.max(0, num(o.price, 0)), lots: Math.max(0, num(o.lots, 0)) };
+    if (o.side === 'short') out1.side = 'short';
+    return out1;
   });
   // 一律補滿 3 格，UI 才有固定的三張卡可以填
   while (out.length < 3) out.push({ price: 0, lots: 0 });

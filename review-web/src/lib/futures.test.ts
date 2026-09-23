@@ -38,6 +38,9 @@ import {
   leverageLadder,
   entryPlan,
   rollCostEstimate,
+  accountTargetPlan,
+  addPositionPlan,
+  lotsToAccountLeverage,
   type FuturesPosition,
   type FuturesSpec,
   type CashFlow,
@@ -1677,5 +1680,68 @@ describe('summarizeAccountAll：多商品彙總（帳戶同時持有 SRF ETF 期
     // 用 specB（2000 股/口）算，不是 specA（1000 股/口）
     expect(s.realized).toBeCloseTo(closedPnl(closed[0], specB), 6);
     expect(s.realized).not.toBeCloseTo(closedPnl(closed[0], specA), 6);
+  });
+});
+
+describe('帳戶層級試算：accountTargetPlan／addPositionPlan／lotsToAccountLeverage', () => {
+  const specA: FuturesSpec = { ...DEFAULT_SPEC };
+  const specB: FuturesSpec = { ...DEFAULT_SPEC, contract_size: 2000, initial_margin: 15000, maintenance_margin: 11500 };
+  const products: Record<string, ProductPriceSpec> = {
+    SRF: { spec: specA, price: 100, beta: 1 },
+    UMC: { spec: specB, price: 50, beta: 1.5 },
+  };
+  const positions: FuturesPosition[] = [
+    { id: 'a', product: 'SRF', month: '202609', side: 'long', lots: 5, entry_price: 100, entry_date: '' },
+    { id: 'b', product: 'UMC', month: '202609', side: 'long', lots: 2, entry_price: 50, entry_date: '' },
+  ];
+
+  it('只動一個商品時，另一個商品的保證金仍算進出金要留的水位', () => {
+    const plan = accountTargetPlan(positions, products, 200_000, { SRF: 1.1 }, 2);
+    const single = targetPlan(positions.filter((p) => p.product === 'SRF'), specA, 200_000, 100, 0.1, 2);
+    // 價格變化的損益只來自 SRF，跟單商品版一致
+    expect(plan.profit).toBeCloseTo(single.profit, 6);
+    // 但要留的保證金是全帳戶：(5×7900 + 2×15000) × 2
+    expect(plan.reserve).toBeCloseTo((5 * 7900 + 2 * 15000) * 2, 6);
+    expect(plan.safe_withdraw).toBeLessThan(single.safe_withdraw);
+    const umc = plan.rows.find((r) => r.product === 'UMC');
+    expect(umc?.pnl_after).toBeCloseTo(umc?.pnl_now as number, 6);
+  });
+
+  it('整體同漲時每個商品都多賺，合計等於各列加總', () => {
+    const plan = accountTargetPlan(positions, products, 200_000, { SRF: 1.1, UMC: 1.1 }, 2.5);
+    const sum = plan.rows.reduce((s, r) => s + (r.pnl_after - r.pnl_now), 0);
+    expect(plan.profit).toBeCloseTo(sum, 6);
+    expect(plan.rows.every((r) => r.pnl_after > r.pnl_now)).toBe(true);
+    expect(plan.rows.find((r) => r.product === 'UMC')?.price_after).toBeCloseTo(55, 6);
+  });
+
+  it('加倉：保證金與名目曝險照整個帳戶累加，權益只少一趟來回費用', () => {
+    const r = addPositionPlan(positions, products, 200_000, { product: 'UMC', side: 'long', lots: 3 });
+    expect(r.after.required_initial - r.before.required_initial).toBeCloseTo(3 * 15000, 6);
+    expect(r.after.contract_value - r.before.contract_value).toBeCloseTo(3 * 50 * 2000, 6);
+    const fees = 3 * 2 * specB.fee_per_lot + 2 * 3 * 50 * 2000 * specB.tax_rate;
+    expect(r.before.equity - r.after.equity).toBeCloseTo(fees, 6);
+  });
+
+  it('max_lots 是權益仍 ≥ 原始保證金的最大口數，多一口就不成立', () => {
+    const r = addPositionPlan(positions, products, 200_000, { product: 'UMC', side: 'long', lots: 0 });
+    const at = addPositionPlan(positions, products, 200_000, { product: 'UMC', side: 'long', lots: r.max_lots });
+    const over = addPositionPlan(positions, products, 200_000, { product: 'UMC', side: 'long', lots: r.max_lots + 1 });
+    expect(at.after.equity).toBeGreaterThanOrEqual(at.after.required_initial);
+    expect(over.after.equity).toBeLessThan(over.after.required_initial);
+    expect(at.room_lots).toBe(0);
+  });
+
+  it('沒有現有部位的商品也能試算，空單同樣佔保證金', () => {
+    const r = addPositionPlan(positions, { ...products, YAGEO: { spec: specB, price: 200, beta: 1.2 } }, 200_000,
+      { product: 'YAGEO', side: 'short', lots: 1 });
+    expect(r.after.short_lots).toBe(1);
+    expect(r.after.required_initial - r.before.required_initial).toBeCloseTo(15000, 6);
+  });
+
+  it('lotsToAccountLeverage：扣掉現有名目曝險後還差幾口；已超過目標回 0', () => {
+    expect(lotsToAccountLeverage(1_000_000, 500_000, 1.5, 100_000)).toBe(10);
+    expect(lotsToAccountLeverage(1_000_000, 2_000_000, 1.5, 100_000)).toBe(0);
+    expect(lotsToAccountLeverage(0, 0, 1.5, 100_000)).toBe(0);
   });
 });

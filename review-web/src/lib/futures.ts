@@ -1213,6 +1213,8 @@ export function suggestLots(
 export interface EntryBatch {
   price: number;
   lots: number;
+  /** 這一批的方向；舊資料沒有這個欄位＝多單 */
+  side?: Side;
 }
 
 export interface WeightedEntry {
@@ -1339,6 +1341,149 @@ export function targetPlan(
     reserve,
     safe_withdraw: Math.max(0, equity_after - reserve),
   };
+}
+
+// ── 帳戶層級試算（多商品一起算）────────────────────────────────────────────
+
+/** 各商品目前的價格規格按比例縮放；ratios 沒列到的商品維持原價 */
+export function scaleProducts(
+  products: Record<string, ProductPriceSpec>,
+  ratios: Record<string, number>,
+): Record<string, ProductPriceSpec> {
+  const out: Record<string, ProductPriceSpec> = {};
+  for (const [code, pp] of Object.entries(products)) {
+    const r = ratios[code];
+    out[code] = r === undefined ? pp : { ...pp, price: scalePrices(pp.price, r) };
+  }
+  return out;
+}
+
+export interface AccountTargetRow {
+  product: string;
+  lots: number;
+  price_now: number;     // 參考月份（口數最多那個月）的現價
+  price_after: number;   // 同一個月份套用漲跌後的價格
+  pnl_now: number;       // 目前未實現（淨額）
+  pnl_after: number;     // 到價時未實現（淨額）
+}
+
+export interface AccountTargetPlan {
+  profit: number;                 // 到價時比現在多賺多少（淨額，只有被移動的商品會有差）
+  equity_now: number;
+  equity_after: number;
+  roi_on_equity: number | null;
+  roi_on_margin: number | null;   // 對「被移動的那些商品」佔用的原始保證金
+  reserve: number;                // 整個帳戶要留下的保證金水位（所有商品的原始保證金 × 倍數）
+  safe_withdraw: number;
+  rows: AccountTargetRow[];
+}
+
+/**
+ * 「價格漲到 X，帳戶能領多少」的**帳戶版**。舊版 targetPlan 只看單一商品的部位，
+ * 帳戶同時有別的商品時，那些商品的未實現損益與保證金都沒算進去——出金上限會高估。
+ * 這裡永遠用整個帳戶算權益與要留的保證金，只有 `ratios` 列到的商品價格會動。
+ */
+export function accountTargetPlan(
+  positions: FuturesPosition[],
+  products: Record<string, ProductPriceSpec>,
+  cash: number,
+  ratios: Record<string, number>,
+  reserveMultiple = 2.5,
+): AccountTargetPlan {
+  const now = summarizeAccountAll(positions, products, cash);
+  const moved = scaleProducts(products, ratios);
+  const after = summarizeAccountAll(positions, moved, cash);
+  const profit = after.unrealized - now.unrealized;
+
+  const reserve = now.required_initial * Math.max(1, safe(reserveMultiple, 2.5));
+  const movedMargin = (now.by_product ?? [])
+    .filter((r) => ratios[r.product] !== undefined)
+    .reduce((s, r) => s + r.required_initial, 0);
+
+  const list = Array.isArray(positions) ? positions : [];
+  const rows: AccountTargetRow[] = (now.by_product ?? []).map((r) => {
+    const own = list.filter((p) => p.product === r.product && p.lots > 0);
+    const month = referenceMonthOf(own);
+    const afterRow = after.by_product?.find((x) => x.product === r.product);
+    return {
+      product: r.product,
+      lots: r.lots,
+      price_now: priceOf(products[r.product]?.price ?? 0, month),
+      price_after: priceOf(moved[r.product]?.price ?? 0, month),
+      pnl_now: r.unrealized,
+      pnl_after: afterRow?.unrealized ?? r.unrealized,
+    };
+  });
+
+  return {
+    profit,
+    equity_now: now.equity,
+    equity_after: after.equity,
+    roi_on_equity: now.equity > 0 ? profit / now.equity : null,
+    roi_on_margin: movedMargin > 0 ? profit / movedMargin : null,
+    reserve,
+    safe_withdraw: Math.max(0, after.equity - reserve),
+    rows,
+  };
+}
+
+export interface AddPositionPlan {
+  before: AccountSummary;
+  after: AccountSummary;
+  /** 加完這筆之後，這個商品還能再開幾口（權益數 ≥ 所需原始保證金＝風險指標 ≥ 100%） */
+  room_lots: number;
+  /** 從「現在」起，這個商品總共最多能開幾口 */
+  max_lots: number;
+}
+
+/**
+ * 現有帳戶再加一筆（任一商品、任一方向）會變怎樣。新部位以現價進場，
+ * 所以權益只會少掉來回費用；保證金、槓桿、風險指標則是整個帳戶重算。
+ */
+export function addPositionPlan(
+  positions: FuturesPosition[],
+  products: Record<string, ProductPriceSpec>,
+  cash: number,
+  add: { product: string; side: Side; lots: number; price?: number },
+): AddPositionPlan {
+  const list = Array.isArray(positions) ? positions : [];
+  const pp = products[add.product];
+  const month = referenceMonthOf(list.filter((p) => p.product === add.product));
+  const px = safe(add.price) > 0 ? safe(add.price) : (pp ? priceOf(pp.price, month) : 0);
+  const virtual = (lots: number): FuturesPosition[] => (lots > 0 && px > 0
+    ? [...list, { id: '_add', product: add.product, month, side: add.side, lots, entry_price: px, entry_date: '' }]
+    : list);
+
+  const before = summarizeAccountAll(list, products, cash);
+  const lots = Math.max(0, Math.floor(safe(add.lots)));
+  const after = summarizeAccountAll(virtual(lots), products, cash);
+
+  // 能開新倉的條件：權益數 ≥ 所需原始保證金。每多一口，權益少一趟來回費用、保證金多一口原始保證金，
+  // 所以先用一口的邊際成本估上限，再往下修到真的成立為止（費用含期交稅，估算可能差一口）。
+  const fits = (n: number) => { const s = summarizeAccountAll(virtual(n), products, cash); return s.equity >= s.required_initial; };
+  let max_lots = 0;
+  if (pp && px > 0) {
+    const perLot = Math.max(1, safe(pp.spec.initial_margin) + 2 * safe(pp.spec.fee_per_lot)
+      + 2 * px * Math.max(1, safe(pp.spec.contract_size, 1000)) * Math.max(0, safe(pp.spec.tax_rate)));
+    let n = Math.max(0, Math.floor((before.equity - before.required_initial) / perLot) + 1);
+    while (n > 0 && !fits(n)) n--;
+    max_lots = n;
+  }
+  return { before, after, room_lots: Math.max(0, max_lots - lots), max_lots };
+}
+
+/**
+ * 整個帳戶要到某個目標槓桿（名目曝險 ÷ 權益數），還要再加幾口這個商品。
+ * 已經超過目標時回 0——這個工具只回答「加多少」，減碼另外看。
+ */
+export function lotsToAccountLeverage(
+  equity: number,
+  currentNotional: number,
+  targetLeverage: number,
+  lotValue: number,
+): number {
+  if (!(lotValue > 0) || !(equity > 0)) return 0;
+  return Math.max(0, Math.round((safe(targetLeverage) * equity - safe(currentNotional)) / lotValue));
 }
 
 export interface TrailingStopPlan {

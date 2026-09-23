@@ -201,7 +201,10 @@ function sanitizeBatches(v) {
   const arr = Array.isArray(v) ? v : [];
   const out = arr.slice(0, 6).map((b) => {
     const o = b && typeof b === 'object' ? b : {};
-    return { price: Math.max(0, num(o.price, 0)), lots: Math.max(0, num(o.lots, 0)) };
+    const out1 = { price: Math.max(0, num(o.price, 0)), lots: Math.max(0, num(o.lots, 0)) };
+    // 分批試算的方向；只存空單，沒有＝多單（舊資料相容）
+    if (o.side === 'short') out1.side = 'short';
+    return out1;
   });
   while (out.length < 3) out.push({ price: 0, lots: 0 });
   return out;
