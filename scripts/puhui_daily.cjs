@@ -1369,6 +1369,15 @@ async function main() {
     log('偵測到 AI 輸出整個包在 ```markdown 圍籬中，已自動拆除');
   }
 
+  // Claude CLI 是完整的 agent，偶爾會把 git commit 用的署名行（Co-Authored-By / Claude-Session）
+  // 當成內容吐在報告結尾（2026-09-24 本機出現過，其他 78 份都沒有）。那不是報告的一部分，刪掉。
+  const attribRe = /^[ \t]*(?:Co-Authored-By|Claude-Session):.*(?:\r?\n|$)/gim;
+  const noAttrib = markdown.replace(attribRe, '');
+  if (noAttrib !== markdown) {
+    markdown = noAttrib.replace(/\n{3,}/g, '\n\n').trimEnd();
+    log('偵測到 AI 誤吐 git 署名行（Co-Authored-By 等），已移除');
+  }
+
   // 若 AI 沒有加原文連結，補上
   if (articleUrl && !markdown.includes(articleUrl)) {
     markdown += `\n\n---\n🔗 [閱讀原文](${articleUrl})`;
