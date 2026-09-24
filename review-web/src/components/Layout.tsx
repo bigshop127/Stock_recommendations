@@ -21,7 +21,9 @@ import {
   SlidersHorizontal,
   Activity,
   ListOrdered,
-  Wallet
+  Wallet,
+  Newspaper,
+  Menu
 } from 'lucide-react';
 import { api } from '../lib/api';
 import type { Health } from '../lib/api';
@@ -52,12 +54,14 @@ interface LayoutProps {
  * 注意再平衡頁**不在**這個名單：它的「抓最新價」走 /api/stocks/:code/ohlcv，
  * 那條是 engine 的代理。
  */
-const ENGINE_FREE_PATHS = new Set(['/futures', '/net-worth']);
+const ENGINE_FREE_PATHS = new Set(['/futures', '/net-worth', '/reports']);
 
 export const Layout: React.FC<LayoutProps> = ({ children }) => {
   const location = useLocation();
   const match = location.pathname.match(/^\/stock\/([a-zA-Z0-9]+)/);
   const activeCode = match ? match[1] : null;
+  // 手機版：側邊欄預設收起（不然導覽列就佔滿一整個螢幕，內容要捲一大段才看得到）；桌機恆展開
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [health, setHealth] = useState<Health | null>(null);
   const [loading, setLoading] = useState(true);
   const [folders, setFolders] = useState(() => getFolders());
@@ -170,18 +174,33 @@ export const Layout: React.FC<LayoutProps> = ({ children }) => {
       <aside className="w-full md:w-64 bg-card border-b md:border-b-0 md:border-r border-border flex flex-col justify-between shrink-0">
         <div>
           {/* Logo / 標題 */}
-          <div className="p-6 border-b border-border flex items-center gap-3">
+          <div className="px-4 py-3 md:p-6 border-b border-border flex items-center gap-3">
             <div className="w-8 h-8 rounded-lg bg-primary flex items-center justify-center font-bold text-white shadow-md">
               審
             </div>
-            <div>
+            <div className="flex-1 min-w-0">
               <h1 className="font-semibold text-zinc-100 tracking-tight">個股全面審視網</h1>
               <span className="text-xs text-zinc-500 font-mono">PWA Desktop & Mobile</span>
             </div>
+            <button
+              type="button"
+              className="md:hidden p-2 rounded-lg border border-border text-zinc-300 hover:bg-zinc-800/60"
+              onClick={() => setMobileNavOpen((v) => !v)}
+              aria-label={mobileNavOpen ? '收起選單' : '展開選單'}
+              aria-expanded={mobileNavOpen}
+            >
+              {mobileNavOpen ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
+            </button>
           </div>
 
           {/* 導覽連結 */}
-          <nav className="p-4 space-y-1">
+          <nav
+            className={`p-4 space-y-1 ${mobileNavOpen ? 'block' : 'hidden'} md:block`}
+            onClick={(e) => {
+              // 手機上點了連結就把選單收回去（點資料夾展開/新增等按鈕不收）
+              if ((e.target as HTMLElement).closest('a')) setMobileNavOpen(false);
+            }}
+          >
             {/* 大盤與籌碼總覽 */}
             <Link
               to="/"
@@ -193,6 +212,19 @@ export const Layout: React.FC<LayoutProps> = ({ children }) => {
             >
               <TrendingUp className="w-5 h-5" />
               大盤與籌碼總覽
+            </Link>
+
+            {/* 老王每日報告（純讀 gateway 的 reports/，不依賴 engine） */}
+            <Link
+              to="/reports"
+              className={`flex items-center gap-3 px-4 py-3 rounded-lg text-sm font-medium transition-all duration-200 ${
+                location.pathname === '/reports'
+                  ? 'bg-primary/10 text-primary border border-primary/20 shadow-sm'
+                  : 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800/40 border border-transparent'
+              }`}
+            >
+              <Newspaper className="w-5 h-5" />
+              老王每日報告
             </Link>
 
             {/* 資金潮汐 */}
@@ -570,7 +602,7 @@ export const Layout: React.FC<LayoutProps> = ({ children }) => {
         </div>
 
         {/* 系統狀態與資訊面板 */}
-        <div className="p-4 border-t border-border bg-zinc-950/40">
+        <div className={`p-4 border-t border-border bg-zinc-950/40 ${mobileNavOpen ? 'block' : 'hidden'} md:block`}>
           <div className="flex items-center justify-between text-xs font-mono">
             <span className="text-zinc-500">Engine Status:</span>
             {loading ? (
@@ -609,6 +641,8 @@ export const Layout: React.FC<LayoutProps> = ({ children }) => {
               ? '再平衡計算機'
               : location.pathname === '/futures'
               ? '期貨損益總覽'
+              : location.pathname === '/reports'
+              ? '老王每日報告'
               : location.pathname.startsWith('/heatmap/sector/')
               ? `產業熱力圖 · ${(() => { try { return decodeURIComponent(location.pathname.replace('/heatmap/sector/', '')); } catch { return location.pathname.replace('/heatmap/sector/', ''); } })()}`
               : location.pathname.startsWith('/heatmap/group/')

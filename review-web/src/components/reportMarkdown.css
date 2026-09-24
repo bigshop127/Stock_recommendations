@@ -1,0 +1,139 @@
+/*
+ * 老王每日報告的排版——刻意比照 Obsidian 預設主題的閱讀模式（標題大小比例、
+ * callout 色塊、表格線框），讓手機/網頁看到的跟電腦 Obsidian 差不多。
+ * 顏色語意：紅=看多、綠=看空、橘=中性觀望（與股市紅漲綠跌相反，見 reportMarkdown.ts）。
+ * 網站本身是深色主題，所以這裡的顏色都是為深色底挑的（把報告原本給淺色底的 #B35A00 等提亮）。
+ */
+.report-md {
+  --rpt-text: #e4e4e7;
+  --rpt-muted: #a1a1aa;
+  --rpt-line: #3f3f46;
+  --rpt-red: #f87171;
+  --rpt-green: #4ade80;
+  --rpt-orange: #fb923c;
+  color: var(--rpt-text);
+  font-size: 1rem;
+  line-height: 1.7;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+}
+
+/* 標題：Obsidian 預設 2 / 1.6 / 1.37 / 1.25 em；手機上 h1 直接 2em 會過大，縮一階 */
+.report-md h1,
+.report-md h2,
+.report-md h3,
+.report-md h4 {
+  font-weight: 700;
+  line-height: 1.3;
+  color: #fafafa;
+}
+.report-md h1 { font-size: 1.5rem; margin: 0.2rem 0 1rem; }
+.report-md h2 { font-size: 1.3rem; margin: 2rem 0 0.6rem; padding-bottom: 0.3rem; border-bottom: 1px solid var(--rpt-line); }
+.report-md h3 { font-size: 1.15rem; margin: 1.5rem 0 0.5rem; }
+.report-md h4 { font-size: 1.05rem; margin: 1.2rem 0 0.4rem; }
+@media (min-width: 768px) {
+  .report-md h1 { font-size: 1.85rem; }
+  .report-md h2 { font-size: 1.5rem; }
+  .report-md h3 { font-size: 1.25rem; }
+}
+
+.report-md p { margin: 0.7rem 0; }
+.report-md strong { color: #fafafa; font-weight: 700; }
+.report-md a { color: #60a5fa; text-decoration: underline; text-underline-offset: 2px; }
+
+.report-md ul,
+.report-md ol { margin: 0.6rem 0; padding-left: 1.5rem; }
+.report-md ul { list-style: disc; }
+.report-md ol { list-style: decimal; }
+.report-md li { margin: 0.3rem 0; }
+.report-md li::marker { color: var(--rpt-muted); }
+
+.report-md hr { border: none; border-top: 1px solid var(--rpt-line); margin: 2rem 0; }
+
+/* 一般引用（不是 callout，例如報告結尾的縮寫註解） */
+.report-md blockquote {
+  margin: 1rem 0;
+  padding: 0.1rem 1rem;
+  border-left: 3px solid var(--rpt-line);
+  color: var(--rpt-muted);
+}
+
+/* 內嵌顏色 */
+.report-md .rpt-red { color: var(--rpt-red); }
+.report-md .rpt-green { color: var(--rpt-green); }
+.report-md .rpt-orange { color: var(--rpt-orange); }
+.report-md .rpt-red strong,
+.report-md .rpt-green strong,
+.report-md .rpt-orange strong { color: inherit; }
+
+/* 螢光重點：半透明底色＋維持淺色字，深色底上讀得清楚 */
+.report-md mark {
+  color: inherit;
+  padding: 0.05rem 0.25rem;
+  border-radius: 3px;
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
+}
+.report-md mark strong { color: #fafafa; }
+.report-md .rpt-mark-red { background: rgba(239, 68, 68, 0.32); }
+.report-md .rpt-mark-orange { background: rgba(245, 158, 11, 0.30); }
+.report-md .rpt-mark-green { background: rgba(34, 197, 94, 0.28); }
+.report-md .rpt-mark-yellow { background: rgba(250, 204, 21, 0.28); }
+
+/* 表格：外層包一層才能在手機上橫向捲動又不撐破頁面 */
+.report-md .rpt-table-wrap {
+  margin: 1rem 0;
+  overflow-x: auto;
+  border: 1px solid var(--rpt-line);
+  border-radius: 6px;
+}
+.report-md table { width: 100%; border-collapse: collapse; font-size: 0.93rem; }
+.report-md th,
+.report-md td {
+  padding: 0.5rem 0.75rem;
+  text-align: left;
+  vertical-align: top;
+  border-bottom: 1px solid var(--rpt-line);
+}
+.report-md tr:last-child td { border-bottom: none; }
+.report-md th { background: #27272a; font-weight: 700; white-space: nowrap; }
+.report-md td + td,
+.report-md th + th { border-left: 1px solid var(--rpt-line); }
+/* 「項目｜內容」這種兩欄表：第一欄是標籤，窄而醒目 */
+.report-md td:first-child { white-space: nowrap; color: #fafafa; }
+.report-md td:first-child strong { font-weight: 600; }
+
+/* callout：有色底＋色標題＋圖示（Obsidian 預設色） */
+.report-md .callout {
+  --c: 8, 109, 221;
+  margin: 1.1rem 0;
+  padding: 0.75rem 1rem;
+  border-radius: 6px;
+  background: rgba(var(--c), 0.12);
+  border: 1px solid rgba(var(--c), 0.28);
+  color: var(--rpt-text);
+}
+.report-md .callout-note,
+.report-md .callout-info { --c: 8, 109, 221; }
+.report-md .callout-tip { --c: 0, 191, 188; }
+.report-md .callout-success { --c: 8, 185, 78; }
+.report-md .callout-question { --c: 224, 172, 0; }
+.report-md .callout-warning,
+.report-md .callout-example { --c: 236, 117, 0; }
+.report-md .callout-danger { --c: 233, 49, 71; }
+.report-md .callout-quote { --c: 158, 158, 158; }
+
+.report-md .callout-title {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  font-weight: 700;
+  line-height: 1.5;
+  color: rgb(var(--c));
+}
+.report-md .callout-title strong { color: inherit; }
+.report-md .callout-icon { flex: none; width: 1.15rem; height: 1.15rem; margin-top: 0.2rem; }
+.report-md .callout > :not(.callout-title) { margin-left: 0; }
+.report-md .callout ul,
+.report-md .callout ol { margin: 0.5rem 0 0.1rem; }
+.report-md .callout p { margin: 0.5rem 0 0.1rem; }
