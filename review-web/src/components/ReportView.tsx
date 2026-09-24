@@ -56,10 +56,13 @@ const components: Components = {
 const REMARK_PLUGINS = [remarkGfm, remarkCallouts];
 const REHYPE_PLUGINS: Options['rehypePlugins'] = [rehypeRaw, rehypeReportColors, [rehypeSanitize, REPORT_SANITIZE_SCHEMA]];
 
-/** 老王每日報告的 markdown 渲染（排版比照 Obsidian，深色主題）。 */
-export function ReportView({ markdown }: { markdown: string }) {
+/**
+ * 老王每日報告的 markdown 渲染（排版比照 Obsidian，深色主題）。
+ * 字級由外層設的 CSS 變數 --rpt-font-size 決定；panel＝小分頁裡的一段，第一個元素貼齊上緣。
+ */
+export function ReportView({ markdown, panel = false }: { markdown: string; panel?: boolean }) {
   return (
-    <div className="report-md">
+    <div className={panel ? 'report-md rpt-panel' : 'report-md'}>
       <ReactMarkdown remarkPlugins={REMARK_PLUGINS} rehypePlugins={REHYPE_PLUGINS} components={components}>
         {stripFrontmatter(markdown)}
       </ReactMarkdown>
