@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from datetime import date as _date, datetime, timezone, timedelta
 from pathlib import Path
 
@@ -29,12 +30,16 @@ CACHE_DIR = _ROOT / "data" / "puhui_analysis"    # gitignored（決策1b 落地�
 _DATE_RE = re.compile(r"(\d{4})-(\d{2})-(\d{2})")
 
 _index_cache: dict[str, Path] | None = None
+_index_at: float = 0.0
+# 索引只快取一小段時間：engine 是常駐行程，報告每天新增，若永久快取就會「凍結在啟動那天」
+# （2026-09-24 查到 VM 的 engine 自 9/02 起沒重啟，三週來一直回 9/02 的老王資料）。
+_INDEX_TTL_S = 60.0
 
 
 def _scan_index(force: bool = False) -> dict[str, Path]:
-    """{date: path}，掃 reports/**/*.md（檔名含日期）。記憶體快取。"""
-    global _index_cache
-    if _index_cache is not None and not force:
+    """{date: path}，掃 reports/**/*.md（檔名含日期）。記憶體快取，TTL 60 秒。"""
+    global _index_cache, _index_at
+    if _index_cache is not None and not force and time.monotonic() - _index_at < _INDEX_TTL_S:
         return _index_cache
     idx: dict[str, Path] = {}
     if REPORTS_DIR.exists():
@@ -43,6 +48,7 @@ def _scan_index(force: bool = False) -> dict[str, Path]:
             if m:
                 idx[f"{m.group(1)}-{m.group(2)}-{m.group(3)}"] = p
     _index_cache = idx
+    _index_at = time.monotonic()
     return idx
 
 

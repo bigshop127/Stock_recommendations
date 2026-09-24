@@ -165,6 +165,24 @@ def test_fallback_uses_recent_and_marks_stale(monkeypatch):
     assert repo.get_daily("2026-06-30") is None          # 超過 fallback 視窗 → 退出
 
 
+def test_index_picks_up_new_reports_after_ttl(monkeypatch, tmp_path):
+    """常駐行程不能把報告索引凍結在啟動那天（2026-09-24：VM engine 三週沒重啟，一直回 9/02）。"""
+    (tmp_path / "2026-09" / "W1").mkdir(parents=True)
+    (tmp_path / "2026-09" / "W1" / "2026-09-02.md").write_text("# a", encoding="utf-8")
+    monkeypatch.setattr(repo, "REPORTS_DIR", tmp_path)
+    monkeypatch.setattr(repo, "_index_cache", None)
+    clock = {"t": 1000.0}
+    monkeypatch.setattr(repo.time, "monotonic", lambda: clock["t"])
+
+    assert repo.list_dates() == ["2026-09-02"]
+
+    (tmp_path / "2026-09" / "W1" / "2026-09-24.md").write_text("# b", encoding="utf-8")
+    clock["t"] += 5                                    # 幾秒內：仍用快取（不該每次請求都掃磁碟）
+    assert repo.list_dates() == ["2026-09-02"]
+    clock["t"] += 3600                                 # 過了一小時：一定要重掃，看得到新報告
+    assert repo.list_dates() == ["2026-09-02", "2026-09-24"]
+
+
 def test_legacy_confidence_discount(monkeypatch):
     monkeypatch.setattr(repo, "_scan_index", lambda force=False: {"2026-05-14": Path("x")})
     monkeypatch.setattr(repo, "_parse_one",
