@@ -200,7 +200,7 @@ export const Reports: React.FC = () => {
           {/* 小分頁（樣式與網址同步比照再平衡計算機） */}
           {hasTabs && (
             <div ref={tabsRef} className="border-b border-border/80 my-4 scroll-mt-4">
-              <div ref={tabBarRef} className="relative flex items-center gap-2 overflow-x-auto pb-2 scrollbar-none" role="tablist" aria-label="報告段落">
+              <div ref={tabBarRef} className="relative flex items-center gap-2 overflow-x-auto pb-2 scrollbar-none md:flex-wrap md:overflow-x-visible" role="tablist" aria-label="報告段落">
                 {[...sections.map((s) => ({ key: s.key, label: s.label })), { key: ALL_TAB, label: ALL_TAB }].map((t) => {
                   const isActive = activeTab === t.key;
                   return (
