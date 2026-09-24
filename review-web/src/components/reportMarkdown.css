@@ -5,7 +5,8 @@
  * 網站本身是深色主題，所以這裡的顏色都是為深色底挑的（把報告原本給淺色底的 #B35A00 等提亮）。
  */
 .report-md {
-  --rpt-text: #e4e4e7;
+  /* 內文比粗體略暗一階：整篇都是最亮的白字時看久會刺眼，也讓粗體重點更突出 */
+  --rpt-text: #d4d4d8;
   --rpt-muted: #a1a1aa;
   --rpt-line: #3f3f46;
   --rpt-red: #f87171;
@@ -14,7 +15,7 @@
   color: var(--rpt-text);
   /* 字級由外層的滑桿設定（--rpt-font-size）；標題／表格全用 em，才會跟著一起縮放 */
   font-size: var(--rpt-font-size, 16px);
-  line-height: 1.7;
+  line-height: 1.8;
   word-break: break-word;
   overflow-wrap: anywhere;
 }
@@ -38,7 +39,7 @@
   .report-md h3 { font-size: 1.25em; }
 }
 
-.report-md p { margin: 0.7em 0; }
+.report-md p { margin: 0.85em 0; }
 .report-md strong { color: #fafafa; font-weight: 700; }
 .report-md a { color: #60a5fa; text-decoration: underline; text-underline-offset: 2px; }
 
@@ -46,13 +47,16 @@
 .report-md ol { margin: 0.6em 0; padding-left: 1.5em; }
 .report-md ul { list-style: disc; }
 .report-md ol { list-style: decimal; }
-.report-md li { margin: 0.3em 0; }
+.report-md li { margin: 0.5em 0; }
+.report-md li > ul,
+.report-md li > ol { margin: 0.3em 0 0.2em; }
 .report-md li::marker { color: var(--rpt-muted); }
 
 .report-md hr { border: none; border-top: 1px solid var(--rpt-line); margin: 2em 0; }
 
-/* 一般引用（不是 callout，例如報告結尾的縮寫註解） */
+/* 一般引用（不是 callout，例如段落結尾的「*ABF：載板　*EPS：每股盈餘」縮寫註解）：字小一階、退到背景 */
 .report-md blockquote {
+  font-size: 0.88em;
   margin: 1em 0;
   padding: 0.1em 1em;
   border-left: 3px solid var(--rpt-line);
@@ -141,3 +145,59 @@
 
 /* 小分頁裡的內容：第一個元素（該段的 ## 標題）貼齊上緣，不要多一截空白 */
 .report-md.rpt-panel > :first-child { margin-top: 0; }
+
+/* 「主標：副標」的標題：副標縮小變淡，放在主標下一行 */
+.report-md .rpt-h-sub {
+  display: block;
+  margin-top: 0.4em;
+  font-size: 0.68em;
+  font-weight: 500;
+  line-height: 1.5;
+  color: var(--rpt-muted);
+}
+
+/* 整行只有粗體的小標題（如「基本面驅動漲停的關鍵數據」）：左側色條＋拉開上方間距，一長串內文裡分得出小主題 */
+.report-md p.rpt-subhead {
+  margin: 1.7em 0 0.5em;
+  padding-left: 0.65em;
+  border-left: 3px solid #3b82f6;
+  font-size: 1.05em;
+  line-height: 1.45;
+}
+.report-md p.rpt-subhead strong { color: #fafafa; }
+
+/*
+ * 國旗：Windows 的 Chrome／Edge 沒有國旗字型，🇹🇼 會顯示成「TW」兩個字母，改用 CSS 畫小旗。
+ * 不放在 .report-md 底下——分頁列按鈕（在報告外面）也要用。
+ */
+.rpt-flag {
+  display: inline-block;
+  width: 1.2em;
+  height: 0.8em;
+  margin-right: 0.15em;
+  vertical-align: -0.06em;
+  border-radius: 2px;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.18);
+}
+/* 中華民國：紅底、左上藍色 1/4、白日 */
+.rpt-flag-tw {
+  background:
+    radial-gradient(circle 0.13em at 25% 25%, #fff 96%, transparent 100%),
+    linear-gradient(#000095, #000095) left top / 50% 50% no-repeat,
+    #fe0000;
+}
+/* 美國：紅白條紋、左上藍色方塊 */
+.rpt-flag-us {
+  background:
+    linear-gradient(#3c3b6e, #3c3b6e) left top / 42% 54% no-repeat,
+    repeating-linear-gradient(#b22234 0 7.69%, #fff 7.69% 15.38%);
+}
+
+/* 斷行：避免最後一行只剩一兩個孤字（「…漲行／情」），標題左右均衡；瀏覽器不支援就自動忽略 */
+.report-md p,
+.report-md li { text-wrap: pretty; }
+.report-md h1,
+.report-md h2,
+.report-md h3,
+.report-md h4,
+.report-md .rpt-h-sub { text-wrap: balance; }

@@ -82,6 +82,42 @@ describe('ReportView：frontmatter', () => {
   });
 });
 
+describe('ReportView：閱讀排版', () => {
+  it('🇹🇼 旗幟 emoji 換成 CSS 小旗（Windows 會把它畫成 TW 字母）', () => {
+    const out = html('## 🇹🇼 台股評估：買最強');
+    expect(out).toContain('rpt-flag rpt-flag-tw');
+    expect(out).not.toContain('🇹🇼');
+    const us = html('美股🇺🇸收高');
+    expect(us).toContain('rpt-flag-us');
+  });
+
+  it('## 標題的「主標：副標」拆成兩行，冒號不外露', () => {
+    const out = html('## 📌 台股評估與選股邏輯：買就要買同族群最強指標股');
+    expect(out).toContain('<h2>');
+    expect(out).toContain('台股評估與選股邏輯<span class="rpt-h-sub">買就要買同族群最強指標股</span>');
+    expect(out).not.toContain('：');
+  });
+
+  it('沒有冒號、或冒號後沒內容的標題維持原樣', () => {
+    expect(html('## 大盤與美股觀察')).not.toContain('rpt-h-sub');
+    expect(html('## 標題：')).not.toContain('rpt-h-sub');
+    expect(html('## ：只有副標')).not.toContain('rpt-h-sub');
+  });
+
+  it('整行只有粗體的最上層段落變小標題（含結尾冒號）', () => {
+    expect(html('**基本面驅動漲停的關鍵數據**：')).toContain('<p class="rpt-subhead">');
+    expect(html('**均線操作策略總覽：**')).toContain('rpt-subhead');
+  });
+
+  it('小標題判斷不誤傷：粗體夾在句子裡、清單項目、過長的整句加粗、callout 內', () => {
+    expect(html('這是**重點**在句子中')).not.toContain('rpt-subhead');
+    expect(html('- **只有粗體的清單項目**')).not.toContain('rpt-subhead');
+    expect(html('**' + '很長的整句強調'.repeat(8) + '**')).not.toContain('rpt-subhead');
+    expect(html('> [!tip] 標題\n> **粗體**')).not.toContain('rpt-subhead');
+    expect(html('**A** 後面還有字')).not.toContain('rpt-subhead');
+  });
+});
+
 describe('ReportView：表格與安全', () => {
   it('表格外包捲動容器', () => {
     const out = html('| 項目 | 內容 |\n| --- | --- |\n| **A** | b |');

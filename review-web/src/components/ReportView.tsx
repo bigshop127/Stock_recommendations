@@ -1,3 +1,5 @@
+import { Children } from 'react';
+import type { ReactNode } from 'react';
 import ReactMarkdown from 'react-markdown';
 import type { Components, Options } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -5,7 +7,14 @@ import rehypeRaw from 'rehype-raw';
 import rehypeSanitize from 'rehype-sanitize';
 import { CircleCheck, CircleHelp, Flame, Info, List, Pencil, Quote, TriangleAlert, Zap } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
-import { REPORT_SANITIZE_SCHEMA, rehypeReportColors, remarkCallouts, stripFrontmatter } from '../lib/reportMarkdown';
+import {
+  REPORT_SANITIZE_SCHEMA,
+  rehypeReportColors,
+  rehypeReportFlags,
+  remarkCallouts,
+  remarkSubheads,
+  stripFrontmatter,
+} from '../lib/reportMarkdown';
 import type { CalloutKind } from '../lib/reportMarkdown';
 import './reportMarkdown.css';
 
@@ -22,7 +31,35 @@ const ICONS: Record<CalloutKind, LucideIcon> = {
   example: List,
 };
 
+/**
+ * 「主標：副標」拆成兩行（154／617 個 ## 標題有副標，例如「台股評估與選股邏輯：買就要買同族群最強指標股」）：
+ * 主標維持標題大小，副標縮小變淡放在下一行，一眼看得出這段在講什麼。
+ * 只處理標題最上層文字裡的第一個全形冒號；冒號在粗體等巢狀元素裡就不拆。
+ */
+function splitSubtitle(children: ReactNode): { main: ReactNode[]; sub: ReactNode[] } {
+  const arr = Children.toArray(children);
+  const i = arr.findIndex((c) => typeof c === 'string' && c.includes('：'));
+  if (i < 0) return { main: arr, sub: [] };
+  const text = arr[i] as string;
+  const k = text.indexOf('：');
+  const main = [...arr.slice(0, i), text.slice(0, k)];
+  const sub = [text.slice(k + 1).trimStart(), ...arr.slice(i + 1)];
+  const mainHasContent = main.some((c) => typeof c !== 'string' || c.trim() !== '');
+  const subHasContent = sub.some((c) => typeof c !== 'string' || c.trim() !== '');
+  return mainHasContent && subHasContent ? { main, sub } : { main: arr, sub: [] };
+}
+
 const components: Components = {
+  h2: ({ node, children, ...rest }) => {
+    void node;
+    const { main, sub } = splitSubtitle(children);
+    return (
+      <h2 {...rest}>
+        {main}
+        {sub.length > 0 && <span className="rpt-h-sub">{sub}</span>}
+      </h2>
+    );
+  },
   a: ({ node, ...props }) => {
     void node;
     return <a {...props} target="_blank" rel="noreferrer noopener" />;
@@ -53,8 +90,8 @@ const components: Components = {
   },
 };
 
-const REMARK_PLUGINS = [remarkGfm, remarkCallouts];
-const REHYPE_PLUGINS: Options['rehypePlugins'] = [rehypeRaw, rehypeReportColors, [rehypeSanitize, REPORT_SANITIZE_SCHEMA]];
+const REMARK_PLUGINS = [remarkGfm, remarkCallouts, remarkSubheads];
+const REHYPE_PLUGINS: Options['rehypePlugins'] = [rehypeRaw, rehypeReportColors, rehypeReportFlags, [rehypeSanitize, REPORT_SANITIZE_SCHEMA]];
 
 /**
  * 老王每日報告的 markdown 渲染（排版比照 Obsidian，深色主題）。

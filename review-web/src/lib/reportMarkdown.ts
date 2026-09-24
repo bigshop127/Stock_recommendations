@@ -12,6 +12,7 @@ import type { Blockquote, PhrasingContent, Root as MdastRoot } from 'mdast';
 import type { Element, Root as HastRoot, RootContent as HastContent } from 'hast';
 import { defaultSchema } from 'rehype-sanitize';
 import type { Options as SanitizeSchema } from 'rehype-sanitize';
+import { FLAG_LABEL, hasFlag, splitFlags } from './reportFlags';
 
 /**
  * AI 偶爾在報告開頭多吐一段 YAML frontmatter（2026-09-24 出現過）。react-markdown 不認得，
@@ -105,6 +106,71 @@ export function remarkCallouts() {
   return (tree: MdastRoot) => walkMdast(tree as MdNode);
 }
 
+// ── 粗體小標題 ─────────────────────────────────────────────────────────────
+
+/** 整段只有粗體、像小標題的段落（`**基本面驅動漲停的關鍵數據**：`）。字數上限避免把「整句加粗的強調」誤當小標題。 */
+const SUBHEAD_MAX = 40;
+
+function plainText(node: { type: string; value?: string; children?: unknown[] }): string {
+  if (typeof node.value === 'string') return node.value;
+  return (node.children ?? []).map((c) => plainText(c as { type: string })).join('');
+}
+
+function isSubhead(p: { children: PhrasingContent[] }): boolean {
+  const [first, second, ...rest] = p.children;
+  if (!first || first.type !== 'strong' || rest.length > 0) return false;
+  if (second && !(second.type === 'text' && /^[\s：:]*$/.test(second.value))) return false;
+  const len = plainText(first).trim().length;
+  return len > 0 && len <= SUBHEAD_MAX;
+}
+
+/**
+ * remark 外掛：最上層那種「整行只有粗體」的段落標成 .rpt-subhead（左側色條的小標題），
+ * 讓一長串內文裡的小主題有層次（79 份報告共 156 處）。只看最上層——清單項目、表格、callout 裡的粗體不動。
+ */
+export function remarkSubheads() {
+  return (tree: MdastRoot) => {
+    for (const node of tree.children) {
+      if (node.type === 'paragraph' && !node.data && isSubhead(node)) {
+        node.data = { hProperties: { className: ['rpt-subhead'] } };
+      }
+    }
+  };
+}
+
+// ── 國旗 emoji → 小旗 ────────────────────────────────────────────────────
+
+function walkFlags(node: HastRoot | Element): void {
+  const next: HastContent[] = [];
+  let changed = false;
+  for (const child of node.children as HastContent[]) {
+    if (child.type === 'text' && hasFlag(child.value)) {
+      changed = true;
+      for (const part of splitFlags(child.value)) {
+        next.push(
+          'flag' in part
+            ? ({
+                type: 'element',
+                tagName: 'span',
+                properties: { className: ['rpt-flag', `rpt-flag-${part.flag}`], title: FLAG_LABEL[part.flag] },
+                children: [],
+              } as Element)
+            : { type: 'text', value: part.text },
+        );
+      }
+    } else {
+      if (child.type === 'element') walkFlags(child);
+      next.push(child);
+    }
+  }
+  if (changed) node.children = next as typeof node.children;
+}
+
+/** rehype 外掛：文字裡的 🇹🇼／🇺🇸 → CSS 小旗（Windows 瀏覽器會把旗幟 emoji 畫成「TW」字母）。 */
+export function rehypeReportFlags() {
+  return (tree: HastRoot) => walkFlags(tree);
+}
+
 // ── 內嵌顏色 → 語意 class ────────────────────────────────────────────────
 
 /** 文字色（style="color:…"）→ class；報告只用過 red / green / #B35A00 三種。 */
@@ -169,7 +235,8 @@ export const REPORT_SANITIZE_SCHEMA: SanitizeSchema = {
   attributes: {
     ...defaultSchema.attributes,
     div: [...(defaultSchema.attributes?.div ?? []), ['className', /^(callout|callout-[a-z]+|callout-title)$/], 'dataCallout'],
-    span: [...(defaultSchema.attributes?.span ?? []), ['className', /^rpt-(red|green|orange)$/]],
+    span: [...(defaultSchema.attributes?.span ?? []), ['className', /^rpt-(red|green|orange|flag|flag-tw|flag-us)$/]],
+    p: [...(defaultSchema.attributes?.p ?? []), ['className', /^rpt-subhead$/]],
     mark: [...(defaultSchema.attributes?.mark ?? []), ['className', /^rpt-mark-(red|green|orange|yellow)$/]],
   },
   tagNames: [...(defaultSchema.tagNames ?? []), 'mark'],

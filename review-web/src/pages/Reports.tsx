@@ -5,6 +5,7 @@ import { api } from '../lib/api';
 import type { Report, ReportsList } from '../lib/api';
 import { ReportView } from '../components/ReportView';
 import { ReportCalendar } from '../components/ReportCalendar';
+import { FlagText } from '../components/FlagText';
 import { stripFrontmatter } from '../lib/reportMarkdown';
 import { ALL_TAB, joinSections, resolveTab, splitReport } from '../lib/reportSections';
 
@@ -216,7 +217,7 @@ export const Reports: React.FC = () => {
                           : 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800/40'
                       }`}
                     >
-                      {t.label}
+                      <FlagText text={t.label} />
                     </button>
                   );
                 })}
@@ -237,12 +238,12 @@ export const Reports: React.FC = () => {
               {prevSection ? (
                 <button type="button" className={btn} onClick={() => selectTab(prevSection.key, true)}>
                   <ChevronLeft className="w-4 h-4" />
-                  <span className="truncate max-w-[9em]">{prevSection.label}</span>
+                  <span className="truncate max-w-[9em]"><FlagText text={prevSection.label} /></span>
                 </button>
               ) : <span />}
               {nextSection ? (
                 <button type="button" className={btn} onClick={() => selectTab(nextSection.key, true)}>
-                  <span className="truncate max-w-[9em]">{nextSection.label}</span>
+                  <span className="truncate max-w-[9em]"><FlagText text={nextSection.label} /></span>
                   <ChevronRight className="w-4 h-4" />
                 </button>
               ) : <span />}
