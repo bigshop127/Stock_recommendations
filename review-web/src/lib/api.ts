@@ -548,6 +548,9 @@ export const api = {
     }),
   // 加權指數：gateway 自己抓 TWSE（盤中走 MIS 即時、收盤後退每日 OpenAPI），不經 engine
   getTaiex: () => req<TaiexResp>('/market/taiex'),
+  // 證交所臺股儀表板（gateway 自抓，不經 engine）：市場槓桿溫度、近一年個股違約揭露名單
+  getMarketCredit: (force = false) => req<MarketCreditResp>(`/market/credit${qs({ force: force ? 1 : undefined })}`),
+  getDefaultDisclosures: (force = false) => defaultDisclosuresOnce(force),
 
   // 個股／ETF 已實現損益（opt36，gateway 讀寫 data/stock_realized_trades.json）
   getStockRealized: () => req<StockRealizedResp>('/stock-realized'),
@@ -739,6 +742,79 @@ export interface TaiexResp {
   cached?: boolean;
   stale?: boolean;
   stale_reason?: string;
+}
+
+/**
+ * 市場信用交易每日一列（gateway 已把單位統一成「元」與「張」）。
+ * keep_rate／below_130_accounts／disposal_* 是「全市場」（上市＋上櫃），2026-08-03 起才有；
+ * margin_*／short_shares／market_value 是「上市」。缺的欄位是 null，不補值。
+ */
+export interface MarketCreditRow {
+  date: string;                         // YYYY-MM-DD
+  keep_rate: number | null;             // 全市場擔保維持率 %（融資＋融券合併口徑）
+  below_130_accounts: number | null;    // 整戶維持率低於 130% 的戶數
+  call_amount: number | null;           // 當日通知追繳金額（元）
+  disposal_accounts: number | null;     // 次一營業日將被處分（斷頭）的戶數
+  disposal_amount: number | null;       // 處分金額（元）
+  credit_turnover: number | null;       // 信用交易成交值（元）
+  margin_balance: number | null;        // 上市融資餘額（元）
+  margin_shares: number | null;         // 上市融資餘額（張）
+  short_shares: number | null;          // 上市融券餘額（張）
+  market_value: number | null;          // 上市總市值（元）
+}
+
+export interface MarketCreditHistoryRow {
+  year: string;
+  label: string;                        // '2000'…'2026/08'（當年度是前月底）
+  period_end: string;
+  margin_ratio: number | null;          // 融資餘額占市值 %
+  credit_ratio: number | null;          // 信用交易占成交值 %
+}
+
+export interface MarketCreditResp {
+  series: MarketCreditRow[];            // 依日期遞增
+  history: MarketCreditHistoryRow[];
+  latest_date: string;
+  keep_rate_since: string | null;
+  partial_errors?: string[];
+  source: string;
+  fetched_at: string;
+  cached?: boolean;
+  stale?: boolean;
+  stale_reason?: string;
+}
+
+export interface DefaultDisclosure {
+  date: string;                         // 申報日 YYYY-MM-DD
+  code: string;
+  name: string;
+  brokers: string[];
+  amount: number | null;                // 個股違約總金額（元）
+}
+
+export interface DefaultDisclosuresResp {
+  from: string;
+  to: string;
+  threshold_note: string;
+  items: DefaultDisclosure[];           // 新到舊
+  fetched_at: string;
+  cached?: boolean;
+  stale?: boolean;
+  stale_reason?: string;
+}
+
+// 盤勢總覽的自選清單和個股頁都會要這份名單，一天才變一次——同一個分頁只抓一次
+let defaultDisclosuresPromise: Promise<DefaultDisclosuresResp> | null = null;
+function defaultDisclosuresOnce(force: boolean): Promise<DefaultDisclosuresResp> {
+  if (force || !defaultDisclosuresPromise) {
+    defaultDisclosuresPromise = req<DefaultDisclosuresResp>(
+      `/market/default-disclosures${qs({ force: force ? 1 : undefined })}`,
+    ).catch((e) => {
+      defaultDisclosuresPromise = null; // 失敗不快取，下次再試
+      throw e;
+    });
+  }
+  return defaultDisclosuresPromise;
 }
 
 /** 指數期貨保證金（電子/金融/半導體30…）——固定金額，跟 TX/MTX/TMF 同一份 indexMarging 資料 */

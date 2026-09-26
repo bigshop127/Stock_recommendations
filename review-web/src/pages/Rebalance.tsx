@@ -7,6 +7,7 @@ import { getFuturesConfig, subscribeFutures } from '../lib/futuresStore';
 import { summarizeAccountAll, findPreset, priceOf, type PriceInput } from '../lib/futures';
 import { api, type Settlement } from '../lib/api';
 import { HoldingsScreenshotImport } from '../components/rebalance/HoldingsScreenshotImport';
+import { MarketLeverageRefLine } from '../components/MarketLeverageCard';
 import type { HoldingsImportPlan } from '../lib/rebalanceHoldingsImport';
 
 // 資產清單（00631L＋防守端債券 ETF）【增修I】
@@ -1224,6 +1225,9 @@ export function Rebalance() {
             )}
           </div>
         )}
+
+        {/* 放在燈號區塊外面：TAIEX 狀態抓不到時這行照樣顯示（資料源不同） */}
+        <MarketLeverageRefLine />
       </div>
 
       {/* 分頁導覽（像個股頁：今天想看什麼再點開什麼） */}

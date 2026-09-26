@@ -10,6 +10,8 @@ import type {
   StockHeatmap,
   HeatmapStock,
   Dashboard as DashboardData,
+  MarketCreditResp,
+  DefaultDisclosuresResp,
 } from '../lib/api';
 import {
   Activity,
@@ -27,6 +29,8 @@ import {
 } from 'lucide-react';
 import { SymbolSearch } from '../components/SymbolSearch';
 import { OverviewCard } from '../components/OverviewCard';
+import { MarketLeverageCard } from '../components/MarketLeverageCard';
+import { summarizeDisclosures, fmtYuan } from '../lib/marketCredit';
 import { buildMarketSummary } from '../lib/marketSummary';
 import {
   getUserWatchlist,
@@ -568,6 +572,14 @@ export const Dashboard: React.FC = () => {
     error: string | null;
   }>({ data: null, loading: true, error: null });
 
+  const [creditState, setCreditState] = useState<{
+    data: MarketCreditResp | null;
+    loading: boolean;
+    error: string | null;
+  }>({ data: null, loading: true, error: null });
+  // 違約揭露名單只拿來在自選清單上標警示，抓不到就不標，不另外顯示錯誤
+  const [disclosures, setDisclosures] = useState<DefaultDisclosuresResp | null>(null);
+
   const [userWatchlist, setUserWatchlist] = useState<UserStock[]>([]);
   const [showSearch, setShowSearch] = useState(false);
 
@@ -837,6 +849,24 @@ export const Dashboard: React.FC = () => {
     }
   };
 
+  const fetchCredit = async (force = false) => {
+    setCreditState((prev) => ({ ...prev, loading: true, error: null }));
+    try {
+      const data = await api.getMarketCredit(force);
+      setCreditState({ data, loading: false, error: null });
+    } catch (err: any) {
+      setCreditState((prev) => ({ data: prev.data, loading: false, error: err.message || '無法取得信用交易資料' }));
+    }
+  };
+
+  const fetchDisclosures = async (force = false) => {
+    try {
+      setDisclosures(await api.getDefaultDisclosures(force));
+    } catch {
+      /* 保留上一份（或沒有），自選清單就不標 */
+    }
+  };
+
   const fetchWatchlist = async () => {
     setWatchlistState((prev) => ({ ...prev, loading: true, error: null }));
     try {
@@ -888,6 +918,7 @@ export const Dashboard: React.FC = () => {
     if (useMock) {
       loadMockData();
       fetchWatchlist();
+      fetchCredit(force); // gateway 自抓證交所、不經 engine，mock 模式照樣抓真的
       return;
     }
     fetchIndices();
@@ -897,6 +928,8 @@ export const Dashboard: React.FC = () => {
     fetchDashboard();
     fetchHeatmap(force);
     fetchWatchlist();
+    fetchCredit(force);
+    fetchDisclosures(force);
   };
 
   useEffect(() => {
@@ -1025,6 +1058,11 @@ export const Dashboard: React.FC = () => {
       return `rgba(34, 197, 94, ${alpha})`;
     }
   };
+
+  const disclosureByCode = useMemo(
+    () => summarizeDisclosures(disclosures?.items || []),
+    [disclosures],
+  );
 
   const mergedWatchlist = useMemo<MergedWatchItem[]>(() => {
     const focusItems = watchlistState.data || [];
@@ -1476,7 +1514,16 @@ export const Dashboard: React.FC = () => {
           </div>
         </OverviewCard>
 
-        {/* 市場多空寬度指標 — Row3 左 (order-7) */}
+        {/* 市場槓桿溫度 — Row3 全寬（跟寬度卡同 order-7，DOM 在前所以排在它上面） */}
+        <MarketLeverageCard
+          data={creditState.data}
+          loading={creditState.loading}
+          error={creditState.error}
+          onRetry={() => fetchCredit(true)}
+          className="md:col-span-2 lg:col-span-12 lg:order-7"
+        />
+
+        {/* 市場多空寬度指標 — Row4 左 (order-7) */}
         <OverviewCard
           title="市場多空寬度指標"
           icon={<Activity className="w-5 h-5 text-primary" />}
@@ -1637,7 +1684,7 @@ export const Dashboard: React.FC = () => {
           </div>
         </OverviewCard>
 
-        {/* Watchlist 自選與焦點個股審查清單 — Row3 右 (order-8) */}
+        {/* Watchlist 自選與焦點個股審查清單 — Row4 右 (order-8) */}
         <OverviewCard
           title="自選與焦點審查清單 (Watchlist)"
           icon={<Activity className="w-5 h-5 text-primary" />}
@@ -1678,7 +1725,29 @@ export const Dashboard: React.FC = () => {
                       className="border-b border-border/30 last:border-0 hover:bg-zinc-800/40 transition duration-150"
                     >
                       <td className="py-3 font-mono text-zinc-300 font-bold">{item.code}</td>
-                      <td className="py-3 text-zinc-200">{item.name}</td>
+                      <td className="py-3 text-zinc-200">
+                        <span className="inline-flex items-center gap-1.5 flex-wrap">
+                          {item.name}
+                          {(() => {
+                            const d = disclosureByCode.get(item.code);
+                            if (!d) return null;
+                            return (
+                              <span
+                                className={`text-[9px] px-1.5 py-0.5 rounded font-semibold border whitespace-nowrap ${
+                                  d.recent
+                                    ? 'bg-red-500/15 text-red-300 border-red-500/40'
+                                    : 'bg-zinc-800 text-zinc-400 border-zinc-700'
+                                }`}
+                                title={`證交所違約揭露：${d.latest.date} 違約 ${fmtYuan(d.latest.amount)}（${d.latest.brokers.join('、') || '券商未列'}）${
+                                  d.count > 1 ? `，近一年共 ${d.count} 次` : ''
+                                }`}
+                              >
+                                違約揭露{d.recent ? '' : '（較早）'}
+                              </span>
+                            );
+                          })()}
+                        </span>
+                      </td>
                       <td className="py-3 text-right font-mono text-zinc-300">
                         {item.swing_score !== null && item.swing_score !== undefined
                           ? `${item.swing_score}分`

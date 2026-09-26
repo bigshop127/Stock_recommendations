@@ -1,8 +1,9 @@
 import React, { useEffect, useState, useMemo, useCallback } from 'react';
 import { useParams, Link, useSearchParams } from 'react-router-dom';
 import { api } from '../lib/api';
-import type { StockDetail as IStockDetail, StockChips, StockFundamentals, StockNews, Book, OhlcvRow, CompanyProfile, ShareholdingDispersion, StockHeatmap, HeatmapStock } from '../lib/api';
-import { BarChart2, TrendingUp, Newspaper, DollarSign, Users, Info, ArrowLeft, Bell, Trash2 } from 'lucide-react';
+import type { StockDetail as IStockDetail, StockChips, StockFundamentals, StockNews, Book, OhlcvRow, CompanyProfile, ShareholdingDispersion, StockHeatmap, HeatmapStock, DefaultDisclosure } from '../lib/api';
+import { BarChart2, TrendingUp, Newspaper, DollarSign, Users, Info, ArrowLeft, Bell, Trash2, AlertTriangle } from 'lucide-react';
+import { disclosuresForCode, daysBetween, tpeToday, fmtYuan } from '../lib/marketCredit';
 import { PriceChart } from '../components/PriceChart';
 import { ChipsCharts } from '../components/ChipsCharts';
 import { StockBriefCard } from '../components/StockBriefCard';
@@ -132,12 +133,25 @@ export const StockDetail: React.FC = () => {
     return () => ro.disconnect();
   }, []);
   const [alertsConfig, setAlertsConfig] = useState<StockAlertsConfig>({});
+  // 證交所「個股達違約資訊揭露標準」名單（近一年）；抓不到就當沒有，不擋頁面
+  const [defaultItems, setDefaultItems] = useState<DefaultDisclosure[]>([]);
   const [alertsSaveStatus, setAlertsSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
   const [alertForm, setAlertForm] = useState<{ conditionType: AlertConditionType; price: string }>({ conditionType: 'price_above', price: '' });
 
   useEffect(() => {
     setFundHoverIdx(null);
   }, [fundTab, activeCode]);
+
+  useEffect(() => {
+    let cancelled = false;
+    setDefaultItems([]);
+    api.getDefaultDisclosures()
+      .then((resp) => {
+        if (!cancelled) setDefaultItems(disclosuresForCode(resp.items, activeCode));
+      })
+      .catch(() => { /* 名單只是加註，失敗不影響個股頁 */ });
+    return () => { cancelled = true; };
+  }, [activeCode]);
 
   // 個股價格警示設定：全站共用一份設定檔（data/stock_price_alerts.json），只在掛載時讀一次，
   // 之後每次新增/切換/刪除都本地樂觀更新＋整份寫回雲端（比照 RealizedPnl.tsx 的 saveToCloud 模式）。
@@ -2671,6 +2685,39 @@ export const StockDetail: React.FC = () => {
 
       {/* Quote Header */}
       {renderHeader()}
+
+      {/* 證交所違約交割揭露（同一標的違約合計達 2,500 萬才上榜，近一年內有就顯示） */}
+      {defaultItems.length > 0 && (() => {
+        const latest = defaultItems[0];
+        const daysAgo = daysBetween(latest.date, tpeToday());
+        const recent = daysAgo <= 90;
+        return (
+          <div
+            className={`flex items-start gap-2.5 rounded-xl border px-4 py-3 text-xs ${
+              recent ? 'border-red-500/40 bg-red-500/10' : 'border-border bg-card'
+            }`}
+          >
+            <AlertTriangle className={`w-4 h-4 mt-0.5 shrink-0 ${recent ? 'text-red-400' : 'text-zinc-500'}`} />
+            <div className="space-y-1 min-w-0">
+              <div className={`font-semibold ${recent ? 'text-red-300' : 'text-zinc-300'}`}>
+                違約交割揭露：{latest.date} 申報違約 {fmtYuan(latest.amount)}
+                <span className="font-normal text-zinc-500 ml-1.5">（{daysAgo} 天前{defaultItems.length > 1 ? `・近一年共 ${defaultItems.length} 次` : ''}）</span>
+              </div>
+              <div className="text-zinc-400 break-words">
+                申報券商：{latest.brokers.join('、') || '—'}
+                {defaultItems.length > 1 && (
+                  <span className="text-zinc-500">
+                    ；其他：{defaultItems.slice(1).map((d) => `${d.date} ${fmtYuan(d.amount)}`).join('、')}
+                  </span>
+                )}
+              </div>
+              <div className="text-[10px] text-zinc-500 leading-relaxed">
+                違約交割＝投資人買進後付不出款（或賣出後交不出股票），由券商向證交所申報；同一檔違約金額（當沖以買賣互抵後淨額計）合計達 2,500 萬元才會公告。資料來源：證交所臺股儀表板，僅供參考。
+              </div>
+            </div>
+          </div>
+        );
+      })()}
 
       {/* Stock Research Brief Card (Opt 8) */}
       <StockBriefCard
