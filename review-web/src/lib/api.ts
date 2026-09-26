@@ -777,7 +777,7 @@ export interface MarketCreditHistoryRow {
   credit_ratio: number | null;          // 信用交易占成交值 %
 }
 
-// 國際股市指數（美股三大指數＋日經＋韓股；gateway 抓 Yahoo，2026-09-27）
+// 國際股市指數（美股三大指數＋費城半導體＋日經＋韓股；gateway 抓 Yahoo，2026-09-27）
 export interface GlobalIndex {
   key: string;
   symbol: string;

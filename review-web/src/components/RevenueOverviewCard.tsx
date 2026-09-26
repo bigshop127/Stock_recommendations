@@ -89,8 +89,9 @@ export const RevenueOverviewCard: React.FC<RevenueOverviewCardProps> = ({
     >
       {data && o && movers && (
         <div className="space-y-4">
-          <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
-            <div className="md:col-span-2 space-y-3 min-w-0">
+          {/* 寬螢幕一排讀完：總覽｜近 12 個月｜成長／衰退產業（2026-09-27 大盤頁改橫向閱讀） */}
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-12 gap-5">
+            <div className="lg:col-span-3 space-y-3 min-w-0">
               <div>
                 <div className="text-[11px] text-zinc-500">{monthLabel(data.month)}營收（{o.count.toLocaleString('zh-TW')} 家）</div>
                 <div className="text-2xl font-black font-mono text-zinc-100 mt-0.5">{fmtRevenue(o.revenue)}</div>
@@ -105,7 +106,7 @@ export const RevenueOverviewCard: React.FC<RevenueOverviewCardProps> = ({
                 <span className="text-bear font-semibold">{movers.downCount}</span> 個年減
               </div>
             </div>
-            <div className="md:col-span-3 min-w-0">
+            <div className="lg:col-span-5 min-w-0">
               <div className="text-xs font-semibold text-zinc-300 mb-1">近 12 個月營收</div>
               {trendPts.length > 0 ? (
                 <MiniTrendChart
@@ -120,11 +121,10 @@ export const RevenueOverviewCard: React.FC<RevenueOverviewCardProps> = ({
                 <div className="h-[140px] flex items-center justify-center text-[11px] text-zinc-500">趨勢資料暫時抓不到</div>
               )}
             </div>
-          </div>
-
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-3 border-t border-border/30">
-            <MoverList title="年增率最高的產業" rows={movers.up} empty="沒有年增的產業" />
-            <MoverList title="年增率衰退的產業" rows={movers.down} empty="這個月沒有產業年減" />
+            <div className="md:col-span-2 lg:col-span-4 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-1 gap-4 min-w-0 pt-3 border-t border-border/30 lg:pt-0 lg:border-t-0 lg:pl-5 lg:border-l">
+              <MoverList title="年增率最高的產業" rows={movers.up} empty="沒有年增的產業" />
+              <MoverList title="年增率衰退的產業" rows={movers.down} empty="這個月沒有產業年減" />
+            </div>
           </div>
 
           <div className="flex justify-end">
