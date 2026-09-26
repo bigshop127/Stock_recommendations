@@ -550,6 +550,7 @@ export const api = {
   getTaiex: () => req<TaiexResp>('/market/taiex'),
   // 證交所臺股儀表板（gateway 自抓，不經 engine）：市場槓桿溫度、近一年個股違約揭露名單
   getMarketCredit: (force = false) => req<MarketCreditResp>(`/market/credit${qs({ force: force ? 1 : undefined })}`),
+  getGlobalIndices: (force = false) => req<GlobalIndicesResp>(`/market/global-indices${qs({ force: force ? 1 : undefined })}`),
   getDefaultDisclosures: (force = false) => defaultDisclosuresOnce(force),
   // 月營收（證交所／櫃買逐家月營收表＋臺股儀表板趨勢，gateway 自抓）：全體上市、官方產業、單一公司 vs 產業
   getMarketRevenue: (force = false) => req<MarketRevenueResp>(`/market/revenue${qs({ force: force ? 1 : undefined })}`),
@@ -774,6 +775,29 @@ export interface MarketCreditHistoryRow {
   period_end: string;
   margin_ratio: number | null;          // 融資餘額占市值 %
   credit_ratio: number | null;          // 信用交易占成交值 %
+}
+
+// 國際股市指數（美股三大指數＋日經＋韓股；gateway 抓 Yahoo，2026-09-27）
+export interface GlobalIndex {
+  key: string;
+  symbol: string;
+  name: string;
+  region: string;           // 美股／日股／韓股
+  price: number | null;
+  prev_close: number | null;
+  change: number | null;
+  change_pct: number | null;
+  as_of: string | null;     // 最新成交時間（ISO，UTC）
+  session: 'open' | 'closed';
+  ok: boolean;
+  error?: string;
+}
+
+export interface GlobalIndicesResp {
+  indices: GlobalIndex[];
+  fetched_at: string;
+  source: string;
+  cached?: boolean;
 }
 
 export interface MarketCreditResp {

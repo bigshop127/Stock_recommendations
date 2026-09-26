@@ -421,9 +421,9 @@ export interface DefensiveAllocation {
  *     依 currentBondValues 陣列順序（index 0 優先），先把第一檔賣到 0，賣不夠才動下一檔。
  *     這是報告「美債優先變現」的核心：index 0 放最適合在股災時變現的資產（如 00687B，
  *     具避險溢價），保留其餘資產（如 00953B 月配息）繼續供息。
- *   - 擴張或不變（bondPool ≥ 現有債券總值，例如賣 00631L 獲利了結回補防守端）：【2026-09】
- *     單一優先回補——index 0（同一檔「優先保留」的資產）吃下全部 bondPool，index 1 為 0；
- *     只買一檔，不再依比例兩檔都買。
+ *   - 擴張或不變（bondPool ≥ 現有債券總值，例如賣 00631L 獲利了結回補防守端）：【2026-09-27 合併計算】
+ *     兩檔債券視為同一個池子——只把「差額」補進 index 0（同一檔「優先保留」的資產），
+ *     另一檔維持現值不動。總額已達標（差額＝0）時兩檔都不動，不會為了換成優先檔而賣掉另一檔。
  * 純函式、全路徑防 NaN；currentBondValues 僅支援 1~2 檔（本站防守端固定兩檔債券）。
  */
 export function allocateDefensive(
@@ -450,8 +450,8 @@ export function allocateDefensive(
       return v - sell;
     });
   } else {
-    // 擴張或不變：單一優先回補，index 0 吃下全部 bondPool（僅支援兩檔，第三檔以上恆 0）
-    bond_values = values.map((_, i) => (i === 0 ? bondPool : 0));
+    // 擴張或不變：兩檔合併計算，只把差額補進 index 0，其他檔維持現值
+    bond_values = values.map((v, i) => (i === 0 ? v + delta : v));
   }
 
   return { cash, bond_values };
@@ -478,6 +478,7 @@ export function allocateDefensiveWithLocks(
   const cashReserve = Math.max(0, safeNum(input.cash.reserve, 0));
   // 【2026-09 單一優先回補】回補方向永遠與變現方向相反：liquidationFirstCode 是「優先變現」那檔，
   // 回補時優先加碼「另一檔」（缺省時 liquidationFirstCode 未給＝優先變現預設 index0，回補預設就是 index1）。
+  // 【2026-09-27 合併計算】兩檔債券總額才是目標：回補只補差額，不會把非優先那檔賣掉換成優先檔。
   const sellFirstCode = input.liquidationFirstCode ?? input.bonds[0]?.code;
   const buyFirstCode = input.bonds.find((b) => b.code !== sellFirstCode)?.code ?? input.bonds[0]?.code;
 
@@ -523,10 +524,11 @@ export function allocateDefensiveWithLocks(
         bondValuesMap.set(b.code, b.value - sell);
       }
     } else {
-      // 擴張（回補）：單一優先回補——buyFirstCode 那檔吃下全部 bondPool，另一檔為 0；
+      // 擴張（回補）：兩檔合併計算——差額全部補進 buyFirstCode 那檔，另一檔維持現值不動
+      // （例如 00953B 已經買足整個債券池，總額達標就不會再叫你賣 00953B 換美債）。
       // 只有 buyFirstCode 被鎖定（不在 unlockedBonds 內）時才會落到下面 length===1 分支改買另一檔。
       unlockedBonds.forEach((b) => {
-        bondValuesMap.set(b.code, b.code === buyFirstCode ? bondPool : 0);
+        bondValuesMap.set(b.code, b.code === buyFirstCode ? b.value + delta : b.value);
       });
     }
   } else if (unlockedBonds.length === 1) {
@@ -725,8 +727,9 @@ export function computeRebalance(input: RebalanceInput): RebalanceResult {
   let cash_delta: number | null = null;
   let trade_shares: number | null = null;
 
-  // 【增修I／2026-09 單一優先回補】防守端內部配置：固定保留 cash_reserve 現金，剩餘（bondPool）
-  // 只買 bond_buy_first 那一檔，另一檔只有在 bond_buy_first 被鎖定時才會承接
+  // 【增修I／2026-09 單一優先回補／09-27 合併計算】防守端內部配置：固定保留 cash_reserve 現金，
+  // 剩餘（bondPool）看兩檔債券「總額」——不足的差額只買 bond_buy_first 那一檔（被鎖定時才改買另一檔），
+  // 總額達標就兩檔都不動
   let target_defensive_value: number | null = null;
   let target_cash_value: number | null = null;
   let cash_adjust_delta: number | null = null;
@@ -1098,96 +1101,4 @@ export function computeMarketStatus(input: MarketStatusInput): MarketStatus | nu
     tier,
     tier_label,
   };
-}
-
-// ── 期貨曝險合併（2026-07-29）─────────────────────────────────────────────────
-//
-// 這頁算的 β 只看現股（00631L × 2 ＋ 防守端 β=0）。但期貨頁的 SRF 多單本質上就是
-// 0050 的市場曝險（β≈1），用保證金撐起來 —— 兩頁各算各的，會**系統性低估**真實槓桿：
-// 押 8 萬保證金換到 100 萬曝險，在現股模型裡完全看不見。
-//
-// 刻意**不**改 computeRebalance()：那條路徑同時餵給 rebalance_alert.cjs 的每日告警，
-// 動它等於動交易建議與寄信內容。這裡改成獨立的純函式，把合併後的真實 β 算出來給
-// 使用者看，要不要據此調整目標 β 由他自己決定（頁面上提供一鍵套用建議值）。
-
-export interface FuturesExposureInput {
-  notional: number;  // 名目曝險（多單為正、空單為負）＝價格 × 契約單位 × 淨口數
-  equity: number;    // 保證金專戶權益數（＝現金餘額＋未實現損益），這是你真正擁有的資產
-  beta: number;      // 期貨標的相對大盤的 β（0050 期貨 ≈ 1.0；台指期 ＝ 1.0）
-}
-
-export interface CombinedBetaResult {
-  stock_value: number;          // 現股組合總值（＝computeRebalance 的 total_value）
-  stock_exposure: number;       // 現股的市場曝險＝etf_value × etf_beta
-  futures_notional: number;
-  futures_equity: number;
-  futures_exposure: number;     // notional × 期貨標的 β
-  total_value: number;          // stock_value + futures_equity（總資產）
-  total_exposure: number;       // stock_exposure + futures_exposure
-  stock_only_beta: number | null;  // 只看現股時算出來的 β（＝這頁原本顯示的數字）
-  combined_beta: number | null;    // 含期貨的真實 β
-  understated_by: number | null;   // combined − stock_only：現股模型低估了多少
-  has_futures: boolean;
-}
-
-/**
- * 把期貨曝險併進投組 β。
- *
- * 分子＝市場曝險總額（現股 ETF 市值 × 其 β ＋ 期貨名目 × 其 β），
- * 分母＝總資產（現股組合總值 ＋ 期貨保證金專戶權益數）。
- *
- * 為什麼分母加的是**權益數**而不是名目：權益數才是你在期貨帳戶裡真正擁有的錢；
- * 名目是靠槓桿撐出來的曝險，加進分母會把槓桿洗掉，那正是要避免的低估。
- */
-export function combineFuturesBeta(
-  result: Pick<RebalanceResult, 'etf_value' | 'total_value'>,
-  etfBeta: number,
-  futures?: FuturesExposureInput | null,
-): CombinedBetaResult {
-  const stock_value = Math.max(0, safeNum(result?.total_value, 0));
-  const stock_exposure = Math.max(0, safeNum(result?.etf_value, 0)) * safeNum(etfBeta, 2);
-
-  const futures_notional = safeNum(futures?.notional, 0);
-  const futures_equity = safeNum(futures?.equity, 0);
-  const futures_exposure = futures_notional * safeNum(futures?.beta, 1);
-  const has_futures = futures_notional !== 0;
-
-  const total_value = stock_value + futures_equity;
-  const total_exposure = stock_exposure + futures_exposure;
-
-  const stock_only_beta = stock_value > 0 ? stock_exposure / stock_value : null;
-  const combined_beta = total_value > 0 ? total_exposure / total_value : null;
-
-  return {
-    stock_value, stock_exposure,
-    futures_notional, futures_equity, futures_exposure,
-    total_value, total_exposure,
-    stock_only_beta, combined_beta,
-    understated_by: combined_beta !== null && stock_only_beta !== null
-      ? combined_beta - stock_only_beta
-      : null,
-    has_futures,
-  };
-}
-
-/**
- * 反解：整體（含期貨）想達到 overallTarget 的話，**這頁的目標 β 該設多少**？
- *
- *   overall = (stock_value × stockBeta + futures_exposure) / total_value
- * ⇒ stockBeta = (overall × total_value − futures_exposure) / stock_value
- *
- * 期貨已經吃掉一部分曝險，所以現股這邊要調低；期貨曝險大到超過整體目標時會算出
- * 負數（意思是「光期貨就超標了，現股得反向做空才壓得下來」），此時 clamp 到 0
- * 並讓呼叫端顯示「期貨曝險已超過整體目標」。
- */
-export function stockTargetForOverallBeta(
-  overallTarget: number,
-  combined: CombinedBetaResult,
-): { stock_target: number | null; over_exposed: boolean } {
-  const target = safeNum(overallTarget, 0);
-  if (!(combined.stock_value > 0) || !(combined.total_value > 0)) {
-    return { stock_target: null, over_exposed: false };
-  }
-  const raw = (target * combined.total_value - combined.futures_exposure) / combined.stock_value;
-  return { stock_target: Math.max(0, raw), over_exposed: raw < 0 };
 }

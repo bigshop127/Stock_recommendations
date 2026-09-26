@@ -5648,8 +5648,9 @@ const LogicTab: React.FC<{ spec: FuturesSpec }> = ({ spec }) => (
       <p className="text-xs text-zinc-300 leading-relaxed">
         再平衡頁管的是現股部位的 β（00631L ＋ 債券 ETF ＋ 現金）。這頁的 {CONTRACT_CODE} 多單本質上就是
         <strong className="text-zinc-100"> {UNDERLYING_CODE} 的曝險</strong>，β 約 1.0 但用保證金撐起來，
-        所以在算「整體資產的市場曝險」時，應該把這頁的<strong className="text-zinc-100">名目曝險</strong>（不是保證金）
-        加進再平衡頁的分子。兩頁目前是各自獨立的，尚未自動合併計算——要合併的話是之後的題目。
+        若要估「整體資產的市場曝險」，要把這頁的<strong className="text-zinc-100">名目曝險</strong>（不是保證金）算進去。
+        不過兩頁<strong className="text-zinc-100">刻意各自獨立</strong>（2026-09-27 起再平衡頁不再讀取期貨部位）：
+        再平衡的目標 β、交易建議與每日告警信都只看現股，期貨部位的風險在這頁自己管。
       </p>
     </Section>
 

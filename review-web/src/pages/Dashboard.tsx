@@ -1,18 +1,17 @@
 import React, { useEffect, useState, useMemo } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { api } from '../lib/api';
 import type {
   MarketIndices,
   MarketBreadth,
   MarketSectors,
   MarketInstitutional,
-  WatchItem,
   StockHeatmap,
   HeatmapStock,
   Dashboard as DashboardData,
   MarketCreditResp,
-  DefaultDisclosuresResp,
   MarketRevenueResp,
+  GlobalIndicesResp,
 } from '../lib/api';
 import {
   Activity,
@@ -20,39 +19,38 @@ import {
   TrendingUp,
   Users,
   RefreshCw,
-  Plus,
-  Trash2,
   LayoutGrid,
   ExternalLink,
   Flame,
   TrendingDown,
   Gauge,
+  Globe,
 } from 'lucide-react';
-import { SymbolSearch } from '../components/SymbolSearch';
 import { OverviewCard } from '../components/OverviewCard';
 import { MarketLeverageCard } from '../components/MarketLeverageCard';
 import { RevenueOverviewCard } from '../components/RevenueOverviewCard';
-import { summarizeDisclosures, fmtYuan } from '../lib/marketCredit';
 import { buildMarketSummary } from '../lib/marketSummary';
-import {
-  getUserWatchlist,
-  addToWatchlist,
-  removeFromWatchlist,
-  subscribeWatchlist,
-  type UserStock,
-} from '../lib/userStore';
+// 大盤頁分頁（2026-09-27：原本一整頁九張卡太亂，拆成四頁；自選清單移除）
+type DashboardTab = 'overview' | 'flows' | 'movers' | 'credit';
+const DASHBOARD_TABS: { id: DashboardTab; label: string }[] = [
+  { id: 'overview', label: '盤勢總覽' },
+  { id: 'flows', label: '法人與產業' },
+  { id: 'movers', label: '漲跌與熱門' },
+  { id: 'credit', label: '槓桿與營收' },
+];
 
-interface MergedWatchItem {
-  code: string;
-  name: string;
-  isFocus: boolean;
-  isUser: boolean;
-  swing_score: number | null;
-  daytrade_prob: number | null;
-  rank_swing: number | null;
-  rank_daytrade: number | null;
-  tags?: string[];
-}
+// 國際指數資料時間：一律用台北時間顯示（美股收盤在台灣是隔天清晨）
+const fmtTpeTime = (iso: string | null) =>
+  iso
+    ? new Date(iso).toLocaleString('zh-TW', {
+        timeZone: 'Asia/Taipei',
+        month: 'numeric',
+        day: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: false,
+      })
+    : '--';
 
 // === 盤面氣氛手刻 SVG 半圓儀表 ===
 const AtmosphereGauge: React.FC<{
@@ -558,11 +556,6 @@ export const Dashboard: React.FC = () => {
     loading: boolean;
     error: string | null;
   }>({ data: null, loading: true, error: null });
-  const [watchlistState, setWatchlistState] = useState<{
-    data: WatchItem[] | null;
-    loading: boolean;
-    error: string | null;
-  }>({ data: null, loading: true, error: null });
   const [dashboardState, setDashboardState] = useState<{
     data: DashboardData | null;
     loading: boolean;
@@ -584,19 +577,27 @@ export const Dashboard: React.FC = () => {
     loading: boolean;
     error: string | null;
   }>({ data: null, loading: true, error: null });
-  // 違約揭露名單只拿來在自選清單上標警示，抓不到就不標，不另外顯示錯誤
-  const [disclosures, setDisclosures] = useState<DefaultDisclosuresResp | null>(null);
+  const [globalState, setGlobalState] = useState<{
+    data: GlobalIndicesResp | null;
+    loading: boolean;
+    error: string | null;
+  }>({ data: null, loading: true, error: null });
 
-  const [userWatchlist, setUserWatchlist] = useState<UserStock[]>([]);
-  const [showSearch, setShowSearch] = useState(false);
-
-  useEffect(() => {
-    setUserWatchlist(getUserWatchlist());
-    const unsubscribe = subscribeWatchlist(() => {
-      setUserWatchlist(getUserWatchlist());
-    });
-    return unsubscribe;
-  }, []);
+  // 分頁記在網址 ?tab=，重新整理或從別頁返回都停在原本那頁
+  const [searchParams, setSearchParams] = useSearchParams();
+  const rawTab = searchParams.get('tab');
+  const activeTab: DashboardTab = DASHBOARD_TABS.some((t) => t.id === rawTab) ? (rawTab as DashboardTab) : 'overview';
+  const handleTabChange = (tab: DashboardTab) => {
+    setSearchParams(
+      (prev) => {
+        const next = new URLSearchParams(prev); // 保留其他參數（例如開發用的 ?mock=1）
+        if (tab === 'overview') next.delete('tab');
+        else next.set('tab', tab);
+        return next;
+      },
+      { replace: true },
+    );
+  };
 
   const isDev = import.meta.env.DEV;
   const isMockParam = new URLSearchParams(window.location.search).get('mock') === '1';
@@ -876,65 +877,21 @@ export const Dashboard: React.FC = () => {
     }
   };
 
-  const fetchDisclosures = async (force = false) => {
+  // 國際指數：gateway 自抓 Yahoo、不經 engine，mock 模式照樣抓真的
+  const fetchGlobal = async (force = false) => {
+    setGlobalState((prev) => ({ ...prev, loading: true, error: null }));
     try {
-      setDisclosures(await api.getDefaultDisclosures(force));
-    } catch {
-      /* 保留上一份（或沒有），自選清單就不標 */
-    }
-  };
-
-  const fetchWatchlist = async () => {
-    setWatchlistState((prev) => ({ ...prev, loading: true, error: null }));
-    try {
-      let data: WatchItem[];
-      if (useMock) {
-        data = [
-          {
-            code: '2330',
-            name: '台積電',
-            source: ['TWSE'],
-            swing_score: 75,
-            daytrade_prob: 0.82,
-            rank_swing: 1,
-            rank_daytrade: 2,
-            tags: ['權值股', '半導體'],
-          },
-          {
-            code: '2454',
-            name: '聯發科',
-            source: ['TWSE'],
-            swing_score: 68,
-            daytrade_prob: 0.75,
-            rank_swing: 2,
-            rank_daytrade: 4,
-            tags: ['高價股', 'IC設計'],
-          },
-          {
-            code: '2317',
-            name: '鴻海',
-            source: ['TWSE'],
-            swing_score: 82,
-            daytrade_prob: 0.68,
-            rank_swing: 3,
-            rank_daytrade: 1,
-            tags: ['蘋果概念', '代工'],
-          },
-        ];
-      } else {
-        const res = await api.watchlist();
-        data = res.items || [];
-      }
-      setWatchlistState({ data, loading: false, error: null });
+      const data = await api.getGlobalIndices(force);
+      setGlobalState({ data, loading: false, error: null });
     } catch (err: any) {
-      setWatchlistState({ data: null, loading: false, error: err.message || '無法取得自選清單' });
+      setGlobalState({ data: null, loading: false, error: err.message || '無法取得國際指數' });
     }
   };
 
   const fetchAllData = (force = false) => {
     if (useMock) {
       loadMockData();
-      fetchWatchlist();
+      fetchGlobal(force);
       fetchCredit(force); // gateway 自抓證交所、不經 engine，mock 模式照樣抓真的
       fetchRevenue(force);
       return;
@@ -945,10 +902,9 @@ export const Dashboard: React.FC = () => {
     fetchInstitutional();
     fetchDashboard();
     fetchHeatmap(force);
-    fetchWatchlist();
+    fetchGlobal(force);
     fetchCredit(force);
     fetchRevenue(force);
-    fetchDisclosures(force);
   };
 
   useEffect(() => {
@@ -1078,54 +1034,6 @@ export const Dashboard: React.FC = () => {
     }
   };
 
-  const disclosureByCode = useMemo(
-    () => summarizeDisclosures(disclosures?.items || []),
-    [disclosures],
-  );
-
-  const mergedWatchlist = useMemo<MergedWatchItem[]>(() => {
-    const focusItems = watchlistState.data || [];
-    const orderedList: MergedWatchItem[] = [];
-
-    focusItems.forEach((item) => {
-      const isUser = userWatchlist.some((u) => u.code === item.code);
-      orderedList.push({
-        code: item.code,
-        name: item.name,
-        isFocus: true,
-        isUser,
-        swing_score: item.swing_score,
-        daytrade_prob: item.daytrade_prob,
-        rank_swing: item.rank_swing,
-        rank_daytrade: item.rank_daytrade,
-        tags: item.tags || [],
-      });
-    });
-
-    const userOnlyItems = userWatchlist.filter(
-      (u) => !focusItems.some((f) => f.code === u.code)
-    );
-    const sortedUserOnly = [...userOnlyItems].sort(
-      (a, b) => new Date(b.added_at).getTime() - new Date(a.added_at).getTime()
-    );
-
-    sortedUserOnly.forEach((u) => {
-      orderedList.push({
-        code: u.code,
-        name: u.name,
-        isFocus: false,
-        isUser: true,
-        swing_score: null,
-        daytrade_prob: null,
-        rank_swing: null,
-        rank_daytrade: null,
-        tags: [],
-      });
-    });
-
-    return orderedList;
-  }, [watchlistState.data, userWatchlist]);
-
   // Market indices lookup helper for top chips
   const getIndexChip = (key: string, label: string) => {
     const item = indicesState.data?.indices.find((i) => i.key.toUpperCase() === key.toUpperCase());
@@ -1188,7 +1096,8 @@ export const Dashboard: React.FC = () => {
               <button
                 key={c.key}
                 onClick={() => {
-                  document.getElementById('index-card')?.scrollIntoView({ behavior: 'smooth' });
+                  handleTabChange('overview');
+                  setTimeout(() => document.getElementById('index-card')?.scrollIntoView({ behavior: 'smooth' }), 50);
                 }}
                 className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-zinc-900/80 hover:bg-zinc-800 border border-border/40 transition shrink-0 text-left cursor-pointer"
               >
@@ -1227,11 +1136,34 @@ export const Dashboard: React.FC = () => {
         </div>
       </div>
 
-      {/* Grid Layout (12-col desktop, 2-col tablet, 1-col mobile) — 三欄式主版面 */}
+      {/* 分頁導覽 */}
+      <div className="border-b border-border/80">
+        <div className="flex items-center gap-2 overflow-x-auto pb-2 scrollbar-none">
+          {DASHBOARD_TABS.map((t) => {
+            const isActive = activeTab === t.id;
+            return (
+              <button
+                key={t.id}
+                onClick={() => handleTabChange(t.id)}
+                className={`flex items-center gap-1.5 px-4 py-2 text-xs font-semibold rounded-lg transition whitespace-nowrap shrink-0 ${
+                  isActive
+                    ? 'bg-primary text-white shadow-sm'
+                    : 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800/40'
+                }`}
+              >
+                {t.label}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Grid Layout (12-col desktop, 2-col tablet, 1-col mobile)；每張卡只在自己的分頁出現，排列照 DOM 順序 */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-12 gap-5">
-        {/* ROW 1: 盤面氣氛 (4) + 期現貨走勢 (4) + 漲跌家數直方圖 (4) */}
+        {/* ── 盤勢總覽：盤面氣氛 (4) + 期現貨指數 (4) + 國際指數 (4) ── */}
 
         {/* 盤面分析卡 */}
+        {activeTab === 'overview' && (
         <OverviewCard
           title="盤面氣氛與關鍵指標"
           icon={<Gauge className="w-5 h-5 text-primary" />}
@@ -1377,8 +1309,10 @@ export const Dashboard: React.FC = () => {
             </div>
           </div>
         </OverviewCard>
+        )}
 
         {/* 指數走勢卡 */}
+        {activeTab === 'overview' && (
         <OverviewCard
           id="index-card"
           title="期現貨指數"
@@ -1434,13 +1368,84 @@ export const Dashboard: React.FC = () => {
             })}
           </div>
         </OverviewCard>
+        )}
 
-        {/* 漲跌分布直方圖 — Row1 右 (order-3) */}
+        {/* 國際指數：美股三大指數＋日經＋韓股（gateway 抓 Yahoo） */}
+        {activeTab === 'overview' && (
+        <OverviewCard
+          title="國際股市指數"
+          icon={<Globe className="w-5 h-5 text-primary" />}
+          caption="美股三大指數、日經 225、韓國綜合"
+          className="lg:col-span-4"
+          loading={globalState.loading}
+          error={globalState.error}
+          onRetry={() => fetchGlobal(true)}
+          footer={
+            globalState.data && (
+              <>
+                <span>來源: {globalState.data.source}</span>
+                <span>時間為台北時間</span>
+              </>
+            )
+          }
+        >
+          <div className="space-y-2">
+            {globalState.data?.indices.map((idx) => {
+              const isUp = (idx.change || 0) >= 0;
+              return (
+                <div
+                  key={idx.key}
+                  className="flex items-center justify-between p-3 rounded-lg bg-zinc-950/40 border border-border/30"
+                >
+                  <div className="min-w-0">
+                    <div className="text-sm font-semibold text-zinc-200 truncate flex items-center gap-1.5">
+                      {idx.name}
+                      <span className="text-[9px] font-normal px-1.5 py-0.5 rounded bg-zinc-800/80 text-zinc-400">{idx.region}</span>
+                    </div>
+                    <div className="text-[9px] text-zinc-500 font-mono mt-0.5">
+                      {idx.ok ? (
+                        <>
+                          {idx.session === 'open' ? <span className="text-emerald-400">盤中</span> : '收盤'}{' '}
+                          {fmtTpeTime(idx.as_of)}
+                        </>
+                      ) : (
+                        <span className="text-amber-400">暫時抓不到</span>
+                      )}
+                    </div>
+                  </div>
+                  <div className="text-right shrink-0">
+                    <div className="text-sm font-bold font-mono text-zinc-100">
+                      {idx.price !== null
+                        ? idx.price.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+                        : '--'}
+                    </div>
+                    <div
+                      className={`text-[11px] font-mono font-medium mt-0.5 ${
+                        idx.change === null ? 'text-zinc-500' : isUp ? 'text-bull' : 'text-bear'
+                      }`}
+                    >
+                      {idx.change !== null
+                        ? `${idx.change >= 0 ? '+' : ''}${idx.change.toFixed(2)}`
+                        : '--'}
+                      {idx.change_pct !== null
+                        ? ` (${idx.change_pct >= 0 ? '+' : ''}${idx.change_pct.toFixed(2)}%)`
+                        : ''}
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </OverviewCard>
+        )}
+
+        {/* ── 漲跌與熱門：漲跌家數分布 (6) + 強勢／弱勢／熱門 Top15 (6) ── */}
+        {activeTab === 'movers' && (
         <OverviewCard
           title="漲跌家數分布直方圖"
           icon={<BarChart3 className="w-5 h-5 text-primary" />}
           caption="上市普通股 1% 級距直條圖與漲跌停 Strip"
-          className="lg:col-span-4 lg:order-3"
+          className="lg:col-span-6"
           loading={heatmapState.loading}
           error={heatmapState.error}
           onRetry={() => fetchHeatmap(true)}
@@ -1453,13 +1458,15 @@ export const Dashboard: React.FC = () => {
         >
           <HistogramChart heatmapData={heatmapState.data} />
         </OverviewCard>
+        )}
 
-        {/* 三大法人買賣超 — Row2 左 (order-4) */}
+        {/* ── 法人與產業：三大法人 (6) + 產業類股熱力 Top10 (6) ── */}
+        {activeTab === 'flows' && (
         <OverviewCard
           title="三大法人現貨資金流向"
           icon={<Users className="w-5 h-5 text-primary" />}
           caption="外資、投信、自營商買賣超與近 10 日趨勢"
-          className="lg:col-span-4 lg:order-4"
+          className="lg:col-span-6"
           loading={institutionalState.loading}
           error={institutionalState.error}
           onRetry={fetchInstitutional}
@@ -1532,22 +1539,25 @@ export const Dashboard: React.FC = () => {
             )}
           </div>
         </OverviewCard>
+        )}
 
-        {/* 市場槓桿溫度 — Row3 全寬（跟寬度卡同 order-7，DOM 在前所以排在它上面） */}
+        {/* ── 槓桿與營收：市場槓桿溫度 (12) + 多空寬度 (4) + 上市營收動能 (8) ── */}
+        {activeTab === 'credit' && (
         <MarketLeverageCard
           data={creditState.data}
           loading={creditState.loading}
           error={creditState.error}
           onRetry={() => fetchCredit(true)}
-          className="md:col-span-2 lg:col-span-12 lg:order-7"
+          className="md:col-span-2 lg:col-span-12"
         />
+        )}
 
-        {/* 市場多空寬度指標 — Row4 左 (order-7) */}
+        {activeTab === 'credit' && (
         <OverviewCard
           title="市場多空寬度指標"
           icon={<Activity className="w-5 h-5 text-primary" />}
           caption="站上 20MA / 50MA 個股比例與全市場家數"
-          className="lg:col-span-4 lg:order-7"
+          className="lg:col-span-4"
           loading={breadthState.loading}
           error={breadthState.error}
           onRetry={fetchBreadth}
@@ -1618,13 +1628,15 @@ export const Dashboard: React.FC = () => {
             )}
           </div>
         </OverviewCard>
+        )}
 
-        {/* 強勢/弱勢/熱門 Top15 — Row2 右 (order-6) */}
+        {/* 強勢／弱勢／熱門 Top15（漲跌與熱門分頁） */}
+        {activeTab === 'movers' && (
         <OverviewCard
           title="強勢／弱勢／熱門 Top15"
           icon={<Flame className="w-5 h-5 text-amber-400" />}
           caption="點選個股列快速進入審查頁面"
-          className="lg:col-span-4 lg:order-6"
+          className="lg:col-span-6"
           loading={heatmapState.loading}
           error={heatmapState.error}
           onRetry={() => fetchHeatmap(true)}
@@ -1637,13 +1649,15 @@ export const Dashboard: React.FC = () => {
         >
           <Top15Table stocks={heatmapState.data?.stocks || []} />
         </OverviewCard>
+        )}
 
-        {/* 產業熱力 Top10 縮卡 — Row2 中 (order-5) */}
+        {/* 產業熱力 Top10 縮卡（法人與產業分頁） */}
+        {activeTab === 'flows' && (
         <OverviewCard
           title="產業類股熱力 (Top 10)"
           icon={<LayoutGrid className="w-5 h-5 text-primary" />}
           caption="市場成交量與漲跌幅產業佈局"
-          className="lg:col-span-4 lg:order-5"
+          className="lg:col-span-6"
           actions={
             <Link
               to="/heatmap"
@@ -1702,187 +1716,19 @@ export const Dashboard: React.FC = () => {
             </div>
           </div>
         </OverviewCard>
+        )}
 
-        {/* 上市營收動能 — Row4 右（同 order-7，DOM 在寬度卡後面，所以排在它右邊） */}
+        {/* 上市營收動能（槓桿與營收分頁，排在寬度卡右邊） */}
+        {activeTab === 'credit' && (
         <RevenueOverviewCard
           data={revenueState.data}
           loading={revenueState.loading}
           error={revenueState.error}
           onRetry={() => fetchRevenue(true)}
-          className="lg:col-span-8 lg:order-7"
+          className="lg:col-span-8"
         />
-
-        {/* Watchlist 自選與焦點個股審查清單 — Row5 全寬 (order-8)；opt41 起營收卡佔了寬度卡右邊，清單改全寬 */}
-        <OverviewCard
-          title="自選與焦點審查清單 (Watchlist)"
-          icon={<Activity className="w-5 h-5 text-primary" />}
-          caption="整合系統焦點推薦與個人自選追蹤標的"
-          className="md:col-span-2 lg:col-span-12 lg:order-8"
-          actions={
-            <button
-              onClick={() => setShowSearch(true)}
-              className="flex items-center gap-1 px-2.5 py-1 rounded bg-primary text-white text-xs font-semibold hover:bg-primary/95 transition"
-            >
-              <Plus className="w-3.5 h-3.5" />
-              加入自選
-            </button>
-          }
-          loading={watchlistState.loading}
-          error={watchlistState.error}
-          onRetry={fetchWatchlist}
-        >
-          {mergedWatchlist.length > 0 ? (
-            <div className="overflow-x-auto">
-              <table className="w-full text-xs text-left">
-                <thead>
-                  <tr className="text-zinc-500 border-b border-border/60 font-mono">
-                    <th className="pb-2 font-semibold">代號</th>
-                    <th className="pb-2 font-semibold">股名</th>
-                    <th className="pb-2 font-semibold text-right">波段評分</th>
-                    <th className="pb-2 font-semibold text-right">當沖機率</th>
-                    <th className="pb-2 font-semibold text-right">波段排名</th>
-                    <th className="pb-2 font-semibold text-right">當沖排名</th>
-                    <th className="pb-2 font-semibold">標籤</th>
-                    <th className="pb-2 font-semibold text-center">操作</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {mergedWatchlist.map((item) => (
-                    <tr
-                      key={item.code}
-                      className="border-b border-border/30 last:border-0 hover:bg-zinc-800/40 transition duration-150"
-                    >
-                      <td className="py-3 font-mono text-zinc-300 font-bold">{item.code}</td>
-                      <td className="py-3 text-zinc-200">
-                        <span className="inline-flex items-center gap-1.5 flex-wrap">
-                          {item.name}
-                          {(() => {
-                            const d = disclosureByCode.get(item.code);
-                            if (!d) return null;
-                            return (
-                              <span
-                                className={`text-[9px] px-1.5 py-0.5 rounded font-semibold border whitespace-nowrap ${
-                                  d.recent
-                                    ? 'bg-red-500/15 text-red-300 border-red-500/40'
-                                    : 'bg-zinc-800 text-zinc-400 border-zinc-700'
-                                }`}
-                                title={`證交所違約揭露：${d.latest.date} 違約 ${fmtYuan(d.latest.amount)}（${d.latest.brokers.join('、') || '券商未列'}）${
-                                  d.count > 1 ? `，近一年共 ${d.count} 次` : ''
-                                }`}
-                              >
-                                違約揭露{d.recent ? '' : '（較早）'}
-                              </span>
-                            );
-                          })()}
-                        </span>
-                      </td>
-                      <td className="py-3 text-right font-mono text-zinc-300">
-                        {item.swing_score !== null && item.swing_score !== undefined
-                          ? `${item.swing_score}分`
-                          : '—'}
-                      </td>
-                      <td className="py-3 text-right font-mono text-zinc-300">
-                        {item.daytrade_prob !== null && item.daytrade_prob !== undefined
-                          ? `${(item.daytrade_prob * 100).toFixed(0)}%`
-                          : '—'}
-                      </td>
-                      <td className="py-3 text-right font-mono text-zinc-400">
-                        {item.rank_swing !== null && item.rank_swing !== undefined
-                          ? `#${item.rank_swing}`
-                          : '—'}
-                      </td>
-                      <td className="py-3 text-right font-mono text-zinc-400">
-                        {item.rank_daytrade !== null && item.rank_daytrade !== undefined
-                          ? `#${item.rank_daytrade}`
-                          : '—'}
-                      </td>
-                      <td className="py-3">
-                        <div className="flex flex-wrap gap-1">
-                          {item.isFocus && (
-                            <span className="text-[9px] bg-bull/10 text-bull px-1.5 py-0.5 rounded font-mono border border-bull/20 font-semibold">
-                              焦點
-                            </span>
-                          )}
-                          {item.isUser && (
-                            <span className="text-[9px] bg-primary/10 text-primary px-1.5 py-0.5 rounded font-mono border border-primary/20 font-semibold">
-                              自選
-                            </span>
-                          )}
-                          {item.tags?.map((tag: string) => (
-                            <span
-                              key={tag}
-                              className="text-[9px] bg-zinc-800 text-zinc-400 px-1.5 py-0.5 rounded font-mono"
-                            >
-                              {tag}
-                            </span>
-                          ))}
-                        </div>
-                      </td>
-                      <td className="py-3">
-                        <div className="flex items-center justify-center gap-2">
-                          <Link
-                            to={`/stock/${item.code}`}
-                            className="px-2.5 py-1 bg-primary/10 text-primary hover:bg-primary/20 text-[10px] font-semibold rounded-md border border-primary/20 transition"
-                          >
-                            進入審查
-                          </Link>
-                          {item.isUser ? (
-                            <button
-                              onClick={() => removeFromWatchlist(item.code)}
-                              className="p-1 text-zinc-500 hover:text-bull transition"
-                              title="移除自選"
-                            >
-                              <Trash2 className="w-4 h-4" />
-                            </button>
-                          ) : (
-                            <button
-                              disabled
-                              className="p-1 text-zinc-700 cursor-not-allowed opacity-40"
-                              title="系統焦點股（無法移除）"
-                            >
-                              <Trash2 className="w-4 h-4" />
-                            </button>
-                          )}
-                        </div>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          ) : (
-            <div className="h-28 flex items-center justify-center text-xs text-zinc-500">
-              尚無自選個股
-            </div>
-          )}
-        </OverviewCard>
+        )}
       </div>
-
-      {/* 搜尋自選股彈窗 */}
-      {showSearch && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
-          <div className="bg-zinc-900 border border-zinc-800 rounded-xl w-full max-w-md p-6 shadow-2xl relative">
-            <button
-              onClick={() => setShowSearch(false)}
-              className="absolute top-4 right-4 text-zinc-400 hover:text-zinc-200 text-lg"
-            >
-              ✕
-            </button>
-            <h3 className="text-zinc-200 font-semibold mb-4 text-base">搜尋並加入自選股</h3>
-            <SymbolSearch
-              autoFocus
-              onPick={(hit) => {
-                addToWatchlist({
-                  code: hit.code,
-                  name: hit.name,
-                  added_at: new Date().toISOString(),
-                });
-                setShowSearch(false);
-              }}
-            />
-          </div>
-        </div>
-      )}
     </div>
   );
 };

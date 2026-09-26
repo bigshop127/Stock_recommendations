@@ -271,7 +271,7 @@ describe('Rebalance Asset Lock Tests', () => {
     // target_beta = 1.0 => target_etf_weight = 0.5. (Wants to reduce 00631L to 500,000, so defensive expands to 500,000)
     // naive_target_etf_value = 500,000. headroom 很充裕（950,000）不受影響，target_etf_value_actual = 500,000。
     // 【bugfix】鎖定現金只保護 min(100,000,50,000)=50,000；target_defensive_value=500,000 中，
-    // 50,000 留在現金，剩下 450,000（含超額的 50,000 閒置現金）單一優先回補（normal regime→優先買 00687B）。
+    // 50,000 留在現金，剩下 450,000（含超額的 50,000 閒置現金）差額補進 00687B（normal regime 優先買）。
     const input: RebalanceInput = {
       shares: 20000,
       price: 30,
@@ -298,11 +298,11 @@ describe('Rebalance Asset Lock Tests', () => {
     expect(res.cash_adjust_delta).toBe(-50000); // 超額的 50,000 被抽走分給債券
 
     // Remaining unlocked_pool = 500,000 - 50,000(保留額) = 450,000（比舊版多 50,000）.
-    // 單一優先回補：00687B（normal regime 優先買）吃下全部 450,000，00953B 為 0。
+    // 兩檔合併計算：現有債券總額 300,000，差額 150,000 全補進 00687B（normal regime 優先買），00953B 不動。
     const b1 = res.bond_plans.find((p) => p.code === '00687B')!;
     const b2 = res.bond_plans.find((p) => p.code === '00953B')!;
-    expect(b1.target_value).toBe(450000);
-    expect(b2.target_value).toBe(0);
+    expect(b1.target_value).toBe(350000);
+    expect(b2.target_value).toBe(100000);
   });
 
   // 5. 鎖定唯一一檔未鎖債券的情境

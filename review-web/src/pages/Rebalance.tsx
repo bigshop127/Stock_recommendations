@@ -1,10 +1,8 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { SlidersHorizontal, AlertTriangle, CheckCircle2, Info, ArrowRightLeft, ShieldAlert, RefreshCw, Loader2, Plus, Trash2, UploadCloud, Cloud, CloudOff, Lock, Unlock, BookOpen, TrendingUp, Activity, ScanLine } from 'lucide-react';
+import { SlidersHorizontal, AlertTriangle, CheckCircle2, Info, ArrowRightLeft, ShieldAlert, RefreshCw, Loader2, Plus, Trash2, UploadCloud, Cloud, CloudOff, Lock, Unlock, Pencil, BookOpen, TrendingUp, Activity, ScanLine } from 'lucide-react';
 import { getRebalanceConfig, saveRebalanceConfig, subscribeRebalance, type RebalanceConfig } from '../lib/rebalanceStore';
-import { computeRebalance, aggregatePortfolio, BOND_ETFS, ETF_CODE, DEFAULT_MACRO_THRESHOLDS, type RebalanceResult, type Trade, computeFundFlows, computeMarketStatus, type MarketStatus, type BondPriority, type MacroState, type MacroCombination, type MacroThresholds, type MacroKey, combineFuturesBeta, stockTargetForOverallBeta, type CombinedBetaResult } from '../lib/rebalance';
-import { getFuturesConfig, subscribeFutures } from '../lib/futuresStore';
-import { summarizeAccountAll, findPreset, priceOf, type PriceInput } from '../lib/futures';
+import { computeRebalance, aggregatePortfolio, BOND_ETFS, ETF_CODE, DEFAULT_MACRO_THRESHOLDS, type RebalanceResult, type Trade, computeFundFlows, computeMarketStatus, type MarketStatus, type BondPriority, type MacroState, type MacroCombination, type MacroThresholds, type MacroKey } from '../lib/rebalance';
 import { api, type Settlement } from '../lib/api';
 import { HoldingsScreenshotImport } from '../components/rebalance/HoldingsScreenshotImport';
 import { MarketLeverageRefLine } from '../components/MarketLeverageCard';
@@ -43,62 +41,6 @@ const tradeSideCls = (code: string, side: 'buy' | 'sell') =>
   (TRADE_COLORS[code] ?? TRADE_COLORS['00631L'])[side];
 const tradeCodeCls = (code: string) => (TRADE_COLORS[code] ?? TRADE_COLORS['00631L']).code;
 
-/**
- * 讀期貨頁的部位，換算成「名目曝險 ＋ 保證金專戶權益數」。
- *
- * 期貨頁與這頁原本各算各的 β，而 SRF 多單本質就是 0050 的市場曝險——不合併會
- * 系統性低估真實槓桿。這裡只**讀**期貨的 store（同一份 localStorage，期貨頁存雲端
- * 時會同步更新），不寫入、也不動 computeRebalance 的任何計算。
- *
- * 帳戶可能同時持有多個商品（例如 SRF ETF 期貨＋個股期貨），各自 beta 不同，
- * 不能先把名目曝險加總再乘一個共同 beta——那樣兩個商品的比重會混在一起算錯。
- * 做法是逐部位算「訊號方向名目 × 該商品 beta」後加總成 `exposure`，再回推一個
- * 「有效 beta」＝exposure／notional，讓 combineFuturesBeta() 既有的
- * `notional × beta` 算式不用改也能算出同一個總曝險。
- */
-function useFuturesExposure() {
-  const [cfg, setCfg] = useState(() => getFuturesConfig());
-  useEffect(() => subscribeFutures(() => setCfg(getFuturesConfig())), []);
-
-  return useMemo(() => {
-    const products: Record<string, { spec: typeof cfg.products[string]['spec']; price: PriceInput; beta: number }> = {};
-    for (const [code, p] of Object.entries(cfg.products)) {
-      products[code] = { spec: p.spec, price: { byMonth: p.prices, fallback: p.price }, beta: p.beta };
-    }
-    const s = summarizeAccountAll(cfg.positions, products, cfg.cash, cfg.closed);
-    if (s.total_lots === 0) return null;
-
-    let notional = 0;   // 淨名目曝險（帶方向，各部位用自己商品的價格）
-    let exposure = 0;   // 換算成大盤曝險後加總（各部位用自己商品的 beta）
-    for (const pos of cfg.positions) {
-      const lots = Math.max(0, pos.lots);
-      if (lots <= 0) continue;
-      const p = cfg.products[pos.product];
-      if (!p) continue;
-      const unit = Math.max(1, p.spec.contract_size || 1000);
-      const price = priceOf({ byMonth: p.prices, fallback: p.price }, pos.month);
-      const sign = pos.side === 'short' ? -1 : 1;
-      const posNotional = sign * lots * unit * price;
-      notional += posNotional;
-      // 台指期本身就是大盤（β=1）；ETF／個股期貨用使用者在期貨頁設的 beta
-      const preset = findPreset(p.code);
-      const beta = preset?.index_linked ? 1 : p.beta;
-      exposure += posNotional * beta;
-    }
-    const label = Object.keys(cfg.products).map((code) => cfg.products[code]?.name || code).join('＋');
-    return {
-      notional,
-      equity: s.equity,
-      beta: notional !== 0 ? exposure / notional : 1,
-      contract: label,
-      net_lots: s.net_lots,
-      long_lots: s.long_lots,
-      short_lots: s.short_lots,
-      risk_indicator: s.risk_indicator,
-    };
-  }, [cfg]);
-}
-
 // 分頁（像個股頁一樣，點開才看該區塊內容，不用整頁滑）
 // 【2026-07-13 合併】持倉現況＋建倉&交易紀錄合成一頁；Beta儀表＋偏離分析&建議合成一頁；整體邏輯放最後
 // 【2026-08-31】宏觀 regime 指標原本獨立分頁，改回移到「Beta 儀表 & 偏離分析」分頁的儀表下方，減少分頁跳轉
@@ -111,95 +53,6 @@ const REBALANCE_TABS: { id: RebalanceTab; label: string }[] = [
 const DEFAULT_REBALANCE_TAB: RebalanceTab = 'beta';
 
 // 半圓 SVG 儀表元件
-/**
- * 含期貨的真實投組 β。
- *
- * 這張卡刻意**只顯示、不自動改**目標 β：期貨部位是手動維護的，數字可能過時，
- * 讓它自動去改交易建議（連帶影響每日告警信）風險太高。要據此調整就按按鈕，
- * 一次一次確認。
- */
-const CombinedBetaCard: React.FC<{
-  combined: CombinedBetaResult;
-  futures: ReturnType<typeof useFuturesExposure>;
-  targetBeta: number;
-  onApplyStockTarget: (v: number) => void;
-}> = ({ combined, futures, targetBeta, onApplyStockTarget }) => {
-  const { stock_target, over_exposed } = stockTargetForOverallBeta(targetBeta, combined);
-  const gap = combined.understated_by ?? 0;
-  const money = (v: number) => `${v < 0 ? '−' : ''}$${Math.abs(Math.round(v)).toLocaleString()}`;
-
-  return (
-    <div className="space-y-3 pt-3 border-t border-border/50">
-      <div className="flex items-center justify-between gap-2 flex-wrap">
-        <div className="flex items-center gap-1.5">
-          <Activity className="w-3.5 h-3.5 text-cyan-400" />
-          <span className="text-xs font-semibold text-zinc-300">含期貨的真實 β</span>
-        </div>
-        <a href="/review/futures" className="text-[10px] text-zinc-500 hover:text-zinc-300 underline">
-          {futures?.contract}．淨 {futures && futures.net_lots >= 0 ? '+' : ''}{futures?.net_lots} 口 →
-        </a>
-      </div>
-
-      <div className="grid grid-cols-3 gap-2 text-center">
-        <div className="bg-zinc-950/60 border border-border/60 rounded-lg p-2.5">
-          <div className="text-[10px] text-zinc-500">只看現股</div>
-          <div className="font-mono text-sm font-bold text-zinc-400 mt-0.5">
-            {combined.stock_only_beta !== null ? `${combined.stock_only_beta.toFixed(2)}X` : '—'}
-          </div>
-        </div>
-        <div className="bg-cyan-500/10 border border-cyan-500/30 rounded-lg p-2.5">
-          <div className="text-[10px] text-cyan-400">含期貨</div>
-          <div className="font-mono text-sm font-bold text-cyan-300 mt-0.5">
-            {combined.combined_beta !== null ? `${combined.combined_beta.toFixed(2)}X` : '—'}
-          </div>
-        </div>
-        <div className="bg-zinc-950/60 border border-border/60 rounded-lg p-2.5">
-          <div className="text-[10px] text-zinc-500">被低估</div>
-          <div className={`font-mono text-sm font-bold mt-0.5 ${Math.abs(gap) < 0.005 ? 'text-zinc-400' : gap > 0 ? 'text-amber-400' : 'text-emerald-400'}`}>
-            {gap >= 0 ? '+' : '−'}{Math.abs(gap).toFixed(2)}
-          </div>
-        </div>
-      </div>
-
-      <dl className="text-[11px] space-y-1">
-        <div className="flex justify-between"><dt className="text-zinc-500">期貨名目曝險</dt>
-          <dd className="font-mono text-zinc-300">{money(combined.futures_notional)}</dd></div>
-        <div className="flex justify-between"><dt className="text-zinc-500">保證金專戶權益數</dt>
-          <dd className="font-mono text-zinc-300">{money(combined.futures_equity)}</dd></div>
-        <div className="flex justify-between"><dt className="text-zinc-500">總資產（現股＋期貨權益）</dt>
-          <dd className="font-mono text-zinc-100">{money(combined.total_value)}</dd></div>
-      </dl>
-
-      {over_exposed ? (
-        <div className="text-[11px] text-rose-400 bg-rose-500/10 border border-rose-500/30 rounded-lg p-2.5">
-          光是期貨曝險就已經超過整體目標 β {targetBeta.toFixed(2)}X 了。要拉回目標得先減期貨口數，
-          現股這邊就算清空也壓不下來。
-        </div>
-      ) : stock_target !== null && (
-        <div className="flex flex-wrap items-center justify-between gap-2 bg-zinc-950/40 border border-border/50 rounded-lg p-2.5">
-          <div className="text-[11px] text-zinc-400">
-            要讓<strong className="text-zinc-200">整體</strong> β ＝ {targetBeta.toFixed(2)}X，
-            現股這邊的目標應設 <strong className="text-cyan-300 font-mono">{stock_target.toFixed(2)}X</strong>
-          </div>
-          <button
-            onClick={() => onApplyStockTarget(stock_target)}
-            disabled={Math.abs(stock_target - targetBeta) < 0.005}
-            className="text-[11px] px-2.5 py-1 rounded-md bg-cyan-600 hover:bg-cyan-500 disabled:bg-zinc-800 disabled:text-zinc-600 text-white font-semibold transition"
-          >
-            套用
-          </button>
-        </div>
-      )}
-
-      <p className="text-[10px] text-zinc-600 leading-relaxed">
-        分子＝現股 ETF 市值 × {'β'} ＋ 期貨名目 × {'β'}；分母＝現股組合總值 ＋ 期貨<strong className="text-zinc-500">權益數</strong>
-        （不是名目——名目是槓桿撐出來的曝險，放進分母會把槓桿洗掉）。
-        期貨部位是手動維護的，這張卡只顯示不自動調整；上方滑桿與每日告警信仍只看現股。
-      </p>
-    </div>
-  );
-};
-
 const BetaGauge: React.FC<{
   currentBeta: number | null;
   targetBeta: number;
@@ -381,6 +234,8 @@ export function Rebalance() {
 
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [showHoldingsImport, setShowHoldingsImport] = useState(false);
+  // 持倉卡平常只顯示五格數字；按「編輯」才展開期初部位與手動現價欄位（依標的各自開關）
+  const [editingAsset, setEditingAsset] = useState<Record<string, boolean>>({});
 
   const [marketStatus, setMarketStatus] = useState<MarketStatus | null>(null);
   const [marketStatusLoading, setMarketStatusLoading] = useState(false);
@@ -738,13 +593,6 @@ export function Rebalance() {
     return computeFundFlows(result);
   }, [result]);
 
-  // 期貨曝險合併（純顯示，不影響上面的 result 與每日告警腳本）
-  const futuresExp = useFuturesExposure();
-  const combined = useMemo(
-    () => combineFuturesBeta(result, config.etf_beta, futuresExp),
-    [result, config.etf_beta, futuresExp],
-  );
-
   const renderBreakdown = (key: string) => {
     const sourceNode = fundFlows.sources.find((s) => s.key === key);
     const useNode = fundFlows.uses.find((u) => u.key === key);
@@ -994,7 +842,7 @@ export function Rebalance() {
             00631L「正2 + 防守端」再平衡計算機
           </h1>
           <p className="text-xs text-zinc-400 mt-1">
-            透過 00631L（β≈2.0）與防守端（固定現金 ${config.cash_reserve.toLocaleString()} ＋ 債券池 {BOND_ETFS[0].code}/{BOND_ETFS[1].code}，優先回補 {result.bond_buy_first ?? '—'}，皆視為 β=0）控管投組風險。不擇時，僅於 Beta 偏離過大時進行高賣低買再平衡。
+            透過 00631L（β≈2.0）與防守端（固定現金 ${config.cash_reserve.toLocaleString()} ＋ 債券池 {BOND_ETFS[0].code}＋{BOND_ETFS[1].code} 合併看總額、不足補 {result.bond_buy_first ?? '—'}，皆視為 β=0）控管投組風險。不擇時，僅於 Beta 偏離過大時進行高賣低買再平衡。
           </p>
         </div>
       </div>
@@ -1283,9 +1131,10 @@ export function Rebalance() {
             <ul className="text-xs text-zinc-300 leading-relaxed space-y-2 list-disc list-inside">
               <li>固定保留現金 <strong className="text-zinc-100">$100,000</strong>（不投入市場的緩衝，隨時可動用）。</li>
               <li>
-                <strong className="text-zinc-100">回補（買）＝單一優先順序（2026-09 改版）</strong>：扣掉保留現金後的防守端資金只買一檔——
-                優先加碼<strong className="text-zinc-100">當下 regime 判定較值得留著避險的那一檔</strong>（與下方變現順序方向相反：平時優先買 {BOND_ETFS[0].code}、升息型崩盤時改優先買 {BOND_ETFS[1].code}）；
-                另一檔<strong className="text-zinc-100">只有在優先檔被鎖定（沒有補充空間）時才會被建議買進</strong>，不再固定依比例兩檔都買。
+                <strong className="text-zinc-100">兩檔債券合併計算（2026-09-27 改版）</strong>：扣掉保留現金後的防守端資金是一個債券池，
+                看的是 {BOND_ETFS[0].code}＋{BOND_ETFS[1].code} 的<strong className="text-zinc-100">總額</strong>——總額達標就兩檔都不動（例如 {BOND_ETFS[1].code} 自己就買滿了，不會再叫你買美債）。
+                總額不足時，<strong className="text-zinc-100">差額只補一檔</strong>：當下 regime 判定較值得留著避險的那一檔（與下方變現順序方向相反：平時優先買 {BOND_ETFS[0].code}、升息型崩盤時改優先買 {BOND_ETFS[1].code}），
+                另一檔只有在優先檔被鎖定時才會被建議買進。
               </li>
               <li>
                 <strong className="text-zinc-100">變現順序＝regime-aware（2026-07 改版）</strong>：需要縮減防守端補錢買 00631L 時，
@@ -1417,7 +1266,7 @@ export function Rebalance() {
                   <span className="font-mono font-bold text-zinc-100">{result.bond_buy_first ?? '—'}</span>
                 </div>
                 <p className="text-[11px] text-zinc-500 border-b border-zinc-800 pb-2 pt-1">
-                  2026-09 改版：回補（買）只買一檔，另一檔只有在優先檔被鎖定時才會列入建議。優先順序方向與下方「變現順序」連動（regime-aware，見「持倉現況」分頁的宏觀 regime 指標卡），本頁不單獨可調。
+                  兩檔債券合併看總額，達標就不動；不足的差額只補這一檔（被鎖定時才改補另一檔）。優先順序方向與下方「變現順序」連動（regime-aware，見「持倉現況」分頁的宏觀 regime 指標卡），本頁不單獨可調。
                 </p>
               </div>
 
@@ -1592,16 +1441,6 @@ export function Rebalance() {
               <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-sm bg-violet-500/80 inline-block" />{BOND_ETFS[1].code} {BOND_ETFS[1].name}</span>
             </div>
           </div>
-
-          {/* 期貨曝險合併：只在期貨頁真的有部位時出現 */}
-          {combined.has_futures && (
-            <CombinedBetaCard
-              combined={combined}
-              futures={futuresExp}
-              targetBeta={config.target_beta}
-              onApplyStockTarget={(v) => updateConfig({ target_beta: Math.round(v * 100) / 100 })}
-            />
-          )}
 
           {/* 容忍區間設定 & 區間指標 */}
           <div className="bg-zinc-950/40 p-4 rounded-lg border border-border/50 space-y-3">
@@ -1862,7 +1701,7 @@ export function Rebalance() {
                 </div>
               )}
 
-              {/* 【增修I／2026-09 單一優先回補】防守端配置：固定現金 + 債券池單一優先順序的應買賣 */}
+              {/* 【增修I／2026-09-27 合併計算】防守端配置：固定現金 + 債券池（兩檔看總額、差額補優先檔）的應買賣 */}
               {hasDefensiveMoves && (
                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
                   {/* 現金調整 */}
@@ -2213,6 +2052,14 @@ export function Rebalance() {
                           </button>
                         )}
                         <button
+                          onClick={() => setEditingAsset((m) => ({ ...m, [a.code]: !m[a.code] }))}
+                          className={`text-[11px] flex items-center gap-1 transition-colors font-medium ${editingAsset[a.code] ? 'text-zinc-200' : 'text-zinc-500 hover:text-zinc-300'}`}
+                          title="手動修改期初部位或現價"
+                        >
+                          <Pencil className="w-3 h-3" />
+                          {editingAsset[a.code] ? '收起' : '編輯'}
+                        </button>
+                        <button
                           onClick={() => void fetchLatestPrice(a.code)}
                           disabled={fetchSt.loading}
                           className="text-[11px] text-primary hover:text-primary/80 disabled:text-zinc-600 flex items-center gap-1 transition-colors font-medium"
@@ -2224,109 +2071,91 @@ export function Rebalance() {
                       </div>
                     </div>
 
-                    {/* 卡片內容：桌機三區橫向、手機三區縱向 */}
-                    <div className="grid grid-cols-1 sm:grid-cols-[1.1fr_0.6fr_1.3fr] gap-4 sm:gap-6 items-stretch">
-                      {/* 期初部位區（可編輯） */}
-                      <div className="rounded-lg border border-zinc-800 bg-zinc-950/20 p-3 space-y-2.5 flex flex-col justify-between">
-                        <div className="text-[10px] text-zinc-500 font-semibold tracking-wider uppercase">期初部位（可編輯）</div>
-                        <div className="space-y-2">
-                          <div className="space-y-1">
-                            <label className="text-[10px] text-zinc-500">期初股數</label>
-                            <div className="relative">
-                              <input
-                                type="number"
-                                min="0"
-                                step="1"
-                                placeholder={a.code === ETF_CODE ? '例如: 19000' : '0'}
-                                value={openStrs[a.code]?.shares ?? ''}
-                                onChange={(e) => handleOpenChange(a.code, 'shares', e.target.value)}
-                                className="w-full px-3 py-1.5 bg-zinc-950 border border-zinc-800 rounded-lg font-mono text-sm text-zinc-100 focus:outline-none focus:border-primary pr-12"
-                              />
-                              <span className="absolute right-3 top-2 text-xs text-zinc-500 font-mono">股</span>
-                            </div>
-                          </div>
-                          <div className="space-y-1">
-                            <label className="text-[10px] text-zinc-500">期初平均成本</label>
-                            <div className="relative">
-                              <input
-                                type="number"
-                                min="0"
-                                step="0.01"
-                                placeholder={a.code === ETF_CODE ? '例如: 35.37' : '0'}
-                                value={openStrs[a.code]?.avg ?? ''}
-                                onChange={(e) => handleOpenChange(a.code, 'avg', e.target.value)}
-                                className="w-full px-3 py-1.5 bg-zinc-950 border border-zinc-800 rounded-lg font-mono text-sm text-zinc-100 focus:outline-none focus:border-primary pr-10"
-                              />
-                              <span className="absolute right-3 top-2 text-xs text-zinc-500 font-mono">元</span>
-                            </div>
+                    {/* 卡片內容：五格數字（持有股數／平均成本／現在價格／獲利%／獲利金額） */}
+                    <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 sm:gap-3">
+                      {[
+                        { label: '持有股數', value: currentShares ? Math.round(currentShares).toLocaleString() : '0', unit: '股', cls: 'text-zinc-100' },
+                        { label: '平均成本', value: currentAvgCost ? currentAvgCost.toFixed(2) : '—', unit: '元', cls: 'text-zinc-100' },
+                        { label: '現在價格', value: price > 0 ? price.toFixed(2) : '—', unit: '元', cls: 'text-zinc-100' },
+                        {
+                          label: '獲利 %',
+                          value: canPnl ? `${returnPct > 0 ? '+' : returnPct < 0 ? '−' : ''}${Math.abs(returnPct).toFixed(2)}%` : '—',
+                          unit: '',
+                          cls: pnlCls,
+                        },
+                        {
+                          label: '獲利金額',
+                          value: canPnl ? `${unrealizedPnl > 0 ? '+' : unrealizedPnl < 0 ? '−' : ''}$${Math.abs(Math.round(unrealizedPnl)).toLocaleString()}` : '—',
+                          unit: '',
+                          cls: pnlCls,
+                        },
+                      ].map((c, i) => (
+                        <div
+                          key={c.label}
+                          className={`rounded-lg border border-zinc-800 bg-zinc-950/20 px-3 py-2.5 ${i === 4 ? 'col-span-2 sm:col-span-1' : ''}`}
+                        >
+                          <div className="text-[10px] text-zinc-500">{c.label}</div>
+                          <div className={`mt-1 font-mono text-base sm:text-lg font-bold ${c.cls}`}>
+                            {c.value}
+                            {c.unit && c.value !== '—' && <span className="ml-1 text-[10px] font-normal text-zinc-500">{c.unit}</span>}
                           </div>
                         </div>
-                      </div>
-
-                      {/* 損益區（未實現，衍生：現價 vs 平均成本，唯讀） */}
-                      <div className="rounded-lg border border-zinc-800 bg-zinc-950/20 p-3 flex flex-col justify-center items-center text-center space-y-1.5 min-h-[100px]">
-                        <div className="text-[10px] text-zinc-500 font-semibold tracking-wider uppercase">報酬率 ／ 現在損益</div>
-                        {canPnl ? (
-                          <div className="space-y-1">
-                            <div className={`text-xl font-bold font-mono ${pnlCls}`}>
-                              {returnPct > 0 ? '+' : returnPct < 0 ? '−' : ''}{Math.abs(returnPct).toFixed(2)}%
-                            </div>
-                            <div className={`text-sm font-mono ${pnlCls}`}>
-                              {unrealizedPnl > 0 ? '+' : unrealizedPnl < 0 ? '−' : ''}${Math.abs(Math.round(unrealizedPnl)).toLocaleString()}
-                            </div>
-                          </div>
-                        ) : (
-                          <div className="space-y-1">
-                            <div className="text-zinc-500 text-sm font-mono">—</div>
-                            <div className="text-[10px] text-zinc-500 italic">尚無成本或現價</div>
-                          </div>
-                        )}
-                      </div>
-
-                      {/* 現況區（衍生 ＋ 現價） */}
-                      <div className="rounded-lg border border-zinc-800 bg-zinc-950/20 p-3 space-y-2.5 flex flex-col justify-between">
-                        <div className="text-[10px] text-zinc-500 font-semibold tracking-wider uppercase">現況（衍生，唯讀 ＋ 現價）</div>
-                        <div className="grid grid-cols-2 gap-3">
-                          <div className="space-y-1">
-                            <label className="text-[10px] text-zinc-500">現況股數（衍生）</label>
-                            <div className="px-3 py-1.5 bg-zinc-900/60 border border-zinc-800 rounded-lg font-mono text-sm text-zinc-300 h-9 flex items-center justify-between">
-                              <span>{currentShares ? Math.round(currentShares).toLocaleString() : '0'}</span>
-                              <span className="text-[10px] text-zinc-500 font-mono">股</span>
-                            </div>
-                          </div>
-                          <div className="space-y-1">
-                            <label className="text-[10px] text-zinc-500">平均成本（衍生）</label>
-                            <div className="px-3 py-1.5 bg-zinc-900/60 border border-zinc-800 rounded-lg font-mono text-sm text-zinc-300 h-9 flex items-center justify-between">
-                              <span>{currentAvgCost ? currentAvgCost.toFixed(2) : '—'}</span>
-                              <span className="text-[10px] text-zinc-500 font-mono">元</span>
-                            </div>
-                          </div>
-                          <div className="space-y-1">
-                            <label className="text-[10px] text-zinc-500">現價（可編輯/抓取）</label>
-                            <div className="relative">
-                              <input
-                                type="number"
-                                min="0"
-                                step="0.01"
-                                placeholder={isEtf ? '例如: 38.8' : '例如: 28.0'}
-                                value={priceStrs[a.code] ?? ''}
-                                onChange={(e) => handlePriceChange(a.code, e.target.value)}
-                                className="w-full px-3 py-1.5 bg-zinc-950 border border-zinc-800 rounded-lg font-mono text-sm text-zinc-100 focus:outline-none focus:border-primary pr-8 h-9"
-                              />
-                              <span className="absolute right-2.5 top-2 text-xs text-zinc-500 font-mono">元</span>
-                            </div>
-                          </div>
-                          <div className="space-y-1">
-                            <label className="text-[10px] text-zinc-500">市值</label>
-                            <div className="px-3 py-1.5 rounded-lg bg-zinc-900/40 border border-zinc-800/60 font-mono text-sm text-right h-9 flex items-center justify-end">
-                              <span className={isEtf ? 'text-blue-400 font-bold' : 'text-cyan-400 font-bold'}>
-                                ${Math.round(currentShares * price).toLocaleString()}
-                              </span>
-                            </div>
-                          </div>
-                        </div>
-                      </div>
+                      ))}
                     </div>
+
+                    {/* 編輯區（預設收起）：期初部位＋手動現價。真實同步／截圖匯入抓不到時才需要手動修 */}
+                    {editingAsset[a.code] && (
+                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 rounded-lg border border-zinc-800 bg-zinc-950/40 p-3">
+                        <div className="space-y-1">
+                          <label className="text-[10px] text-zinc-500">期初股數</label>
+                          <div className="relative">
+                            <input
+                              type="number"
+                              min="0"
+                              step="1"
+                              placeholder={isEtf ? '例如: 19000' : '0'}
+                              value={openStrs[a.code]?.shares ?? ''}
+                              onChange={(e) => handleOpenChange(a.code, 'shares', e.target.value)}
+                              className="w-full px-3 py-1.5 bg-zinc-950 border border-zinc-800 rounded-lg font-mono text-sm text-zinc-100 focus:outline-none focus:border-primary pr-12"
+                            />
+                            <span className="absolute right-3 top-2 text-xs text-zinc-500 font-mono">股</span>
+                          </div>
+                        </div>
+                        <div className="space-y-1">
+                          <label className="text-[10px] text-zinc-500">期初平均成本</label>
+                          <div className="relative">
+                            <input
+                              type="number"
+                              min="0"
+                              step="0.01"
+                              placeholder={isEtf ? '例如: 35.37' : '0'}
+                              value={openStrs[a.code]?.avg ?? ''}
+                              onChange={(e) => handleOpenChange(a.code, 'avg', e.target.value)}
+                              className="w-full px-3 py-1.5 bg-zinc-950 border border-zinc-800 rounded-lg font-mono text-sm text-zinc-100 focus:outline-none focus:border-primary pr-10"
+                            />
+                            <span className="absolute right-3 top-2 text-xs text-zinc-500 font-mono">元</span>
+                          </div>
+                        </div>
+                        <div className="space-y-1">
+                          <label className="text-[10px] text-zinc-500">現在價格（手動覆寫）</label>
+                          <div className="relative">
+                            <input
+                              type="number"
+                              min="0"
+                              step="0.01"
+                              placeholder={isEtf ? '例如: 38.8' : '例如: 28.0'}
+                              value={priceStrs[a.code] ?? ''}
+                              onChange={(e) => handlePriceChange(a.code, e.target.value)}
+                              className="w-full px-3 py-1.5 bg-zinc-950 border border-zinc-800 rounded-lg font-mono text-sm text-zinc-100 focus:outline-none focus:border-primary pr-8"
+                            />
+                            <span className="absolute right-3 top-2 text-xs text-zinc-500 font-mono">元</span>
+                          </div>
+                        </div>
+                        <p className="sm:col-span-3 text-[10px] text-zinc-500 leading-relaxed">
+                          持有股數與平均成本＝期初部位＋下方交易紀錄累算。「真實同步」與「截圖匯入」會直接覆蓋期初部位，平常不用手動改。
+                        </p>
+                      </div>
+                    )}
 
                     {/* 抓價狀態列 */}
                     <div className="h-3 text-right">
@@ -2435,7 +2264,7 @@ export function Rebalance() {
                 ) : null}
                 <p className="text-zinc-500 leading-tight font-sans">
                   防守端先保留這筆現金；加碼 00631L 需要抽錢時依 regime-aware 順序變現（平時先賣 {BOND_ETFS[1].code}、升息型崩盤先賣美債，見「宏觀 regime 指標」卡）。
-                  獲利了結回補時只買一檔（目前優先 {result.bond_buy_first ?? '—'}），另一檔僅在優先檔被鎖定時才會列入建議。
+                  兩檔債券合併看總額：總額達標就不動，不足的差額只補 {result.bond_buy_first ?? '—'}（被鎖定時才改補另一檔）。
                   {config.locked?.cash && (
                     <span className="block mt-0.5 text-primary/80">
                       已鎖定：只保護這筆 ${config.cash_reserve.toLocaleString()} 保留額，閒置現金超出的部分仍會照常參與再平衡。
@@ -2661,7 +2490,7 @@ export function Rebalance() {
         <div>
           <strong className="text-zinc-400 font-medium">系統聲明與警語：</strong>
           <p className="mt-0.5 leading-relaxed">
-            本工具為個人資產配置輔助試算。各標的持有股數、平均成本與閒置現金由「期初部位＋買賣報價單」自動累算（均價採加權平均法、賣出只減股數不改均價；現金＝期初現金 − 全部買進金額 ＋ 全部賣出金額，未計手續費/交易稅）；各標的現價可「抓最新價」自動帶入<strong className="text-zinc-400">現在最新成交價（即時報價）</strong>（TWSE MIS 官方報價，經 <span className="font-mono">/api</span> 讀取，盤中約數秒～數十秒延遲、非交易時段回最近一筆成交，可手動覆寫）；未實現損益依累算均價計算，僅供參考、不影響再平衡；投組 Beta 以 00631L β=2.0、防守端（現金＋{BOND_ETFS[0].code}＋{BOND_ETFS[1].code}）β=0 計算——債券 ETF 實際仍有利率/信用風險，β=0 為簡化假設。防守端配置＝固定保留現金 ${config.cash_reserve.toLocaleString()}，剩餘單一優先回補（目前優先 {result.bond_buy_first ?? '—'}）{BOND_ETFS[0].code}/{BOND_ETFS[1].code}。按「送出並同步雲端」或新增/刪除交易時，持倉會存到伺服器（<span className="font-mono">data/rebalance_holdings.json</span>，與每日再平衡 Email 告警同一份），僅供個人內網自用。非投資建議。
+            本工具為個人資產配置輔助試算。各標的持有股數、平均成本與閒置現金由「期初部位＋買賣報價單」自動累算（均價採加權平均法、賣出只減股數不改均價；現金＝期初現金 − 全部買進金額 ＋ 全部賣出金額，未計手續費/交易稅）；各標的現價可「抓最新價」自動帶入<strong className="text-zinc-400">現在最新成交價（即時報價）</strong>（TWSE MIS 官方報價，經 <span className="font-mono">/api</span> 讀取，盤中約數秒～數十秒延遲、非交易時段回最近一筆成交，可手動覆寫）；未實現損益依累算均價計算，僅供參考、不影響再平衡；投組 Beta 以 00631L β=2.0、防守端（現金＋{BOND_ETFS[0].code}＋{BOND_ETFS[1].code}）β=0 計算——債券 ETF 實際仍有利率/信用風險，β=0 為簡化假設。防守端配置＝固定保留現金 ${config.cash_reserve.toLocaleString()}，剩餘為債券池（{BOND_ETFS[0].code}＋{BOND_ETFS[1].code} 合併看總額，不足的差額補 {result.bond_buy_first ?? '—'}）。按「送出並同步雲端」或新增/刪除交易時，持倉會存到伺服器（<span className="font-mono">data/rebalance_holdings.json</span>，與每日再平衡 Email 告警同一份），僅供個人內網自用。非投資建議。
           </p>
         </div>
       </div>

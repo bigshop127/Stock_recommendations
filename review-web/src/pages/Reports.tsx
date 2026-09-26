@@ -128,7 +128,8 @@ export const Reports: React.FC = () => {
     'hover:bg-zinc-800/60 disabled:opacity-30 disabled:hover:bg-card transition-colors';
 
   return (
-    <div className="max-w-3xl mx-auto">
+    // 2026-09-27 改滿版：撐滿右側內容區（原本 max-w-3xl 置中，大螢幕兩邊空一大塊）
+    <div className="w-full">
       <div className="flex items-center gap-2 mb-1">
         <Newspaper className="w-5 h-5 text-primary" />
         <h1 className="text-lg font-bold text-zinc-100">老王每日報告</h1>

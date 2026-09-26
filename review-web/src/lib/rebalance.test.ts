@@ -7,8 +7,6 @@ import {
   allocateDefensive,
   computeMarketStatus,
   computeBondRegime,
-  combineFuturesBeta,
-  stockTargetForOverallBeta,
   ETF_CODE,
   DEFAULT_CASH_RESERVE,
   type Trade,
@@ -558,7 +556,7 @@ describe('aggregatePortfolio', () => {
 describe('computeRebalance with bonds (增修I)', () => {
   // 基準情境：總資產 1,000,000＝00631L 650,000＋現金 150,000＋00687B 140,000＋00953B 60,000
   // β = 0.65×2 = 1.3 = 目標 → normal；目標防守端 350,000 → 現金保留 100,000、債券池 250,000
-  // （單一優先回補，預設 regime_aware/normal → 優先買 00687B）
+  // （兩檔合併計算：債券總額 200,000 差 50,000，差額補進優先檔——預設 regime_aware/normal → 00687B）
   const base = {
     shares: 6500,
     price: 100,
@@ -593,19 +591,19 @@ describe('computeRebalance with bonds (增修I)', () => {
     expect(res.bond_buy_first).toBe('00687B'); // normal regime → 優先買 00687B
     const [b687, b953] = res.bond_plans;
     expect(b687.code).toBe('00687B');
-    expect(b687.target_value).toBeCloseTo(250_000, 6); // 單一優先回補，吃下全部 bondPool
-    expect(b687.value_delta).toBeCloseTo(110_000, 6);
-    expect(b687.trade_shares).toBe(Math.round(110_000 / 28)); // 3929
-    expect(b953.target_value).toBeCloseTo(0, 6); // 另一檔不買
-    expect(b953.value_delta).toBeCloseTo(-60_000, 6);
-    expect(b953.trade_shares).toBe(-6000);
+    expect(b687.target_value).toBeCloseTo(190_000, 6); // 140,000 ＋ 差額 50,000
+    expect(b687.value_delta).toBeCloseTo(50_000, 6);
+    expect(b687.trade_shares).toBe(Math.round(50_000 / 28)); // 1786
+    expect(b953.target_value).toBeCloseTo(60_000, 6); // 另一檔維持現值，不賣
+    expect(b953.value_delta).toBeCloseTo(0, 6);
+    expect(b953.trade_shares).toBe(0);
   });
 
   it('post-trade cash reflects bond legs; post_beta returns to target', () => {
     const res = computeRebalance(base);
     expect(res.trade_shares).toBe(0); // 00631L 已達標
-    // post_cash = 150,000 − 0 − (3929×28 − 6000×10) = 150,000 − 50,012 = 99,988
-    expect(res.post_cash).toBeCloseTo(99_988, 6);
+    // post_cash = 150,000 − 0 − 1786×28 = 150,000 − 50,008 = 99,992
+    expect(res.post_cash).toBeCloseTo(99_992, 6);
     expect(res.post_beta).toBeCloseTo(1.3, 3);
   });
 
@@ -647,8 +645,44 @@ describe('computeRebalance with bonds (增修I)', () => {
     expect(res.bond_sell_first).toBe('00687B');
     expect(res.bond_buy_first).toBe('00953B');
     const [b687, b953] = res.bond_plans;
-    expect(b687.target_value).toBeCloseTo(0, 6);
-    expect(b953.target_value).toBeCloseTo(250_000, 6);
+    expect(b687.target_value).toBeCloseTo(140_000, 6); // 不動
+    expect(b953.target_value).toBeCloseTo(110_000, 6); // 60,000 ＋ 差額 50,000
+  });
+
+  it('bonds are pooled: priority bond short but the other already covers the pool → no bond trades', () => {
+    // 使用者情境：債券池目標 250,000，00953B 自己就買滿了（美債 0）→ 視為達標，不會叫你賣 00953B 換美債
+    const res = computeRebalance({
+      ...base,
+      cash: 100_000,
+      bonds: [
+        { code: '00687B', shares: 0, price: 28 },
+        { code: '00953B', shares: 25_000, price: 10 },
+      ],
+    });
+    expect(res.target_defensive_value).toBeCloseTo(350_000, 6);
+    expect(res.target_cash_value).toBeCloseTo(100_000, 6);
+    for (const p of res.bond_plans) {
+      expect(p.value_delta).toBeCloseTo(0, 6);
+      expect(p.trade_shares).toBe(0);
+    }
+  });
+
+  it('bonds are pooled: small shortfall only tops up the priority bond by the gap', () => {
+    // 00953B 240,000 已接近池子目標 250,000 → 只補 10,000 美債，00953B 不動
+    const res = computeRebalance({
+      ...base,
+      cash: 100_000,
+      shares: 6500,
+      bonds: [
+        { code: '00687B', shares: 0, price: 28 },
+        { code: '00953B', shares: 24_000, price: 10 },
+      ],
+    });
+    const [b687, b953] = res.bond_plans;
+    expect(res.total_value).toBe(990_000);
+    // 目標防守端 0.35×990,000＝346,500 → 現金 100,000、債券池 246,500；差額 6,500 補美債
+    expect(b687.value_delta).toBeCloseTo(6_500, 6);
+    expect(b953.value_delta).toBeCloseTo(0, 6);
   });
 
   it('no bonds → identical to legacy pure-cash model with defaults echoed', () => {
@@ -824,7 +858,7 @@ describe('computeBondRegime (regime-aware)', () => {
   });
 });
 
-// ===== 【增修K／2026-09 單一優先回補】allocateDefensive：優先變現瀑布（縮水）／單一優先（擴張）=====
+// ===== 【增修K／2026-09-27 合併計算】allocateDefensive：優先變現瀑布（縮水）／差額補優先檔（擴張）=====
 
 describe('allocateDefensive (增修K／單一優先回補)', () => {
   it('shrink: drains index 0 (priority bond) fully before touching index 1', () => {
@@ -840,10 +874,10 @@ describe('allocateDefensive (增修K／單一優先回補)', () => {
     expect(r.bond_values[1]).toBeCloseTo(30_000, 6); // 90,000 − 60,000
   });
 
-  it('grow: single priority — index 0 takes the whole pool, index 1 gets nothing', () => {
+  it('grow: pooled — only the gap goes into index 0, index 1 keeps its value', () => {
     const r = allocateDefensive(200_000, [10_000, 5_000], 0);
-    expect(r.bond_values[0]).toBeCloseTo(200_000, 6);
-    expect(r.bond_values[1]).toBeCloseTo(0, 6);
+    expect(r.bond_values[0]).toBeCloseTo(195_000, 6); // 10,000 ＋ 差額 185,000
+    expect(r.bond_values[1]).toBeCloseTo(5_000, 6);
   });
 
   it('cash reserve floors before the bond pool is computed', () => {
@@ -854,10 +888,10 @@ describe('allocateDefensive (增修K／單一優先回補)', () => {
     expect(r.bond_values[1]).toBeCloseTo(0, 6);
   });
 
-  it('zero delta is treated as the grow branch (single priority)', () => {
+  it('zero delta: pool already met in total → neither bond moves', () => {
     const r = allocateDefensive(100_000, [60_000, 40_000], 0);
-    expect(r.bond_values[0]).toBeCloseTo(100_000, 6);
-    expect(r.bond_values[1]).toBeCloseTo(0, 6);
+    expect(r.bond_values[0]).toBeCloseTo(60_000, 6);
+    expect(r.bond_values[1]).toBeCloseTo(40_000, 6);
   });
 });
 
@@ -986,76 +1020,5 @@ describe('computeMarketStatus', () => {
     expect(s!.peak_close).toBe(100);
     expect(s!.drawdown).toBeCloseTo(0.22, 6);
     expect(s!.tier).toBe(3);
-  });
-});
-
-// ── 期貨曝險合併（2026-07-29）────────────────────────────────────────────────
-
-describe('combineFuturesBeta：把期貨曝險併進投組 β', () => {
-  // 現股：00631L 60 萬（β2）＋ 防守端 40 萬 → 總值 100 萬、曝險 120 萬、β 1.2
-  const stock = { etf_value: 600_000, total_value: 1_000_000 };
-
-  it('沒有期貨時 combined 等於 stock_only（不動原本的數字）', () => {
-    const r = combineFuturesBeta(stock, 2.0, null);
-    expect(r.has_futures).toBe(false);
-    expect(r.stock_only_beta).toBeCloseTo(1.2, 10);
-    expect(r.combined_beta).toBeCloseTo(1.2, 10);
-    expect(r.understated_by).toBeCloseTo(0, 10);
-  });
-
-  it('期貨多單會拉高真實 β——分母加權益數不是名目，槓桿才不會被洗掉', () => {
-    // 8 口 SRF @102 ＝ 名目 81.6 萬，保證金專戶權益數 20 萬
-    const r = combineFuturesBeta(stock, 2.0, { notional: 816_000, equity: 200_000, beta: 1 });
-    expect(r.total_value).toBe(1_200_000);          // 100 萬現股 ＋ 20 萬權益數
-    expect(r.total_exposure).toBe(2_016_000);       // 120 萬 ＋ 81.6 萬
-    expect(r.combined_beta).toBeCloseTo(1.68, 10);
-    expect(r.stock_only_beta).toBeCloseTo(1.2, 10);
-    expect(r.understated_by).toBeCloseTo(0.48, 10); // 現股模型少算了這麼多
-  });
-
-  it('若把名目而不是權益數放進分母，槓桿會被洗掉（這正是要避免的算法）', () => {
-    const r = combineFuturesBeta(stock, 2.0, { notional: 816_000, equity: 200_000, beta: 1 });
-    const wrong = (r.stock_exposure + r.futures_exposure) / (r.stock_value + r.futures_notional);
-    expect(wrong).toBeLessThan(r.combined_beta as number); // 錯算會低估
-    expect(wrong).toBeCloseTo(2_016_000 / 1_816_000, 10);
-  });
-
-  it('期貨空單會壓低真實 β', () => {
-    const r = combineFuturesBeta(stock, 2.0, { notional: -816_000, equity: 200_000, beta: 1 });
-    expect(r.combined_beta as number).toBeLessThan(1.2);
-    expect(r.understated_by as number).toBeLessThan(0);
-  });
-
-  it('現股為空（總值 0）時回 null 而不是 NaN', () => {
-    const r = combineFuturesBeta({ etf_value: 0, total_value: 0 }, 2.0, null);
-    expect(r.stock_only_beta).toBeNull();
-    expect(r.combined_beta).toBeNull();
-  });
-});
-
-describe('stockTargetForOverallBeta：反解現股該設多少目標 β', () => {
-  const stock = { etf_value: 600_000, total_value: 1_000_000 };
-
-  it('套回去確實命中整體目標', () => {
-    const c = combineFuturesBeta(stock, 2.0, { notional: 816_000, equity: 200_000, beta: 1 });
-    const { stock_target, over_exposed } = stockTargetForOverallBeta(1.3, c);
-    expect(over_exposed).toBe(false);
-    // 用這個現股 β 重算整體：(stock_value × stock_target + futures_exposure) / total_value
-    const back = (c.stock_value * (stock_target as number) + c.futures_exposure) / c.total_value;
-    expect(back).toBeCloseTo(1.3, 10);
-    // 期貨已經吃掉一部分曝險，現股目標必然低於整體目標
-    expect(stock_target as number).toBeLessThan(1.3);
-  });
-
-  it('沒有期貨時反解＝整體目標本身', () => {
-    const c = combineFuturesBeta(stock, 2.0, null);
-    expect(stockTargetForOverallBeta(1.3, c).stock_target).toBeCloseTo(1.3, 10);
-  });
-
-  it('期貨曝險已超過整體目標時標記 over_exposed 並 clamp 到 0', () => {
-    const c = combineFuturesBeta(stock, 2.0, { notional: 5_000_000, equity: 200_000, beta: 1 });
-    const { stock_target, over_exposed } = stockTargetForOverallBeta(1.3, c);
-    expect(over_exposed).toBe(true);
-    expect(stock_target).toBe(0);
   });
 });

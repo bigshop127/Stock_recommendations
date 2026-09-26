@@ -10,6 +10,7 @@ const path = require('path');
 const express = require('express');
 const { engineGet } = require('../lib/engine');
 const { sendError, httpError } = require('../lib/errors');
+const { GLOBAL_INDEX_DEFS, parseYahooQuote } = require('../lib/global_indices');
 
 const router = express.Router();
 
@@ -244,5 +245,60 @@ router.get('/api/market/stock-heatmap', async (req, res) => {
   }
 });
 
-module.exports = router;
+// ── 國際股市指數（美股三大指數＋日經 225＋韓國綜合）── 2026-09-27 ────────────────
+//
+// 大盤頁「盤勢總覽」分頁用。跟 /api/market/taiex 一樣由 gateway 自己抓、不經 engine。
+// 資料源 Yahoo chart API（再平衡頁宏觀指標也用它），單一指數抓不到只標 ok:false，不擋整張卡。
+// 任何一個市場盤中就快取 1 分鐘，全部收盤快取 10 分鐘。
+const YF_HOSTS = ['query1', 'query2'];
+const GLOBAL_OPEN_TTL_MS = 60 * 1000;
+const GLOBAL_CLOSED_TTL_MS = 10 * 60 * 1000;
+let globalCache = { at: 0, ttl: 0, data: null };
 
+async function fetchYahooChart(symbol) {
+  const enc = encodeURIComponent(symbol);
+  let lastErr;
+  for (const host of YF_HOSTS) {
+    try {
+      const url = `https://${host}.finance.yahoo.com/v8/finance/chart/${enc}?range=1d&interval=5m`;
+      const r = await fetch(url, {
+        headers: { 'User-Agent': 'Mozilla/5.0' },
+        signal: AbortSignal.timeout(10000),
+      });
+      if (!r.ok) { lastErr = new Error(`HTTP ${r.status}`); continue; }
+      return await r.json();
+    } catch (e) { lastErr = e; }
+  }
+  throw lastErr || new Error('fetch failed');
+}
+
+router.get('/api/market/global-indices', async (req, res) => {
+  const now = Date.now();
+  if (req.query.force !== '1' && globalCache.data && now - globalCache.at < globalCache.ttl) {
+    return res.json({ ...globalCache.data, cached: true });
+  }
+  try {
+    const indices = await Promise.all(GLOBAL_INDEX_DEFS.map(async (def) => {
+      try {
+        return parseYahooQuote(await fetchYahooChart(def.symbol), def, now);
+      } catch (e) {
+        return {
+          key: def.key, symbol: def.symbol, name: def.name, region: def.region,
+          price: null, prev_close: null, change: null, change_pct: null,
+          as_of: null, session: 'closed', ok: false, error: String((e && e.message) || e),
+        };
+      }
+    }));
+    if (!indices.some((i) => i.ok)) {
+      return sendError(res, httpError(502, 'YAHOO', '抓取國際指數失敗: ' + indices.map((i) => i.error).join('；')));
+    }
+    const data = { indices, fetched_at: new Date(now).toISOString(), source: 'Yahoo Finance' };
+    const anyOpen = indices.some((i) => i.session === 'open');
+    globalCache = { at: now, ttl: anyOpen ? GLOBAL_OPEN_TTL_MS : GLOBAL_CLOSED_TTL_MS, data };
+    return res.json({ ...data, cached: false });
+  } catch (err) {
+    return sendError(res, err);
+  }
+});
+
+module.exports = router;
