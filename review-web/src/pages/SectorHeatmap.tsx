@@ -4,6 +4,7 @@ import { api, type StockHeatmap, type HeatmapStock } from '../lib/api';
 import { squarify, type TreemapInput, type TreemapTile } from '../lib/treemap';
 import { aggregateGroups, selectTopGroups, type GroupAgg } from '../lib/groupHeatmap';
 import { RevenueHeatmap } from '../components/RevenueHeatmap';
+import { groupLabel } from '../lib/stockGroups';
 import {
   Loader2,
   RefreshCw,
@@ -674,6 +675,8 @@ export const SectorHeatmap: React.FC = () => {
               <span className="font-mono text-zinc-500 text-[10px]">{hoveredStock.code}</span>
             </div>
             <div className="grid grid-cols-2 gap-y-1 font-mono text-[11px] text-zinc-400">
+              <div>族群:</div>
+              <div className="text-zinc-200 text-right truncate">{groupLabel(hoveredStock.code) || '尚未收錄'}</div>
               <div>產業:</div>
               <div className="text-zinc-200 text-right truncate">{hoveredStock.sector || '其他'}</div>
               <div>收盤價:</div>
@@ -751,7 +754,7 @@ export const SectorHeatmap: React.FC = () => {
         <div className="text-[11px] text-zinc-500 leading-relaxed space-y-1">
           {viewMode === 'group' && (
             <>
-              <div>* 族群分類為<strong>本站自建</strong>（公開常識），非官方分類；官方產業別另見「產業聚合」檢視。</div>
+              <div>* 族群分類為<strong>本站自建</strong>（公開常識，並以公開資訊觀測站各公司申報的主要經營業務核對），非官方分類；官方產業別另見「產業聚合」檢視。</div>
               <div>* <strong>僅上市（TWSE），不含上櫃</strong>。</div>
               <div>* 僅顯示<strong>成交值前 30</strong> 大族群；區塊面積＝族群平均漲跌幅絕對值。</div>
               <div>* 歷史漲跌幅（週/月）採未還原收盤價計算，若期間經歷除權息可能影響精確度。</div>

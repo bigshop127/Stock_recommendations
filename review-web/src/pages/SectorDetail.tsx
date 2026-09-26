@@ -2,6 +2,7 @@ import React, { useEffect, useState, useMemo } from 'react';
 import { useParams, useNavigate, useSearchParams, Link } from 'react-router-dom';
 import { api, type StockHeatmap, type HeatmapStock } from '../lib/api';
 import { squarify, type TreemapInput } from '../lib/treemap';
+import { groupLabel } from '../lib/stockGroups';
 import {
   ArrowLeft,
   Loader2,
@@ -453,6 +454,8 @@ export const SectorDetail: React.FC = () => {
               </span>
             </div>
             <div className="grid grid-cols-2 gap-y-1 font-mono text-[11px] text-zinc-400">
+              <div>族群:</div>
+              <div className="text-zinc-200 text-right truncate">{groupLabel(hoveredStock.datum.code) || '尚未收錄'}</div>
               <div>收盤價:</div>
               <div className="text-zinc-200 text-right">
                 {hoveredStock.datum.close !== null ? `${hoveredStock.datum.close} 元` : '無資料'}

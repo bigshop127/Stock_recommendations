@@ -4,6 +4,7 @@ import { AlertCircle, Info, Loader2, RefreshCw, X } from 'lucide-react';
 import { api, type MarketRevenueResp, type RevenueAggregate, type RevenueIndustryResp } from '../lib/api';
 import { squarify, type TreemapInput } from '../lib/treemap';
 import { MiniTrendChart } from './MiniTrendChart';
+import { GroupTag } from './GroupTag';
 import {
   compactRevenueAxis,
   divergingColor,
@@ -364,6 +365,7 @@ export const RevenueHeatmap: React.FC<RevenueHeatmapProps> = ({ viewToggle }) =>
                                 <span className="font-mono text-zinc-500 mr-1.5">{c.code}</span>
                                 {c.name}
                               </Link>
+                              <GroupTag code={c.code} className="ml-1.5" />
                             </td>
                             <td className="py-1.5 text-right text-zinc-300">{fmtRevenue(c.revenue)}</td>
                             <td className={`py-1.5 text-right font-semibold ${toneClass(c.yoy_pct)}`}>{fmtPct(c.yoy_pct, 1)}</td>

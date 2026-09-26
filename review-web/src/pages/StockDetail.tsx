@@ -12,6 +12,9 @@ import { FolderPickerButton } from '../components/FolderPickerButton';
 import { buildStockBrief } from '../lib/stockBrief';
 import type { StockBriefInput } from '../lib/stockBrief';
 import { CODE_TO_GROUP } from '../lib/stockGroups';
+import { GroupTag } from '../components/GroupTag';
+
+const groupRefOf = (code: string) => CODE_TO_GROUP.get(code);
 
 export type StockTab = 'basic' | 'industry' | 'financials' | 'chips' | 'technical' | 'news';
 
@@ -784,8 +787,9 @@ export const StockDetail: React.FC = () => {
             {activeCode}
           </div>
           <div>
-            <h2 className="text-xl font-bold tracking-tight text-zinc-100 flex items-center gap-2">
+            <h2 className="text-xl font-bold tracking-tight text-zinc-100 flex items-center gap-2 flex-wrap">
               {name} ({activeCode})
+              <GroupTag code={activeCode} link className="text-[11px]" />
             </h2>
             <div className="flex items-center gap-3 mt-1 flex-wrap">
               {lastPrice > 0 ? (
@@ -2156,7 +2160,7 @@ export const StockDetail: React.FC = () => {
     const allStocks = heatmap?.stocks || [];
 
     // 優先用自建的細分族群表（stockGroups.ts，如「封測」），比 TWSE 官方產業別（如「電子工業」）
-    // 更貼近實際同業比較；該股不在 523 檔族群 universe 內時（如上櫃股），退回官方產業別、不限筆數。
+    // 更貼近實際同業比較；該股沒有族群時（刻意不收錄的幾檔、多數上櫃股），退回官方產業別、不限筆數。
     const groupRef = CODE_TO_GROUP.get(activeCode);
 
     let targetSector: string;
@@ -2328,6 +2332,7 @@ export const StockDetail: React.FC = () => {
                           <Link to={`/stock/${item.code}`} className="flex items-center gap-2 hover:text-primary">
                             <span className="font-semibold text-zinc-200">{item.name}</span>
                             <span className="text-[11px] text-zinc-500">({item.code})</span>
+                            <GroupTag code={item.code} fallback={item.sector} />
                             {isSelf && (
                               <span className="text-[10px] bg-primary text-white px-1.5 py-0.5 rounded font-sans font-medium">
                                 本股
@@ -2442,6 +2447,11 @@ export const StockDetail: React.FC = () => {
                 <div className="text-sm font-semibold text-zinc-200">
                   {profile?.industry || '—'}
                 </div>
+                {groupRefOf(activeCode) && (
+                  <div className="text-[11px] text-zinc-400">
+                    族群：{groupRefOf(activeCode)!.category}／{groupRefOf(activeCode)!.group}
+                  </div>
+                )}
               </div>
 
               <div className="space-y-1">

@@ -31,6 +31,7 @@ import { OverviewCard } from '../components/OverviewCard';
 import { MarketLeverageCard } from '../components/MarketLeverageCard';
 import { RevenueOverviewCard } from '../components/RevenueOverviewCard';
 import { buildMarketSummary } from '../lib/marketSummary';
+import { GroupTag } from '../components/GroupTag';
 // 大盤頁分頁（2026-09-27：原本一整頁九張卡太亂，拆成四頁；自選清單移除）
 type DashboardTab = 'overview' | 'flows' | 'movers' | 'credit';
 const DASHBOARD_TABS: { id: DashboardTab; label: string }[] = [
@@ -624,7 +625,8 @@ const Top15RankTable: React.FC<{ rows: HeatmapStock[]; scroll?: boolean }> = ({ 
                 <td className="py-2 font-mono text-zinc-500 text-center text-[10px]">{idx + 1}</td>
                 <td className="py-2">
                   <span className="font-mono font-bold text-zinc-200 mr-1.5">{st.code}</span>
-                  <span className="text-zinc-300 text-xs">{st.name}</span>
+                  <span className="text-zinc-300 text-xs mr-1.5">{st.name}</span>
+                  <GroupTag code={st.code} fallback={st.sector} />
                 </td>
                 <td className="py-2 text-right font-mono text-zinc-200 font-medium">
                   {st.close !== null ? st.close.toFixed(2) : '--'}

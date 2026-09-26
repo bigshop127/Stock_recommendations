@@ -1,6 +1,8 @@
 import React, { useEffect, useState, useMemo } from 'react';
 import { Link } from 'react-router-dom';
 import { api, type CapitalTideData, type CapitalTideStock } from '../lib/api';
+import { groupLabel } from '../lib/stockGroups';
+import { GroupTag } from '../components/GroupTag';
 import {
   Waves,
   RefreshCw,
@@ -359,8 +361,8 @@ export const CapitalTide: React.FC = () => {
                   <span className="font-mono text-zinc-500">{hoveredStock.code}</span>
                 </div>
                 <div className="grid grid-cols-2 gap-y-1 font-mono text-[11px] text-zinc-400">
-                  <div>細分產業:</div>
-                  <div className="text-zinc-200 text-right truncate">{hoveredStock.sector}</div>
+                  <div>族群:</div>
+                  <div className="text-zinc-200 text-right truncate">{groupLabel(hoveredStock.code, hoveredStock.sector)}</div>
                   <div>強弱評分:</div>
                   <div className="text-zinc-200 text-right">{hoveredStock.strength} 分</div>
                   <div>5日法人超:</div>
@@ -395,7 +397,10 @@ export const CapitalTide: React.FC = () => {
                 <div className="flex items-center justify-between">
                   <div>
                     <h4 className="text-base font-bold text-zinc-100">{selectedStock.name}</h4>
-                    <span className="text-xs font-mono text-zinc-500">{selectedStock.code} · {selectedStock.sector}</span>
+                    <span className="text-xs font-mono text-zinc-500 flex items-center gap-1.5">
+                      {selectedStock.code}
+                      <GroupTag code={selectedStock.code} fallback={selectedStock.sector} link />
+                    </span>
                   </div>
                   <Link
                     to={`/stock/${selectedStock.code}`}
@@ -500,7 +505,7 @@ export const CapitalTide: React.FC = () => {
                     </div>
                     <div className="text-right font-mono">
                       <div className="text-bull font-bold">+{s.flow_raw.toLocaleString()} 張</div>
-                      <div className="text-[10px] text-zinc-500">{s.sector}</div>
+                      <GroupTag code={s.code} fallback={s.sector} className="mt-0.5" />
                     </div>
                   </div>
                 ))}
@@ -529,7 +534,7 @@ export const CapitalTide: React.FC = () => {
                     </div>
                     <div className="text-right font-mono">
                       <div className="text-bull font-bold">+{s.momentum_raw.toFixed(2)} %/日</div>
-                      <div className="text-[10px] text-zinc-500">{s.sector}</div>
+                      <GroupTag code={s.code} fallback={s.sector} className="mt-0.5" />
                     </div>
                   </div>
                 ))}

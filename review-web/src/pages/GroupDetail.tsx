@@ -530,7 +530,7 @@ export const GroupDetail: React.FC = () => {
       {/* Notice & Legend Panel */}
       <div className="flex flex-col sm:flex-row items-center justify-between gap-4 p-4 border border-zinc-800 bg-zinc-900/20 rounded-xl">
         <div className="text-[11px] text-zinc-500 leading-relaxed space-y-1">
-          <div>* 族群分類為<strong>本站自建</strong>（公開常識），非官方分類；官方產業別另見「產業聚合」檢視。</div>
+          <div>* 族群分類為<strong>本站自建</strong>（公開常識，並以公開資訊觀測站各公司申報的主要經營業務核對），非官方分類；官方產業別另見「產業聚合」檢視。</div>
           <div>* <strong>僅上市（TWSE），不含上櫃</strong>。</div>
           <div>* 區塊面積代表個股漲跌幅絕對值。歷史漲跌幅（週/月）採未還原收盤價計算，若期間經歷除權息可能影響計算精確度。</div>
         </div>

@@ -1,7 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import { aggregateGroups, selectTopGroups, isCuratedGroup } from './groupHeatmap';
-import { CODE_TO_GROUP, STOCK_GROUPS } from './stockGroups';
+import { CODE_TO_GROUP, STOCK_GROUPS, UNCLASSIFIED } from './stockGroups';
 import { SNAPSHOT_0714 } from './__fixtures__/heatmap0714';
+import { LISTED_0924 } from './__fixtures__/listed0924';
 import type { HeatmapStock } from './api';
 
 describe('groupHeatmap module', () => {
@@ -15,8 +16,8 @@ describe('groupHeatmap module', () => {
       { code: '6770', name: '力積電', sector: '半導體業', close: 20, change_pct: null, turnover: 1000000 },
       // 2327 -> 電子零組件/被動元件
       { code: '2327', name: '國巨', sector: '電子零組件業', close: 600, change_pct: -1.0, turnover: 4000000 },
-      // 4916 -> Not in stockGroups curated list, should be skipped
-      { code: '4916', name: '事欣科', sector: '電腦及週邊設備業', close: 30, change_pct: 1.0, turnover: 5000000 },
+      // 3712 -> 刻意不收錄（UNCLASSIFIED），should be skipped
+      { code: '3712', name: '永崴投控', sector: '電腦及週邊設備業', close: 30, change_pct: 1.0, turnover: 5000000 },
       // 3008 -> 光電/光學鏡頭 (change_pct is null only, so valid_count = 0, should be excluded completely)
       { code: '3008', name: '大立光', sector: '光電業', close: 2500, change_pct: null, turnover: 3000000 },
     ];
@@ -37,7 +38,7 @@ describe('groupHeatmap module', () => {
     //   avg_change_pct = -1.0%
     //   up_count = 0
     // 3008 belongs to group "光學鏡頭" but has valid_count = 0, so it's excluded.
-    // 4916 is skipped entirely.
+    // 3712 is skipped entirely.
 
     expect(result).toHaveLength(2);
 
@@ -95,7 +96,9 @@ describe('isCuratedGroup', () => {
 });
 
 // opt22 §7 #4/#5：規格要求以 2026-07-14 真實快照驗收前 30 名單與順序。
-// 這組斷言釘住 §4.2 的實測表，任何排序/FLOOR/口徑改動都會在此變紅。
+// 這組斷言釘住實測表，任何排序/FLOOR/口徑改動都會在此變紅。
+// 2026-09-27 族群對照表擴成全上市收錄（原 523 檔→1,082 檔、75→141 族群）後依同一份快照重新釘：
+// 前 30 名單幾乎不變，塑化因台橡、南帝移到「橡膠與輪胎」而退到第 7。
 describe('groupHeatmap — 2026-07-14 真實快照（opt22 §7 #4/#5）', () => {
   const stocks: HeatmapStock[] = SNAPSHOT_0714.map(([code, change_pct, turnover]) => ({
     code,
@@ -106,12 +109,8 @@ describe('groupHeatmap — 2026-07-14 真實快照（opt22 §7 #4/#5）', () => 
     turnover,
   }));
 
-  it('universe 為 1082 檔上市，對照表零幽靈代號、成交值覆蓋 98.2%', () => {
+  it('universe 為 1082 檔上市，成交值覆蓋 99.99%（沒收錄的只剩 UNCLASSIFIED 與之後下市的）', () => {
     expect(stocks).toHaveLength(1082);
-
-    const universe = new Set(stocks.map((s) => s.code));
-    const ghosts = [...CODE_TO_GROUP.keys()].filter((c) => !universe.has(c));
-    expect(ghosts).toEqual([]);
 
     let covered = 0;
     let total = 0;
@@ -120,7 +119,12 @@ describe('groupHeatmap — 2026-07-14 真實快照（opt22 §7 #4/#5）', () => 
       total += t;
       if (CODE_TO_GROUP.get(s.code)) covered += t;
     }
-    expect((covered / total) * 100).toBeCloseTo(98.2, 1);
+    expect((covered / total) * 100).toBeGreaterThan(99.9);
+
+    const listedNow = new Set(LISTED_0924);
+    const unmapped = stocks.filter((s) => !CODE_TO_GROUP.get(s.code)).map((s) => s.code);
+    // 沒收錄的要嘛是刻意不猜的，要嘛 9/24 已經不在上市名單
+    expect(unmapped.filter((c) => !UNCLASSIFIED.includes(c) && listedNow.has(c))).toEqual([]);
   });
 
   it('#4 成交值前 30 的名單與順序對得上 §4.2 實測表', () => {
@@ -131,9 +135,9 @@ describe('groupHeatmap — 2026-07-14 真實快照（opt22 §7 #4/#5）', () => 
       '被動元件',
       '記憶體',
       'PCB印刷電路板',
-      '塑化',
       'ABF載板',
       'IC設計·運算與網通',
+      '塑化',
       '封測',
       '面板',
       'AI伺服器與代工',
@@ -168,10 +172,50 @@ describe('groupHeatmap — 2026-07-14 真實快照（opt22 §7 #4/#5）', () => 
     }
 
     // 陸運 只有 2633 台灣高鐵，當日 change_pct=null（除權息）→ valid_count===0 → 整組排除，
-    // 故 74 而非 75。這是 §5 的防線在真實資料上生效的實例。
+    // 故 140 而非 141。這是 §5 的防線在真實資料上生效的實例。
     const groupNames = Object.values(STOCK_GROUPS).flatMap((g) => Object.keys(g));
-    expect(groupNames).toHaveLength(75);
-    expect(all).toHaveLength(74);
+    expect(groupNames).toHaveLength(141);
+    expect(all).toHaveLength(140);
     expect(all.find((g) => g.group === '陸運')).toBeUndefined();
+  });
+});
+
+// 2026-09-27：使用者要求「網站上出現的個股都要有細分族群」→ 對照表改成全上市收錄
+describe('族群對照表 — 全上市收錄（2026-09-24 上市名單）', () => {
+  const OTC_KNOWN = ['3081', '6435', '8043', '8088']; // 上櫃，只收曾出現在已實現損益的
+
+  it('上市 1085 檔中，除了刻意不收錄的之外全部都有族群', () => {
+    expect(LISTED_0924).toHaveLength(1085);
+    const unmapped = LISTED_0924.filter((c) => !CODE_TO_GROUP.get(c));
+    expect([...unmapped].sort()).toEqual([...UNCLASSIFIED].sort());
+  });
+
+  it('對照表零幽靈代號：每個代號都在 7/14 或 9/24 上市名單裡，或是已知上櫃股', () => {
+    const known = new Set([...SNAPSHOT_0714.map(([c]) => c), ...LISTED_0924, ...OTC_KNOWN]);
+    expect([...CODE_TO_GROUP.keys()].filter((c) => !known.has(c))).toEqual([]);
+  });
+
+  it('同一檔只屬於一個族群、族群名不重複、沒有空族群', () => {
+    const seen = new Map<string, string>();
+    const groupNames = new Set<string>();
+    for (const groups of Object.values(STOCK_GROUPS)) {
+      for (const [group, codes] of Object.entries(groups)) {
+        expect(groupNames.has(group)).toBe(false);
+        groupNames.add(group);
+        expect(codes.length).toBeGreaterThan(0);
+        for (const c of codes) {
+          expect(seen.get(c), `${c} 同時在 ${seen.get(c)} 與 ${group}`).toBeUndefined();
+          seen.set(c, group);
+        }
+      }
+    }
+  });
+
+  it('使用者舉例與這次修正的代表個股', () => {
+    expect(CODE_TO_GROUP.get('8046')?.group).toBe('ABF載板'); // 南電
+    expect(CODE_TO_GROUP.get('2493')?.group).toBe('PCB設備與耗材'); // 揚博，原本誤放被動元件
+    expect(CODE_TO_GROUP.get('4989')?.group).toBe('銅箔基板與PCB材料'); // 榮科，原本誤放無塵室工程
+    expect(CODE_TO_GROUP.get('2101')?.group).toBe('橡膠與輪胎'); // 南港，原本誤放營建
+    expect(CODE_TO_GROUP.get('3021')?.group).toBe('連接器與線材'); // 鴻名，新收錄
   });
 });
