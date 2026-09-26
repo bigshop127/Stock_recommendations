@@ -3,6 +3,8 @@
 > 單一事實來源（SSOT）。任何進度／更新／優化都先改這份，再同步 Obsidian vault `C:\obsidian\儲存庫\個股全面審視網` 與 `.claude` 記憶。
 > 建立日：2026-06-21。狀態：**Phase 0–8 ✅ 全案完工。Phase 8（整合・RWD 打磨・PWA・部署上既有 Oracle VM，gateway 同源 serve `review-web/dist`）2026-06-25 實作並部署完成：① 後端 gateway 同源 serve `review-web/dist` 在子路徑 `/review`；② 前端 base、Router basename、PWA scope/start_url 對齊 `/review`，未知路由重定向；③ RWD 斷點打磨及 `ChipsCharts` SVG 縮放 tooltip 比例修正；④ PWA 包含 192/512 PNG/maskable 圖標、manifest 修改與 API 快取從嚴設定；⑤ 效能分塊與路由 lazy-loading，使 build size 無 >500kB 警告。VM 上 `git pull` + `npm ci` + build + gateway 重啟及本機 `ssh -L` 與端點驗收全綠。**
 
+> 〔opt41 月營收：盤勢總覽營收卡＋熱力圖「產業營收」檢視＋個股 vs 產業 2026-09-26 新增〕opt40 同日第二輪（原建議第 3、4 項）。改用證交所／櫃買 OpenAPI 的逐家月營收表自己加總官方 32 產業，數字跟臺股儀表板逐位相同；熱力圖原本的產業分類（FinMind，有 255 檔擠在舊「電子工業」大類）不動，營收另開一個檢視。詳見 §8 opt41。
+
 > 〔opt40 證交所臺股儀表板資料接入 2026-09-26 新增〕使用者發現證交所 2026/8 新上線的「臺股儀表板」（https://www.twse.com.tw/dashboard/zh/credit/margin.html），問哪些能拿來優化審視網。逐頁看過 6 頁、抓出背後 12 支免金鑰 JSON 端點後，先做兩項：盤勢總覽「市場槓桿溫度」卡（全市場擔保維持率／整戶<130% 戶數／處分斷頭戶數／融資占市值年度位置），以及個股頁＋自選清單的「違約交割揭露」警示；產業別月營收接熱力圖、全體營收小格列下一輪。詳見 §8 opt40。
 
 > 〔opt39 老王每日報告分頁 2026-09-24 新增〕手機看報告原本靠 Obsidian＋obsidian-git，9/24 手機端 git 分岔（Merges with conflicts）打不開；改在審視網新增 `/reports` 獨立分頁，直接讀 gateway 的 `reports/`（與 engine 無關），排版比照 Obsidian（callout 色塊圖示、表格線框、紅/綠/橘語意色），並讓手機版側邊欄預設收起。
@@ -325,6 +327,20 @@ Python engine  FastAPI :8000         ← 既有，本案會新增 /data 或 /mar
   **驗證**：本機另起臨時 gateway（:3200，不動常駐的 :3000）＋Chrome 實測：桌機與 390px 手機寬（無橫向捲動）、兩張小圖提示框、6213（5 天前、紅）／2408（近一年 3 次）／2337（205 天前、灰）／2330（無）四種個股頁狀態、攔截自選清單 API 驗徽章；上游斷線時確認退回磁碟並標 stale、完全沒快取時回 502。`npm run build` 乾淨；vitest 420 過、1 敗為既有的 `futures.test.ts` 舊案（與本次無關）。
 
   **下一輪候選（未做）**：③產業別月營收（`tpex.org.tw/www/revenue/industry|industryTrend`，`market=T`＝上市，32 個官方產業）接熱力圖「股價漲跌／營收年增」切換，並在個股「產業分析」分頁加「本公司 vs 所屬產業」營收年增對照（要先核對產業名稱跟 FinMind `industry_category` 對不對得上）；④盤勢總覽加全體上市月營收小格（`revenue/change`）。
+
+- **opt41 ✅ 2026-09-26 月營收三處：盤勢總覽「上市營收動能」卡＋熱力圖「產業營收」檢視＋個股「月營收動能 vs 所屬產業」（Claude 直接實作）。**
+
+  **起因**：opt40 上線後使用者說「可以開始動手處理另外兩項」＝opt40 建議清單的第 3、4 項。
+
+  **資料源決定（先查再做）**：臺股儀表板的產業營收 API（`tpex.org.tw/www/revenue/industry`）只給前十占比與成長／衰退前三，沒有全部 32 產業的年增率，而且 2026/8 營收前的月份查不到。改用**證交所 OpenAPI `t187ap05_L`（上市）＋櫃買 OpenAPI `mopsfin_t187ap05_O`（上櫃）逐家月營收表**，一次拿到全部公司，自己依官方「產業別」加總（排除存託憑證）——驗證結果跟儀表板**逐位相同**：2026-08 全體上市 1,084 家、58,916.61 億、年增 46.8118%、月增 5.6601%、累計年增 37.9191%；電腦及週邊 +90.5877%、半導體 +61.2997%、金融保險 −34.8798%；成長前三與衰退名單也一致。12 個月趨勢只有儀表板有，才用它的 `revenue/change`、`revenue/industryTrend`。**熱力圖既有的產業分類不能直接拿來配**：那是 FinMind 的 `industry_category`，有 255 檔擠在已停用的「電子工業」大類、還有「化學生技醫療」等舊類，所以營收另開一個用官方分類的檢視，「產業聚合」維持原樣。
+
+  **後端**：`lib/twse_revenue.js` 純函式（`parseCompanyRows` 千元→元、`buildMarket` 產業加總＋share、申報期間混兩個月時只拿最新月、`industryRank`、`parseTpexTrend` 億→元），`node --test lib/twse_revenue.test.js` 7 案（縮減版真實測資，驗到跟儀表板逐位相同）。`routes/twse_dashboard.js` 新增三支：`GET /api/market/revenue`（全體上市概況＋12 個月趨勢＋32 產業，約 10KB）、`GET /api/market/revenue/company/:code`（本公司＋同市場同產業加總＋產業內年增率名次；ETF／存託憑證回 404）、`GET /api/market/revenue/industry?name=[&market=otc]`（產業 12 個月趨勢＋成分公司）。三支共用一份資料：記憶體 6 小時快取、同時進來的請求只打一次上游、失敗退磁碟 `data/twse_revenue.json`（已 gitignore）標 stale；上市抓不到才算失敗，上櫃與趨勢抓不到只少那一塊。
+
+  **前端**：①盤勢總覽新 `components/RevenueOverviewCard.tsx`（當月營收、年增／月增／累計年增、12 個月長條、年增最高三產業與年減產業，點產業直接開熱力圖明細），放在「市場多空寬度」右邊（lg 8 欄），**自選清單因此改成全寬**；②熱力圖第四個檢視「產業營收」（`components/RevenueHeatmap.tsx`）：官方 32 產業 treemap，面積＝當月營收（最小產業有占總額 0.4% 的下限）、顏色＝年增率（±50% 飽和，跟股價漲跌同一組紅漲綠跌色），點產業在下方展開明細（六格指標＋12 個月長條＋成分公司可依營收／年增／月增排序、前 15 家可展開全部、點公司進個股頁產業分析分頁），選中產業寫進 `?industry=`；這個檢視不等 engine 的股價熱力圖；③個股頁「產業分析」分頁最上方 `components/RevenueVsIndustryCard.tsx`：本公司 vs 同市場同產業的年增／月增／累計年增與差距（百分點）、占產業比重、產業內年增率名次、公司申報的增減原因；上櫃股跟上櫃產業比；ETF 查不到就整張不顯示。計算層 `lib/marketRevenue.ts`（`marketRevenue.test.ts` 10 案）。`MiniTrendChart` 新增 `axisFormat`（軸標籤用精簡單位，「5,010.2 億」原本會被左邊 44px 截掉）。
+
+  **驗證**：本機臨時 gateway（:3200）＋Chrome：營收熱力圖、提示框、點產業明細（半導體 96 家、電子通路 22 家）、從盤勢卡連結帶產業進入、個股頁 2330（年增 +53.32% vs 產業 +61.30%、96 家排第 29）／3055 蔚華科（+108.24%，22 家排第 3）／上櫃 6488 環球晶（跟上櫃半導體 110 家比）／0050（不顯示）、390px 手機寬無橫向捲動。自動化分頁在瀏覽器是隱藏狀態、平滑捲動不會播，改用攔截確認點產業後有呼叫捲動。vitest 430 過、1 敗為既有 `futures.test.ts` 舊案；三個頁面檔 lint 問題數與改動前相同、新檔 0。
+
+  **限制**：臺股儀表板的趨勢 API 只能查最新月（往回 12 個月），更早的月份查不到；上市公司每月 10 日前申報（保險業 15 日），申報期間表會陸續更新，快取 6 小時。
 
 ---
 

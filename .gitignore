@@ -113,6 +113,7 @@ data/twse_taiex.json
 # 證交所臺股儀表板：信用交易／違約揭露快取（routes/twse_dashboard.js，可重抓）
 data/twse_credit.json
 data/twse_default_disclosures.json
+data/twse_revenue.json
 # 保留下來的舊 log 樣本（見 ops-local-gateway-autostart.md §4.1b 的 pm2 當機迴圈）
 data/_archive/
 

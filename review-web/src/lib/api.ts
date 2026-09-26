@@ -551,6 +551,11 @@ export const api = {
   // 證交所臺股儀表板（gateway 自抓，不經 engine）：市場槓桿溫度、近一年個股違約揭露名單
   getMarketCredit: (force = false) => req<MarketCreditResp>(`/market/credit${qs({ force: force ? 1 : undefined })}`),
   getDefaultDisclosures: (force = false) => defaultDisclosuresOnce(force),
+  // 月營收（證交所／櫃買逐家月營收表＋臺股儀表板趨勢，gateway 自抓）：全體上市、官方產業、單一公司 vs 產業
+  getMarketRevenue: (force = false) => req<MarketRevenueResp>(`/market/revenue${qs({ force: force ? 1 : undefined })}`),
+  getRevenueCompany: (code: string) => req<RevenueCompanyResp>(`/market/revenue/company/${encodeURIComponent(code)}`),
+  getRevenueIndustry: (name: string, market?: 'listed' | 'otc') =>
+    req<RevenueIndustryResp>(`/market/revenue/industry${qs({ name, market: market === 'otc' ? 'otc' : undefined })}`),
 
   // 個股／ETF 已實現損益（opt36，gateway 讀寫 data/stock_realized_trades.json）
   getStockRealized: () => req<StockRealizedResp>('/stock-realized'),
@@ -801,6 +806,78 @@ export interface DefaultDisclosuresResp {
   cached?: boolean;
   stale?: boolean;
   stale_reason?: string;
+}
+
+/**
+ * 月營收加總（全體或單一產業）。金額單位一律「元」，百分比是 %（46.81 ＝ +46.81%）。
+ * 產業是證交所官方現行分類（上市 32 類），跟熱力圖「產業聚合」的 FinMind 分類不同。
+ */
+export interface RevenueAggregate {
+  name?: string;              // 產業名；全體概況沒有
+  count: number;              // 申報家數
+  revenue: number;
+  last_month: number;
+  last_year: number;
+  cum_revenue: number;
+  cum_last_year: number;
+  mom_pct: number | null;
+  yoy_pct: number | null;
+  cum_yoy_pct: number | null;
+  share_pct?: number | null;  // 占同市場營收比重 %
+}
+
+export interface RevenueTrendPoint {
+  month: string;              // YYYY-MM
+  revenue: number;            // 元
+  mom_pct?: number;
+}
+
+export interface RevenueCompany {
+  code: string;
+  name: string;
+  market: 'listed' | 'otc';
+  industry: string;
+  revenue: number | null;
+  mom_pct: number | null;
+  yoy_pct: number | null;
+  cum_yoy_pct: number | null;
+  note: string;               // 公司自己申報的增減說明
+}
+
+interface RevenueStaleFields {
+  fetched_at: string;
+  stale?: boolean;
+  stale_reason?: string;
+}
+
+export interface MarketRevenueResp extends RevenueStaleFields {
+  market: 'listed';
+  month: string;              // 資料年月 YYYY-MM
+  published: string | null;   // 證交所出表日
+  overview: RevenueAggregate;
+  industries: RevenueAggregate[];      // 依營收大到小
+  trend: RevenueTrendPoint[] | null;   // 全體上市近 12 個月
+  otc_overview: (RevenueAggregate & { month: string }) | null;
+  partial_errors?: string[];
+  source: string;
+}
+
+export interface RevenueCompanyResp extends RevenueStaleFields {
+  month: string;
+  published: string | null;
+  company: RevenueCompany & { month: string; current: boolean };
+  industry: RevenueAggregate | null;   // 同市場同產業
+  rank: { rank: number; of: number } | null;  // 產業內年增率名次
+}
+
+export interface RevenueIndustryResp extends RevenueStaleFields {
+  market: 'listed' | 'otc';
+  month: string;
+  published: string | null;
+  industry: RevenueAggregate;
+  trend: RevenueTrendPoint[] | null;
+  trend_error?: string;
+  companies: RevenueCompany[];         // 依營收大到小
 }
 
 // 盤勢總覽的自選清單和個股頁都會要這份名單，一天才變一次——同一個分頁只抓一次

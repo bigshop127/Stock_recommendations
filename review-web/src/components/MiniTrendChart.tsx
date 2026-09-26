@@ -9,8 +9,10 @@ export interface MiniTrendPoint {
 interface MiniTrendChartProps {
   points: MiniTrendPoint[];
   kind: 'line' | 'bar';
-  /** 軸標籤與提示框用的數字格式 */
+  /** 提示框用的數字格式（軸標籤沒另外給 axisFormat 時也用它） */
   format: (v: number) => string;
+  /** 軸標籤專用的精簡格式——左邊只留 44px，「5,010.2 億」這種會被截掉 */
+  axisFormat?: (v: number) => string;
   /** 給螢幕閱讀器的圖名（畫面上的標題由外層負責） */
   label: string;
   height?: number;
@@ -29,6 +31,7 @@ export const MiniTrendChart: React.FC<MiniTrendChartProps> = ({
   points,
   kind,
   format,
+  axisFormat,
   label,
   height = 132,
 }) => {
@@ -103,7 +106,7 @@ export const MiniTrendChart: React.FC<MiniTrendChartProps> = ({
           <g key={i}>
             <line x1={PAD.left} x2={width - PAD.right} y1={yAt(t)} y2={yAt(t)} stroke="#27272a" strokeWidth={1} />
             <text x={PAD.left - 6} y={yAt(t) + 3} fill="#71717a" fontSize="10" textAnchor="end" fontFamily="ui-monospace, monospace">
-              {format(t)}
+              {(axisFormat || format)(t)}
             </text>
           </g>
         ))}

@@ -3,6 +3,7 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import { api, type StockHeatmap, type HeatmapStock } from '../lib/api';
 import { squarify, type TreemapInput, type TreemapTile } from '../lib/treemap';
 import { aggregateGroups, selectTopGroups, type GroupAgg } from '../lib/groupHeatmap';
+import { RevenueHeatmap } from '../components/RevenueHeatmap';
 import {
   Loader2,
   RefreshCw,
@@ -31,18 +32,21 @@ const HEADER_H = 17;
 const GROUP_GAP = 2;
 const TINY_FLOOR = 1; // 成交值下限，避免 0 值
 
+// 族群 / 個股 (finviz 式) / 產業聚合 / 產業營收（opt41，官方 32 產業，資料源跟另外三個不同）
+type ViewMode = 'group' | 'stock' | 'sector' | 'revenue';
+const VIEW_MODES: ViewMode[] = ['group', 'stock', 'sector', 'revenue'];
+
 export const SectorHeatmap: React.FC = () => {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const initialPeriod = (searchParams.get('period') as 'day' | 'week' | 'month') || 'day';
-  const initialView = (searchParams.get('view') as 'group' | 'stock' | 'sector') || 'group';
+  const initialView = (searchParams.get('view') as ViewMode) || 'group';
 
   const [period, setPeriod] = useState<'day' | 'week' | 'month'>(
     ['day', 'week', 'month'].includes(initialPeriod) ? initialPeriod : 'day'
   );
-  // 檢視模式：族群 / 個股 (finviz 式) / 產業聚合
-  const [viewMode, setViewMode] = useState<'group' | 'stock' | 'sector'>(
-    ['group', 'stock', 'sector'].includes(initialView) ? initialView : 'group'
+  const [viewMode, setViewMode] = useState<ViewMode>(
+    VIEW_MODES.includes(initialView) ? initialView : 'group'
   );
   const [data, setData] = useState<StockHeatmap | null>(null);
   const [loading, setLoading] = useState(true);
@@ -65,12 +69,13 @@ export const SectorHeatmap: React.FC = () => {
     );
   };
 
-  const handleViewChange = (newView: 'group' | 'stock' | 'sector') => {
+  const handleViewChange = (newView: ViewMode) => {
     setViewMode(newView);
     setSearchParams(
       (prev) => {
         const next = new URLSearchParams(prev);
         next.set('view', newView);
+        if (newView !== 'revenue') next.delete('industry'); // 選中的產業只屬於營收檢視
         return next;
       },
       { replace: true }
@@ -90,9 +95,11 @@ export const SectorHeatmap: React.FC = () => {
     }
   };
 
+  // 產業營收檢視自己抓月營收，不用等股價熱力圖（engine 冷載要十幾秒）
+  const isRevenueView = viewMode === 'revenue';
   useEffect(() => {
-    fetchData();
-  }, [period]);
+    if (!isRevenueView) fetchData();
+  }, [period, isRevenueView]);
 
   // Aggregate stocks by sector
   const aggregatedSectors = useMemo<AggregatedSector[]>(() => {
@@ -275,6 +282,31 @@ export const SectorHeatmap: React.FC = () => {
     return name;
   };
 
+  const viewToggle = (
+    <div className="flex items-center gap-1 bg-zinc-900/60 border border-zinc-800/80 rounded-lg p-1 flex-wrap">
+      {([
+        ['group', '族群'],
+        ['stock', '個股'],
+        ['sector', '產業聚合'],
+        ['revenue', '產業營收'],
+      ] as [ViewMode, string][]).map(([mode, label]) => (
+        <button
+          key={mode}
+          onClick={() => handleViewChange(mode)}
+          className={`px-3 py-1.5 rounded-md text-xs font-semibold transition ${
+            viewMode === mode ? 'bg-primary text-white shadow-sm' : 'text-zinc-400 hover:text-zinc-200'
+          }`}
+        >
+          {label}
+        </button>
+      ))}
+    </div>
+  );
+
+  if (viewMode === 'revenue') {
+    return <RevenueHeatmap viewToggle={viewToggle} />;
+  }
+
   if (loading) {
     return (
       <div className="h-[70vh] flex flex-col items-center justify-center gap-3">
@@ -321,33 +353,8 @@ export const SectorHeatmap: React.FC = () => {
           </p>
         </div>
         <div className="flex items-center gap-3 shrink-0 flex-wrap">
-          {/* 檢視模式切換：族群 / 個股 / 產業 */}
-          <div className="flex items-center gap-1 bg-zinc-900/60 border border-zinc-800/80 rounded-lg p-1">
-            <button
-              onClick={() => handleViewChange('group')}
-              className={`px-3 py-1.5 rounded-md text-xs font-semibold transition ${
-                viewMode === 'group' ? 'bg-primary text-white shadow-sm' : 'text-zinc-400 hover:text-zinc-200'
-              }`}
-            >
-              族群
-            </button>
-            <button
-              onClick={() => handleViewChange('stock')}
-              className={`px-3 py-1.5 rounded-md text-xs font-semibold transition ${
-                viewMode === 'stock' ? 'bg-primary text-white shadow-sm' : 'text-zinc-400 hover:text-zinc-200'
-              }`}
-            >
-              個股
-            </button>
-            <button
-              onClick={() => handleViewChange('sector')}
-              className={`px-3 py-1.5 rounded-md text-xs font-semibold transition ${
-                viewMode === 'sector' ? 'bg-primary text-white shadow-sm' : 'text-zinc-400 hover:text-zinc-200'
-              }`}
-            >
-              產業聚合
-            </button>
-          </div>
+          {/* 檢視模式切換：族群 / 個股 / 產業聚合 / 產業營收 */}
+          {viewToggle}
 
           <button
             onClick={() => fetchData(true)}

@@ -7,6 +7,7 @@ import { disclosuresForCode, daysBetween, tpeToday, fmtYuan } from '../lib/marke
 import { PriceChart } from '../components/PriceChart';
 import { ChipsCharts } from '../components/ChipsCharts';
 import { StockBriefCard } from '../components/StockBriefCard';
+import { RevenueVsIndustryCard } from '../components/RevenueVsIndustryCard';
 import { FolderPickerButton } from '../components/FolderPickerButton';
 import { buildStockBrief } from '../lib/stockBrief';
 import type { StockBriefInput } from '../lib/stockBrief';
@@ -2212,6 +2213,9 @@ export const StockDetail: React.FC = () => {
 
     return (
       <div className="space-y-6">
+        {/* 月營收 vs 官方產業（opt41，自己抓資料；ETF 等查不到就不顯示） */}
+        <RevenueVsIndustryCard code={activeCode} />
+
         {/* Industry Position Summary Bar */}
         <div className="bg-card border border-border rounded-xl p-6">
           <div className="flex items-center justify-between border-b border-border/60 pb-3 mb-4 flex-wrap gap-3">

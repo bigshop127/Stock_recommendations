@@ -12,6 +12,7 @@ import type {
   Dashboard as DashboardData,
   MarketCreditResp,
   DefaultDisclosuresResp,
+  MarketRevenueResp,
 } from '../lib/api';
 import {
   Activity,
@@ -30,6 +31,7 @@ import {
 import { SymbolSearch } from '../components/SymbolSearch';
 import { OverviewCard } from '../components/OverviewCard';
 import { MarketLeverageCard } from '../components/MarketLeverageCard';
+import { RevenueOverviewCard } from '../components/RevenueOverviewCard';
 import { summarizeDisclosures, fmtYuan } from '../lib/marketCredit';
 import { buildMarketSummary } from '../lib/marketSummary';
 import {
@@ -577,6 +579,11 @@ export const Dashboard: React.FC = () => {
     loading: boolean;
     error: string | null;
   }>({ data: null, loading: true, error: null });
+  const [revenueState, setRevenueState] = useState<{
+    data: MarketRevenueResp | null;
+    loading: boolean;
+    error: string | null;
+  }>({ data: null, loading: true, error: null });
   // 違約揭露名單只拿來在自選清單上標警示，抓不到就不標，不另外顯示錯誤
   const [disclosures, setDisclosures] = useState<DefaultDisclosuresResp | null>(null);
 
@@ -859,6 +866,16 @@ export const Dashboard: React.FC = () => {
     }
   };
 
+  const fetchRevenue = async (force = false) => {
+    setRevenueState((prev) => ({ ...prev, loading: true, error: null }));
+    try {
+      const data = await api.getMarketRevenue(force);
+      setRevenueState({ data, loading: false, error: null });
+    } catch (err: any) {
+      setRevenueState((prev) => ({ data: prev.data, loading: false, error: err.message || '無法取得月營收資料' }));
+    }
+  };
+
   const fetchDisclosures = async (force = false) => {
     try {
       setDisclosures(await api.getDefaultDisclosures(force));
@@ -919,6 +936,7 @@ export const Dashboard: React.FC = () => {
       loadMockData();
       fetchWatchlist();
       fetchCredit(force); // gateway 自抓證交所、不經 engine，mock 模式照樣抓真的
+      fetchRevenue(force);
       return;
     }
     fetchIndices();
@@ -929,6 +947,7 @@ export const Dashboard: React.FC = () => {
     fetchHeatmap(force);
     fetchWatchlist();
     fetchCredit(force);
+    fetchRevenue(force);
     fetchDisclosures(force);
   };
 
@@ -1684,12 +1703,21 @@ export const Dashboard: React.FC = () => {
           </div>
         </OverviewCard>
 
-        {/* Watchlist 自選與焦點個股審查清單 — Row4 右 (order-8) */}
+        {/* 上市營收動能 — Row4 右（同 order-7，DOM 在寬度卡後面，所以排在它右邊） */}
+        <RevenueOverviewCard
+          data={revenueState.data}
+          loading={revenueState.loading}
+          error={revenueState.error}
+          onRetry={() => fetchRevenue(true)}
+          className="lg:col-span-8 lg:order-7"
+        />
+
+        {/* Watchlist 自選與焦點個股審查清單 — Row5 全寬 (order-8)；opt41 起營收卡佔了寬度卡右邊，清單改全寬 */}
         <OverviewCard
           title="自選與焦點審查清單 (Watchlist)"
           icon={<Activity className="w-5 h-5 text-primary" />}
           caption="整合系統焦點推薦與個人自選追蹤標的"
-          className="lg:col-span-8 lg:order-8"
+          className="md:col-span-2 lg:col-span-12 lg:order-8"
           actions={
             <button
               onClick={() => setShowSearch(true)}

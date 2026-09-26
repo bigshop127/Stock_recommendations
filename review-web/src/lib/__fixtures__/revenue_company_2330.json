@@ -1,0 +1,36 @@
+{
+ "month": "2026-08",
+ "published": "2026-09-17",
+ "company": {
+  "code": "2330",
+  "name": "台積電",
+  "market": "listed",
+  "industry": "半導體業",
+  "revenue": 514805337000,
+  "mom_pct": 10.099818994181087,
+  "yoy_pct": 53.320053714712955,
+  "cum_yoy_pct": 39.26370665798065,
+  "note": "因先進製程產品需求增加所致。",
+  "month": "2026-08",
+  "current": true
+ },
+ "industry": {
+  "name": "半導體業",
+  "count": 96,
+  "revenue": 910936931000,
+  "last_month": 832472462000,
+  "last_year": 564748184000,
+  "cum_revenue": 5907538407000,
+  "cum_last_year": 4228913044000,
+  "mom_pct": 9.4254732236416,
+  "yoy_pct": 61.29966537439986,
+  "cum_yoy_pct": 39.6940146447712,
+  "share_pct": 15.461462532510941
+ },
+ "rank": {
+  "rank": 29,
+  "of": 96
+ },
+ "fetched_at": "2026-09-26T14:30:25.574Z",
+ "stale": false
+}
