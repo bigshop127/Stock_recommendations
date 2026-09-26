@@ -374,8 +374,8 @@
   "config": {
     "analysts": ["technical", "news_sentiment", "puhui"],
     "debate_rounds": 1,
-    "primary_provider": "gemini",
-    "fallback_provider": "claude"
+    "primary_provider": "claude",
+    "fallback_provider": "gemini"
   }
 }
 ```

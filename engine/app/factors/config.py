@@ -113,9 +113,11 @@ class AgentConfig:
     analysts: tuple[str, ...] = ("technical", "news_sentiment", "puhui")
     debate_rounds: int = 1               # 多空研究員辯論輪數（成本主要槓桿）
     watchlist_top_n: int = 10            # codes 省略時取 /watchlist 前 N（≤10）
-    # LLM provider 政策：Gemini CLI 主 → 額度用完切 Claude CLI
-    primary_provider: str = "gemini"
-    fallback_provider: str = "claude"
+    # LLM provider 政策：Claude CLI 主 → 失敗/額度用完切 Gemini CLI。
+    # 2026-09-26 改：原本 Gemini 主，但 Gemini CLI 訂閱到期已解除安裝（VM 則從來沒裝，一直靠備援跑 Claude）。
+    # Gemini 沒裝時備援那一步會立刻 FileNotFoundError、不耗時。
+    primary_provider: str = "claude"
+    fallback_provider: str = "gemini"
     gemini_model: str = ""              # 空 = CLI 預設模型
     claude_model: str = ""             # 空 = CLI 預設模型
     llm_timeout_s: int = 180           # 單次 CLI 呼叫逾時

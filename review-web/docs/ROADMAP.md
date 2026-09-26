@@ -112,6 +112,8 @@ Python engine  FastAPI :8000         ← 既有，本案會新增 /data 或 /mar
 
 ## 5. 互動模式與流程（每階段）
 
+> **2026-09-26 改版（以此為準）**：需求 → Claude 擬規格、使用者確認 → **Claude 實作＋測試＋自我 review → commit/push 並部署 VM** → 使用者事後驗收。下方舊流程第 3 步「你寫 code」實際上是 Gemini（Antigravity CLI）在寫，Gemini 已於 9/26 退場（8 月底起其實已經是 Claude 直接實作）。舊流程保留作歷史參考。
+
 1. 你開新對話：「請你幫我去閱讀 `review-web\docs\prompts\phaseN.md`，然後根據裡面的說明進行」。
 2. 新對話的 Claude 讀提示詞 → **複述本階段希望看到的內容、澄清疑問**（不直接寫產品 code）。
 3. **你寫 code / 架構。**
@@ -121,9 +123,7 @@ Python engine  FastAPI :8000         ← 既有，本案會新增 /data 或 /mar
 ## 6. 文件維護規則
 
 - **SSOT＝本檔**。狀態、決策變更、缺口先改這裡。
-- Obsidian vault `C:\obsidian\儲存庫\個股全面審視網`（沿用財經APP 整理法）：
-  - `README.md`（索引）、`開發進度.md`（時序日誌）、`階段提示詞索引.md`
-  - `1_系統概覽` / `2_盤勢總覽` / `3_個股審視` / `4_AI分析` / `5_API與契約` / `6_部署與運維`
+- Obsidian vault：**2026-09-26 起只留一頁** `C:\obsidian\儲存庫\個股全面審視網\個股全面審視網 目前進度.md`（只寫現況：怎麼開、有哪些頁面、還沒做的）。每次上線功能直接改寫這頁，不再累積時序日誌；舊的 `README`／`開發進度`／`1_`～`6_` 分類已整理掉（原文在 `C:\封存\Obsidian儲存庫_整理前_2026-09-26.zip`）。
 - `.claude` 記憶：建一則 project 記憶指向本檔與 vault，方便未來新 session 銜接。
 
 ## 7. 沿用既有系統的坑（務必帶進每階段 review）
@@ -143,7 +143,7 @@ Python engine  FastAPI :8000         ← 既有，本案會新增 /data 或 /mar
 
 ## 8. 優化專案（Phase 0–8 完工後・2026-06-27 起）
 
-> 全案藍圖 Phase 0–8 已收尾；以下為使用者後續提出的功能優化，**各自獨立成小專案**，沿用同一互動模式（Claude 給提示詞 → 使用者寫 code → Claude review → 更新 SSOT/Obsidian/記憶）。提示詞置於 `review-web/docs/prompts/optN-*.md`。
+> 全案藍圖 Phase 0–8 已收尾；以下為使用者後續提出的功能優化，**各自獨立成小專案**，沿用同一互動模式（Claude 給提示詞 → 使用者寫 code → Claude review → 更新 SSOT/Obsidian/記憶；**2026-09-26 起改為 Claude 實作到上線、使用者事後驗收，見 §5**）。提示詞置於 `review-web/docs/prompts/optN-*.md`。
 
 | # | 專案 | 提示詞 | 重點 | 後端改動 | 狀態 |
 |---|---|---|---|---|---|

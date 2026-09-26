@@ -5,7 +5,7 @@
   ＋ 對照 blended_score 的一致性檢查 ＋ LLM 用量遙測）。
 `codes` 省略 → 取 `/watchlist` 前 N（預設 ≤10）。
 
-**不進回測**；僅每日盤後對觀察清單跑。所有 LLM 走 Gemini CLI 主 → Claude CLI 備援。
+**不進回測**；僅每日盤後對觀察清單跑。所有 LLM 走 Claude CLI 主 → Gemini CLI 備援（2026-09-26 調換）。
 """
 from __future__ import annotations
 

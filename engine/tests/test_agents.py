@@ -11,12 +11,16 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 
 from app.agents import llm_cli, orchestrator, parsing, roles
 from app.agents.llm_cli import UsageLog
 from app.factors.config import DEFAULT_CONFIG
 
-CFG = DEFAULT_CONFIG
+# 切換機制與 provider 無關；這裡的測試固定用「Gemini 主 → Claude 備」驗證（假 runner 以 gemini 模擬額度用盡）。
+# 2026-09-26 起真正的預設是 Claude 主 → Gemini 備，由下方 test_default_* 另外鎖住。
+CFG = replace(DEFAULT_CONFIG, agents=replace(DEFAULT_CONFIG.agents,
+                                             primary_provider="gemini", fallback_provider="claude"))
 
 
 # ── 假 runner 工具 ────────────────────────────────────────────────────────────
@@ -71,6 +75,24 @@ def test_quota_exhausted_switches_to_claude():
     assert usage.switch_events and usage.switch_events[0]["to"] == "claude"
     # 第一個嘗試是 gemini 且失敗
     assert res.attempts[0]["provider"] == "gemini" and res.attempts[0]["ok"] is False
+
+
+def test_default_primary_is_claude():
+    assert DEFAULT_CONFIG.agents.primary_provider == "claude"
+    res = llm_cli.call_llm("hi", system="你是技術＋籌碼分析師", cfg=DEFAULT_CONFIG, runner=make_runner())
+    assert res.ok and res.provider == "claude" and res.switched is False
+
+
+def test_default_claude_fail_with_gemini_missing_degrades():
+    """Gemini CLI 已移除：Claude 失敗時備援那步 FileNotFoundError → 降級回錯誤、不崩潰。"""
+    def runner(argv, stdin, timeout, cwd):
+        if argv[0] == "gemini":
+            raise FileNotFoundError("gemini")
+        return 1, "", "boom"
+    res = llm_cli.call_llm("hi", cfg=DEFAULT_CONFIG, runner=runner)
+    assert res.ok is False and res.text == ""
+    assert [a["provider"] for a in res.attempts] == ["claude", "gemini"]
+    assert "CLI 不存在" in res.attempts[1]["reason"]
 
 
 def test_quota_detection_keywords():

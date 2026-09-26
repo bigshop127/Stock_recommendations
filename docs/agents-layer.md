@@ -67,7 +67,7 @@ CLI wrapper → 自寫更省、相依更少、最好測、為雲端鋪路。`eng
 
 ## 3. LLM 切換模組 `llm_cli.py`（成本控制核心）
 
-**政策**：Gemini CLI 主 → 額度/速率用盡自動切 Claude CLI（兩者本機皆 npm 全域 CLI）。
+**政策**：~~Gemini CLI 主 → 額度/速率用盡自動切 Claude CLI~~ → **2026-09-26 起調換為 Claude CLI 主 → Gemini CLI 備**（Gemini CLI 訂閱到期、已從本機移除；VM 從未安裝 Gemini，本來就一直由備援的 Claude 在跑）。順序由 `AgentConfig.primary_provider/fallback_provider` 決定。
 
 - **無頭呼叫**：`gemini --skip-trust -p <短指示>`、`claude -p`；**整段 prompt（system＋user）走 stdin**。
   - 🚨 **踩過的坑**：Windows npm CLI 是 `.CMD` 殼、以 `%*` 轉發參數 → 含**換行/`{}`/引號的多行 prompt

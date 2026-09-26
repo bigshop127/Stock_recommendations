@@ -1,6 +1,7 @@
 """可重用 LLM provider 模組（階段5）— 無頭 CLI 呼叫 ＋ 自動備援 ＋ 用量遙測。
 
-政策（ROADMAP §1.6 / phase5）：**Gemini CLI 主 → 當天額度/速率用盡自動切 Claude CLI**。
+政策（ROADMAP §1.6 / phase5，2026-09-26 調換）：**Claude CLI 主 → 失敗/額度用盡自動切 Gemini CLI**
+（原本 Gemini 主；Gemini CLI 訂閱到期已移除，順序由 `AgentConfig.primary_provider/fallback_provider` 決定）。
 - 無頭：`gemini -p "<prompt>"`、`claude -p "<prompt>"`（不開互動視窗，為階段8 雲端鋪路）。
 - 偵測額度/速率用盡（關鍵字 / 非零 exit / 空輸出）→ 切備援，記一筆切換事件。
 - 每次呼叫記 **token 估算 / 耗時 / provider** → `UsageLog` 匯總每日成本估算。
