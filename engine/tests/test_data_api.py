@@ -317,49 +317,77 @@ def test_macro_missing_key_is_502(monkeypatch):
     assert "FRED_API_KEY" in r.json()["detail"]
 
 
+def _month_start(offset: int) -> str:
+    """本月 1 日往前／後推 offset 個月（FinMind 月營收的 date 就是公布那個月的 1 日）。"""
+    return (pd.Timestamp.today().to_period("M") + offset).to_timestamp().strftime("%Y-%m-%d")
+
+
+def _quarter_end(offset: int) -> str:
+    """最近一個已結束季度的季末日，往前推 offset 季（offset=0 是最近一季）。"""
+    last_q = pd.Timestamp.today().to_period("Q") - 1
+    return (last_q - offset).end_time.strftime("%Y-%m-%d")
+
+
+def _days_ago(n: int) -> str:
+    return (pd.Timestamp.today() - pd.Timedelta(days=n)).strftime("%Y-%m-%d")
+
+
+def _fin_row(date: str, eps, revenue: float, net: float) -> dict:
+    return {
+        "date": date, "eps": eps, "gross_margin": 50.0, "operating_margin": 40.0, "net_margin": net / revenue * 100,
+        "revenue": revenue, "gross_profit": revenue * 0.5, "operating_income": revenue * 0.4,
+        "pre_tax_income": net * 1.2, "net_income": net, "net_income_parent": net,
+    }
+
+
 def test_fundamentals(monkeypatch):
-    # Mock all the finmind_client fetch functions used by service.get_fundamentals
     monkeypatch.setattr(
         finmind_client, "fetch_valuation",
         lambda code, start, end: pd.DataFrame(
-            {"date": ["2026-06-18", "2026-06-19"], "pe_ratio": [24.0, 24.5], "pb_ratio": [6.7, 6.8], "dividend_yield": [2.5, 2.45]}
+            {"date": [_days_ago(2), _days_ago(1)], "pe_ratio": [24.0, 24.5], "pb_ratio": [6.7, 6.8], "dividend_yield": [2.5, 2.45]}
         )
     )
+    # 公布月 1 日：_month_start(0) 是上個月營收、_month_start(-12) 是去年同月
     monkeypatch.setattr(
         finmind_client, "fetch_month_revenue",
         lambda code, start, end: pd.DataFrame(
-            {
-                "date": ["2025-05-10", "2026-04-10", "2026-05-10"],
-                "revenue": [2.0e11, 2.4e11, 2.5e11]
-            }
+            {"date": [_month_start(-12), _month_start(-1), _month_start(0)], "revenue": [2.0e11, 2.4e11, 2.5e11]}
         )
     )
+    fin_rows = [
+        _fin_row(_quarter_end(4), 5.0, 800.0, 300.0),
+        _fin_row(_quarter_end(3), 6.0, 900.0, 320.0),
+        _fin_row(_quarter_end(2), 7.0, 950.0, 340.0),
+        _fin_row(_quarter_end(1), 8.0, 1000.0, 360.0),
+        _fin_row(_quarter_end(0), 9.0, 1200.0, 450.0),
+    ]
+    monkeypatch.setattr(finmind_client, "fetch_financials", lambda code, start, end: pd.DataFrame(fin_rows))
     monkeypatch.setattr(
-        finmind_client, "fetch_financials",
-        lambda code, start, end: pd.DataFrame(
-            {"date": ["2025-12-31", "2026-03-31"], "eps": [9.5, 8.7], "gross_margin": [55.0, 56.2], "operating_margin": [41.0, 42.1], "net_margin": [37.0, 38.5]}
-        )
+        finmind_client, "fetch_balance_sheet",
+        lambda code, start, end: pd.DataFrame([{
+            "date": _quarter_end(0), "total_assets": 1000.0, "total_liabilities": 400.0, "equity": 600.0,
+            "equity_parent": 590.0, "current_assets": 500.0, "current_liabilities": 250.0, "cash": 200.0,
+            "receivables": 100.0, "inventories": 80.0, "capital_stock": 100.0,
+        }])
     )
+    future_ex = (pd.Timestamp.today() + pd.Timedelta(days=20)).strftime("%Y-%m-%d")
     monkeypatch.setattr(
         finmind_client, "fetch_dividend",
-        lambda code, start, end: pd.DataFrame(
-            {
-                "date": ["2024-04-15", "2025-04-15", "2025-09-15"],
-                "cash_dividend": [12.0, 10.0, 3.5],
-                "stock_dividend": [0.0, 0.0, 0.0]
-            }
-        )
+        lambda code, start, end: pd.DataFrame([
+            {"date": _days_ago(400), "period": "上年度", "cash_dividend": 10.0, "stock_dividend": 0.0,
+             "announce_date": _days_ago(460), "cash_ex_date": _days_ago(406), "stock_ex_date": None, "payment_date": _days_ago(380)},
+            {"date": future_ex, "period": "本年度", "cash_dividend": 3.5, "stock_dividend": 0.5,
+             "announce_date": _days_ago(10), "cash_ex_date": future_ex, "stock_ex_date": future_ex, "payment_date": None},
+        ])
     )
     monkeypatch.setattr(
         finmind_client, "fetch_shares_issued",
-        lambda code, start, end: pd.DataFrame(
-            {"date": ["2026-06-19"], "shares": [2.59e10]}
-        )
+        lambda code, start, end: pd.DataFrame({"date": [_days_ago(1)], "shares": [10.0]})
     )
     monkeypatch.setattr(
         finmind_client, "fetch_ohlcv",
         lambda code, start, end: pd.DataFrame(
-            {"date": ["2026-06-19"], "open": [900.0], "high": [910.0], "low": [890.0], "close": [905.0], "volume": [1000], "turnover": [905000]}
+            {"date": [_days_ago(1)], "open": [900.0], "high": [910.0], "low": [890.0], "close": [905.0], "volume": [1000], "turnover": [905000]}
         )
     )
 
@@ -368,128 +396,166 @@ def test_fundamentals(monkeypatch):
     body = r.json()
     assert body["code"] == "2330"
     assert body["name"] == "台積電"
-    assert body["as_of"] == "2026-06-19"
-    
-    # Check summary
+    assert body["as_of"] == _days_ago(1)
+
     summary = body["summary"]
     assert summary["pe_ratio"] == 24.5
     assert summary["pb_ratio"] == 6.8
     assert summary["dividend_yield"] == 2.45
-    assert summary["market_cap"] == int(2.59e10 * 905.0)
-    assert summary["eps_ttm"] is None
+    assert summary["market_cap"] == int(10.0 * 905.0)
+    assert summary["eps_ttm"] == 30.0  # 6+7+8+9：最新四季、連續
 
-    # Let's check sub-arrays
     assert len(body["valuation"]) == 2
-    assert body["valuation"][0]["pe_ratio"] == 24.0
-    
-    assert len(body["revenue"]) == 3
-    assert body["revenue"][2]["month"] == "2026-05"
-    assert body["revenue"][2]["yoy"] == 25.0  # (2.5e11 - 2.0e11) / 2.0e11 * 100
-    assert body["revenue"][2]["mom"] == 4.1667  # (2.5e11 - 2.4e11) / 2.4e11 * 100
-    
-    assert len(body["financials"]) == 2
-    assert body["financials"][0]["quarter"] == "2025-Q4"
-    assert body["financials"][1]["quarter"] == "2026-Q1"
-    assert body["financials"][1]["eps"] == 8.7
-    assert body["financials"][1]["net_margin"] == 38.5
-    
-    assert len(body["dividend"]) == 2
-    assert body["dividend"][1]["year"] == "2025"
-    assert body["dividend"][1]["cash_dividend"] == 13.5
-    assert body["dividend"][1]["stock_dividend"] == 0.0
 
-    # If any datasource is empty, it should fall back to empty list/null
+    # 月份標籤＝公布月往前一個月；YoY 對的是去年同月
+    rev = body["revenue"]
+    assert len(rev) == 3
+    assert rev[2]["month"] == (pd.Timestamp.today().to_period("M") - 1).strftime("%Y-%m")
+    assert rev[2]["yoy"] == 25.0
+    assert rev[2]["mom"] == 4.1667
+
+    fin = body["financials"]
+    assert len(fin) == 5
+    last = fin[-1]
+    assert last["quarter"] == str(pd.Timestamp.today().to_period("Q") - 1).replace("Q", "-Q")
+    assert last["revenue"] == 1200.0
+    assert last["operating_income"] == 480.0
+    assert last["revenue_yoy"] == 50.0      # 1200 vs 四季前 800
+    assert last["net_income_yoy"] == 50.0   # 450 vs 300
+    assert fin[0]["revenue_yoy"] is None    # 更早的沒有去年同季
+
+    bal = body["balance_sheet"]
+    assert len(bal) == 1
+    assert bal[0]["debt_ratio"] == 40.0
+    assert bal[0]["current_ratio"] == 200.0
+    assert bal[0]["bvps"] == 59.0  # 590 ÷ (股本 100 ÷ 面額 10)
+
+    ev = body["dividend_events"]
+    assert [e["period"] for e in ev] == ["本年度", "上年度"]  # 新到舊，已宣告未除息的也在
+    assert ev[0]["base_date"] == future_ex
+    assert ev[0]["stock_dividend"] == 0.5
+    assert ev[0]["payment_date"] is None
+
+    # 資料源空 → 空陣列／null，不丟錯
     monkeypatch.setattr(finmind_client, "fetch_valuation", lambda code, start, end: pd.DataFrame())
+    monkeypatch.setattr(finmind_client, "fetch_balance_sheet", lambda code, start, end: pd.DataFrame())
     r = client.get("/data/fundamentals", params={"code": "2331"})
     assert r.status_code == 200
     body = r.json()
     assert body["valuation"] == []
+    assert body["balance_sheet"] == []
     assert body["summary"]["pe_ratio"] is None
 
 
 def test_fundamentals_calculation_details(monkeypatch):
-    # 1. Test financials pivot logic
+    # 1. 損益 pivot：三率＋金額；金融業欄名 IncomeAfterTax 也要認得
     raw_fin_data = pd.DataFrame([
         {"date": "2026-03-31", "type": "EPS", "value": 8.7},
         {"date": "2026-03-31", "type": "Revenue", "value": 1000.0},
         {"date": "2026-03-31", "type": "GrossProfit", "value": 560.0},
         {"date": "2026-03-31", "type": "OperatingIncome", "value": 420.0},
         {"date": "2026-03-31", "type": "IncomeAfterTaxes", "value": 380.0},
+        {"date": "2026-06-30", "type": "Revenue", "value": 500.0},
+        {"date": "2026-06-30", "type": "IncomeAfterTax", "value": 100.0},
     ])
     monkeypatch.setattr(finmind_client, "_finmind_get", lambda dataset, code, start, end: raw_fin_data)
-    
-    df_fin = finmind_client.fetch_financials("2330", "2026-01-01", "2026-04-01")
-    assert not df_fin.empty
-    assert df_fin.iloc[0]["eps"] == 8.7
-    assert df_fin.iloc[0]["gross_margin"] == 56.0  # (560/1000)*100
-    assert df_fin.iloc[0]["operating_margin"] == 42.0
-    assert df_fin.iloc[0]["net_margin"] == 38.0
+    df_fin = finmind_client.fetch_financials("2330", "2026-01-01", "2026-07-01")
+    assert list(df_fin["date"]) == ["2026-03-31", "2026-06-30"]
+    q1, q2 = df_fin.iloc[0], df_fin.iloc[1]
+    assert q1["eps"] == 8.7
+    assert q1["gross_margin"] == 56.0
+    assert q1["operating_margin"] == 42.0
+    assert q1["net_margin"] == 38.0
+    assert q1["revenue"] == 1000.0 and q1["operating_income"] == 420.0
+    assert pd.isna(q2["eps"]) and pd.isna(q2["gross_profit"])
+    assert q2["net_income"] == 100.0 and q2["net_margin"] == 20.0
 
-    # 2. Test get_fundamentals logic with specific sequence of revenue and dividend
-    # To test actual calculations inside get_fundamentals, we mock the fetch functions:
+    # 2. 資產負債 pivot：*_per（占總資產比）要排除
+    raw_bal = pd.DataFrame([
+        {"date": "2026-06-30", "type": "TotalAssets", "value": 1000.0},
+        {"date": "2026-06-30", "type": "TotalAssets_per", "value": 100.0},
+        {"date": "2026-06-30", "type": "Liabilities", "value": 630.0},
+        {"date": "2026-06-30", "type": "Equity", "value": 370.0},
+        {"date": "2026-06-30", "type": "OrdinaryShare", "value": 35.0},
+    ])
+    monkeypatch.setattr(finmind_client, "_finmind_get", lambda dataset, code, start, end: raw_bal)
+    df_bal = finmind_client.fetch_balance_sheet("2383", "2026-01-01", "2026-07-01")
+    assert df_bal.iloc[0]["total_assets"] == 1000.0
+    assert df_bal.iloc[0]["capital_stock"] == 35.0
+    assert pd.isna(df_bal.iloc[0]["current_assets"])
+
+    # 3. 股利：盈餘＋資本公積一起算，日期欄位空字串 → None
+    raw_div = pd.DataFrame([{
+        "date": "2026-07-06", "year": "114年", "CashEarningsDistribution": 3.0, "CashStatutorySurplus": 0.5,
+        "StockEarningsDistribution": 0.0, "StockStatutorySurplus": 0.2, "CashExDividendTradingDate": "2026-06-30",
+        "StockExDividendTradingDate": "", "CashDividendPaymentDate": "2026-07-28", "AnnouncementDate": "2026-06-12",
+    }])
+    monkeypatch.setattr(finmind_client, "_finmind_get", lambda dataset, code, start, end: raw_div)
+    df_div = finmind_client.fetch_dividend("2882", "2026-01-01", "2027-01-01")
+    row = df_div.iloc[0]
+    assert row["period"] == "114年"
+    assert row["cash_dividend"] == 3.5
+    assert row["stock_dividend"] == 0.2
+    assert row["cash_ex_date"] == "2026-06-30"
+    assert row["stock_ex_date"] is None
+    assert row["announce_date"] == "2026-06-12"
+
+    # 4. get_fundamentals：月營收 MoM/YoY（中間缺月）、近四季 EPS 最新一季缺值就不算、股利年度加總
     monkeypatch.setattr(finmind_client, "fetch_valuation", lambda code, start, end: pd.DataFrame())
-    monkeypatch.setattr(finmind_client, "fetch_financials", lambda code, start, end: pd.DataFrame())
     monkeypatch.setattr(finmind_client, "fetch_shares_issued", lambda code, start, end: pd.DataFrame())
     monkeypatch.setattr(finmind_client, "fetch_ohlcv", lambda code, start, end: pd.DataFrame())
-    
-    # Revenue sequence with gaps or exactly 13 months apart for YoY and 1 month for MoM
+    monkeypatch.setattr(finmind_client, "fetch_balance_sheet", lambda code, start, end: pd.DataFrame())
+
+    # 公布月：-13（→營收月 -14）、-12、-2、-1、0
     revenue_data = pd.DataFrame([
-        {"date": "2025-01-01", "revenue": 100.0},
-        {"date": "2025-02-01", "revenue": 110.0},
-        {"date": "2025-12-01", "revenue": 110.0},
-        {"date": "2026-01-01", "revenue": 120.0},
-        {"date": "2026-02-01", "revenue": 143.0},
+        {"date": _month_start(-13), "revenue": 100.0},
+        {"date": _month_start(-12), "revenue": 110.0},
+        {"date": _month_start(-2), "revenue": 110.0},
+        {"date": _month_start(-1), "revenue": 120.0},
+        {"date": _month_start(0), "revenue": 143.0},
     ])
     monkeypatch.setattr(finmind_client, "fetch_month_revenue", lambda code, start, end: revenue_data)
-    
-    # Dividend sequence with multiple payouts in the same year
+    monkeypatch.setattr(
+        finmind_client, "fetch_financials",
+        lambda code, start, end: pd.DataFrame([
+            _fin_row(_quarter_end(4), 5.0, 800.0, 300.0),
+            _fin_row(_quarter_end(3), 6.0, 900.0, 320.0),
+            _fin_row(_quarter_end(2), 7.0, 950.0, 340.0),
+            _fin_row(_quarter_end(1), 8.0, 1000.0, 360.0),
+            _fin_row(_quarter_end(0), None, 1200.0, 450.0),  # 最新一季還沒有 EPS
+        ])
+    )
+    this_year = pd.Timestamp.today().year
     dividend_data = pd.DataFrame([
-        {"date": "2025-03-15", "cash_dividend": 2.5, "stock_dividend": 0.0},
-        {"date": "2025-06-15", "cash_dividend": 2.5, "stock_dividend": 0.0},
-        {"date": "2025-09-15", "cash_dividend": 3.0, "stock_dividend": 1.0},
-        {"date": "2025-12-15", "cash_dividend": 3.0, "stock_dividend": 0.0},
+        {"date": f"{this_year - 1}-03-15", "period": "a", "cash_dividend": 2.5, "stock_dividend": 0.0},
+        {"date": f"{this_year - 1}-06-15", "period": "b", "cash_dividend": 2.5, "stock_dividend": 0.0},
+        {"date": f"{this_year - 1}-09-15", "period": "c", "cash_dividend": 3.0, "stock_dividend": 1.0},
+        {"date": f"{this_year - 1}-12-15", "period": "d", "cash_dividend": 3.0, "stock_dividend": 0.0},
     ])
     monkeypatch.setattr(finmind_client, "fetch_dividend", lambda code, start, end: dividend_data)
-    
+
     from app.data.service import get_fundamentals
     res = get_fundamentals("2330")
-    
-    # Verify MoM and YoY calculation for revenue
+
+    month = lambda k: (pd.Timestamp.today().to_period("M") + k - 1).strftime("%Y-%m")  # noqa: E731
     rev_list = res["revenue"]
-    assert len(rev_list) == 5
-    # 2025-01: no prev month, no prev year
-    assert rev_list[0]["month"] == "2025-01"
-    assert rev_list[0]["mom"] is None
-    assert rev_list[0]["yoy"] is None
-    
-    # 2025-02: MoM = (110 - 100) / 100 * 100 = 10.0%
-    assert rev_list[1]["month"] == "2025-02"
-    assert rev_list[1]["mom"] == 10.0
-    assert rev_list[1]["yoy"] is None
-    
-    # 2025-12: MoM = None (no 2025-11)
-    assert rev_list[2]["month"] == "2025-12"
-    assert rev_list[2]["mom"] is None
-    assert rev_list[2]["yoy"] is None
-    
-    # 2026-01: YoY = (120 - 100) / 100 * 100 = 20.0%
-    # MoM: (120 - 110) / 110 * 100 = 9.0909%
-    assert rev_list[3]["month"] == "2026-01"
-    assert rev_list[3]["yoy"] == 20.0
+    assert [r["month"] for r in rev_list] == [month(-13), month(-12), month(-2), month(-1), month(0)]
+    assert rev_list[0]["mom"] is None and rev_list[0]["yoy"] is None
+    assert rev_list[1]["mom"] == 10.0 and rev_list[1]["yoy"] is None
+    assert rev_list[2]["mom"] is None  # 前一個月沒有
+    assert rev_list[3]["yoy"] == 20.0  # 120 vs 100（12 個月前）
     assert abs(rev_list[3]["mom"] - 9.0909) < 1e-3
-    
-    # 2026-02: YoY = (143 - 110) / 110 * 100 = 30.0%
-    # MoM: (143 - 120) / 120 * 100 = 19.1667%
-    assert rev_list[4]["month"] == "2026-02"
-    assert rev_list[4]["yoy"] == 30.0
+    assert rev_list[4]["yoy"] == 30.0  # 143 vs 110
     assert abs(rev_list[4]["mom"] - 19.1667) < 1e-3
 
-    # Verify dividend year aggregation
+    assert res["summary"]["eps_ttm"] is None  # 不可拿前面四季冒充
+
     div_list = res["dividend"]
     assert len(div_list) == 1
-    assert div_list[0]["year"] == "2025"
-    assert div_list[0]["cash_dividend"] == 11.0  # 2.5 + 2.5 + 3.0 + 3.0
+    assert div_list[0]["year"] == str(this_year - 1)
+    assert div_list[0]["cash_dividend"] == 11.0
     assert div_list[0]["stock_dividend"] == 1.0
+    assert len(res["dividend_events"]) == 4
 
 
 def test_symbols_search(monkeypatch):

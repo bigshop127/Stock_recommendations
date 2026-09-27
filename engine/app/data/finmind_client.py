@@ -207,67 +207,130 @@ def fetch_month_revenue(code: str, start: str, end: str) -> pd.DataFrame:
     return out[cols].sort_values("date").reset_index(drop=True)
 
 
-# ── 獲利能力（EPS / 三率，季頻）→ Phase 4 ──────────────────────────────────────
+# ── 獲利能力（EPS / 三率＋損益金額，季頻）→ Phase 4；opt45 補金額 ─────────────────
+# FinMind 給的是單季數字（第四季已經扣掉前三季）。金融業沒有毛利／營業利益，
+# 稅後淨利的欄名也不同（IncomeAfterTax），抓不到的欄位留 None。
+_FIN_AMOUNT_TYPES = {
+    "revenue": ("Revenue",),
+    "gross_profit": ("GrossProfit",),
+    "operating_income": ("OperatingIncome",),
+    "pre_tax_income": ("PreTaxIncome",),
+    "net_income": ("IncomeAfterTaxes", "IncomeAfterTax"),
+    "net_income_parent": ("EquityAttributableToOwnersOfParent",),
+}
+FINANCIALS_COLS = ["date", "eps", "gross_margin", "operating_margin", "net_margin", *_FIN_AMOUNT_TYPES]
+
+
+def _pick(df_pivot: pd.DataFrame, names: tuple[str, ...]) -> pd.Series | None:
+    """依序取第一個有值的欄位（逐列合併：同一檔不同季欄名可能不一樣）。"""
+    picked: pd.Series | None = None
+    for n in names:
+        if n in df_pivot.columns:
+            col = pd.to_numeric(df_pivot[n], errors="coerce")
+            picked = col if picked is None else picked.combine_first(col)
+    return picked
+
+
+def _ratio_pct(num: pd.Series | None, den: pd.Series | None) -> pd.Series | None:
+    if num is None or den is None:
+        return None
+    den = den.where(den != 0)
+    return (num / den * 100).round(2)
+
+
 def fetch_financials(code: str, start: str, end: str) -> pd.DataFrame:
-    """獲利能力 (季頻)：date, eps, gross_margin, operating_margin, net_margin。"""
+    """損益（季頻）：date, eps, 三率(%), revenue/gross_profit/operating_income/pre_tax_income/net_income/net_income_parent（元）。"""
     raw = _finmind_get("TaiwanStockFinancialStatements", code, start, end)
-    cols = ["date", "eps", "gross_margin", "operating_margin", "net_margin"]
     if raw.empty:
-        return pd.DataFrame(columns=cols)
-        
+        return pd.DataFrame(columns=FINANCIALS_COLS)
+
     df_pivot = raw.pivot_table(index="date", columns="type", values="value", aggfunc="first").reset_index()
-    
-    eps_col = "EPS" if "EPS" in df_pivot.columns else None
-    rev_col = "Revenue" if "Revenue" in df_pivot.columns else None
-    gross_col = "GrossProfit" if "GrossProfit" in df_pivot.columns else None
-    op_col = "OperatingIncome" if "OperatingIncome" in df_pivot.columns else None
-    net_col = "IncomeAfterTaxes" if "IncomeAfterTaxes" in df_pivot.columns else None
-    
-    out = pd.DataFrame()
-    out["date"] = df_pivot["date"].astype(str)
-    
-    if eps_col:
-        out["eps"] = pd.to_numeric(df_pivot[eps_col], errors="coerce")
-    else:
-        out["eps"] = None
-        
-    if rev_col and gross_col:
-        out["gross_margin"] = (pd.to_numeric(df_pivot[gross_col], errors="coerce") / 
-                                pd.to_numeric(df_pivot[rev_col], errors="coerce") * 100).round(2)
-    else:
-        out["gross_margin"] = None
-        
-    if rev_col and op_col:
-        out["operating_margin"] = (pd.to_numeric(df_pivot[op_col], errors="coerce") / 
-                                    pd.to_numeric(df_pivot[rev_col], errors="coerce") * 100).round(2)
-    else:
-        out["operating_margin"] = None
-        
-    if rev_col and net_col:
-        out["net_margin"] = (pd.to_numeric(df_pivot[net_col], errors="coerce") / 
-                              pd.to_numeric(df_pivot[rev_col], errors="coerce") * 100).round(2)
-    else:
-        out["net_margin"] = None
-        
-    return out[cols].sort_values("date").reset_index(drop=True)
+    out = pd.DataFrame({"date": df_pivot["date"].astype(str)})
+    amounts = {key: _pick(df_pivot, names) for key, names in _FIN_AMOUNT_TYPES.items()}
+    eps = _pick(df_pivot, ("EPS",))
+    out["eps"] = eps if eps is not None else None
+    rev = amounts["revenue"]
+    for col, key in (("gross_margin", "gross_profit"), ("operating_margin", "operating_income"), ("net_margin", "net_income")):
+        ratio = _ratio_pct(amounts[key], rev)
+        out[col] = ratio if ratio is not None else None
+    for key, series in amounts.items():
+        out[key] = series if series is not None else None
+    return out[FINANCIALS_COLS].sort_values("date").reset_index(drop=True)
 
 
-# ── 股利政策（年頻）→ Phase 4 ──────────────────────────────────────────────────
-def fetch_dividend(code: str, start: str, end: str) -> pd.DataFrame:
-    """股利政策：date, cash_dividend, stock_dividend。"""
-    raw = _finmind_get("TaiwanStockDividend", code, start, end)
-    cols = ["date", "cash_dividend", "stock_dividend"]
+# ── 資產負債表（季頻，opt45）──────────────────────────────────────────────────
+_BALANCE_TYPES = {
+    "total_assets": ("TotalAssets",),
+    "total_liabilities": ("Liabilities",),
+    "equity": ("Equity",),
+    "equity_parent": ("EquityAttributableToOwnersOfParent",),
+    "current_assets": ("CurrentAssets",),
+    "current_liabilities": ("CurrentLiabilities",),
+    "cash": ("CashAndCashEquivalents",),
+    "receivables": ("AccountsReceivableNet",),
+    "inventories": ("Inventories",),
+    "capital_stock": ("OrdinaryShare", "CapitalStock"),
+}
+BALANCE_COLS = ["date", *_BALANCE_TYPES]
+
+
+def fetch_balance_sheet(code: str, start: str, end: str) -> pd.DataFrame:
+    """資產負債表（季頻，金額單位元）：總資產／負債／權益／流動資產負債／現金／應收／存貨／股本。"""
+    raw = _finmind_get("TaiwanStockBalanceSheet", code, start, end)
     if raw.empty:
-        return pd.DataFrame(columns=cols)
-        
+        return pd.DataFrame(columns=BALANCE_COLS)
+    raw = raw[~raw["type"].astype(str).str.endswith("_per")]
+    df_pivot = raw.pivot_table(index="date", columns="type", values="value", aggfunc="first").reset_index()
+    out = pd.DataFrame({"date": df_pivot["date"].astype(str)})
+    for key, names in _BALANCE_TYPES.items():
+        series = _pick(df_pivot, names)
+        out[key] = series if series is not None else None
+    return out[BALANCE_COLS].sort_values("date").reset_index(drop=True)
+
+
+# ── 股利政策（每次配發一列）→ Phase 4；opt45 補日期與資本公積 ───────────────────
+# date＝FinMind 的除權息基準日附近（一次配發一列，季配息每季一列）；period＝「114年」或「114年第4季」。
+# 現金股利＝盈餘配息＋資本公積配息，股票股利同理（原本只算盈餘那一段，會少算用公積配的公司）。
+DIVIDEND_COLS = [
+    "date", "period", "cash_dividend", "stock_dividend",
+    "announce_date", "cash_ex_date", "stock_ex_date", "payment_date",
+]
+
+
+def _date_or_none(v) -> str | None:
+    s = str(v or "").strip()
+    return s[:10] if len(s) >= 10 and s[4] == "-" else None
+
+
+def fetch_dividend(code: str, start: str, end: str) -> pd.DataFrame:
+    """股利政策：date, period, cash_dividend, stock_dividend（元/股）＋公告日、除息日、除權日、發放日。"""
+    raw = _finmind_get("TaiwanStockDividend", code, start, end)
+    if raw.empty:
+        return pd.DataFrame(columns=DIVIDEND_COLS)
+
+    def _num(col: str) -> pd.Series:
+        if col not in raw.columns:
+            return pd.Series(0.0, index=raw.index)
+        return pd.to_numeric(raw[col], errors="coerce").fillna(0.0)
+
+    def _dates(col: str) -> list[str | None]:
+        if col not in raw.columns:
+            return [None] * len(raw)
+        return [_date_or_none(v) for v in raw[col]]
+
     out = pd.DataFrame(
         {
             "date": raw["date"].astype(str),
-            "cash_dividend": pd.to_numeric(raw["CashEarningsDistribution"], errors="coerce").fillna(0.0),
-            "stock_dividend": pd.to_numeric(raw["StockEarningsDistribution"], errors="coerce").fillna(0.0),
+            "period": raw["year"].astype(str) if "year" in raw.columns else "",
+            "cash_dividend": _num("CashEarningsDistribution") + _num("CashStatutorySurplus"),
+            "stock_dividend": _num("StockEarningsDistribution") + _num("StockStatutorySurplus"),
+            "announce_date": _dates("AnnouncementDate"),
+            "cash_ex_date": _dates("CashExDividendTradingDate"),
+            "stock_ex_date": _dates("StockExDividendTradingDate"),
+            "payment_date": _dates("CashDividendPaymentDate"),
         }
     )
-    return out[cols].sort_values("date").reset_index(drop=True)
+    return out[DIVIDEND_COLS].sort_values("date").reset_index(drop=True)
 
 
 # ── 發行股數（估值市值計算用，日頻）→ Phase 4 ─────────────────────────

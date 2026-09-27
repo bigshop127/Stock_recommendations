@@ -121,3 +121,122 @@ def test_lagging_source_day_is_not_skipped_forever(monkeypatch):
     assert meta["cache_hit"] is False
     assert "2026-07-10" in set(df2["date"])
     assert df2["date"].max() == "2026-07-14"
+
+
+# ── get_periodic：季報／月營收／股利這類「日期早於公布日」的資料（opt45）────────────
+
+
+class PublishingServer:
+    """模擬晚公布的期別資料：rows 裡只有「已公布」的那些列拿得到，呼叫區間用期別日期過濾。"""
+
+    def __init__(self, rows: list[dict]):
+        self.rows = rows
+        self.published: set[str] = {r["date"] for r in rows}
+        self.calls: list[tuple[str, str]] = []
+        self.fail = False
+
+    def fetch(self, code: str, start: str, end: str) -> pd.DataFrame:
+        self.calls.append((start, end))
+        if self.fail:
+            raise RuntimeError("upstream down")
+        out = [r for r in self.rows if r["date"] in self.published and start <= r["date"] <= end]
+        return pd.DataFrame(out, columns=["date", "period", "eps"])
+
+
+def _set_clock(monkeypatch, now: str):
+    ts = pd.Timestamp(now)
+    monkeypatch.setattr(cache, "_now", lambda: ts)
+    monkeypatch.setattr(cache, "_today", lambda: ts.normalize())
+
+
+QUARTERS = [
+    {"date": "2025-12-31", "period": "Q4", "eps": 19.5},
+    {"date": "2026-03-31", "period": "Q1", "eps": 22.1},
+    {"date": "2026-06-30", "period": "Q2", "eps": 27.3},
+]
+
+
+def test_periodic_late_published_quarter_is_picked_up(monkeypatch):
+    """Q2（2026-06-30）8 月中才公布：7 月查過一次之後，8 月底再查必須補到（get_timeseries 會永久漏掉）。"""
+    srv = PublishingServer(QUARTERS)
+    srv.published.discard("2026-06-30")
+    _set_clock(monkeypatch, "2026-07-20 10:00")
+    df1, m1 = cache.get_periodic("fin", "2330", "2025-01-01", "2026-07-20", srv.fetch, refresh_days=200)
+    assert list(df1["date"]) == ["2025-12-31", "2026-03-31"]
+    assert m1["cache_hit"] is False
+
+    # ttl（6 小時）內再查 → 不打 API
+    _set_clock(monkeypatch, "2026-07-20 15:00")
+    _, m2 = cache.get_periodic("fin", "2330", "2025-01-01", "2026-07-20", srv.fetch, refresh_days=200)
+    assert m2["cache_hit"] is True
+    assert len(srv.calls) == 1
+
+    # 8 月底：Q2 已公布，快取過期 → 只重抓最近 200 天，補到 Q2
+    srv.published.add("2026-06-30")
+    _set_clock(monkeypatch, "2026-08-31 09:00")
+    df3, m3 = cache.get_periodic("fin", "2330", "2025-01-01", "2026-08-31", srv.fetch, refresh_days=200)
+    assert m3["cache_hit"] is False
+    assert srv.calls[-1] == ("2026-02-12", "2026-08-31")
+    assert list(df3["date"]) == ["2025-12-31", "2026-03-31", "2026-06-30"]
+
+
+def test_periodic_legacy_watermark_triggers_full_refetch(monkeypatch, tmp_path):
+    """舊 get_timeseries 留下的浮水印（沒有 fetched_at）→ 整段重抓一次，把以前漏掉的期別補回來。"""
+    srv = PublishingServer(QUARTERS)
+    _set_clock(monkeypatch, "2026-09-27 12:00")
+    cache.write_cache("fin", "2330", pd.DataFrame(QUARTERS[:2]))
+    cache._write_covered("fin", "2330", "2025-01-01", "2026-09-24")
+    df, meta = cache.get_periodic("fin", "2330", "2025-01-01", "2026-09-27", srv.fetch, refresh_days=200)
+    assert srv.calls == [("2025-01-01", "2026-09-27")]
+    assert df["date"].max() == "2026-06-30"
+    assert meta["cache_hit"] is False
+
+
+def test_periodic_refresh_failure_serves_cache(monkeypatch):
+    srv = PublishingServer(QUARTERS)
+    _set_clock(monkeypatch, "2026-09-01 09:00")
+    cache.get_periodic("fin", "2330", "2025-01-01", "2026-09-01", srv.fetch, refresh_days=200)
+    fetched_at = cache._read_meta("fin", "2330")["fetched_at"]
+
+    srv.fail = True
+    _set_clock(monkeypatch, "2026-09-02 09:00")
+    df, _ = cache.get_periodic("fin", "2330", "2025-01-01", "2026-09-02", srv.fetch, refresh_days=200)
+    assert len(df) == 3  # 回舊快取
+    assert cache._read_meta("fin", "2330")["fetched_at"] == fetched_at  # 沒成功就不算抓過，下次再試
+
+
+def test_periodic_first_fetch_failure_raises(monkeypatch):
+    srv = PublishingServer(QUARTERS)
+    srv.fail = True
+    _set_clock(monkeypatch, "2026-09-01 09:00")
+    with pytest.raises(RuntimeError):
+        cache.get_periodic("fin", "2330", "2025-01-01", "2026-09-01", srv.fetch, refresh_days=200)
+
+
+def test_periodic_empty_result_is_remembered(monkeypatch):
+    """ETF 沒有財報：抓回空的也要記住，ttl 內不要每次重打。"""
+    srv = PublishingServer([])
+    _set_clock(monkeypatch, "2026-09-01 09:00")
+    df, _ = cache.get_periodic("fin", "0050", "2025-01-01", "2026-09-01", srv.fetch, refresh_days=200)
+    assert df.empty
+    _set_clock(monkeypatch, "2026-09-01 10:00")
+    _, meta = cache.get_periodic("fin", "0050", "2025-01-01", "2026-09-01", srv.fetch, refresh_days=200)
+    assert meta["cache_hit"] is True
+    assert len(srv.calls) == 1
+
+
+def test_periodic_head_gap_and_key_cols(monkeypatch):
+    """往前要更早的區間 → 只補前段；key_cols 讓同一天兩筆不同期別的股利不會互相覆蓋。"""
+    rows = [
+        {"date": "2024-07-01", "period": "112年", "eps": 1.0},
+        {"date": "2025-07-01", "period": "113年", "eps": 2.0},
+        {"date": "2025-07-01", "period": "113年特別", "eps": 0.5},
+    ]
+    srv = PublishingServer(rows)
+    _set_clock(monkeypatch, "2026-01-01 09:00")
+    df1, _ = cache.get_periodic("div", "1101", "2025-01-01", "2026-01-01", srv.fetch, refresh_days=400, key_cols=["date", "period"])
+    assert len(df1) == 2
+    _set_clock(monkeypatch, "2026-01-01 10:00")
+    df2, _ = cache.get_periodic("div", "1101", "2024-01-01", "2026-01-01", srv.fetch, refresh_days=400, key_cols=["date", "period"])
+    assert srv.calls[-1] == ("2024-01-01", "2024-12-31")
+    assert len(df2) == 3

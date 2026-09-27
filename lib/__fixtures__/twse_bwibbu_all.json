@@ -1,0 +1,66 @@
+[
+ {
+  "Date": "1150924",
+  "Code": "1101",
+  "Name": "台泥",
+  "PEratio": "",
+  "DividendYield": "3.17",
+  "PBratio": "0.82"
+ },
+ {
+  "Date": "1150924",
+  "Code": "2002",
+  "Name": "中鋼",
+  "PEratio": "",
+  "DividendYield": "0.80",
+  "PBratio": "0.95"
+ },
+ {
+  "Date": "1150924",
+  "Code": "2303",
+  "Name": "聯電",
+  "PEratio": "23.16",
+  "DividendYield": "1.69",
+  "PBratio": "4.35"
+ },
+ {
+  "Date": "1150924",
+  "Code": "2330",
+  "Name": "台積電",
+  "PEratio": "28.69",
+  "DividendYield": "0.89",
+  "PBratio": "9.98"
+ },
+ {
+  "Date": "1150924",
+  "Code": "2368",
+  "Name": "金像電",
+  "PEratio": "39.66",
+  "DividendYield": "0.89",
+  "PBratio": "13.56"
+ },
+ {
+  "Date": "1150924",
+  "Code": "2383",
+  "Name": "台光電",
+  "PEratio": "78.97",
+  "DividendYield": "0.50",
+  "PBratio": "31.02"
+ },
+ {
+  "Date": "1150924",
+  "Code": "2454",
+  "Name": "聯發科",
+  "PEratio": "87.28",
+  "DividendYield": "1.01",
+  "PBratio": "19.89"
+ },
+ {
+  "Date": "1150924",
+  "Code": "2882",
+  "Name": "國泰金",
+  "PEratio": "13.03",
+  "DividendYield": "3.17",
+  "PBratio": "1.59"
+ }
+]

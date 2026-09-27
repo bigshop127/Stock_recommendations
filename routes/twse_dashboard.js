@@ -361,4 +361,129 @@ router.get('/api/market/revenue/industry', async (req, res) => {
   }
 });
 
+// ── 個股估值＋獲利率（opt45 合理價＋同業排名、資料夾卡片牆）─────────────────────
+//
+//   GET /api/market/stock-metrics?codes=2330,2383   指定個股（最多 400 檔，照 codes 順序）
+//   GET /api/market/stock-metrics                   全部上市
+//
+// 每檔：收盤、本益比、淨值比、殖利率、反推近四季 EPS／每股淨值（證交所 BWIBBU_d）、
+// 今年累計三率（t187ap17_L）、最新月營收年增率（沿用上面的月營收資料，上市＋上櫃）。
+// 同業怎麼分是前端的事（細分族群表在前端），這裡只給數字。解析在 lib/twse_valuation.js（有測試）。
+
+const {
+  parseBwibbu,
+  parseBwibbuOpenApi,
+  parseMarginAnalysis,
+  buildStockMetrics,
+  parseCodes,
+} = require('../lib/twse_valuation');
+
+/** 單一資料集：記憶體 → 上游 → 磁碟備援，同時多個請求只打一次上游 */
+function makeDataset({ label, diskFile, ttlMs, build }) {
+  const diskPath = path.join(DATA_DIR, diskFile);
+  const STALE_RETRY_MS = 5 * 60 * 1000;
+  let state = { at: 0, data: null, stale: false, stale_reason: null };
+  let inflight = null;
+
+  return (force = false) => {
+    const ttl = state.stale ? STALE_RETRY_MS : ttlMs;
+    if (!force && state.data && Date.now() - state.at < ttl) return Promise.resolve(state);
+    if (!inflight) {
+      inflight = (async () => {
+        try {
+          const data = { ...(await build()), fetched_at: new Date().toISOString() };
+          try {
+            fs.mkdirSync(DATA_DIR, { recursive: true });
+            const tmp = diskPath + '.tmp';
+            fs.writeFileSync(tmp, JSON.stringify(data));
+            fs.renameSync(tmp, diskPath);
+          } catch { /* 落地失敗不影響這次回應 */ }
+          state = { at: Date.now(), data, stale: false, stale_reason: null };
+        } catch (err) {
+          let fallback = state.data;
+          if (!fallback) {
+            try {
+              if (fs.existsSync(diskPath)) fallback = JSON.parse(fs.readFileSync(diskPath, 'utf-8'));
+            } catch { /* 快取檔壞掉就當沒有 */ }
+          }
+          if (!fallback) throw httpError(502, 'TWSE', `抓取${label}失敗: ${err.message}`);
+          state = { at: Date.now(), data: fallback, stale: true, stale_reason: err.message };
+        }
+        return state;
+      })().finally(() => { inflight = null; });
+    }
+    return inflight;
+  };
+}
+
+// 估值每天收盤後更新一次（晚上才出），快取 1 小時；主來源失敗改用 OpenAPI 同一份表
+const getValuation = makeDataset({
+  label: '個股本益比／淨值比',
+  diskFile: 'twse_bwibbu.json',
+  ttlMs: 60 * 60 * 1000,
+  build: async () => {
+    let parsed = null;
+    let primaryError = null;
+    try {
+      parsed = parseBwibbu(await twseGet('/afterTrading/BWIBBU_d?selectType=ALL&response=json'));
+      if (!parsed) primaryError = 'BWIBBU_d 沒有資料';
+    } catch (e) {
+      primaryError = e.message;
+    }
+    if (!parsed) {
+      parsed = parseBwibbuOpenApi(await getJson(`${TWSE_OPENAPI}/exchangeReport/BWIBBU_ALL`, 30000));
+      if (!parsed) throw new Error(`${primaryError}；OpenAPI 備援也沒有資料`);
+      parsed.fallback_reason = primaryError;
+    }
+    return parsed;
+  },
+});
+
+// 營益分析一季才換一次，快取 12 小時
+const getMargins = makeDataset({
+  label: '營益分析',
+  diskFile: 'twse_t187ap17.json',
+  ttlMs: 12 * 3600 * 1000,
+  build: async () => {
+    const parsed = parseMarginAnalysis(await getJson(`${TWSE_OPENAPI}/opendata/t187ap17_L`, 30000));
+    if (!parsed || !Object.keys(parsed.rows).length) throw new Error('營益分析表沒有資料');
+    return parsed;
+  },
+});
+
+router.get('/api/market/stock-metrics', async (req, res) => {
+  const codes = parseCodes(req.query.codes);
+  const force = req.query.force === '1';
+  try {
+    const partialErrors = [];
+    const valSt = await getValuation(force);
+    // 三率與營收只是加值：抓不到照樣回估值
+    const marginSt = await getMargins(force).catch((e) => { partialErrors.push(`營益分析：${e.message}`); return null; });
+    const revSt = await getRevenueDataset().catch((e) => { partialErrors.push(`月營收：${e.message}`); return null; });
+    const revenueCompanies = revSt
+      ? [...(revSt.data.listed?.companies || []), ...(revSt.data.otc?.companies || [])]
+      : [];
+    const items = buildStockMetrics({
+      valuation: valSt.data,
+      margins: marginSt ? marginSt.data : null,
+      revenueCompanies,
+      codes,
+    });
+    res.json({
+      date: valSt.data.date,
+      eps_period: valSt.data.eps_period,
+      margin_period: marginSt ? marginSt.data.period : null,
+      revenue_month: revSt ? revSt.data.listed?.month || null : null,
+      items,
+      partial_errors: partialErrors.length ? partialErrors : undefined,
+      source: 'twse-BWIBBU_d+t187ap17_L+t187ap05',
+      fetched_at: valSt.data.fetched_at,
+      stale: valSt.stale || Boolean(marginSt && marginSt.stale),
+      ...(valSt.stale ? { stale_reason: valSt.stale_reason } : {}),
+    });
+  } catch (err) {
+    sendError(res, err);
+  }
+});
+
 module.exports = router;

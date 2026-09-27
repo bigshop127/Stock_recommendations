@@ -72,73 +72,184 @@ def get_ohlcv_adj(code: str, start: str, end: str) -> dict:
     }
 
 
+def _quarter_index(date_str: str) -> int:
+    dt = pd.to_datetime(date_str)
+    return dt.year * 4 + (dt.month - 1) // 3
+
+
+def _quarter_label(date_str: str) -> str:
+    dt = pd.to_datetime(date_str)
+    return f"{dt.year}-Q{(dt.month - 1) // 3 + 1}"
+
+
+def _num_or_none(v) -> float | None:
+    if v is None:
+        return None
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+    return None if pd.isna(f) else f
+
+
+def _growth_pct(cur: float | None, prev: float | None) -> float | None:
+    """(cur / prev − 1) × 100；去年同期是負數或 0 時沒有意義（虧轉盈不算成長率）。"""
+    if cur is None or prev is None or prev <= 0:
+        return None
+    return round((cur / prev - 1) * 100, 2)
+
+
+def _clean_records(df, map_fn=None) -> list[dict]:
+    if df is None or df.empty:
+        return []
+    cleaned = []
+    for r in df.to_dict(orient="records"):
+        cleaned_r = {}
+        for k, v in r.items():
+            if v is None or (not isinstance(v, str) and pd.isna(v)):
+                cleaned_r[k] = None
+            elif isinstance(v, (int, float)):
+                cleaned_r[k] = round(v, 4) if isinstance(v, float) else v
+            else:
+                cleaned_r[k] = str(v)
+        if map_fn:
+            cleaned_r = map_fn(cleaned_r)
+        cleaned.append(cleaned_r)
+    return cleaned
+
+
 def get_fundamentals(code: str) -> dict:
-    """個股基本面聚合：估值（日）、月營收（月）、獲利 (季)、股利 (年) 與最新 summary。"""
+    """個股基本面聚合：估值（日）、月營收（月）、損益 (季)、資產負債 (季)、股利 (每次配發) 與最新 summary。
+
+    月營收／財報／股利走 cache.get_periodic：這三種資料的日期早於實際公布日，
+    用 get_timeseries 會把還沒公布的那一期永遠跳過（見 cache.py 說明）。
+    """
     today = datetime.date.today()
-    
-    # 1. Valuation: 近一年
-    val_start = (today - datetime.timedelta(days=365)).isoformat()
     val_end = today.isoformat()
+
+    # 1. Valuation: 近一年（日頻、當天就有，照舊用浮水印快取）
+    val_start = (today - datetime.timedelta(days=365)).isoformat()
     val_df, _ = cache.get_timeseries("fundamentals_valuation", code, val_start, val_end, finmind_client.fetch_valuation)
-    
-    # 2. Revenue: 近 ~25 月
-    # 為了計算 YoY，往前多拿 13 個月（即共 38 個月）
-    rev_start_query = (today - datetime.timedelta(days=38 * 30.5)).isoformat()
-    rev_df, _ = cache.get_timeseries(
+
+    # 2. Revenue: 近 ~25 月（為了算 YoY 往前多拿 13 個月）
+    # FinMind 月營收的 date 是「公布那個月的 1 日」：8 月營收＝2026-09-01，營收月份要往前推一個月
+    rev_start_query = (today - datetime.timedelta(days=int(38 * 30.5))).isoformat()
+    rev_df, _ = cache.get_periodic(
         "fundamentals_revenue", code, rev_start_query, val_end,
-        finmind_client.fetch_month_revenue
+        finmind_client.fetch_month_revenue, refresh_days=75,
     )
     if not rev_df.empty:
         rev_df = rev_df.copy()
         rev_df["date_dt"] = pd.to_datetime(rev_df["date"])
         rev_df = rev_df.sort_values("date_dt").reset_index(drop=True)
-        
-        rev_df["month_period"] = rev_df["date_dt"].dt.to_period("M")
+        rev_df["month_period"] = rev_df["date_dt"].dt.to_period("M") - 1
         rev_map = rev_df.set_index("month_period")["revenue"].to_dict()
-        
+
         mom_list = []
         yoy_list = []
         for _, row in rev_df.iterrows():
             m = row["month_period"]
             rev = row["revenue"]
-            
-            # MoM
-            prev_m = m - 1
-            prev_rev = rev_map.get(prev_m)
+            prev_rev = rev_map.get(m - 1)
             if prev_rev is not None and not pd.isna(prev_rev) and prev_rev > 0:
                 mom_list.append(round(((rev - prev_rev) / prev_rev) * 100, 4))
             else:
                 mom_list.append(None)
-                
-            # YoY
-            prev_y = m - 12
-            prev_rev_y = rev_map.get(prev_y)
+            prev_rev_y = rev_map.get(m - 12)
             if prev_rev_y is not None and not pd.isna(prev_rev_y) and prev_rev_y > 0:
                 yoy_list.append(round(((rev - prev_rev_y) / prev_rev_y) * 100, 4))
             else:
                 yoy_list.append(None)
-                
+
         rev_df["mom"] = mom_list
         rev_df["yoy"] = yoy_list
         rev_df["month"] = rev_df["month_period"].astype(str)
         rev_df = rev_df[["month", "revenue", "yoy", "mom"]]
         rev_df = rev_df.tail(25).reset_index(drop=True)
-        
-    # 3. Financials: 近 ~10 季
-    # 拿過去 12 季以確保有 10 季數據可用
-    fin_start = (today - datetime.timedelta(days=12 * 92)).isoformat()
-    fin_df, _ = cache.get_timeseries("fundamentals_financials", code, fin_start, val_end, finmind_client.fetch_financials)
-    if not fin_df.empty:
-        fin_df = fin_df.tail(10).reset_index(drop=True)
-        
-    # 4. Dividend: 近 ~6 年
-    div_start = (today - datetime.timedelta(days=6 * 365)).isoformat()
-    div_df, _ = cache.get_timeseries(
-        "fundamentals_dividend", code, div_start, val_end,
-        finmind_client.fetch_dividend
+
+    # 3. 損益：抓 ~15 季，算完去年同季成長率再留最近 10 季
+    fin_start = (today - datetime.timedelta(days=15 * 92)).isoformat()
+    fin_df, _ = cache.get_periodic(
+        "fundamentals_financials_v2", code, fin_start, val_end,
+        finmind_client.fetch_financials, refresh_days=200,
     )
+    eps_ttm = None
+    if not fin_df.empty:
+        fin_df = fin_df.copy().sort_values("date").reset_index(drop=True)
+        fin_df["qidx"] = [_quarter_index(d) for d in fin_df["date"]]
+        rows = fin_df.to_dict(orient="records")
+        by_q = {int(r["qidx"]): r for r in rows}
+
+        def _net(r: dict | None) -> float | None:
+            if r is None:
+                return None
+            v = _num_or_none(r.get("net_income_parent"))
+            return v if v is not None else _num_or_none(r.get("net_income"))
+
+        def _prev(r: dict) -> dict | None:
+            return by_q.get(int(r["qidx"]) - 4)
+
+        fin_df["revenue_yoy"] = [
+            _growth_pct(_num_or_none(r.get("revenue")), _num_or_none((_prev(r) or {}).get("revenue")))
+            for r in rows
+        ]
+        fin_df["net_income_yoy"] = [_growth_pct(_net(r), _net(_prev(r))) for r in rows]
+
+        # 近四季 EPS：最新四季都要有 EPS、而且季別連續（最新一季缺 EPS 或中間漏一季就不算，
+        # 免得拿舊的四季冒充近四季——金融股最近幾季 FinMind 常缺 EPS）
+        last4 = fin_df.tail(4)
+        if len(last4) == 4 and last4["eps"].notna().all():
+            q = [int(v) for v in last4["qidx"].tolist()]
+            if q == list(range(q[0], q[0] + 4)):
+                eps_ttm = round(float(last4["eps"].sum()), 2)
+
+        fin_df = fin_df.drop(columns=["qidx"]).tail(10).reset_index(drop=True)
+
+    # 4. 發行股數與市值（每股淨值也要用）
+    latest_shares: float | None = None
+    market_cap = None
+    try:
+        shares_start = (today - datetime.timedelta(days=30)).isoformat()
+        shares_df, _ = cache.get_timeseries("shares_issued", code, shares_start, val_end, finmind_client.fetch_shares_issued)
+        if not shares_df.empty:
+            shares_val = float(shares_df.iloc[-1]["shares"])
+            if shares_val > 0:
+                latest_shares = shares_val
+                ohlcv_start = (today - datetime.timedelta(days=15)).isoformat()
+                ohlcv_df, _ = cache.get_timeseries("ohlcv", code, ohlcv_start, val_end, finmind_client.fetch_ohlcv)
+                if not ohlcv_df.empty:
+                    latest_close = float(ohlcv_df.iloc[-1]["close"])
+                    market_cap = int(latest_shares * latest_close)
+    except Exception:
+        pass
+
+    # 5. 資產負債表：最近 8 季；抓不到（ETF、上游失敗）就空陣列，不擋整包基本面
+    balance_records: list[dict] = []
+    try:
+        bal_start = (today - datetime.timedelta(days=11 * 92)).isoformat()
+        bal_df, _ = cache.get_periodic(
+            "fundamentals_balance", code, bal_start, val_end,
+            finmind_client.fetch_balance_sheet, refresh_days=200,
+        )
+        balance_records = _build_balance_records(bal_df, latest_shares)
+    except Exception:
+        balance_records = []
+
+    # 6. 股利：每次配發一列。已宣告、還沒除息的那一筆日期在未來，所以 end 往後放一年多
+    div_start = (today - datetime.timedelta(days=6 * 365)).isoformat()
+    div_end = (today + datetime.timedelta(days=400)).isoformat()
+    div_df, _ = cache.get_periodic(
+        "fundamentals_dividend_v2", code, div_start, div_end,
+        finmind_client.fetch_dividend, refresh_days=400, key_cols=["date", "period"],
+    )
+    div_events: list[dict] = []
     if not div_df.empty:
         div_df = div_df.copy()
+        events_df = div_df.sort_values("date", ascending=False).head(8).rename(columns={"date": "base_date"})
+        div_events = _clean_records(events_df.reindex(columns=[
+            "period", "base_date", "cash_dividend", "stock_dividend",
+            "announce_date", "cash_ex_date", "stock_ex_date", "payment_date",
+        ]))
         div_df["year"] = pd.to_datetime(div_df["date"]).dt.year.astype(str)
         div_df = div_df.groupby("year").agg({
             "cash_dividend": "sum",
@@ -147,74 +258,28 @@ def get_fundamentals(code: str) -> dict:
         div_df["cash_dividend"] = div_df["cash_dividend"].round(4)
         div_df["stock_dividend"] = div_df["stock_dividend"].round(4)
         div_df = div_df.sort_values("year").tail(6).reset_index(drop=True)
-        
-    # 5. Summary / market cap / as_of
+
+    # 7. Summary / as_of
     pe_ratio = None
     pb_ratio = None
     dividend_yield = None
     as_of = today.isoformat()
-    
+
     if not val_df.empty:
         latest_val = val_df.iloc[-1]
         as_of = str(latest_val["date"])
-        
+
         val_pe = latest_val["pe_ratio"]
         val_pb = latest_val["pb_ratio"]
         val_dy = latest_val["dividend_yield"]
-        
+
         if not pd.isna(val_pe): pe_ratio = round(float(val_pe), 2)
         if not pd.isna(val_pb): pb_ratio = round(float(val_pb), 2)
         if not pd.isna(val_dy): dividend_yield = round(float(val_dy), 2)
-        
-    market_cap = None
-    try:
-        shares_start = (today - datetime.timedelta(days=30)).isoformat()
-        shares_df, _ = cache.get_timeseries("shares_issued", code, shares_start, val_end, finmind_client.fetch_shares_issued)
-        if not shares_df.empty:
-            latest_shares = float(shares_df.iloc[-1]["shares"])
-            if latest_shares > 0:
-                ohlcv_start = (today - datetime.timedelta(days=15)).isoformat()
-                ohlcv_df, _ = cache.get_timeseries("ohlcv", code, ohlcv_start, val_end, finmind_client.fetch_ohlcv)
-                if not ohlcv_df.empty:
-                    latest_close = float(ohlcv_df.iloc[-1]["close"])
-                    market_cap = int(latest_shares * latest_close)
-    except Exception:
-        pass
-        
-    eps_ttm = None
-    if not fin_df.empty:
-        last_4_fin = fin_df.tail(4)
-        eps_list = last_4_fin["eps"].dropna().tolist()
-        if len(eps_list) == 4:
-            eps_ttm = round(sum(eps_list), 2)
-            
-    def _clean_records(df, map_fn=None):
-        if df is None or df.empty:
-            return []
-        records = df.to_dict(orient="records")
-        cleaned = []
-        for r in records:
-            cleaned_r = {}
-            for k, v in r.items():
-                if pd.isna(v):
-                    cleaned_r[k] = None
-                else:
-                    if isinstance(v, (int, float)):
-                        cleaned_r[k] = round(v, 4) if isinstance(v, float) else v
-                    else:
-                        cleaned_r[k] = str(v)
-            if map_fn:
-                cleaned_r = map_fn(cleaned_r)
-            cleaned.append(cleaned_r)
-        return cleaned
 
     def format_financials_record(r):
         date_str = r.pop("date", None)
-        if date_str:
-            dt = pd.to_datetime(date_str)
-            r["quarter"] = f"{dt.year}-Q{(dt.month - 1) // 3 + 1}"
-        else:
-            r["quarter"] = None
+        r["quarter"] = _quarter_label(date_str) if date_str else None
         return r
 
     return {
@@ -231,15 +296,64 @@ def get_fundamentals(code: str) -> dict:
         "valuation": _clean_records(val_df),
         "revenue": _clean_records(rev_df),
         "financials": _clean_records(fin_df, format_financials_record),
+        "balance_sheet": balance_records,
         "dividend": _clean_records(div_df),
+        "dividend_events": div_events,
         "unit": {
             "revenue": "元",
             "market_cap": "元",
             "dividend": "元/股",
-            "ratio": "%"
+            "ratio": "%",
+            "financial_amount": "元",
+            "bvps": "元/股",
         },
         "source": "FinMind"
     }
+
+
+def _build_balance_records(bal_df: pd.DataFrame, latest_shares: float | None) -> list[dict]:
+    """最近 8 季資產負債＋負債比、流動比、每股淨值。
+
+    每股淨值＝歸屬母公司權益 ÷ 股數；各季股數用「股本 ÷ 面額」推，面額由最新股本 ÷ 最新發行股數反推
+    （大多數是 10 元，少數公司採彈性面額），推不出來就當 10 元。
+    """
+    if bal_df is None or bal_df.empty:
+        return []
+    df = bal_df.sort_values("date").tail(8).reset_index(drop=True)
+    par = 10.0
+    last_capital = _num_or_none(df.iloc[-1].get("capital_stock")) if "capital_stock" in df.columns else None
+    if last_capital and latest_shares and latest_shares > 0:
+        implied = last_capital / latest_shares
+        if 0.5 <= implied <= 100:
+            par = implied
+
+    out = []
+    for r in df.to_dict(orient="records"):
+        assets = _num_or_none(r.get("total_assets"))
+        liab = _num_or_none(r.get("total_liabilities"))
+        equity = _num_or_none(r.get("equity"))
+        equity_parent = _num_or_none(r.get("equity_parent"))
+        ca = _num_or_none(r.get("current_assets"))
+        cl = _num_or_none(r.get("current_liabilities"))
+        capital = _num_or_none(r.get("capital_stock"))
+        book = equity_parent if equity_parent is not None else equity
+        shares = capital / par if capital and capital > 0 else None
+        out.append({
+            "quarter": _quarter_label(str(r["date"])),
+            "total_assets": assets,
+            "total_liabilities": liab,
+            "equity": equity,
+            "equity_parent": equity_parent,
+            "current_assets": ca,
+            "current_liabilities": cl,
+            "cash": _num_or_none(r.get("cash")),
+            "receivables": _num_or_none(r.get("receivables")),
+            "inventories": _num_or_none(r.get("inventories")),
+            "debt_ratio": round(liab / assets * 100, 2) if liab is not None and assets else None,
+            "current_ratio": round(ca / cl * 100, 2) if ca is not None and cl else None,
+            "bvps": round(book / shares, 2) if book is not None and shares else None,
+        })
+    return out
 
 
 def get_chips(code: str, start: str, end: str) -> dict:
