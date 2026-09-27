@@ -149,3 +149,27 @@ describe('buildStockHighlights', () => {
     expect(hs.map((h) => h.key)).toEqual(['rev-yoy', 'rev-high', 'rev-streak', 'eps-loss', 'pe-pos', 'foreign', 'trust', 'margin']);
   });
 });
+
+describe('除息倒數標籤（opt45）', () => {
+  const baseFund = {
+    code: '2330', name: '台積電', as_of: '2026-09-10',
+    summary: { pe_ratio: null, pb_ratio: null, dividend_yield: null, market_cap: null, eps_ttm: null },
+    valuation: [], revenue: [], financials: [], dividend: [],
+    unit: { revenue: '元', market_cap: '元', dividend: '元/股', ratio: '%' }, source: 'FinMind',
+    dividend_events: [{
+      period: '115年第1季', base_date: '2026-09-22', cash_dividend: 7.00000137, stock_dividend: 0,
+      announce_date: '2026-09-01', cash_ex_date: '2026-09-16', stock_ex_date: null, payment_date: '2026-10-08',
+    }],
+  };
+  const tags = (today: string) =>
+    buildStockHighlights({ dailyOhlcv: null, chips: null, fundamentals: baseFund, today }).filter((h) => h.key === 'dividend');
+
+  it('14 天內標倒數、當天標今天、已除息或太遠不標', () => {
+    expect(tags('2026-09-10')[0].text).toBe('6 天後除息');
+    expect(tags('2026-09-10')[0].detail).toContain('現金 7 元');
+    expect(tags('2026-09-16')[0].text).toBe('今天除息');
+    expect(tags('2026-09-17')).toHaveLength(0);
+    expect(tags('2026-08-20')).toHaveLength(0);
+    expect(buildStockHighlights({ dailyOhlcv: null, chips: null, fundamentals: baseFund }).some((h) => h.key === 'dividend')).toBe(false);
+  });
+});

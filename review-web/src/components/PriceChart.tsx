@@ -16,7 +16,11 @@ import {
   calculateRSI,
   calculateBBands,
   toTime,
+  recentWindowStart,
 } from '../lib/indicators';
+
+/** 日 K 一打開預設只看最近幾個月（使用者 2026-09-28 指定兩個月） */
+const DAILY_DEFAULT_MONTHS = 2;
 
 /** 疊在主圖上的水平價位線（關鍵價位）；只畫在日 K 上 */
 export interface ChartLevel {
@@ -573,10 +577,16 @@ export const PriceChart: React.FC<PriceChartProps> = ({ rows, isIntraday, height
       });
     });
 
-    // 用固定 barSpacing 取代 fitContent：K 棒有較寬間距、顯示近期，歷史往左捲/滾輪縮放
-    // （fitContent 會把全部資料壓進畫面寬度，資料越長棒子越細；固定間距較好看）
-    mainChart.timeScale().applyOptions({ barSpacing: 12 });
-    mainChart.timeScale().scrollToRealTime();
+    if (isIntraday) {
+      // 分 K：固定間距、貼齊最新一根（fitContent 會把整天壓進畫面寬度，棒子太細）
+      mainChart.timeScale().applyOptions({ barSpacing: 12 });
+      mainChart.timeScale().scrollToRealTime();
+    } else {
+      // 日 K（2026-09-28）：預設只框近兩個月，間距跟著畫面寬度放大、看得出每一天；
+      // 更早的資料往左拖或滾輪縮放。右邊留兩根的空白，最後一根不會貼著價格軸。
+      const from = recentWindowStart(candleData.map((d) => String(d.time)), DAILY_DEFAULT_MONTHS);
+      mainChart.timeScale().setVisibleLogicalRange({ from: from - 0.5, to: candleData.length - 1 + 2 });
+    }
 
     // --- Handle Resize Alignment ---
     const ro = new ResizeObserver(() => {

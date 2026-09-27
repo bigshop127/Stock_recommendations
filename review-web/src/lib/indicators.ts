@@ -261,3 +261,24 @@ export function calculateBBands(
 
   return data;
 }
+
+/**
+ * 日 K 預設畫面從哪一根開始（2026-09-28）：最後一根往前推 months 個月，取那天之後的第一根。
+ * 原本用固定 12px 間距，寬螢幕一次塞半年、K 棒細到看不出單日；改成只框近兩個月，
+ * 間距依畫面寬度自動放大，舊資料照樣可以往左拖、滾輪縮放。
+ * 至少留 minBars 根（剛上市、資料很短時不要只剩三五根）；日期格式不對就從頭畫。
+ */
+export function recentWindowStart(dates: string[], months: number, minBars = 20): number {
+  const n = dates.length;
+  if (!n) return 0;
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(dates[n - 1]);
+  if (!m) return 0;
+  const y = Number(m[1]);
+  const mon = Number(m[2]) - 1 - months;
+  // 月底往前推到比較短的月份時夾在該月最後一天（例：4/30 往前兩個月＝2/28，不是 3/2）
+  const lastDay = new Date(Date.UTC(y, mon + 1, 0)).getUTCDate();
+  const cutoff = new Date(Date.UTC(y, mon, Math.min(Number(m[3]), lastDay))).toISOString().slice(0, 10);
+  let idx = dates.findIndex((d) => d.slice(0, 10) >= cutoff);
+  if (idx < 0) idx = 0;
+  return Math.max(0, Math.min(idx, n - minBars));
+}

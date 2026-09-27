@@ -10,6 +10,7 @@ import {
   type MacroState,
   type MacroCombination,
   type MacroIndicator,
+  type FedTarget,
 } from './rebalance';
 
 const VERSION = 'v1';
@@ -132,12 +133,29 @@ function sanitizeMacroIndicator(v: unknown): MacroIndicator | undefined {
   };
 }
 
+function sanitizeFedTarget(v: unknown): FedTarget | undefined {
+  if (!v || typeof v !== 'object') return undefined;
+  const o = v as Record<string, unknown>;
+  const fin = (x: unknown) => (typeof x === 'number' && Number.isFinite(x) ? x : null);
+  const upper = fin(o.upper);
+  const lower = fin(o.lower);
+  if (upper === null || lower === null) return undefined;
+  return {
+    upper,
+    lower,
+    effective: fin(o.effective),
+    as_of: typeof o.as_of === 'string' ? o.as_of : undefined,
+    effective_date: typeof o.effective_date === 'string' ? o.effective_date : undefined,
+  };
+}
+
 // 宏觀 regime 設定：門檻缺欄位補預設、指標值缺→undefined、combination 守衛
 function sanitizeMacro(v: unknown): MacroState {
   const o = (v && typeof v === 'object' ? v : {}) as Record<string, unknown>;
   const t = (o.thresholds && typeof o.thresholds === 'object' ? o.thresholds : {}) as Record<string, unknown>;
   return {
     fed_rate: sanitizeMacroIndicator(o.fed_rate),
+    fed_target: sanitizeFedTarget(o.fed_target),
     treasury_yield: sanitizeMacroIndicator(o.treasury_yield),
     fx: sanitizeMacroIndicator(o.fx),
     thresholds: {

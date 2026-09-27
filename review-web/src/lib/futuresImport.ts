@@ -306,7 +306,17 @@ export function buildImportPlan(
   // 從 0 起算，同一天匯入兩個商品沒有它會撞出一樣的 id（例如都叫 f_imp20260825_1）
   // ——position id 是帳戶層級共用的鍵（stop_loss／React key 都靠它），不能只在單一
   // 商品內唯一。
-  const nid = (prefix: string) => `${prefix}_imp${opts.today.replace(/-/g, '')}_${product}_${++seq}`;
+  // 同一天匯入第二次時流水號又從 1 起算，會撞到上一次匯入的 id（2026-09-01 實例：兩筆
+  // c_imp20260901_SRF_1，刪一筆會兩筆一起刪）——跳過帳上已經有的 id
+  const idsInUse = new Set<string>([...positions.map((p) => p.id), ...closed.map((t) => t.id)]);
+  const nid = (prefix: string) => {
+    let id: string;
+    do {
+      id = `${prefix}_imp${opts.today.replace(/-/g, '')}_${product}_${++seq}`;
+    } while (idsInUse.has(id));
+    idsInUse.add(id);
+    return id;
+  };
 
   for (const s of screens) warnings.push(...s.warnings);
 

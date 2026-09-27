@@ -204,6 +204,27 @@ function sanitizePosition(v: unknown, i: number, codes: string[], defaultCode: s
   };
 }
 
+/**
+ * 同一份清單裡 id 撞號時，第一筆保留、後面的改名成 `id~2`、`id~3`（2026-09-28）。
+ * 撞號來源：9/01 同一天匯入兩次平倉截圖，匯入的流水號每次從 1 起算，產生兩筆
+ * c_imp20260901_SRF_1。後果不只 React key 重複：刪除是 `filter(x => x.id !== t.id)`，
+ * 按一筆會把兩筆都刪掉、現金卻只回沖一筆的損益。
+ */
+export function uniqueIds<T extends { id: string }>(list: T[]): T[] {
+  const seen = new Set<string>();
+  return list.map((item) => {
+    if (!seen.has(item.id)) {
+      seen.add(item.id);
+      return item;
+    }
+    let n = 2;
+    while (seen.has(`${item.id}~${n}`)) n++;
+    const id = `${item.id}~${n}`;
+    seen.add(id);
+    return { ...item, id };
+  });
+}
+
 function sanitizeClosed(v: unknown, i: number, codes: string[], defaultCode: string): ClosedTrade | null {
   if (!v || typeof v !== 'object') return null;
   const o = v as Record<string, unknown>;
@@ -406,12 +427,12 @@ export function normalizeFutures(parsed: Record<string, unknown>): FuturesConfig
   const wantedActive = safeProductCode(parsed.active_product);
   const active_product = codes.includes(wantedActive) ? wantedActive : (migratedDefaultCode && codes.includes(migratedDefaultCode) ? migratedDefaultCode : codes[0]);
 
-  const positions = (Array.isArray(parsed.positions) ? parsed.positions : [])
+  const positions = uniqueIds((Array.isArray(parsed.positions) ? parsed.positions : [])
     .map((p, i) => sanitizePosition(p, i, codes, active_product))
-    .filter((p): p is FuturesPosition => p !== null);
-  const closed = (Array.isArray(parsed.closed) ? parsed.closed : [])
+    .filter((p): p is FuturesPosition => p !== null));
+  const closed = uniqueIds((Array.isArray(parsed.closed) ? parsed.closed : [])
     .map((t, i) => sanitizeClosed(t, i, codes, active_product))
-    .filter((t): t is ClosedTrade => t !== null);
+    .filter((t): t is ClosedTrade => t !== null));
 
   // 停損價只保留還存在的部位，避免刪了部位後留下孤兒設定
   const ids = new Set(positions.map((p) => p.id));

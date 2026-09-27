@@ -341,6 +341,44 @@ export interface FinancialsRow {
   gross_margin: number | null;
   operating_margin: number | null;
   net_margin: number | null;
+  // opt45 起：單季損益金額（元）與去年同季成長率（%）；金融業沒有毛利／營業利益
+  revenue?: number | null;
+  gross_profit?: number | null;
+  operating_income?: number | null;
+  pre_tax_income?: number | null;
+  net_income?: number | null;
+  net_income_parent?: number | null;
+  revenue_yoy?: number | null;
+  net_income_yoy?: number | null;
+}
+
+/** 資產負債表（季末，金額單位元；opt45） */
+export interface BalanceSheetRow {
+  quarter: string;
+  total_assets: number | null;
+  total_liabilities: number | null;
+  equity: number | null;
+  equity_parent: number | null;
+  current_assets: number | null;
+  current_liabilities: number | null;
+  cash: number | null;
+  receivables: number | null;
+  inventories: number | null;
+  debt_ratio: number | null;     // %
+  current_ratio: number | null;  // %
+  bvps: number | null;           // 每股淨值（元）
+}
+
+/** 一次股利配發（季配息每季一筆；opt45）。日期都是 YYYY-MM-DD，還沒定的是 null */
+export interface DividendEvent {
+  period: string;                // 「114年」「115年第1季」，ETF 只有年度數字
+  base_date: string;             // FinMind 的基準日附近日期，排序用
+  cash_dividend: number | null;  // 元/股（盈餘＋資本公積）
+  stock_dividend: number | null; // 元/股
+  announce_date: string | null;
+  cash_ex_date: string | null;
+  stock_ex_date: string | null;
+  payment_date: string | null;
 }
 
 export interface DividendRow {
@@ -357,7 +395,9 @@ export interface StockFundamentals {
   valuation: ValuationRow[];
   revenue: RevenueRow[];
   financials: FinancialsRow[];
+  balance_sheet?: BalanceSheetRow[];
   dividend: DividendRow[];
+  dividend_events?: DividendEvent[];
   unit: {
     revenue: string;
     market_cap: string;
@@ -365,6 +405,49 @@ export interface StockFundamentals {
     ratio: string;
   };
   source: string;
+}
+
+/** 證交所個股估值＋獲利率（gateway /api/market/stock-metrics；opt45）。上櫃只有營收年增 */
+export interface StockMetric {
+  code: string;
+  name: string;
+  close: number | null;
+  pe: number | null;             // 近四季本益比，虧損是 null
+  pb: number | null;
+  dy: number | null;             // 殖利率 %
+  eps_ttm: number | null;        // 收盤 ÷ 本益比
+  bvps: number | null;           // 收盤 ÷ 淨值比
+  gross_margin: number | null;   // 今年累計 %
+  operating_margin: number | null;
+  net_margin: number | null;
+  margin_period: string | null;  // '2026-Q2'
+  rev_yoy: number | null;        // 最新月營收年增 %
+  rev_cum_yoy: number | null;
+  revenue_month: string | null;
+}
+
+export interface StockMetricsResp {
+  date: string | null;
+  eps_period: { year: number; quarter: number; label: string } | null;
+  margin_period: string | null;
+  revenue_month: string | null;
+  items: StockMetric[];
+  partial_errors?: string[];
+  fetched_at: string;
+  stale: boolean;
+  stale_reason?: string;
+}
+
+/** 三大法人近 N 日買賣超（證交所 T86，只有上市；opt45 卡片牆） */
+export interface InstNetResp {
+  /** 實際用到的交易日，新到舊 */
+  dates: string[];
+  /** net_lots 單位張；days＝這檔實際有幾天資料。上櫃、查無的代號不會出現 */
+  items: Record<string, { net_lots: number; days: number }>;
+  unit: string;
+  source: string;
+  partial?: boolean;
+  errors?: string[];
 }
 
 export interface NewsSentiment {
@@ -557,6 +640,11 @@ export const api = {
   getRevenueCompany: (code: string) => req<RevenueCompanyResp>(`/market/revenue/company/${encodeURIComponent(code)}`),
   getRevenueIndustry: (name: string, market?: 'listed' | 'otc') =>
     req<RevenueIndustryResp>(`/market/revenue/industry${qs({ name, market: market === 'otc' ? 'otc' : undefined })}`),
+  // 個股估值＋三率＋營收年增（opt45，同業排名／資料夾卡片牆）；同一組代號 10 分鐘內共用
+  getStockMetrics: (codes: string[]) => stockMetricsCached(codes),
+  // 三大法人近 N 日買賣超（上市全市場一張表，取代卡片牆逐檔打 FinMind）
+  marketInstNet: (codes: string[], days = 5) =>
+    req<InstNetResp>(`/market/inst-net${qs({ codes: codes.join(','), days })}`),
 
   // 個股／ETF 已實現損益（opt36，gateway 讀寫 data/stock_realized_trades.json）
   getStockRealized: () => req<StockRealizedResp>('/stock-realized'),
@@ -904,6 +992,19 @@ export interface RevenueIndustryResp extends RevenueStaleFields {
   companies: RevenueCompany[];         // 依營收大到小
 }
 
+const stockMetricsCache = new Map<string, { at: number; p: Promise<StockMetricsResp> }>();
+function stockMetricsCached(codes: string[]): Promise<StockMetricsResp> {
+  const key = [...new Set(codes)].sort().join(',');
+  const hit = stockMetricsCache.get(key);
+  if (hit && Date.now() - hit.at < 10 * 60 * 1000) return hit.p;
+  const p = req<StockMetricsResp>(`/market/stock-metrics${qs({ codes: key })}`).catch((e) => {
+    stockMetricsCache.delete(key); // 失敗不快取
+    throw e;
+  });
+  stockMetricsCache.set(key, { at: Date.now(), p });
+  return p;
+}
+
 // 盤勢總覽的自選清單和個股頁都會要這份名單，一天才變一次——同一個分頁只抓一次
 let defaultDisclosuresPromise: Promise<DefaultDisclosuresResp> | null = null;
 function defaultDisclosuresOnce(force: boolean): Promise<DefaultDisclosuresResp> {
@@ -964,6 +1065,16 @@ export interface MacroIndicatorResp {
 export interface MacroIndicatorsResp {
   fetched_at: string;
   fed_rate: MacroIndicatorResp;
+  /** 聯準會官方目標區間（FRED）；gateway 還沒更新時沒有這個欄位 */
+  fed_target?: {
+    ok: boolean;
+    upper?: number;
+    lower?: number;
+    effective?: number | null;
+    effective_date?: string | null;
+    as_of?: string;
+    error?: string;
+  };
   treasury_yield: MacroIndicatorResp;
   fx: MacroIndicatorResp;
 }
@@ -993,6 +1104,7 @@ export interface RebalanceHoldingsPayload {
   bond_priority?: 'bond1_first' | 'bond2_first' | 'regime_aware'; // 變現／回補優先順序【regime-aware／2026-09 單一優先回補】
   macro?: {             // 宏觀 regime 指標與門檻【regime-aware】
     fed_rate?: { current: number | null; reference: number | null; as_of?: string; ref_date?: string };
+    fed_target?: { upper: number; lower: number; effective: number | null; as_of?: string; effective_date?: string };
     treasury_yield?: { current: number | null; reference: number | null; as_of?: string; ref_date?: string };
     fx?: { current: number | null; reference: number | null; as_of?: string; ref_date?: string };
     thresholds?: { fed_rate_rise: number; treasury_yield_rise: number; fx_rise_pct: number };

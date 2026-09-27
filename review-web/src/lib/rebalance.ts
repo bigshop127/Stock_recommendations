@@ -39,8 +39,20 @@ export const DEFAULT_MACRO_THRESHOLDS: MacroThresholds = {
 
 export type MacroCombination = 'any' | 'majority' | 'all';
 
+/** 聯準會官方政策利率（FRED）：只顯示、不參與 regime 判斷 */
+export interface FedTarget {
+  upper: number;             // 目標區間上限 %
+  lower: number;             // 目標區間下限 %
+  effective: number | null;  // 有效聯邦資金利率 %
+  as_of?: string;
+  effective_date?: string;
+}
+
 export interface MacroState {
-  fed_rate?: MacroIndicator;       // ^IRX（13週國庫券殖利率，貼近 Fed 基準利率）
+  // ^IRX＝13週國庫券殖利率：市場利率、會先反映升降息預期，不是聯準會公布的政策利率
+  // （2026-09-25：^IRX 4.07% vs 官方目標 3.75–4.00%）。regime 判斷照舊用它，官方數字見 fed_target
+  fed_rate?: MacroIndicator;
+  fed_target?: FedTarget;
   treasury_yield?: MacroIndicator; // ^TYX（30年美債殖利率，代理 00687B 的 20年天期）
   fx?: MacroIndicator;             // TWD=X（USD/TWD）
   thresholds?: MacroThresholds;

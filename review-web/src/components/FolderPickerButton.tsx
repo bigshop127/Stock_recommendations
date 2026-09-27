@@ -40,7 +40,7 @@ export const FolderPickerButton: React.FC<FolderPickerButtonProps> = ({ code, na
     <div className="relative" ref={wrapRef}>
       <button
         onClick={(e) => { e.preventDefault(); e.stopPropagation(); setOpen((o) => !o); }}
-        className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold border transition-colors duration-150 ${
+        className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold border whitespace-nowrap transition-colors duration-150 ${
           memberCount > 0
             ? 'bg-primary/10 text-primary border-primary/20 hover:bg-primary/20'
             : 'bg-zinc-800 text-zinc-300 border-border hover:bg-zinc-700'

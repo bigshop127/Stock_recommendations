@@ -6,7 +6,7 @@ import {
   ClipboardCopy, Check, Target, Layers,
   ShieldCheck, Wallet, ListOrdered, CalendarSync, SlidersHorizontal, BookOpen,
   LineChart, Flame, Ruler, ArrowDownCircle, ArrowUpCircle, ArrowLeftRight,
-  ChevronDown, ChevronUp, Eraser, History, Compass, Filter,
+  ChevronDown, ChevronUp, ChevronRight, Eraser, History, Compass, Filter,
   Archive, RotateCcw,
 } from 'lucide-react';
 import { Panel, StatTile, RiskMeter, ThreatCard, LevelCard, Row, Chip, type Tone } from '../components/futures/ui';
@@ -33,6 +33,7 @@ import {
   getFuturesConfig, saveFuturesConfig, subscribeFutures,
   DEFAULT_PLANNER, type FuturesConfig, type PlannerConfig,
 } from '../lib/futuresStore';
+import { groupClosedTrades, sortClosedGroups, type ClosedGroupMode, type ClosedRowView } from '../lib/futuresClosedGroups';
 
 type FuturesTab = 'overview' | 'positions' | 'stress' | 'planner' | 'rollover' | 'settings' | 'logic';
 
@@ -1239,6 +1240,384 @@ const filterChipCls = (active: boolean) =>
       ? 'bg-primary/15 text-primary border-primary/30'
       : 'text-zinc-400 border-border hover:text-zinc-200 hover:border-zinc-600'
   }`;
+const sortChipCls = (active: boolean) =>
+  `px-2.5 py-1 rounded-lg text-[10px] font-semibold border transition ${
+    active
+      ? 'bg-primary/15 text-primary border-primary/30'
+      : 'text-zinc-500 border-border hover:text-zinc-200 hover:border-zinc-600'
+  }`;
+
+/**
+ * 平倉紀錄的篩選（商品／平倉日）：總覽的「已實現損益」與「部位 & 平倉紀錄」分頁的平倉紀錄
+ * 共用這一套邏輯，但各自呼叫、各自一份 state——在一邊選了 8 月，另一邊不會跟著變。
+ *
+ * 商品選項只列「平倉紀錄裡真的出現過」的商品：封存或還沒交易過的商品列出來只會篩出空表。
+ */
+function useClosedFilters(baseRows: ClosedRowView[], products: Record<string, ProductConfig>) {
+  const [filterProduct, setFilterProduct] = useState('');
+  const [timeMode, setTimeMode] = useState<'all' | 'month' | 'range'>('all');
+  const [month, setMonth] = useState('');
+  const [dateStart, setDateStart] = useState('');
+  const [dateEnd, setDateEnd] = useState('');
+
+  const productOptions = useMemo(
+    () => [...new Set(baseRows.map((r) => r.t.product))]
+      .map((code) => [code, products[code]?.name || code] as const)
+      .sort((a, b) => a[1].localeCompare(b[1])),
+    [baseRows, products],
+  );
+  const multiProduct = productOptions.length > 1;
+  /** 月份快選：近 6 個月排成按鈕，更早的塞進下拉選單——跟總覽頁同一套設計 */
+  const monthOptions = useMemo(() => {
+    const set = new Set<string>();
+    baseRows.forEach((r) => { const m = exitMonthOf(r.t.exit_date); if (m) set.add(m); });
+    return [...set].sort().reverse();
+  }, [baseRows]);
+
+  // 篩選的商品從紀錄裡消失了（刪光了）就當沒篩，免得卡在一張空表卻看不到那顆按鈕
+  const productActive = filterProduct && productOptions.some(([c]) => c === filterProduct) ? filterProduct : '';
+  const filteredRows = useMemo(() => baseRows
+    .filter((r) => !productActive || r.t.product === productActive)
+    .filter((r) => {
+      if (timeMode === 'month') return !month || exitMonthOf(r.t.exit_date) === month;
+      if (timeMode === 'range') return inExitDateRange(r.t.exit_date, dateStart, dateEnd);
+      return true;
+    }),
+  [baseRows, productActive, timeMode, month, dateStart, dateEnd]);
+
+  return {
+    filterProduct: productActive, setFilterProduct,
+    timeMode, setTimeMode, month, setMonth, dateStart, setDateStart, dateEnd, setDateEnd,
+    productOptions, multiProduct, monthOptions, filteredRows,
+  };
+}
+type ClosedFilters = ReturnType<typeof useClosedFilters>;
+
+const ClosedFilterBar: React.FC<{ f: ClosedFilters }> = ({ f }) => {
+  const RECENT_MONTHS_SHOWN = 6;
+  const recentMonths = f.monthOptions.slice(0, RECENT_MONTHS_SHOWN);
+  const olderMonths = f.monthOptions.slice(RECENT_MONTHS_SHOWN);
+  const monthChipLabel = (m: string) => {
+    const [y, mm] = m.split('-');
+    return Number(y) === new Date().getFullYear() ? `${Number(mm)}月` : `${y.slice(2)}/${mm}`;
+  };
+  return (
+    <div className="space-y-2 mb-4">
+      {f.multiProduct && (
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="flex items-center gap-1 text-[11px] text-zinc-500 mr-1">
+            <Filter className="w-3.5 h-3.5" /> 商品
+          </span>
+          <button onClick={() => f.setFilterProduct('')} className={filterChipCls(!f.filterProduct)}>全部商品</button>
+          {f.productOptions.map(([code, name]) => (
+            <button key={code} onClick={() => f.setFilterProduct(code)} className={filterChipCls(f.filterProduct === code)}>
+              {name}
+            </button>
+          ))}
+        </div>
+      )}
+      <div className="flex flex-wrap items-center gap-2">
+        <span className={`text-[11px] text-zinc-500 mr-1 ${f.multiProduct ? 'pl-[19px]' : 'flex items-center gap-1'}`}>
+          {!f.multiProduct && <Filter className="w-3.5 h-3.5" />} 平倉日
+        </span>
+        <button
+          onClick={() => { f.setTimeMode('all'); f.setMonth(''); f.setDateStart(''); f.setDateEnd(''); }}
+          className={filterChipCls(f.timeMode === 'all')}
+        >
+          全部時間
+        </button>
+        {recentMonths.map((m) => (
+          <button
+            key={m}
+            onClick={() => { f.setTimeMode('month'); f.setMonth(m); }}
+            className={filterChipCls(f.timeMode === 'month' && f.month === m)}
+          >
+            {monthChipLabel(m)}
+          </button>
+        ))}
+        {olderMonths.length > 0 && (
+          <select
+            value={f.timeMode === 'month' && olderMonths.includes(f.month) ? f.month : ''}
+            onChange={(e) => { if (e.target.value) { f.setTimeMode('month'); f.setMonth(e.target.value); } }}
+            className="px-2.5 py-1.5 rounded-lg text-[11px] bg-zinc-900 border border-border text-zinc-300"
+          >
+            <option value="">更早月份…</option>
+            {olderMonths.map((m) => (
+              <option key={m} value={m}>{m.replace('-', '/')}</option>
+            ))}
+          </select>
+        )}
+        <button onClick={() => f.setTimeMode('range')} className={filterChipCls(f.timeMode === 'range')}>自訂區間</button>
+        {f.timeMode === 'range' && (
+          <>
+            <input type="date" value={f.dateStart} onChange={(e) => f.setDateStart(e.target.value)}
+              className="px-2.5 py-1.5 rounded-lg text-[11px] bg-zinc-900 border border-border text-zinc-300" />
+            <span className="text-zinc-600 text-[11px]">至</span>
+            <input type="date" value={f.dateEnd} onChange={(e) => f.setDateEnd(e.target.value)}
+              className="px-2.5 py-1.5 rounded-lg text-[11px] bg-zinc-900 border border-border text-zinc-300" />
+          </>
+        )}
+      </div>
+    </div>
+  );
+};
+
+/** 篩選結果的四格摘要（淨損益／費用／勝率／平均每筆），兩處平倉紀錄共用 */
+const ClosedStatTiles: React.FC<{ rows: ClosedRowView[] }> = ({ rows }) => {
+  const total = rows.reduce((s, r) => s + r.b.net, 0);
+  const gross = rows.reduce((s, r) => s + r.b.gross, 0);
+  const cost = rows.reduce((s, r) => s + r.b.fees + r.b.tax, 0);
+  const lots = rows.reduce((s, r) => s + Math.max(0, r.t.lots), 0);
+  const wins = rows.filter((r) => r.b.net > 0).length;
+  return (
+    <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+      <StatTile label="淨已實現損益" value={money(total)} valueCls={pnlCls(total)} tone="zinc"
+        sub={`毛損益 ${money(gross)} － 費用 ${money(cost)}`} />
+      <StatTile label="交易費用合計" value={money(cost)} tone="zinc"
+        sub={lots > 0 ? `平均 ${money(cost / lots)} / 口（來回）` : ''}
+        hint="手續費 + 期交稅。有券商實收金額就用實收的，否則用「契約規格 & 設定」的費率推估。" />
+      <StatTile label="勝率" value={rows.length > 0 ? pct(wins / rows.length, 0) : '—'} tone="zinc"
+        sub={`${wins} 勝 / ${rows.length - wins} 敗`}
+        hint="以每一筆平倉紀錄的淨損益是否為正計算，不是以口數加權。" />
+      <StatTile label="平均每筆" value={rows.length > 0 ? money(total / rows.length) : '—'} valueCls={pnlCls(total)} tone="zinc"
+        sub={lots > 0 ? `每口平均 ${money(total / lots)}` : ''} />
+    </div>
+  );
+};
+
+const GROUP_MODE_OPTIONS: { value: ClosedGroupMode; label: string; hint: string }[] = [
+  { value: 'exit_date', label: '依平倉日', hint: '同一天出場的拆單併成一組，看每天賺賠多少' },
+  { value: 'contract', label: '依合約', hint: '同一商品、同一契約月份、同一方向併成一組' },
+];
+const CLOSED_GROUPS_SHOWN = 6;
+const CLOSED_GROUP_MODE_KEY = 'futures:closedGroupMode';
+
+/**
+ * 「部位 & 平倉紀錄」分頁的平倉紀錄（2026-09-28 收納整理）。
+ *
+ * 原本是攤平的一張表：券商一筆委託常拆成好幾筆成交，同一天同價位的 1 口／2 口／1 口
+ * 各佔一列，36 筆看不出每天到底賺賠多少。比照「已實現損益總覽」頁的依標的摺疊：
+ * 依平倉日（預設）或依合約分組、組標題帶口數加權均價與毛損益／費用／淨損益小計，
+ * 只有一筆的組直接顯示那一筆；預設只列最新 6 組，其餘按「展開全部」。
+ * 篩選、四格摘要跟總覽的「已實現損益」共用同一套（各自一份 state）。
+ *
+ * 刪除仍在這裡做（總覽那邊唯讀），刪除時把當初結算進現金的損益回沖——由上層 onDelete 處理。
+ */
+const ClosedTradesPanel: React.FC<{
+  closed: ClosedTrade[];
+  spec: FuturesSpec;
+  products: Record<string, ProductConfig>;
+  onDelete: (t: ClosedTrade) => void;
+}> = ({ closed, spec, products, onDelete }) => {
+  const baseRows = useMemo<ClosedRowView[]>(
+    () => closed.map((t) => ({ t, b: closedBreakdown(t, products[t.product]?.spec ?? spec) })),
+    [closed, spec, products],
+  );
+  const f = useClosedFilters(baseRows, products);
+  const [groupMode, setGroupModeState] = useState<ClosedGroupMode>(() => {
+    try { return localStorage.getItem(CLOSED_GROUP_MODE_KEY) === 'contract' ? 'contract' : 'exit_date'; } catch { return 'exit_date'; }
+  });
+  const setGroupMode = (m: ClosedGroupMode) => {
+    setGroupModeState(m);
+    setExpanded(new Set());
+    try { localStorage.setItem(CLOSED_GROUP_MODE_KEY, m); } catch { /* 記不住就算了 */ }
+  };
+  const [sortMode, setSortMode] = useState<RealizedSortMode>('date_desc');
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const [showAll, setShowAll] = useState(false);
+
+  const groups = useMemo(
+    () => sortClosedGroups(groupClosedTrades(f.filteredRows, groupMode), sortMode),
+    [f.filteredRows, groupMode, sortMode],
+  );
+  const visible = showAll ? groups : groups.slice(0, CLOSED_GROUPS_SHOWN);
+  const multiRowKeys = groups.filter((g) => g.rows.length > 1).map((g) => g.key);
+  const allExpanded = multiRowKeys.length > 0 && multiRowKeys.every((k) => expanded.has(k));
+  const toggle = (key: string) => setExpanded((prev) => {
+    const next = new Set(prev);
+    if (next.has(key)) next.delete(key); else next.add(key);
+    return next;
+  });
+
+  const grandTotal = baseRows.reduce((s, r) => s + r.b.net, 0);
+  const lots = f.filteredRows.reduce((s, r) => s + Math.max(0, r.t.lots), 0);
+  const gross = f.filteredRows.reduce((s, r) => s + r.b.gross, 0);
+  const cost = f.filteredRows.reduce((s, r) => s + r.b.fees + r.b.tax, 0);
+  const total = f.filteredRows.reduce((s, r) => s + r.b.net, 0);
+  const showProductCol = f.multiProduct && !f.filterProduct;
+  const productName = (code: string) => products[code]?.name ?? code;
+  const colCount = showProductCol ? 11 : 10;
+  const shortDate = (d: string) => (d ? d.slice(5) : '—');
+
+  return (
+    <Panel
+      title={`平倉紀錄（${closed.length}）`}
+      icon={<ListOrdered className="w-4 h-4" />}
+      tone="zinc"
+      right={closed.length > 0 && (
+        <Chip tone={grandTotal >= 0 ? 'rose' : 'emerald'} title="所有平倉紀錄的淨損益合計（不受下面篩選影響）">
+          {money(grandTotal)}
+        </Chip>
+      )}
+      desc={closed.length === 0
+        ? '還沒有平倉紀錄。平倉時會自動把損益結算進上方的保證金專戶現金餘額。'
+        : '平倉時已把損益結算進保證金專戶現金餘額。刪除一筆會把那筆損益從現金餘額回沖。'}
+    >
+      {closed.length > 0 && (
+        <>
+          <ClosedFilterBar f={f} />
+          <ClosedStatTiles rows={f.filteredRows} />
+
+          <div className="mt-4 flex flex-wrap items-center justify-between gap-2">
+            <div className="flex flex-wrap items-center gap-1.5">
+              {GROUP_MODE_OPTIONS.map((opt) => (
+                <button key={opt.value} onClick={() => setGroupMode(opt.value)} className={sortChipCls(groupMode === opt.value)} title={opt.hint}>
+                  {opt.label}
+                </button>
+              ))}
+              <span className="text-[11px] text-zinc-500 ml-1">共 {groups.length} 組 / {f.filteredRows.length} 筆</span>
+            </div>
+            <div className="flex flex-wrap items-center gap-1.5">
+              {REALIZED_SORT_OPTIONS.map((opt) => (
+                <button key={opt.value} onClick={() => setSortMode(opt.value)} className={sortChipCls(sortMode === opt.value)}>
+                  {opt.label}
+                </button>
+              ))}
+              {multiRowKeys.length > 0 && (
+                <button
+                  onClick={() => setExpanded(allExpanded ? new Set() : new Set(multiRowKeys))}
+                  className="flex items-center gap-1 px-2.5 py-1 rounded-lg text-[10px] font-semibold border border-border text-zinc-400 hover:text-zinc-200 hover:border-zinc-600"
+                >
+                  {allExpanded ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
+                  {allExpanded ? '全部收合' : '全部展開'}
+                </button>
+              )}
+            </div>
+          </div>
+
+          {/* 手機看不出這張表可以左右滑，補一句——否則會以為欄位就這幾個 */}
+          <p className="sm:hidden text-[10px] text-zinc-600 mt-2">← 左右滑動可看完整欄位 →</p>
+          <div className="mt-2 overflow-x-auto">
+            <table className="w-full text-xs min-w-[760px]">
+              <thead>
+                <tr className="text-zinc-500 border-b border-border">
+                  <th className="text-left font-medium py-2 pr-3">平倉日</th>
+                  {showProductCol && <th className="text-left font-medium py-2 pr-3">商品</th>}
+                  <th className="text-left font-medium py-2 pr-3">月份</th>
+                  <th className="text-left font-medium py-2 pr-3">方向</th>
+                  <th className="text-right font-medium py-2 pr-3">口數</th>
+                  <th className="text-right font-medium py-2 pr-3">進場</th>
+                  <th className="text-right font-medium py-2 pr-3">出場</th>
+                  <th className="text-right font-medium py-2 pr-3">毛損益</th>
+                  <th className="text-right font-medium py-2 pr-3">費用</th>
+                  <th className="text-right font-medium py-2 pr-3">淨損益</th>
+                  <th className="py-2" />
+                </tr>
+              </thead>
+              <tbody>
+                {visible.length === 0 && (
+                  <tr><td colSpan={colCount} className="py-6 text-center text-zinc-600">沒有符合篩選條件的紀錄</td></tr>
+                )}
+                {visible.map((g) => {
+                  const single = g.rows.length === 1;
+                  const open = single || expanded.has(g.key);
+                  const dateCell = g.exitDate
+                    ? g.exitDate
+                    : g.earliestDate && g.latestDate
+                      ? `${shortDate(g.earliestDate)} ~ ${shortDate(g.latestDate)}`
+                      : '—';
+                  return (
+                    <React.Fragment key={g.key}>
+                      {!single && (
+                        <tr onClick={() => toggle(g.key)} className="border-b border-border/50 bg-zinc-900/40 hover:bg-zinc-900/70 cursor-pointer select-none">
+                          <td className="py-2 pr-3 text-zinc-200 font-semibold whitespace-nowrap">
+                            <span className="inline-flex items-center gap-1.5">
+                              {open ? <ChevronDown className="w-3.5 h-3.5 text-zinc-500" /> : <ChevronRight className="w-3.5 h-3.5 text-zinc-500" />}
+                              <span className="font-mono">{dateCell}</span>
+                              <span className="text-[10px] font-normal text-zinc-500">× {g.rows.length} 筆</span>
+                            </span>
+                          </td>
+                          {showProductCol && (
+                            <td className="py-2 pr-3 text-zinc-300">{g.product ? productName(g.product) : <span className="text-zinc-500">多個商品</span>}</td>
+                          )}
+                          <td className="py-2 pr-3 font-mono text-zinc-300">{g.month ? monthLabel(g.month) : <span className="text-zinc-600">—</span>}</td>
+                          <td className={`py-2 pr-3 ${g.side === 'long' ? 'text-bull' : g.side === 'short' ? 'text-bear' : 'text-zinc-500'}`}>
+                            {g.side === 'long' ? '多' : g.side === 'short' ? '空' : '多空'}
+                          </td>
+                          <td className="py-2 pr-3 text-right font-mono text-zinc-200">{g.lots}</td>
+                          <td className="py-2 pr-3 text-right font-mono text-zinc-400" title="口數加權平均進場價">
+                            {g.avgEntry !== null ? <>均 {px(g.avgEntry)}</> : '—'}
+                          </td>
+                          <td className="py-2 pr-3 text-right font-mono text-zinc-400" title="口數加權平均出場價">
+                            {g.avgExit !== null ? <>均 {px(g.avgExit)}</> : '—'}
+                          </td>
+                          <td className={`py-2 pr-3 text-right font-mono ${pnlCls(g.gross)}`}>{money(g.gross)}</td>
+                          <td className="py-2 pr-3 text-right font-mono text-zinc-500">{money(g.cost)}{g.anyEstimated ? ' 估' : ''}</td>
+                          <td className={`py-2 pr-3 text-right font-mono font-bold ${pnlCls(g.net)}`}>{money(g.net)}</td>
+                          <td className="py-2" />
+                        </tr>
+                      )}
+                      {open && g.rows.map(({ t, b }) => (
+                        <tr key={t.id} className={`border-b border-border/50 last:border-0 ${single ? '' : 'bg-zinc-950/40'}`}>
+                          <td className="py-2 pr-3 font-mono text-zinc-400 whitespace-nowrap">
+                            {single ? (t.exit_date || '—') : <><span className="pl-4 pr-1.5 text-zinc-600">└</span>{t.exit_date || '—'}</>}
+                          </td>
+                          {showProductCol && <td className="py-2 pr-3 text-zinc-400">{productName(t.product)}</td>}
+                          <td className="py-2 pr-3 font-mono text-zinc-300">{monthLabel(t.month)}</td>
+                          <td className={`py-2 pr-3 ${t.side === 'long' ? 'text-bull' : 'text-bear'}`}>{t.side === 'long' ? '多' : '空'}</td>
+                          <td className="py-2 pr-3 text-right font-mono text-zinc-300">{t.lots}</td>
+                          <td className="py-2 pr-3 text-right font-mono text-zinc-500">{px(t.entry_price)}</td>
+                          <td className="py-2 pr-3 text-right font-mono text-zinc-500">{px(t.exit_price)}</td>
+                          <td className={`py-2 pr-3 text-right font-mono ${pnlCls(b.gross)}`}>{money(b.gross)}</td>
+                          <td className="py-2 pr-3 text-right font-mono text-zinc-500" title={b.actual_cost ? '券商實收金額' : '依「契約規格 & 設定」的費率推估'}>
+                            {money(b.fees + b.tax)}{b.actual_cost ? '' : ' 估'}
+                          </td>
+                          <td className={`py-2 pr-3 text-right font-mono font-semibold ${pnlCls(b.net)}`}>{money(b.net)}</td>
+                          <td className="py-2 text-right">
+                            <button
+                              onClick={() => onDelete(t)}
+                              className="text-zinc-600 hover:text-rose-400"
+                              title="刪除這筆平倉紀錄（現金餘額會同步回沖）"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </React.Fragment>
+                  );
+                })}
+              </tbody>
+              {f.filteredRows.length > 0 && (
+                <tfoot>
+                  <tr className="border-t border-border">
+                    <td className="py-2 pr-3 text-zinc-400 font-medium" colSpan={showProductCol ? 4 : 3}>
+                      合計{showAll || groups.length <= CLOSED_GROUPS_SHOWN ? '' : `（含未列出的 ${groups.length - CLOSED_GROUPS_SHOWN} 組）`}
+                    </td>
+                    <td className="py-2 pr-3 text-right font-mono text-zinc-300">{lots}</td>
+                    <td className="py-2 pr-3" colSpan={2} />
+                    <td className={`py-2 pr-3 text-right font-mono ${pnlCls(gross)}`}>{money(gross)}</td>
+                    <td className="py-2 pr-3 text-right font-mono text-zinc-500">{money(cost)}</td>
+                    <td className={`py-2 pr-3 text-right font-mono font-bold ${pnlCls(total)}`}>{money(total)}</td>
+                    <td className="py-2" />
+                  </tr>
+                </tfoot>
+              )}
+            </table>
+          </div>
+          {groups.length > CLOSED_GROUPS_SHOWN && (
+            <button
+              onClick={() => setShowAll((v) => !v)}
+              className="mt-2 w-full text-center text-[11px] text-zinc-500 hover:text-zinc-300 py-1.5 border border-border rounded-lg hover:border-zinc-600"
+            >
+              {showAll ? `收合，只顯示前 ${CLOSED_GROUPS_SHOWN} 組` : `展開全部 ${groups.length} 組`}
+            </button>
+          )}
+        </>
+      )}
+    </Panel>
+  );
+};
 
 /**
  * 已實現損益明細。**預設收合**：這頁開場要回答的是「我現在安不安全」，已經落袋的
@@ -1254,8 +1633,7 @@ const filterChipCls = (active: boolean) =>
  */
 const RealizedPanel: React.FC<{ closed: ClosedTrade[]; spec: FuturesSpec; products: Record<string, ProductConfig> }> = ({ closed, spec, products }) => {
   const [open, setOpen] = useState(false);
-  const multiProduct = Object.keys(products).length > 1;
-  const baseRows = useMemo(
+  const baseRows = useMemo<ClosedRowView[]>(
     () => closed.map((t) => ({ t, b: closedBreakdown(t, products[t.product]?.spec ?? spec) })),
     [closed, spec, products],
   );
@@ -1264,42 +1642,10 @@ const RealizedPanel: React.FC<{ closed: ClosedTrade[]; spec: FuturesSpec; produc
   const grandLots = baseRows.reduce((s, r) => s + Math.max(0, r.t.lots), 0);
   const grandWins = baseRows.filter((r) => r.b.net > 0).length;
 
-  // ── 篩選：商品（多商品帳戶才顯示）／平倉日區間 ─────────────────────────────
-  const [filterProduct, setFilterProduct] = useState('');
-  const [timeMode, setTimeMode] = useState<'all' | 'month' | 'range'>('all');
-  const [month, setMonth] = useState('');
-  const [dateStart, setDateStart] = useState('');
-  const [dateEnd, setDateEnd] = useState('');
+  // ── 篩選：商品（紀錄裡有兩種以上才顯示）／平倉日區間 ─────────────────────────
+  const f = useClosedFilters(baseRows, products);
+  const filteredRows = f.filteredRows;
   const [sortMode, setSortMode] = useState<RealizedSortMode>('date_desc');
-
-  const productOptions = useMemo(
-    () => Object.entries(products)
-      .map(([code, p]) => [code, p.name || code] as const)
-      .sort((a, b) => a[1].localeCompare(b[1])),
-    [products],
-  );
-  /** 月份快選：近 6 個月排成按鈕，更早的塞進下拉選單——跟總覽頁同一套設計 */
-  const monthOptions = useMemo(() => {
-    const set = new Set<string>();
-    baseRows.forEach((r) => { const m = exitMonthOf(r.t.exit_date); if (m) set.add(m); });
-    return [...set].sort().reverse();
-  }, [baseRows]);
-  const RECENT_MONTHS_SHOWN = 6;
-  const recentMonths = monthOptions.slice(0, RECENT_MONTHS_SHOWN);
-  const olderMonths = monthOptions.slice(RECENT_MONTHS_SHOWN);
-  const monthChipLabel = (m: string) => {
-    const [y, mm] = m.split('-');
-    return Number(y) === new Date().getFullYear() ? `${Number(mm)}月` : `${y.slice(2)}/${mm}`;
-  };
-
-  const filteredRows = useMemo(() => baseRows
-    .filter((r) => !filterProduct || r.t.product === filterProduct)
-    .filter((r) => {
-      if (timeMode === 'month') return !month || exitMonthOf(r.t.exit_date) === month;
-      if (timeMode === 'range') return inExitDateRange(r.t.exit_date, dateStart, dateEnd);
-      return true;
-    }),
-  [baseRows, filterProduct, timeMode, month, dateStart, dateEnd]);
 
   const sortedRows = useMemo(() => {
     const arr = [...filteredRows];
@@ -1316,8 +1662,7 @@ const RealizedPanel: React.FC<{ closed: ClosedTrade[]; spec: FuturesSpec; produc
   const gross = filteredRows.reduce((s, r) => s + r.b.gross, 0);
   const cost = filteredRows.reduce((s, r) => s + r.b.fees + r.b.tax, 0);
   const lots = filteredRows.reduce((s, r) => s + Math.max(0, r.t.lots), 0);
-  const wins = filteredRows.filter((r) => r.b.net > 0).length;
-  const showProductCol = multiProduct && !filterProduct;
+  const showProductCol = f.multiProduct && !f.filterProduct;
 
   return (
     <Panel
@@ -1345,77 +1690,8 @@ const RealizedPanel: React.FC<{ closed: ClosedTrade[]; spec: FuturesSpec; produc
     >
       {baseRows.length > 0 && open && (
         <>
-          {/* ── 篩選列：商品（多商品帳戶才顯示）／平倉日區間 ── */}
-          <div className="space-y-2 mb-4">
-            {multiProduct && (
-              <div className="flex flex-wrap items-center gap-2">
-                <span className="flex items-center gap-1 text-[11px] text-zinc-500 mr-1">
-                  <Filter className="w-3.5 h-3.5" /> 商品
-                </span>
-                <button onClick={() => setFilterProduct('')} className={filterChipCls(!filterProduct)}>全部商品</button>
-                {productOptions.map(([code, name]) => (
-                  <button key={code} onClick={() => setFilterProduct(code)} className={filterChipCls(filterProduct === code)}>
-                    {name}
-                  </button>
-                ))}
-              </div>
-            )}
-            <div className="flex flex-wrap items-center gap-2">
-              <span className={`text-[11px] text-zinc-500 mr-1 ${multiProduct ? 'pl-[19px]' : 'flex items-center gap-1'}`}>
-                {!multiProduct && <Filter className="w-3.5 h-3.5" />} 平倉日
-              </span>
-              <button
-                onClick={() => { setTimeMode('all'); setMonth(''); setDateStart(''); setDateEnd(''); }}
-                className={filterChipCls(timeMode === 'all')}
-              >
-                全部時間
-              </button>
-              {recentMonths.map((m) => (
-                <button
-                  key={m}
-                  onClick={() => { setTimeMode('month'); setMonth(m); }}
-                  className={filterChipCls(timeMode === 'month' && month === m)}
-                >
-                  {monthChipLabel(m)}
-                </button>
-              ))}
-              {olderMonths.length > 0 && (
-                <select
-                  value={timeMode === 'month' && olderMonths.includes(month) ? month : ''}
-                  onChange={(e) => { if (e.target.value) { setTimeMode('month'); setMonth(e.target.value); } }}
-                  className="px-2.5 py-1.5 rounded-lg text-[11px] bg-zinc-900 border border-border text-zinc-300"
-                >
-                  <option value="">更早月份…</option>
-                  {olderMonths.map((m) => (
-                    <option key={m} value={m}>{m.replace('-', '/')}</option>
-                  ))}
-                </select>
-              )}
-              <button onClick={() => setTimeMode('range')} className={filterChipCls(timeMode === 'range')}>自訂區間</button>
-              {timeMode === 'range' && (
-                <>
-                  <input type="date" value={dateStart} onChange={(e) => setDateStart(e.target.value)}
-                    className="px-2.5 py-1.5 rounded-lg text-[11px] bg-zinc-900 border border-border text-zinc-300" />
-                  <span className="text-zinc-600 text-[11px]">至</span>
-                  <input type="date" value={dateEnd} onChange={(e) => setDateEnd(e.target.value)}
-                    className="px-2.5 py-1.5 rounded-lg text-[11px] bg-zinc-900 border border-border text-zinc-300" />
-                </>
-              )}
-            </div>
-          </div>
-
-          <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-            <StatTile label="淨已實現損益" value={money(total)} valueCls={pnlCls(total)} tone="zinc"
-              sub={`毛損益 ${money(gross)} － 費用 ${money(cost)}`} />
-            <StatTile label="交易費用合計" value={money(cost)} tone="zinc"
-              sub={lots > 0 ? `平均 ${money(cost / lots)} / 口（來回）` : ''}
-              hint="手續費 + 期交稅。有券商實收金額就用實收的，否則用「契約規格 & 設定」的費率推估。" />
-            <StatTile label="勝率" value={filteredRows.length > 0 ? pct(wins / filteredRows.length, 0) : '—'} tone="zinc"
-              sub={`${wins} 勝 / ${filteredRows.length - wins} 敗`}
-              hint="以每一筆平倉紀錄的淨損益是否為正計算，不是以口數加權。" />
-            <StatTile label="平均每筆" value={filteredRows.length > 0 ? money(total / filteredRows.length) : '—'} valueCls={pnlCls(total)} tone="zinc"
-              sub={lots > 0 ? `每口平均 ${money(total / lots)}` : ''} />
-          </div>
+          <ClosedFilterBar f={f} />
+          <ClosedStatTiles rows={filteredRows} />
 
           <div className="mt-4 flex flex-wrap items-center justify-between gap-2">
             <span className="text-[11px] text-zinc-500">明細（共 {sortedRows.length} 筆）</span>
@@ -2387,68 +2663,21 @@ const PositionsTab: React.FC<{
         })}
       </div>
 
-      {/* 平倉紀錄 */}
-      <div className="bg-card/70 border border-border rounded-2xl p-5 shadow-sm">
-        <div className="flex items-center gap-2.5 mb-3"><span className="w-7 h-7 rounded-lg bg-zinc-400/10 border border-zinc-400/30 grid place-items-center shrink-0"><ListOrdered className="w-4 h-4 text-zinc-400" /></span><h2 className="text-sm font-bold text-zinc-100 tracking-wide">平倉紀錄（{config.closed.length}）</h2></div>
-        {config.closed.length === 0 ? (
-          <p className="text-xs text-zinc-500">還沒有平倉紀錄。平倉時會自動把損益結算進上方的保證金專戶現金餘額。</p>
-        ) : (
-          <>
-          {/* 手機看不出這張表可以左右滑，補一句——否則會以為欄位就這幾個 */}
-          <p className="sm:hidden text-[10px] text-zinc-600 mb-1.5">← 左右滑動可看完整欄位 →</p>
-          <div className="overflow-x-auto">
-            <table className="w-full min-w-[700px] text-xs">
-              <thead>
-                <tr className="text-zinc-500 border-b border-border">
-                  {Object.keys(products).length > 1 && <th className="text-left font-medium py-2 pr-3">商品</th>}
-                  <th className="text-left font-medium py-2 pr-3">平倉日</th>
-                  <th className="text-left font-medium py-2 pr-3">月份</th>
-                  <th className="text-left font-medium py-2 pr-3">方向</th>
-                  <th className="text-right font-medium py-2 pr-3">口數</th>
-                  <th className="text-right font-medium py-2 pr-3">進場</th>
-                  <th className="text-right font-medium py-2 pr-3">出場</th>
-                  <th className="text-right font-medium py-2 pr-3">損益</th>
-                  <th className="py-2" />
-                </tr>
-              </thead>
-              <tbody>
-                {config.closed.map((t) => {
-                  const tSpec = products[t.product]?.spec ?? spec;
-                  return (
-                  <tr key={t.id} className="border-b border-border/50 last:border-0">
-                    {Object.keys(products).length > 1 && <td className="py-2 pr-3 text-zinc-400">{products[t.product]?.name ?? t.product}</td>}
-                    <td className="py-2 pr-3 font-mono text-zinc-400">{t.exit_date || '—'}</td>
-                    <td className="py-2 pr-3 font-mono text-zinc-300">{monthLabel(t.month)}</td>
-                    <td className={`py-2 pr-3 ${t.side === 'long' ? 'text-bull' : 'text-bear'}`}>{t.side === 'long' ? '多' : '空'}</td>
-                    <td className="py-2 pr-3 text-right font-mono text-zinc-300">{t.lots}</td>
-                    <td className="py-2 pr-3 text-right font-mono text-zinc-500">{px(t.entry_price)}</td>
-                    <td className="py-2 pr-3 text-right font-mono text-zinc-500">{px(t.exit_price)}</td>
-                    <td className={`py-2 pr-3 text-right font-mono font-semibold ${pnlCls(closedPnl(t, tSpec))}`}>{money(closedPnl(t, tSpec))}</td>
-                    <td className="py-2 text-right">
-                      <button
-                        onClick={() => {
-                          const next = patch((c) => ({
-                            ...c,
-                            closed: c.closed.filter((x) => x.id !== t.id),
-                            cash: c.cash - closedPnl(t, tSpec), // 刪紀錄時把當初結算進去的損益扣回來
-                          }));
-                          void saveToCloud(next);
-                        }}
-                        className="text-zinc-600 hover:text-rose-400"
-                        title="刪除這筆平倉紀錄（現金餘額會同步回沖）"
-                      >
-                        <Trash2 className="w-3.5 h-3.5" />
-                      </button>
-                    </td>
-                  </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-          </>
-        )}
-      </div>
+      {/* 平倉紀錄：依平倉日／合約分組（2026-09-28 收納整理） */}
+      <ClosedTradesPanel
+        closed={config.closed}
+        spec={spec}
+        products={products}
+        onDelete={(t) => {
+          const tSpec = products[t.product]?.spec ?? spec;
+          const next = patch((c) => ({
+            ...c,
+            closed: c.closed.filter((x) => x.id !== t.id),
+            cash: c.cash - closedPnl(t, tSpec), // 刪紀錄時把當初結算進去的損益扣回來
+          }));
+          void saveToCloud(next);
+        }}
+      />
     </div>
   );
 };

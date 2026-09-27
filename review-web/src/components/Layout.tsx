@@ -23,7 +23,8 @@ import {
   ListOrdered,
   Wallet,
   Newspaper,
-  Menu
+  Menu,
+  LayoutDashboard
 } from 'lucide-react';
 import { api } from '../lib/api';
 import type { Health } from '../lib/api';
@@ -305,6 +306,19 @@ export const Layout: React.FC<LayoutProps> = ({ children }) => {
               資產變化圖
             </Link>
 
+            {/* 資料夾卡片牆（opt45）：每檔一張迷你 K 線＋量比／法人／營收 */}
+            <Link
+              to="/folders"
+              className={`flex items-center gap-3 px-4 py-3 rounded-lg text-sm font-medium transition-all duration-200 ${
+                location.pathname === '/folders'
+                  ? 'bg-primary/10 text-primary border border-primary/20 shadow-sm'
+                  : 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800/40 border border-transparent'
+              }`}
+            >
+              <LayoutDashboard className="w-5 h-5" />
+              資料夾卡片牆
+            </Link>
+
             {/* 個股多維度審查 折疊選單 */}
             <div className="space-y-1">
               <button
@@ -388,6 +402,13 @@ export const Layout: React.FC<LayoutProps> = ({ children }) => {
                                   <Plus className="w-3 h-3" />
                                 )}
                               </button>
+                              <Link
+                                to={`/folders?f=${encodeURIComponent(f.id)}`}
+                                className="opacity-0 group-hover/folder:opacity-100 p-0.5 rounded hover:bg-zinc-800 text-zinc-400 hover:text-zinc-200 transition-all duration-150"
+                                title="用卡片牆看這個資料夾"
+                              >
+                                <LayoutDashboard className="w-3 h-3" />
+                              </Link>
                               <button
                                 onClick={(e) => {
                                   e.preventDefault();
@@ -643,6 +664,8 @@ export const Layout: React.FC<LayoutProps> = ({ children }) => {
               ? '期貨損益總覽'
               : location.pathname === '/reports'
               ? '老王每日報告'
+              : location.pathname === '/folders'
+              ? '資料夾卡片牆'
               : location.pathname.startsWith('/heatmap/sector/')
               ? `產業熱力圖 · ${(() => { try { return decodeURIComponent(location.pathname.replace('/heatmap/sector/', '')); } catch { return location.pathname.replace('/heatmap/sector/', ''); } })()}`
               : location.pathname.startsWith('/heatmap/group/')

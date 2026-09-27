@@ -6,7 +6,7 @@
  * 保證金/風險指標——這個檔案就是在部署到 VM 之前先擋住這件事。
  */
 import { describe, it, expect } from 'vitest';
-import { normalizeFutures } from './futuresStore';
+import { normalizeFutures, uniqueIds } from './futuresStore';
 import { summarizeAccount, summarizeAccountAll, type ProductPriceSpec } from './futures';
 
 // 貼近真實 8/21 那筆帳戶設定的形狀（見 memory：14 口 @105.5679、保證金 8700/6700）
@@ -113,5 +113,37 @@ describe('normalizeFutures：舊格式遷移成單一商品', () => {
     expect(cfg.active_product).toBe('SRF');
     expect(cfg.positions).toEqual([]);
     expect(cfg.cash).toBe(0);
+  });
+});
+
+describe('uniqueIds：平倉紀錄／部位 id 撞號時改名（2026-09-28）', () => {
+  it('第一筆保留、後面的依序加 ~2、~3；不撞號的原樣回傳同一個物件', () => {
+    const a = { id: 'c_imp20260901_SRF_1', v: 1 };
+    const b = { id: 'c_imp20260901_SRF_2', v: 2 };
+    const out = uniqueIds([a, b, { id: 'c_imp20260901_SRF_1', v: 3 }, { id: 'c_imp20260901_SRF_2', v: 4 }, { id: 'c_imp20260901_SRF_1', v: 5 }]);
+    expect(out.map((x) => x.id)).toEqual([
+      'c_imp20260901_SRF_1', 'c_imp20260901_SRF_2', 'c_imp20260901_SRF_1~2', 'c_imp20260901_SRF_2~2', 'c_imp20260901_SRF_1~3',
+    ]);
+    expect(out.map((x) => x.v)).toEqual([1, 2, 3, 4, 5]);
+    expect(out[0]).toBe(a);
+  });
+
+  it('改名後的 id 剛好已經存在也不會再撞', () => {
+    const out = uniqueIds([{ id: 'x' }, { id: 'x~2' }, { id: 'x' }]);
+    expect(new Set(out.map((o) => o.id)).size).toBe(3);
+  });
+
+  it('normalizeFutures 讀進來時就把撞號的平倉紀錄改好，刪一筆不會連帶刪掉另一筆', () => {
+    const t = { product: 'SRF', month: '202609', side: 'long', lots: 1, entry_price: 105.75, exit_price: 106.45, exit_date: '2026-09-01', fee: 80, tax: 4 };
+    const cfg = normalizeFutures({
+      products: { SRF: { code: 'SRF', name: '小型元大台灣50ETF期貨' } },
+      active_product: 'SRF',
+      cash: 0,
+      positions: [],
+      closed: [{ ...t, id: 'c_imp20260901_SRF_1' }, { ...t, id: 'c_imp20260901_SRF_1' }],
+    } as unknown as Record<string, unknown>);
+    const ids = cfg.closed.map((c) => c.id);
+    expect(ids).toEqual(['c_imp20260901_SRF_1', 'c_imp20260901_SRF_1~2']);
+    expect(cfg.closed.filter((c) => c.id !== ids[0])).toHaveLength(1);
   });
 });

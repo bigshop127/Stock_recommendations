@@ -1364,7 +1364,12 @@ describe('期交所 MIS 即時報價解析與轉換測試', () => {
     expect(CONTRACT_TO_MIS['MTX']).toBe('MXF');
     expect(CONTRACT_TO_MIS['XYZ']).toBeUndefined();
 
-    expect(monthToSymbol('XYZ', '202608')).toBeNull();
+    // opt33 起查無對照表的代碼直接當 MIS 根碼（個股期貨 GRF → GRFI6），不再退回 null；
+    // 只有月份本身不合法才退回 null
+    expect(monthToSymbol('XYZ', '202608')).toBe('XYZH6');
+    expect(monthToSymbol('GRF', '202609')).toBe('GRFI6');
+    expect(monthToSymbol('SRF', '202613')).toBeNull();
+    expect(monthToSymbol('SRF', 'abcdef')).toBeNull();
   });
 });
 

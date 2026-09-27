@@ -20,7 +20,9 @@ const MACRO_META: {
   key: MacroKey; label: string; symbol: string; thrKey: keyof MacroThresholds; deltaUnit: string;
   fmtVal: (n: number) => string;
 }[] = [
-  { key: 'fed_rate', label: '聯準會利率', symbol: '^IRX', thrKey: 'fed_rate_rise', deltaUnit: 'pp', fmtVal: (n) => `${n.toFixed(2)}%` },
+  // 2026-09-28 改名：^IRX 是 13 週國庫券殖利率（市場利率），不是聯準會公布的政策利率，
+  // 原本標「聯準會利率」會跟新聞上的 3.75–4.00% 對不起來；官方區間另外顯示在這一列下面
+  { key: 'fed_rate', label: '短期利率（3個月美債）', symbol: '^IRX 13週國庫券', thrKey: 'fed_rate_rise', deltaUnit: 'pp', fmtVal: (n) => `${n.toFixed(2)}%` },
   { key: 'treasury_yield', label: '長天期美債殖利率', symbol: '^TYX 30年', thrKey: 'treasury_yield_rise', deltaUnit: 'pp', fmtVal: (n) => `${n.toFixed(2)}%` },
   { key: 'fx', label: '美元／台幣匯率', symbol: 'TWD=X', thrKey: 'fx_rise_pct', deltaUnit: '%', fmtVal: (n) => n.toFixed(3) },
 ];
@@ -711,9 +713,20 @@ export function Rebalance() {
         x && x.ok && x.current != null && x.reference != null
           ? { current: x.current, reference: x.reference, as_of: x.as_of ?? undefined, ref_date: x.ref_date ?? undefined }
           : undefined;
+      const ft = r.fed_target;
       const nextMacro: MacroState = {
         ...config.macro,
         fed_rate: toInd(r.fed_rate),
+        // FRED 偶爾抓不到：沿用上一次的官方區間，不要因為一次失敗就把它清掉
+        fed_target: ft && ft.ok && typeof ft.upper === 'number' && typeof ft.lower === 'number'
+          ? {
+              upper: ft.upper,
+              lower: ft.lower,
+              effective: typeof ft.effective === 'number' ? ft.effective : null,
+              as_of: ft.as_of,
+              effective_date: ft.effective_date ?? undefined,
+            }
+          : config.macro.fed_target,
         treasury_yield: toInd(r.treasury_yield),
         fx: toInd(r.fx),
         fetched_at: r.fetched_at,
@@ -1139,7 +1152,7 @@ export function Rebalance() {
               <li>
                 <strong className="text-zinc-100">變現順序＝regime-aware（2026-07 改版）</strong>：需要縮減防守端補錢買 00631L 時，
                 <strong className="text-zinc-100">平時優先賣 {BOND_ETFS[1].code}</strong>（非投等債股災跟跌，先出掉；留 {BOND_ETFS[0].code} 美債當火藥、避險上漲留到谷底才變現）；
-                但當「宏觀 regime 指標」卡偵測到升息型崩盤（Fed 利率／長天期美債殖利率／匯率任一達門檻）時，自動改回<strong className="text-zinc-100">先賣美債</strong>（此時美債同步下跌不宜留）。
+                但當「宏觀 regime 指標」卡偵測到升息型崩盤（短期利率／長天期美債殖利率／匯率任一達門檻）時，自動改回<strong className="text-zinc-100">先賣美債</strong>（此時美債同步下跌不宜留）。
                 依 2000–2026 代理數據回測，「部分變現、留倉到谷底」情境下平時先賣 {BOND_ETFS[1].code} 於 6 次股災贏 5 次、平均多留約 9 個百分點火藥，唯一反例 2022 升息崩盤由指標防呆擋掉。
               </li>
               <li>
@@ -1841,7 +1854,7 @@ export function Rebalance() {
               onClick={() => void syncMacroIndicators()}
               disabled={macroSync.status === 'loading'}
               className="text-[11px] text-primary hover:text-primary/80 disabled:text-zinc-600 flex items-center gap-1 transition-colors"
-              title="抓取 Fed 利率(^IRX)、長天期美債殖利率(^TYX)、美元台幣匯率(TWD=X) 最新值——公開市場資料，不碰任何交易帳戶"
+              title="抓取 3 個月美債殖利率(^IRX)＋聯準會官方目標區間、長天期美債殖利率(^TYX)、美元台幣匯率(TWD=X) 最新值——公開市場資料，不碰任何交易帳戶"
             >
               {macroSync.status === 'loading' ? <Loader2 className="w-3 h-3 animate-spin" /> : <RefreshCw className="w-3 h-3" />}
               同步指標
@@ -1892,6 +1905,21 @@ export function Rebalance() {
                   <div className="flex-1 min-w-[128px]">
                     <div className="text-xs text-zinc-200 font-medium">{m.label}</div>
                     <div className="text-[10px] text-zinc-500 font-mono">{m.symbol}</div>
+                    {m.key === 'fed_rate' && (
+                      <div
+                        className="text-[10px] text-zinc-400 mt-0.5"
+                        title="聯準會公布的聯邦資金利率目標區間與實際有效利率（資料：聖路易聯準銀行 FRED）。只供對照，燈號仍看上面的 3 個月美債殖利率——它會提前反映市場對升降息的預期。"
+                      >
+                        {config.macro.fed_target ? (
+                          <>
+                            聯準會目標 {config.macro.fed_target.lower.toFixed(2)}–{config.macro.fed_target.upper.toFixed(2)}%
+                            {config.macro.fed_target.effective !== null && <>・有效 {config.macro.fed_target.effective.toFixed(2)}%</>}
+                          </>
+                        ) : (
+                          <span className="text-zinc-600">按「同步指標」抓聯準會官方利率</span>
+                        )}
+                      </div>
+                    )}
                   </div>
                   <div className="text-right min-w-[86px]">
                     <div className="text-sm font-mono text-zinc-100">{hasData && sig ? m.fmtVal(sig.current as number) : '—'}</div>
@@ -1954,7 +1982,7 @@ export function Rebalance() {
           </div>
 
           <p className="text-[10px] text-zinc-500 leading-relaxed">
-            回測（2000–2026）：股災往下探時 {BOND_ETFS[0].name} 避險上漲、{BOND_ETFS[1].name} 跟跌，故平時「先賣 {BOND_ETFS[1].name}、留美債當火藥」較優（6 次股災贏 5 次）；唯一反例是升息型崩盤（如 2022），此時上面三項指標任一達標就自動改回先賣美債。指標為公開市場資料，按「同步指標」抓取，平時只顯示參考、達門檻才接管變現順序。
+            回測（2000–2026）：股災往下探時 {BOND_ETFS[0].name} 避險上漲、{BOND_ETFS[1].name} 跟跌，故平時「先賣 {BOND_ETFS[1].name}、留美債當火藥」較優（6 次股災贏 5 次）；唯一反例是升息型崩盤（如 2022），此時上面三項指標任一達標就自動改回先賣美債。指標為公開市場資料，按「同步指標」抓取，平時只顯示參考、達門檻才接管變現順序。短期利率用 3 個月美債殖利率（^IRX）而不是聯準會公布的政策利率：它每天跟著市場變、會提前反映升降息預期，回測也是用它；兩者通常差 0.1–0.3 個百分點。
           </p>
         </div>
         </div>

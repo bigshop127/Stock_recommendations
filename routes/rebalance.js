@@ -19,6 +19,7 @@ const fs = require('fs');
 const path = require('path');
 const { spawn } = require('child_process');
 const { sendError, httpError } = require('../lib/errors');
+const { parseFredCsvLatest, buildFedTarget } = require('../lib/fred');
 
 const router = express.Router();
 
@@ -189,6 +190,18 @@ function sanitizeMacroIndicator(v) {
   if (typeof v.ref_date === 'string') out.ref_date = v.ref_date;
   return out;
 }
+// 聯準會官方目標區間（顯示用，跟著宏觀指標一起存雲端，重開頁面不必再同步一次）
+function sanitizeFedTarget(v) {
+  if (!v || typeof v !== 'object') return undefined;
+  const fin = (x) => (typeof x === 'number' && Number.isFinite(x) ? x : null);
+  const upper = fin(v.upper);
+  const lower = fin(v.lower);
+  if (upper === null || lower === null) return undefined;
+  const out = { upper, lower, effective: fin(v.effective) };
+  if (typeof v.as_of === 'string') out.as_of = v.as_of.slice(0, 10);
+  if (typeof v.effective_date === 'string') out.effective_date = v.effective_date.slice(0, 10);
+  return out;
+}
 function sanitizeMacro(v) {
   const o = v && typeof v === 'object' ? v : {};
   const t = o.thresholds && typeof o.thresholds === 'object' ? o.thresholds : {};
@@ -206,6 +219,8 @@ function sanitizeMacro(v) {
   if (fed) macro.fed_rate = fed;
   if (ty) macro.treasury_yield = ty;
   if (fx) macro.fx = fx;
+  const ft = sanitizeFedTarget(o.fed_target);
+  if (ft) macro.fed_target = ft;
   if (typeof o.fetched_at === 'string') macro.fetched_at = o.fetched_at;
   return macro;
 }
@@ -432,7 +447,9 @@ router.get('/api/rebalance/sync-holdings-status', (req, res) => {
 // （回看 lookback 交易日前的值）。前端據此算變動、與門檻比較，決定股災變現先賣哪一檔。
 const YF_HOSTS = ['query1', 'query2'];
 const MACRO_DEFS = [
-  { key: 'fed_rate', symbol: '^IRX', lookback: 126, label: '聯準會利率（13週國庫券殖利率）' },
+  // ^IRX 是 13 週國庫券殖利率（市場利率、會先反映升降息預期），不是聯準會公布的政策利率；
+  // regime 判斷照舊用它（回測用的就是它），官方目標區間另外從 FRED 抓來並排顯示（fed_target）
+  { key: 'fed_rate', symbol: '^IRX', lookback: 126, label: '短期利率（13週美國國庫券殖利率）' },
   { key: 'treasury_yield', symbol: '^TYX', lookback: 60, label: '長天期美債殖利率（30年）' },
   { key: 'fx', symbol: 'TWD=X', lookback: 60, label: '美元兌台幣匯率' },
 ];
@@ -465,8 +482,36 @@ async function fetchYahooSeries(symbol) {
   throw lastErr || new Error('fetch failed');
 }
 
+// 聯準會官方政策利率（只顯示、不參與 regime 判斷）：目標區間上下限＋有效聯邦資金利率
+const FRED_CSV = process.env.FRED_CSV_BASE || 'https://fred.stlouisfed.org/graph/fredgraph.csv';
+async function fetchFredLatest(id) {
+  const cosd = new Date(Date.now() - 45 * 86400 * 1000).toISOString().slice(0, 10);
+  const r = await fetch(`${FRED_CSV}?id=${encodeURIComponent(id)}&cosd=${cosd}`, {
+    headers: { 'User-Agent': 'Mozilla/5.0' },
+    signal: AbortSignal.timeout(12000),
+  });
+  if (!r.ok) throw new Error(`FRED ${id} HTTP ${r.status}`);
+  const latest = parseFredCsvLatest(await r.text());
+  if (!latest) throw new Error(`FRED ${id} 沒有數值`);
+  return latest;
+}
+async function fetchFedTarget() {
+  try {
+    const [upper, lower, effective] = await Promise.all([
+      fetchFredLatest('DFEDTARU'),
+      fetchFredLatest('DFEDTARL'),
+      fetchFredLatest('DFF').catch(() => null),
+    ]);
+    const t = buildFedTarget(upper, lower, effective);
+    return t ? { ...t, ok: true } : { ok: false, error: '目標區間不完整' };
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) };
+  }
+}
+
 router.get('/api/rebalance/macro-indicators', async (req, res) => {
   try {
+    const fedTargetP = fetchFedTarget();
     const entries = await Promise.all(
       MACRO_DEFS.map(async (d) => {
         try {
@@ -489,6 +534,7 @@ router.get('/api/rebalance/macro-indicators', async (req, res) => {
     );
     const out = { fetched_at: new Date().toISOString() };
     for (const [k, v] of entries) out[k] = v;
+    out.fed_target = await fedTargetP;
     return res.json(out);
   } catch (err) {
     return sendError(res, httpError(502, 'YAHOO', '抓取宏觀指標失敗: ' + err.message));

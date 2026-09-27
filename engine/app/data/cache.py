@@ -33,6 +33,17 @@ _SAFE = re.compile(r"[^0-9A-Za-z_.\-]")
 # 未結算窗長度：今天往前這麼多天內，來源的空回傳一律不當成「假日」（可能只是還沒出 EOD）
 _SETTLE_GRACE_DAYS = 3
 
+# 事後會被更正的資料集：往後補新的一天時，順便把前面這麼多個日曆天一起重抓覆蓋。
+# 2026-09-28 實例：2330 投信 9/18、9/21、9/23 的買賣超，快取裡是當晚的初值，證交所／FinMind
+# 之後更正了（9/18 快取 −273,476 股、現在 +478,401 股），但舊日期已在浮水印內、永遠不會重抓，
+# 個股頁的法人 5 日跟證交所 T86 差了 773 張。尾端補抓本來就會打一次 API，只是把起點往前拉，
+# 不增加呼叫次數。
+_REVISE_DAYS: dict[str, int] = {
+    "chips_inst": 10,
+    "chips_margin": 10,
+    "chips_shareholding": 10,
+}
+
 
 def _safe(name: str) -> str:
     """把 dataset/code 清成安全檔名片段（台股代號可能含 '.'、'^' 等）。"""
@@ -134,8 +145,12 @@ def get_timeseries(
     end: str,
     fetch_fn: FetchFn,
     date_col: str = "date",
+    revise_days: int | None = None,
 ) -> tuple[pd.DataFrame, dict]:
     """取 [start, end] 的時序資料；快取未涵蓋處才打 API。
+
+    revise_days：往後補抓時，一併重抓浮水印終點前這麼多個日曆天（覆蓋事後更正的資料）；
+    None＝依 `_REVISE_DAYS` 的資料集預設，沒列的是 0。
 
     回傳 `(df, meta)`：
       df   — 已切到 [start, end]、依日期排序的乾淨 DataFrame。
@@ -158,8 +173,12 @@ def get_timeseries(
             ranges_to_fetch.append((start, gap_end))
         # 後缺口（更新到最新；用浮水印而非資料 max，週末/假日不會重打）
         if e_ts > cov_end:
-            gap_start = (cov_end + timedelta(days=1)).strftime("%Y-%m-%d")
-            ranges_to_fetch.append((gap_start, end))
+            gap_start_ts = cov_end + timedelta(days=1)
+            rd = _REVISE_DAYS.get(dataset, 0) if revise_days is None else max(0, revise_days)
+            if rd > 0:
+                # 同一次請求往前拉，涵蓋最近 rd 天（不早於已涵蓋起點）
+                gap_start_ts = max(cov_start, gap_start_ts - timedelta(days=rd))
+            ranges_to_fetch.append((gap_start_ts.strftime("%Y-%m-%d"), end))
 
     # 過濾掉反向區間
     ranges_to_fetch = [(s, e) for (s, e) in ranges_to_fetch if pd.Timestamp(s) <= pd.Timestamp(e)]

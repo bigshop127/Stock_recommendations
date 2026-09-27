@@ -240,3 +240,55 @@ def test_periodic_head_gap_and_key_cols(monkeypatch):
     df2, _ = cache.get_periodic("div", "1101", "2024-01-01", "2026-01-01", srv.fetch, refresh_days=400, key_cols=["date", "period"])
     assert srv.calls[-1] == ("2024-01-01", "2024-12-31")
     assert len(df2) == 3
+
+
+# ── 事後更正的資料（法人／融資券）：往後補抓時順便重抓最近幾天 ─────────────────────
+
+
+class RevisingServer:
+    """模擬來源事後更正：bump 裡的日期回傳更正後的值，其他日期回 1.0。"""
+
+    def __init__(self):
+        self.calls: list[tuple[str, str]] = []
+        self.bump: dict[str, float] = {}
+
+    def fetch(self, code: str, start: str, end: str) -> pd.DataFrame:
+        self.calls.append((start, end))
+        days = _business_days(start, end)
+        return pd.DataFrame({"date": days, "trust_net": [self.bump.get(d, 1.0) for d in days]})
+
+
+def test_chips_tail_fetch_revises_recent_days():
+    srv = RevisingServer()
+    cache.get_timeseries("chips_inst", "2330", "2026-06-01", "2026-06-30", srv.fetch)
+    # 事後更正：6/25 在修正窗內、6/10 在窗外
+    srv.bump = {"2026-06-25": -5.0, "2026-06-10": -9.0}
+    df, meta = cache.get_timeseries("chips_inst", "2330", "2026-06-01", "2026-07-03", srv.fetch)
+    assert len(srv.calls) == 2  # 沒有多打 API，只是尾端那次起點往前拉
+    assert srv.calls[1] == ("2026-06-21", "2026-07-03")  # 6/30 往前 10 個日曆天 → 6/21 起
+    by_date = df.set_index("date")["trust_net"]
+    assert by_date["2026-06-25"] == -5.0  # 更正值覆蓋掉快取裡的初值
+    assert by_date["2026-06-10"] == 1.0  # 修正窗外的不重抓
+    assert meta["cache_hit"] is False
+
+
+def test_chips_cache_hit_does_not_refetch():
+    srv = RevisingServer()
+    cache.get_timeseries("chips_inst", "2330", "2026-06-01", "2026-06-30", srv.fetch)
+    _, meta = cache.get_timeseries("chips_inst", "2330", "2026-06-05", "2026-06-30", srv.fetch)
+    assert meta["cache_hit"] is True
+    assert len(srv.calls) == 1
+
+
+def test_revise_window_never_reaches_before_covered_start():
+    srv = RevisingServer()
+    cache.get_timeseries("chips_margin", "2330", "2026-06-26", "2026-06-30", srv.fetch)
+    cache.get_timeseries("chips_margin", "2330", "2026-06-26", "2026-07-03", srv.fetch)
+    assert srv.calls[1][0] == "2026-06-26"
+
+
+def test_ohlcv_tail_fetch_is_not_widened_by_default():
+    srv = RevisingServer()
+    cache.get_timeseries("ohlcv", "2330", "2026-06-01", "2026-06-30", srv.fetch)
+    cache.get_timeseries("ohlcv", "2330", "2026-06-01", "2026-07-03", srv.fetch)
+    assert srv.calls[1][0] == "2026-07-01"

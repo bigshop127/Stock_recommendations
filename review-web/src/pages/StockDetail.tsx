@@ -1,8 +1,8 @@
-import React, { useEffect, useState, useMemo, useCallback } from 'react';
+import React, { useEffect, useState, useMemo, useCallback, Suspense, lazy } from 'react';
 import { useParams, Link, useSearchParams } from 'react-router-dom';
 import { api } from '../lib/api';
 import type { StockDetail as IStockDetail, StockChips, StockFundamentals, StockNews, Book, OhlcvRow, CompanyProfile, ShareholdingDispersion, StockHeatmap, HeatmapStock, DefaultDisclosure } from '../lib/api';
-import { BarChart2, TrendingUp, Newspaper, DollarSign, Users, Info, ArrowLeft, Bell, Trash2, AlertTriangle } from 'lucide-react';
+import { BarChart2, TrendingUp, Newspaper, DollarSign, Users, Info, ArrowLeft, Bell, Trash2, AlertTriangle, ImageDown } from 'lucide-react';
 import { disclosuresForCode, daysBetween, tpeToday, fmtYuan } from '../lib/marketCredit';
 import { PriceChart } from '../components/PriceChart';
 import { ChipsCharts } from '../components/ChipsCharts';
@@ -20,8 +20,17 @@ import { buildGroupContext } from '../lib/groupContext';
 import { KeyLevelsCard } from '../components/KeyLevelsCard';
 import type { LevelAlertCondition } from '../components/KeyLevelsCard';
 import type { ChartLevel } from '../components/PriceChart';
+import { PeerValuationCard } from '../components/PeerValuationCard';
+import { PositionPlanCard } from '../components/PositionPlanCard';
+import { QuarterlyIncomeTable, BalanceSheetPanel, DividendProgressList } from '../components/FinancialStatements';
+import { looksFinancial } from '../lib/financialStatements';
+import { usePeerValuation } from '../lib/usePeerValuation';
+import type { StockMetric } from '../lib/api';
 
 const groupRefOf = (code: string) => CODE_TO_GROUP.get(code);
+
+// 戰情卡（opt45）只有按下才載入：連同 html-to-image 一起拆成獨立 chunk
+const StockPosterModal = lazy(() => import('../components/StockPosterModal').then((m) => ({ default: m.StockPosterModal })));
 
 const HIGHLIGHT_TONE: Record<HighlightTone, string> = {
   bull: 'bg-bull/10 text-red-300 border-bull/30',
@@ -139,7 +148,7 @@ export const StockDetail: React.FC = () => {
     return () => ro.disconnect();
   }, []);
   const [newsState, setNewsState] = useState<{ data: StockNews | null; loading: boolean; error: string | null }>({ data: null, loading: true, error: null });
-  const [fundTab, setFundTab] = useState<'valuation' | 'revenue' | 'financials' | 'dividend'>('valuation');
+  const [fundTab, setFundTab] = useState<'valuation' | 'revenue' | 'financials' | 'balance' | 'dividend'>('valuation');
   const [fundHoverIdx, setFundHoverIdx] = useState<number | null>(null);
   // 基本面 4 張圖表共用一組實際量測到的容器像素尺寸，讓 SVG viewBox 與畫面 1:1 對應，
   // 滑鼠座標才不會因 preserveAspectRatio 縮放置中（letterbox）而跟 viewBox 座標系對不上。
@@ -159,6 +168,7 @@ export const StockDetail: React.FC = () => {
   const [defaultItems, setDefaultItems] = useState<DefaultDisclosure[]>([]);
   const [alertsSaveStatus, setAlertsSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
   const [alertForm, setAlertForm] = useState<{ conditionType: AlertConditionType; price: string }>({ conditionType: 'price_above', price: '' });
+  const [posterOpen, setPosterOpen] = useState(false);
 
   useEffect(() => {
     setFundHoverIdx(null);
@@ -798,6 +808,7 @@ export const StockDetail: React.FC = () => {
       dailyOhlcv: dailyRows,
       chips: chipsState.data?.code === activeCode ? chipsState.data : null,
       fundamentals: fundamentalsState.data?.code === activeCode ? fundamentalsState.data : null,
+      today: tpeToday(),
     }),
     [dailyRows, chipsState.data, fundamentalsState.data, activeCode],
   );
@@ -819,6 +830,20 @@ export const StockDetail: React.FC = () => {
   }, [keyLevels]);
 
   const stockBrief = useMemo(() => buildStockBrief(briefInput), [briefInput]);
+
+  // 合理價＋同業排名（opt45）：切到產業分析才抓；現價用報價列的即時價，沒有就用證交所收盤
+  const livePriceRaw = headerBookState.data?.code === activeCode ? headerBookState.data?.book?.last_price : null;
+  const livePrice = typeof livePriceRaw === 'number' && livePriceRaw > 0 ? livePriceRaw : null;
+  const peerValuation = usePeerValuation(activeCode, peersState.data?.stocks ?? null, livePrice, activeTab === 'industry' || posterOpen);
+  const livePrevClose = headerBookState.data?.code === activeCode
+    ? (headerBookState.data?.book?.day as { prev_close?: number } | undefined)?.prev_close ?? null
+    : null;
+  const liveChangePct = livePrice && livePrevClose ? (livePrice / livePrevClose - 1) * 100 : null;
+  const peerMetricByCode = useMemo(() => {
+    const m = new Map<string, StockMetric>();
+    for (const it of peerValuation.meta?.items ?? []) m.set(it.code, it);
+    return m;
+  }, [peerValuation.meta]);
 
   // Render Quote Header
   const renderHeader = () => {
@@ -866,7 +891,7 @@ export const StockDetail: React.FC = () => {
 
     return (
       <div className="flex items-center justify-between flex-wrap gap-4 w-full bg-card border border-border rounded-xl p-4 sm:p-6">
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-3 flex-wrap">
           <div className="bg-primary/10 border border-primary/20 text-primary w-12 h-12 rounded-xl flex items-center justify-center font-bold text-lg">
             {activeCode}
           </div>
@@ -890,7 +915,19 @@ export const StockDetail: React.FC = () => {
               )}
             </div>
           </div>
-          <FolderPickerButton code={activeCode} name={name} />
+          {/* 手機上兩顆按鈕自己一行，不要把股名擠成直的 */}
+          <div className="flex items-center gap-2 w-full sm:w-auto">
+            <FolderPickerButton code={activeCode} name={name} />
+            <button
+              type="button"
+              onClick={() => setPosterOpen(true)}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold border whitespace-nowrap bg-zinc-800 text-zinc-300 border-border hover:bg-zinc-700 transition-colors duration-150"
+              title="把這一檔的重點、關鍵價位、合理價、建倉計畫匯出成一張圖"
+            >
+              <ImageDown className="w-3.5 h-3.5" />
+              戰情卡
+            </button>
+          </div>
         </div>
 
         <div className="grid grid-cols-2 sm:grid-cols-7 gap-x-4 gap-y-2 border-t sm:border-t-0 sm:border-l border-border/80 pt-3 sm:pt-0 sm:pl-6 text-xs font-mono w-full sm:w-auto">
@@ -976,6 +1013,8 @@ export const StockDetail: React.FC = () => {
     }
     const data = fundamentalsState.data;
     if (!data) return <div className="text-xs text-zinc-500 text-center py-16">無基本面資料</div>;
+    // 金融業報表沒有毛利／營業利益、不分流動非流動：季度損益表與資產負債改用金融業版面
+    const isFinancial = looksFinancial(data.financials || [], data.balance_sheet || []);
 
     // Helper to calculate percentile label
     const getPercentileLabel = (current: number | null | undefined, history: (number | null)[]) => {
@@ -1008,7 +1047,7 @@ export const StockDetail: React.FC = () => {
       <div className="flex flex-col h-full justify-between">
         {/* Tab selection */}
         <div className="flex border-b border-border/60 mb-4 bg-zinc-950/20 p-0.5 rounded-lg shrink-0">
-          {(['valuation', 'revenue', 'financials', 'dividend'] as const).map((tab) => (
+          {(['valuation', 'revenue', 'financials', 'balance', 'dividend'] as const).map((tab) => (
             <button
               key={tab}
               onClick={() => { setFundTab(tab); setFundHoverIdx(null); }}
@@ -1019,8 +1058,9 @@ export const StockDetail: React.FC = () => {
               }`}
             >
               {tab === 'valuation' && '估值分析'}
-              {tab === 'revenue' && '月營收趨勢'}
+              {tab === 'revenue' && (<><span className="sm:hidden">月營收</span><span className="hidden sm:inline">月營收趨勢</span></>)}
               {tab === 'financials' && '獲利能力'}
+              {tab === 'balance' && '資產負債'}
               {tab === 'dividend' && '股利政策'}
             </button>
           ))}
@@ -1705,9 +1745,13 @@ export const StockDetail: React.FC = () => {
                   <span>圖例: 柱狀 = EPS (藍，左軸)；折線 = 三率 (粉/綠/紫，右軸)</span>
                   <span>資料來源: {data.source}</span>
                 </div>
+
+                <QuarterlyIncomeTable rows={financials} financial={isFinancial} />
               </div>
             );
           })()}
+
+          {fundTab === 'balance' && <BalanceSheetPanel rows={data.balance_sheet || []} financial={isFinancial} />}
 
           {fundTab === 'dividend' && (() => {
             const dividend = data.dividend || [];
@@ -1734,12 +1778,14 @@ export const StockDetail: React.FC = () => {
 
             return (
               <div className="space-y-4">
+                <DividendProgressList events={data.dividend_events || []} today={tpeToday()} />
+
                 <div className="grid grid-cols-2 gap-2">
                   <div className="bg-zinc-950/40 p-2 rounded-lg border border-border/30">
                     <div className="text-[9px] text-zinc-500 font-medium">當前年度股利分配 ({latest.year})</div>
                     <div className="text-xs font-semibold mt-1 font-mono text-zinc-100 flex gap-4">
                       <span>現金: {latest.cash_dividend !== null ? `${latest.cash_dividend.toFixed(2)}元` : '—'}</span>
-                      <span>股票: {latest.stock_dividend !== null ? `${latest.stock_dividend.toFixed(2)}股` : '—'}</span>
+                      <span>股票: {latest.stock_dividend !== null ? `${latest.stock_dividend.toFixed(2)}元` : '—'}</span>
                     </div>
                   </div>
                   <div className="bg-zinc-950/40 p-2 rounded-lg border border-border/30">
@@ -1884,7 +1930,7 @@ export const StockDetail: React.FC = () => {
                       </div>
                       <div className="flex justify-between font-mono">
                         <span className="text-zinc-500">股票股利</span>
-                        <span className="text-indigo-400 font-semibold">{hoverRow.stock_dividend !== null ? `${hoverRow.stock_dividend.toFixed(2)}股` : '—'}</span>
+                        <span className="text-indigo-400 font-semibold">{hoverRow.stock_dividend !== null ? `${hoverRow.stock_dividend.toFixed(2)}元` : '—'}</span>
                       </div>
                       <div className="flex justify-between font-mono border-t border-border/30 pt-1 mt-0.5 font-bold">
                         <span className="text-zinc-300">股利合計</span>
@@ -2316,6 +2362,9 @@ export const StockDetail: React.FC = () => {
 
     return (
       <div className="space-y-6">
+        {/* 合理價＋同業排名（opt45，同業＝細分族群；上櫃／ETF 沒有族群就不顯示） */}
+        <PeerValuationCard state={peerValuation} />
+
         {/* 月營收 vs 官方產業（opt41，自己抓資料；ETF 等查不到就不顯示） */}
         <RevenueVsIndustryCard code={activeCode} />
 
@@ -2415,6 +2464,9 @@ export const StockDetail: React.FC = () => {
                     <th className="p-3 text-right cursor-pointer hover:text-zinc-200" onClick={() => handleSort('turnover')}>
                       成交金額 {peerSortKey === 'turnover' ? (peerSortOrder === 'desc' ? '↓' : '↑') : ''}
                     </th>
+                    <th className="p-3 text-right">本益比</th>
+                    <th className="p-3 text-right">殖利率</th>
+                    <th className="p-3 text-right">營收年增</th>
                     <th className="p-3 text-center">操作</th>
                   </tr>
                 </thead>
@@ -2458,6 +2510,20 @@ export const StockDetail: React.FC = () => {
                           {formatMoney(item.turnover)}
                         </td>
 
+                        {(() => {
+                          const pm = peerMetricByCode.get(item.code);
+                          const yoy = pm?.rev_yoy ?? null;
+                          return (
+                            <>
+                              <td className="p-3 text-right text-zinc-300">{pm?.pe ? `${pm.pe.toFixed(1)}x` : '—'}</td>
+                              <td className="p-3 text-right text-zinc-300">{pm?.dy !== null && pm?.dy !== undefined ? `${pm.dy.toFixed(2)}%` : '—'}</td>
+                              <td className={`p-3 text-right ${yoy === null ? 'text-zinc-500' : yoy >= 0 ? 'text-bull' : 'text-bear'}`}>
+                                {yoy === null ? '—' : `${yoy >= 0 ? '+' : ''}${yoy.toFixed(1)}%`}
+                              </td>
+                            </>
+                          );
+                        })()}
+
                         <td className="p-3 text-center">
                           {!isSelf && (
                             <Link
@@ -2477,7 +2543,7 @@ export const StockDetail: React.FC = () => {
           )}
 
           <div className="text-[10px] text-zinc-500 pt-2 border-t border-border/40 font-mono">
-            同儕圈＝TWSE 官方產業別，非第三方策展題材；資料源 TWSE
+            {groupRef ? `同儕圈＝細分族群「${groupRef.group}」（依成交金額取前 5 檔）` : '同儕圈＝TWSE 官方產業別'}；價格、成交金額、本益比、殖利率、營收年增皆為證交所資料
           </div>
         </div>
       </div>
@@ -3013,6 +3079,16 @@ export const StockDetail: React.FC = () => {
               onAddAlert={addLevelAlert}
               saveStatus={alertsSaveStatus}
             />
+
+            {/* 個股建倉計畫（opt45）：換股或日 K 更新時用 key 重新掛載，分批回到預設 */}
+            {keyLevels && (
+              <PositionPlanCard
+                key={`${activeCode}-${keyLevels.date}`}
+                levels={keyLevels}
+                isAlertSet={isLevelAlertSet}
+                onAddAlert={addLevelAlert}
+              />
+            )}
           </div>
         )}
 
@@ -3136,6 +3212,24 @@ export const StockDetail: React.FC = () => {
           </div>
         )}
       </div>
+
+      {posterOpen && (
+        <Suspense fallback={null}>
+          <StockPosterModal
+            code={activeCode}
+            name={headerBookState.data?.book?.name || signalState.data?.name || activeCode}
+            price={livePrice}
+            changePct={liveChangePct}
+            highlights={highlights}
+            levels={keyLevels}
+            dailyRows={dailyRows}
+            peer={peerValuation.data}
+            peerLoading={peerValuation.loading}
+            brief={stockBrief}
+            onClose={() => setPosterOpen(false)}
+          />
+        </Suspense>
+      )}
     </div>
   );
 };

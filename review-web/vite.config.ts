@@ -75,6 +75,10 @@ export default defineConfig({
       output: {
         manualChunks(id) {
           if (id.includes('node_modules')) {
+            // 戰情卡匯出才用到，留給動態 import 自己拆 chunk，不要塞進一開就載的 vendor
+            if (id.includes('html-to-image')) {
+              return undefined;
+            }
             if (id.includes('lightweight-charts')) {
               return 'vendor-charts';
             }

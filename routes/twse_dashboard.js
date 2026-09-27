@@ -486,4 +486,84 @@ router.get('/api/market/stock-metrics', async (req, res) => {
   }
 });
 
+// ── 三大法人近 N 日買賣超（資料夾卡片牆用，opt45 增修 2026-09-28）──────────────────
+//
+//   GET /api/market/inst-net?codes=2330,2383&days=5
+//     → { dates: ['2026-09-24', …（新到舊）], items: { 2330: { net_lots, days } }, partial? }
+//
+// 卡片牆原本每檔各打一次個股籌碼（engine 背後三支 FinMind），20 檔的資料夾一天吃 60 次額度。
+// 證交所 T86 一天一個請求就是全部上市，改由這裡一次抓齊。上櫃不在這張表 → 不會出現在 items，
+// 前端對缺的代號照舊逐檔抓。解析在 lib/twse_inst.js（有測試）。
+//
+// 快取：過去的交易日資料不會再變，抓到就一直留著（沒開盤的日子也記住，不重打）；
+// 今天還沒產出（證交所約 15:00 後）10 分鐘後再試。證交所限流嚴，實際打出去的請求間隔 1.5 秒。
+
+const { parseT86, sumInstNet, ymdIso: t86Iso } = require('../lib/twse_inst');
+
+const T86_TODAY_RETRY_MS = 10 * 60 * 1000;
+const T86_GAP_MS = 1500;
+const T86_MAX_LOOKBACK = 14; // 最多往回看幾個日曆天（連假也夠湊 5 個交易日）
+// YYYYMMDD → { at, day: { date, net } | null, final }；final＝抓的時候這天已經過去了。
+// 「今天還沒產出」那筆 final=false：就算隔天變成過去的日子也要重抓，不能當成沒開盤記一輩子
+const t86Cache = new Map();
+const t86Inflight = new Map();
+let t86LastHit = 0;
+
+async function fetchT86Day(ymd, today) {
+  const hit = t86Cache.get(ymd);
+  if (hit && (hit.day || hit.final || Date.now() - hit.at < T86_TODAY_RETRY_MS)) return hit.day;
+  if (t86Inflight.has(ymd)) return t86Inflight.get(ymd);
+  const p = (async () => {
+    const wait = t86LastHit + T86_GAP_MS - Date.now();
+    t86LastHit = Date.now() + Math.max(0, wait);
+    if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+    const parsed = parseT86(await twseGet(`/fund/T86?date=${ymd}&selectType=ALLBUT0999&response=json`));
+    const day = parsed.noData ? null : { date: parsed.date || t86Iso(ymd), net: parsed.net };
+    t86Cache.set(ymd, { at: Date.now(), day, final: ymd < today });
+    // 只留最近 40 天，免得常駐行程一直長大
+    if (t86Cache.size > 40) {
+      const oldest = [...t86Cache.keys()].sort()[0];
+      t86Cache.delete(oldest);
+    }
+    return day;
+  })();
+  t86Inflight.set(ymd, p);
+  try {
+    return await p;
+  } finally {
+    t86Inflight.delete(ymd);
+  }
+}
+
+router.get('/api/market/inst-net', async (req, res) => {
+  const codes = parseCodes(req.query.codes);
+  const want = Math.min(10, Math.max(1, parseInt(req.query.days, 10) || 5));
+  const today = tpeYmd(0);
+  const days = [];
+  const errors = [];
+  for (let back = 0; back < T86_MAX_LOOKBACK && days.length < want; back++) {
+    const ymd = tpeYmd(-back);
+    const wd = new Date(`${ymdIso(ymd)}T00:00:00Z`).getUTCDay();
+    if (wd === 0 || wd === 6) continue;
+    try {
+      const day = await fetchT86Day(ymd, today);
+      if (day) days.push(day);
+    } catch (e) {
+      errors.push(`${ymdIso(ymd)}：${e.message}`);
+      // 連續兩天都抓不到多半是被證交所擋或斷線，不要再往回打
+      if (errors.length >= 2) break;
+    }
+  }
+  if (!days.length) {
+    return sendError(res, httpError(502, 'TWSE', `三大法人日報抓不到${errors.length ? '：' + errors.join('；') : ''}`));
+  }
+  res.json({
+    dates: days.map((d) => d.date),
+    items: sumInstNet(days, codes),
+    unit: '張',
+    source: 'twse-T86',
+    ...(days.length < want || errors.length ? { partial: true, errors: errors.length ? errors : undefined } : {}),
+  });
+});
+
 module.exports = router;

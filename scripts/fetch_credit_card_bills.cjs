@@ -80,8 +80,14 @@ const SOURCES = [
 ];
 
 // ── Google OAuth（沿用 futures_alert.cjs 手法，獨立複製一份）────────────
+// 失敗原因留給 main() 印：invalid_grant（授權過期／被撤銷）跟 .env 缺欄位的處理方式完全不同
+let tokenError = null;
+
 async function getAccessToken() {
-  if (!GOOGLE_CLIENT_ID || !GOOGLE_CLIENT_SECRET || !GOOGLE_REFRESH_TOKEN) return null;
+  if (!GOOGLE_CLIENT_ID || !GOOGLE_CLIENT_SECRET || !GOOGLE_REFRESH_TOKEN) {
+    tokenError = '.env 缺 GOOGLE_CLIENT_ID／GOOGLE_CLIENT_SECRET／GOOGLE_REFRESH_TOKEN';
+    return null;
+  }
   const r = await fetch('https://oauth2.googleapis.com/token', {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
@@ -91,8 +97,12 @@ async function getAccessToken() {
       refresh_token: GOOGLE_REFRESH_TOKEN,
       grant_type: 'refresh_token',
     }),
-  }).then((res) => res.json());
-  return r && r.access_token ? r.access_token : null;
+  }).then((res) => res.json()).catch((e) => ({ error: 'network', error_description: e.message }));
+  if (r && r.access_token) return r.access_token;
+  tokenError = r && r.error === 'invalid_grant'
+    ? `Google 授權已過期或被撤銷（invalid_grant: ${r.error_description || ''}）。要重新授權：在本機跑 node scripts/oauth_reauth.cjs，再把新的 GOOGLE_REFRESH_TOKEN 更新到 VM 的 .env`
+    : `Google 換 token 失敗（${(r && (r.error_description || r.error)) || '未知錯誤'}）`;
+  return null;
 }
 
 async function gmailGet(token, path_) {
@@ -267,7 +277,7 @@ function saveStore(store) {
 async function main() {
   const dryRun = process.argv.includes('--dry-run');
   const token = await getAccessToken();
-  if (!token) { log('無法取得 Google access token，檢查 .env 的 GOOGLE_CLIENT_ID/SECRET/REFRESH_TOKEN'); process.exitCode = 1; return; }
+  if (!token) { log(`無法取得 Google access token：${tokenError}`); process.exitCode = 1; return; }
 
   const store = loadStore();
   let added = 0;

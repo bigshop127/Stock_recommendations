@@ -138,6 +138,28 @@ describe('匯入平倉查詢', () => {
     expect(again.next.closed).toHaveLength(4);
   });
 
+  it('同一天匯入第二次，新紀錄的 id 不會撞到上一次匯入的（2026-09-01 實際撞出兩筆 c_imp20260901_SRF_1）', () => {
+    const dupBase = {
+      product: '小型元大台灣50ETF 202609', month: '202609', side: 'long' as const,
+      entry_price: 105.75, entry_date: '2026-08-31', exit_price: 106.45, exit_date: '2026-09-01',
+      pnl: 700, fee: 80, tax: 4, net_pnl: 616,
+    };
+    const firstRows: ScanClosedRow[] = [
+      { ...dupBase, lots: 1, ref: 'c|2026-09-01|61007|61649|1|105.75|106.45' },
+      { ...dupBase, lots: 2, pnl: 1400, fee: 160, tax: 8, net_pnl: 1232, ref: 'c|2026-09-01|61007|61649|2|105.75|106.45' },
+    ];
+    const secondRows: ScanClosedRow[] = [
+      ...firstRows,
+      { ...dupBase, lots: 1, ref: 'c|2026-09-01|61007|61649|1|105.75|106.45|1' },
+      { ...dupBase, lots: 1, ref: 'c|2026-09-01|61007|61649|1|105.75|106.45|2' },
+    ];
+    const first = buildImportPlan(emptyState(), [screen({ kind: 'closed', closed_rows: firstRows })], spec, 'SRF', { today: '2026-09-01' });
+    const second = buildImportPlan(first.next, [screen({ kind: 'closed', closed_rows: secondRows })], spec, 'SRF', { today: '2026-09-01' });
+    const ids = second.next.closed.map((t) => t.id);
+    expect(ids).toHaveLength(4);
+    expect(new Set(ids).size).toBe(4);
+  });
+
   it('修好之前就已經漏記過的舊帳（第一次出現用舊格式指紋）：重新匯入同一張截圖只補回漏掉的那 2 口，不會把已經記對的 2 口重複計帳', () => {
     // 模擬使用者實際遇到的情況：改版前用舊的（會撞號的）邏輯匯過一次，序號 1、3
     // correctly 進了帳，序號 2、4 被誤判成重複而漏掉。改版後重新匯入同一張截圖，

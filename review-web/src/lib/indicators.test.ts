@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { calculateKD, calculateRSI, calculateBBands, calculateMACD, calculateSMA } from './indicators';
+import { calculateKD, calculateRSI, calculateBBands, calculateMACD, calculateSMA, recentWindowStart } from './indicators';
 import type { OhlcvRow } from './api';
 
 // Helper to create test rows
@@ -95,5 +95,46 @@ describe('Technical Indicators Calculations', () => {
       expect(macd.dea[0].value).toBeCloseTo(0, 4);
       expect(macd.osc[0].value).toBeCloseTo(0, 4);
     });
+  });
+});
+
+describe('recentWindowStart（日 K 預設只框近兩個月）', () => {
+  // 2026-06-01 起每個平日一根
+  const weekdays = (start: string, count: number) => {
+    const out: string[] = [];
+    const d = new Date(`${start}T00:00:00Z`);
+    while (out.length < count) {
+      const wd = d.getUTCDay();
+      if (wd !== 0 && wd !== 6) out.push(d.toISOString().slice(0, 10));
+      d.setUTCDate(d.getUTCDate() + 1);
+    }
+    return out;
+  };
+
+  it('最後一根 9/25 → 從 7/25 以後的第一根開始', () => {
+    const dates = weekdays('2026-06-01', 85); // 最後一天 2026-09-25
+    const last = dates[dates.length - 1];
+    expect(last).toBe('2026-09-25');
+    const i = recentWindowStart(dates, 2);
+    expect(dates[i]).toBe('2026-07-27'); // 7/25、7/26 是週末
+    expect(dates[i - 1] < '2026-07-25').toBe(true);
+  });
+
+  it('月底往前推到短月份會夾在月底（4/30 → 2/28）', () => {
+    const dates = ['2026-02-27', '2026-02-28', '2026-03-02', ...weekdays('2026-03-03', 40), '2026-04-30'];
+    const i = recentWindowStart(dates, 2, 1);
+    expect(dates[i]).toBe('2026-02-28');
+  });
+
+  it('資料不到 minBars 根就從頭；剛好在邊界也至少留 minBars 根', () => {
+    expect(recentWindowStart(weekdays('2026-09-01', 10), 2)).toBe(0);
+    const dates = weekdays('2026-01-01', 200);
+    const i = recentWindowStart(dates, 2, 60);
+    expect(dates.length - i).toBeGreaterThanOrEqual(60);
+  });
+
+  it('空陣列、日期格式不對都回 0', () => {
+    expect(recentWindowStart([], 2)).toBe(0);
+    expect(recentWindowStart(['abc'], 2)).toBe(0);
   });
 });

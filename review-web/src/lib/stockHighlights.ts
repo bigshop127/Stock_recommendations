@@ -1,4 +1,5 @@
 import type { OhlcvRow, StockChips, StockFundamentals, ChipRow } from './api';
+import { upcomingDividend } from './financialStatements';
 
 /**
  * 個股頁頂部重點標籤（2026-09-27，仿 Danny Quant 個股頁標題下那排小標籤）。
@@ -20,6 +21,8 @@ export interface HighlightInput {
   dailyOhlcv: OhlcvRow[] | null;
   chips: StockChips | null;
   fundamentals: StockFundamentals | null;
+  /** 台北今天 YYYY-MM-DD（除息倒數用；不給就不出這個標籤） */
+  today?: string;
 }
 
 const MAX_TAGS = 8;
@@ -203,10 +206,32 @@ function priceTags(daily: OhlcvRow[] | null): Highlight[] {
 }
 
 /** 順序＝基本面 → 估值 → 籌碼 → 價格 → 量能，最多 8 個 */
+/** 14 天內要除權息：標出倒數與金額（已除息、日期未定都不標） */
+function dividendTags(f: StockFundamentals | null, today: string | undefined): Highlight[] {
+  if (!f || !today) return [];
+  const up = upcomingDividend(f.dividend_events, today);
+  const ex = up?.ex;
+  if (!up || !ex?.date || up.status !== '待除息') return [];
+  const days = up.next && up.next.date === ex.date ? up.next.daysLeft : null;
+  if (days === null || days > 14) return [];
+  const cash = up.event.cash_dividend ?? 0;
+  const stock = up.event.stock_dividend ?? 0;
+  const amount = [cash > 0 ? `現金 ${Number(cash.toFixed(4))} 元` : '', stock > 0 ? `股票 ${Number(stock.toFixed(4))} 元` : '']
+    .filter(Boolean)
+    .join('、');
+  return [{
+    key: 'dividend',
+    text: days === 0 ? `今天${ex.label}` : `${days} 天後${ex.label}`,
+    tone: 'info',
+    detail: `${up.event.period}：${ex.label}交易日 ${ex.date}${up.event.payment_date ? `，發放日 ${up.event.payment_date}` : ''}；${amount}`,
+  }];
+}
+
 export function buildStockHighlights(input: HighlightInput): Highlight[] {
   return [
     ...revenueTags(input.fundamentals),
     ...valuationTags(input.fundamentals),
+    ...dividendTags(input.fundamentals, input.today),
     ...chipTags(input.chips),
     ...priceTags(input.dailyOhlcv),
   ].slice(0, MAX_TAGS);
