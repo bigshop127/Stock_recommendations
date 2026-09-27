@@ -1,5 +1,7 @@
 import React, { useState } from 'react';
+import { Link } from 'react-router-dom';
 import type { StockBrief } from '../lib/stockBrief';
+import type { GroupContext, GroupPeriodStat } from '../lib/groupContext';
 import { ChevronDown, ChevronUp, AlertCircle, CheckCircle2, XCircle, ShieldAlert, Sparkles, RefreshCw } from 'lucide-react';
 
 export interface StockBriefCardProps {
@@ -8,6 +10,62 @@ export interface StockBriefCardProps {
   error?: string | null;
   onRetry?: () => void;
 }
+
+const signedPct = (v: number) => `${v >= 0 ? '+' : ''}${v.toFixed(2)}%`;
+const toneOf = (v: number) => (v > 0 ? 'text-bull' : v < 0 ? 'text-bear' : 'text-zinc-300');
+
+const GroupPeriodCell: React.FC<{ title: string; stat: GroupPeriodStat | null }> = ({ title, stat }) => (
+  <div className="rounded-lg bg-zinc-900/60 border border-zinc-800/80 p-2.5 min-w-0">
+    <div className="flex items-baseline justify-between gap-2">
+      <span className="text-[11px] text-zinc-500">{title}</span>
+      {stat && stat.baseDate !== stat.date && (
+        <span className="text-[10px] text-zinc-600 font-mono truncate">{stat.baseDate.slice(5)}～{stat.date.slice(5)}</span>
+      )}
+    </div>
+    {stat ? (
+      <div className="mt-1 space-y-0.5">
+        <div className="flex flex-wrap items-baseline gap-x-2">
+          <span className="text-zinc-400">族群平均</span>
+          <span className={`font-mono font-bold ${toneOf(stat.avg)}`}>{signedPct(stat.avg)}</span>
+          <span className="text-zinc-400">
+            {stat.rank !== null ? <>第 <strong className="text-zinc-100">{stat.rank}</strong> / {stat.total} 名</> : '成分股太少不排名'}
+          </span>
+        </div>
+        <div className="flex flex-wrap items-baseline gap-x-2 text-[11px] text-zinc-500">
+          <span>{stat.validCount} 檔中 {stat.upCount} 檔上漲</span>
+          {stat.stockChange !== null && (
+            <span>
+              本股 <span className={`font-mono ${toneOf(stat.stockChange)}`}>{signedPct(stat.stockChange)}</span>
+              {stat.stockRankInGroup !== null && `，族群內第 ${stat.stockRankInGroup}/${stat.validCount}`}
+            </span>
+          )}
+        </div>
+      </div>
+    ) : (
+      <div className="mt-1 text-[11px] text-zinc-600">暫無資料</div>
+    )}
+  </div>
+);
+
+const GroupStrip: React.FC<{ group: GroupContext }> = ({ group }) => (
+  <div className="bg-zinc-950/40 border border-zinc-800/80 rounded-xl p-3.5 text-xs">
+    <div className="flex items-center gap-1.5 mb-2 flex-wrap">
+      <span className="font-bold text-zinc-300">族群連動</span>
+      <Link
+        to={`/heatmap/group/${encodeURIComponent(group.group)}`}
+        className="text-sky-300 hover:text-sky-200 underline-offset-2 hover:underline"
+        title="看這個族群的熱力圖"
+      >
+        {group.group}
+      </Link>
+      <span className="text-zinc-500">（{group.category}）</span>
+    </div>
+    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+      <GroupPeriodCell title="今日" stat={group.day} />
+      <GroupPeriodCell title="近一月" stat={group.month} />
+    </div>
+  </div>
+);
 
 export const StockBriefCard: React.FC<StockBriefCardProps> = ({ brief, loading, error, onRetry }) => {
   const [collapsed, setCollapsed] = useState(false);
@@ -35,7 +93,7 @@ export const StockBriefCard: React.FC<StockBriefCardProps> = ({ brief, loading, 
     );
   }
 
-  const { overall, action, stateLabel, headline, forces, plus, minus, checkpoints, invalidation, asOf, degraded } = brief;
+  const { overall, action, stateLabel, headline, forces, plus, minus, checkpoints, invalidation, asOf, degraded, group } = brief;
 
   // 訊號失敗不該讓整卡全滅：動能/基本面/觀察點來自 K線與基本面，與 blended 無關。
   // 只有連這些可用區塊都算不出來時，才走整卡硬錯誤；否則降級顯示（規格 §6：blended 缺 → 灰態＋重試）。
@@ -221,6 +279,8 @@ export const StockBriefCard: React.FC<StockBriefCardProps> = ({ brief, loading, 
                   )}
                 </div>
               </div>
+
+              {group && <GroupStrip group={group} />}
             </div>
 
             {/* Right Column (Desktop 5 Cols): Score & 5-Force Radar */}

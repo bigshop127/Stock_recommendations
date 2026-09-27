@@ -1129,6 +1129,8 @@ export interface StockHeatmap {
 }
 
 const heatmapCache = new Map<string, { timestamp: number; data: StockHeatmap }>();
+// 同一份快照正在抓時共用同一個請求（個股頁的族群連動與產業分析分頁會同時要今日快照）
+const heatmapInflight = new Map<string, Promise<StockHeatmap>>();
 
 export function marketStockHeatmap(o?: { period?: string; date?: string }, force = false): Promise<StockHeatmap> {
   const key = `${o?.period || 'day'}_${o?.date || 'latest'}`;
@@ -1137,10 +1139,18 @@ export function marketStockHeatmap(o?: { period?: string; date?: string }, force
   if (!force && cached && now - cached.timestamp < 5 * 60 * 1000) {
     return Promise.resolve(cached.data);
   }
-  return req<StockHeatmap>(`/market/stock-heatmap${qs(o)}`).then((data) => {
-    heatmapCache.set(key, { timestamp: Date.now(), data });
-    return data;
-  });
+  const pending = heatmapInflight.get(key);
+  if (!force && pending) return pending;
+  const p = req<StockHeatmap>(`/market/stock-heatmap${qs(o)}`)
+    .then((data) => {
+      heatmapCache.set(key, { timestamp: Date.now(), data });
+      return data;
+    })
+    .finally(() => {
+      if (heatmapInflight.get(key) === p) heatmapInflight.delete(key);
+    });
+  heatmapInflight.set(key, p);
+  return p;
 }
 
 // ── 資產變化圖／淨資產快照 ───────────────────────────────────────────────────

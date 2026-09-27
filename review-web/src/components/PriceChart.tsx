@@ -18,10 +18,22 @@ import {
   toTime,
 } from '../lib/indicators';
 
+/** 疊在主圖上的水平價位線（關鍵價位）；只畫在日 K 上 */
+export interface ChartLevel {
+  price: number;
+  color: string;
+  title?: string;
+  lineWidth?: 1 | 2;
+  /** 0 實線、2 虛線、3 點線（lightweight-charts LineStyle） */
+  lineStyle?: 0 | 2 | 3;
+  axisLabel?: boolean;
+}
+
 interface PriceChartProps {
   rows: OhlcvRow[];
   isIntraday: boolean;
   height?: number;
+  levels?: ChartLevel[];
 }
 
 interface IndicatorSettings {
@@ -36,9 +48,26 @@ interface IndicatorSettings {
   macd: boolean;
   kd: boolean;
   rsi: boolean;
+  levels: boolean;
 }
 
-export const PriceChart: React.FC<PriceChartProps> = ({ rows, isIntraday, height = 300 }) => {
+// 精簡預設：只留 MA20/MA60 + 成交量 + MACD + 關鍵價位，其餘要看再自己勾
+const DEFAULT_SETTINGS: IndicatorSettings = {
+  ma5: false,
+  ma10: false,
+  ma20: true,
+  ma60: true,
+  bbands: false,
+  vol: true,
+  vma5: false,
+  vma20: false,
+  macd: true,
+  kd: false,
+  rsi: false,
+  levels: true,
+};
+
+export const PriceChart: React.FC<PriceChartProps> = ({ rows, isIntraday, height = 300, levels }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const mainContainerRef = useRef<HTMLDivElement>(null);
   const macdContainerRef = useRef<HTMLDivElement>(null);
@@ -47,26 +76,12 @@ export const PriceChart: React.FC<PriceChartProps> = ({ rows, isIntraday, height
 
   // Indicators switches state
   const [settings, setSettings] = useState<IndicatorSettings>(() => {
-    const saved = localStorage.getItem('technical_indicator_settings');
-    if (saved) {
-      try {
-        return JSON.parse(saved);
-      } catch (_) {}
-    }
-    // 精簡預設：只留 MA20/MA60 + 成交量 + MACD，其餘要看再自己勾（僅影響尚無存檔的新使用者）
-    return {
-      ma5: false,
-      ma10: false,
-      ma20: true,
-      ma60: true,
-      bbands: false,
-      vol: true,
-      vma5: false,
-      vma20: false,
-      macd: true,
-      kd: false,
-      rsi: false,
-    };
+    // 跟預設合併：舊存檔沒有後來新增的開關（例如 levels）時，沿用預設值而不是 undefined
+    try {
+      const saved = localStorage.getItem('technical_indicator_settings');
+      if (saved) return { ...DEFAULT_SETTINGS, ...JSON.parse(saved) };
+    } catch (_) {}
+    return DEFAULT_SETTINGS;
   });
 
   const toggleSetting = (key: keyof typeof settings) => {
@@ -221,6 +236,20 @@ export const PriceChart: React.FC<PriceChartProps> = ({ rows, isIntraday, height
         close: Number(r.close),
       }));
     candle.setData(candleData);
+
+    // 關鍵價位水平線（只畫日 K；分 K 的價格區間小，遠處的線沒有參考價值）
+    if (settings.levels && !isIntraday && levels) {
+      for (const lv of levels) {
+        candle.createPriceLine({
+          price: lv.price,
+          color: lv.color,
+          lineWidth: lv.lineWidth ?? 1,
+          lineStyle: lv.lineStyle ?? 2,
+          axisLabelVisible: lv.axisLabel ?? true,
+          title: lv.title ?? '',
+        });
+      }
+    }
 
     // Add main chart indicator series
     // 疊加線一律關右軸最後值標籤與橫貫價格線，改由左上動態圖例/游標顯示數值
@@ -563,7 +592,7 @@ export const PriceChart: React.FC<PriceChartProps> = ({ rows, isIntraday, height
       ro.disconnect();
       activeCharts.forEach((c) => c.remove());
     };
-  }, [rows, isIntraday, height, settings, logScale]);
+  }, [rows, isIntraday, height, settings, logScale, levels]);
 
   return (
     <div ref={containerRef} className="w-full flex flex-col gap-2">
@@ -679,6 +708,21 @@ export const PriceChart: React.FC<PriceChartProps> = ({ rows, isIntraday, height
           />
           RSI
         </label>
+
+        {levels && levels.length > 0 && !isIntraday && (
+          <>
+            <span className="text-zinc-700">|</span>
+            <label className="flex items-center gap-1.5 cursor-pointer select-none hover:text-zinc-200">
+              <input
+                type="checkbox"
+                checked={settings.levels}
+                onChange={() => toggleSetting('levels')}
+                className="rounded border-zinc-700 text-primary focus:ring-0 focus:ring-offset-0 bg-zinc-950"
+              />
+              關鍵價位
+            </label>
+          </>
+        )}
 
         <span className="text-zinc-700">|</span>
 

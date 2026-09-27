@@ -1,5 +1,7 @@
 import type { StockSignal, OhlcvRow, StockChips, StockFundamentals, StockNews } from './api';
 import { calculateKD } from './indicators';
+import { edgeCut } from './groupContext';
+import type { GroupContext, GroupPeriodStat } from './groupContext';
 
 export interface StockBriefInput {
   blended: StockSignal | null;            // signalState.data?.blended
@@ -7,6 +9,7 @@ export interface StockBriefInput {
   chips: StockChips | null;               // 既有 20 日籌碼
   fundamentals: StockFundamentals | null; // 既有基本面
   news: StockNews | null;                 // 既有新聞輿情
+  group?: GroupContext | null;            // 族群連動（上市族群熱力圖）；沒收錄族群或還沒載到時為 null
 }
 
 export interface ForceScore {
@@ -20,7 +23,7 @@ export interface BriefBullet {
   text: string;
   provenance: string;
   tone: 'plus' | 'minus';
-  category: 'chips' | 'fundamental' | 'momentum' | 'sentiment';
+  category: 'chips' | 'fundamental' | 'momentum' | 'sentiment' | 'industry';
   strength: number;
 }
 
@@ -43,6 +46,7 @@ export interface StockBrief {
   invalidation: string[];
   asOf: string | null;
   degraded: boolean;          // blended 整包缺 → true（整卡灰態）
+  group: GroupContext | null;
 }
 
 function clamp(v: number, min: number, max: number): number {
@@ -72,6 +76,7 @@ function calculateVolumeSMA(rows: OhlcvRow[], period: number): number | null {
 
 export function buildStockBrief(input: StockBriefInput): StockBrief {
   const { blended, dailyOhlcv, chips, fundamentals, news } = input;
+  const group = input.group ?? null;
 
   // Degraded check
   const degraded = !blended || blended.unavailable === true || blended.score == null;
@@ -426,6 +431,36 @@ export function buildStockBrief(input: StockBriefInput): StockBrief {
     }
   }
 
+  // Industry Rules：所屬族群在全部族群裡排前 10%／後 10%（至少 3 名）才算。
+  // 近一月比單日更能代表族群趨勢，所以強度給得比較高。
+  if (group) {
+    const groupBullet = (stat: GroupPeriodStat | null, period: string, strength: number) => {
+      if (!stat || stat.rank === null || stat.total < 10) return;
+      const cut = edgeCut(stat.total);
+      const avgStr = `${stat.avg >= 0 ? '+' : ''}${stat.avg.toFixed(1)}%`;
+      const provenance = `族群 · 上市族群熱力圖 ${stat.baseDate === stat.date ? stat.date : `${stat.baseDate}～${stat.date}`}`;
+      if (stat.rank <= cut && stat.avg > 0) {
+        plusCandidates.push({
+          text: `所屬族群「${group.group}」${period}強勢（平均 ${avgStr}，第 ${stat.rank}/${stat.total} 名）`,
+          provenance,
+          tone: 'plus',
+          category: 'industry',
+          strength,
+        });
+      } else if (stat.rank > stat.total - cut && stat.avg < 0) {
+        minusCandidates.push({
+          text: `所屬族群「${group.group}」${period}弱勢（平均 ${avgStr}，倒數第 ${stat.total - stat.rank + 1} 名）`,
+          provenance,
+          tone: 'minus',
+          category: 'industry',
+          strength,
+        });
+      }
+    };
+    groupBullet(group.month, '近一月', 70);
+    groupBullet(group.day, '今日', 45);
+  }
+
   // Filter candidates: sort by strength desc, max 2 per category, top 4 total
   const filterBullets = (bullets: BriefBullet[]): BriefBullet[] => {
     const sorted = [...bullets].sort((a, b) => b.strength - a.strength);
@@ -567,5 +602,6 @@ export function buildStockBrief(input: StockBriefInput): StockBrief {
     invalidation,
     asOf,
     degraded,
+    group,
   };
 }

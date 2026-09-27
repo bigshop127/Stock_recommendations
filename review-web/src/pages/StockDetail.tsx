@@ -13,8 +13,22 @@ import { buildStockBrief } from '../lib/stockBrief';
 import type { StockBriefInput } from '../lib/stockBrief';
 import { CODE_TO_GROUP } from '../lib/stockGroups';
 import { GroupTag } from '../components/GroupTag';
+import { buildStockHighlights } from '../lib/stockHighlights';
+import type { HighlightTone } from '../lib/stockHighlights';
+import { buildKeyLevels, roundLevel, LEVEL_COLORS } from '../lib/keyLevels';
+import { buildGroupContext } from '../lib/groupContext';
+import { KeyLevelsCard } from '../components/KeyLevelsCard';
+import type { LevelAlertCondition } from '../components/KeyLevelsCard';
+import type { ChartLevel } from '../components/PriceChart';
 
 const groupRefOf = (code: string) => CODE_TO_GROUP.get(code);
+
+const HIGHLIGHT_TONE: Record<HighlightTone, string> = {
+  bull: 'bg-bull/10 text-red-300 border-bull/30',
+  bear: 'bg-bear/10 text-emerald-300 border-bear/30',
+  warn: 'bg-amber-500/10 text-amber-300 border-amber-500/30',
+  info: 'bg-zinc-800/80 text-zinc-300 border-zinc-700',
+};
 
 export type StockTab = 'basic' | 'industry' | 'financials' | 'chips' | 'technical' | 'news';
 
@@ -107,6 +121,8 @@ export const StockDetail: React.FC = () => {
   const [profileState, setProfileState] = useState<{ data: CompanyProfile | null; loading: boolean; error: string | null }>({ data: null, loading: true, error: null });
   const [dispersionState, setDispersionState] = useState<{ data: ShareholdingDispersion | null; loading: boolean; error: string | null }>({ data: null, loading: true, error: null });
   const [peersState, setPeersState] = useState<{ data: StockHeatmap | null; loading: boolean; error: string | null }>({ data: null, loading: false, error: null });
+  // 族群連動用：上市族群熱力圖的今日／近一月快照（全市場一份，跟換哪一檔無關，只抓一次；api 端有 5 分鐘快取）
+  const [groupHeat, setGroupHeat] = useState<{ day: StockHeatmap | null; month: StockHeatmap | null }>({ day: null, month: null });
   const [peerSortKey, setPeerSortKey] = useState<'turnover' | 'change_pct'>('turnover');
   const [peerSortOrder, setPeerSortOrder] = useState<'asc' | 'desc'>('desc');
   const [chipsSubTab, setChipsSubTab] = useState<'dispersion' | 'inst' | 'margin'>('dispersion');
@@ -137,6 +153,8 @@ export const StockDetail: React.FC = () => {
     return () => ro.disconnect();
   }, []);
   const [alertsConfig, setAlertsConfig] = useState<StockAlertsConfig>({});
+  // 雲端警示設定讀到之前不准存：存檔是整份覆寫，沒讀到就存會把其他個股的警示洗掉
+  const [alertsLoaded, setAlertsLoaded] = useState(false);
   // 證交所「個股達違約資訊揭露標準」名單（近一年）；抓不到就當沒有，不擋頁面
   const [defaultItems, setDefaultItems] = useState<DefaultDisclosure[]>([]);
   const [alertsSaveStatus, setAlertsSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
@@ -157,6 +175,17 @@ export const StockDetail: React.FC = () => {
     return () => { cancelled = true; };
   }, [activeCode]);
 
+  useEffect(() => {
+    let cancelled = false;
+    api.marketStockHeatmap()
+      .then((day) => { if (!cancelled) setGroupHeat((prev) => ({ ...prev, day })); })
+      .catch(() => { /* 族群連動只是加註，抓不到就不顯示 */ });
+    api.marketStockHeatmap({ period: 'month' })
+      .then((month) => { if (!cancelled) setGroupHeat((prev) => ({ ...prev, month })); })
+      .catch(() => { /* 同上 */ });
+    return () => { cancelled = true; };
+  }, []);
+
   // 個股價格警示設定：全站共用一份設定檔（data/stock_price_alerts.json），只在掛載時讀一次，
   // 之後每次新增/切換/刪除都本地樂觀更新＋整份寫回雲端（比照 RealizedPnl.tsx 的 saveToCloud 模式）。
   useEffect(() => {
@@ -166,6 +195,7 @@ export const StockDetail: React.FC = () => {
       if (resp.exists && resp.data && resp.data.stocks) {
         setAlertsConfig(resp.data.stocks as unknown as StockAlertsConfig);
       }
+      setAlertsLoaded(true);
     }).catch((e) => {
       console.error('讀取價格警示設定失敗', e);
     });
@@ -173,6 +203,10 @@ export const StockDetail: React.FC = () => {
   }, []);
 
   const saveAlertsConfig = async (next: StockAlertsConfig) => {
+    if (!alertsLoaded) {
+      setAlertsSaveStatus('error');
+      return;
+    }
     setAlertsConfig(next);
     setAlertsSaveStatus('saving');
     try {
@@ -224,6 +258,23 @@ export const StockDetail: React.FC = () => {
       next[activeCode] = { ...entry, alerts: remaining };
     }
     void saveAlertsConfig(next);
+  };
+
+  // 關鍵價位卡的「突破／跌破提醒」：直接加一筆收盤價警示，note 記下是哪個價位（信裡會帶出來）
+  const isLevelAlertSet = (conditionType: LevelAlertCondition, price: number) =>
+    (alertsConfig[activeCode]?.alerts ?? []).some((a) => a.conditionType === conditionType && a.price === price);
+
+  const addLevelAlert = (conditionType: LevelAlertCondition, price: number, note: string) => {
+    if (isLevelAlertSet(conditionType, price)) return;
+    const entry = alertsConfig[activeCode] || { name: headerBookState.data?.book?.name || signalState.data?.name || activeCode, alerts: [] };
+    const newAlert: StockAlertItem = {
+      id: `a_${conditionType}_${price}_${Date.now()}`,
+      conditionType,
+      price,
+      enabled: true,
+      note,
+    };
+    void saveAlertsConfig({ ...alertsConfig, [activeCode]: { ...entry, alerts: [...entry.alerts, newAlert] } });
   };
 
   // 日K快照只在換股時清空（不可綁 fundTab，否則切基本面 tab 會清掉摘要卡動能軸與觀察點）
@@ -726,13 +777,46 @@ export const StockDetail: React.FC = () => {
   }, [activeCode, useMock]);
 
   // Opt 8: Build Research Brief Input and Memoized StockBrief
+  const groupContext = useMemo(
+    () => buildGroupContext(activeCode, groupHeat.day, groupHeat.month),
+    [activeCode, groupHeat.day, groupHeat.month],
+  );
+
   const briefInput: StockBriefInput = useMemo(() => ({
     blended: signalState.data?.blended || null,
     dailyOhlcv: dailyRows,
     chips: chipsState.data,
     fundamentals: fundamentalsState.data,
     news: newsState.data,
-  }), [signalState.data, dailyRows, chipsState.data, fundamentalsState.data, newsState.data]);
+    group: groupContext,
+  }), [signalState.data, dailyRows, chipsState.data, fundamentalsState.data, newsState.data, groupContext]);
+
+  // 頂部重點標籤、關鍵價位：都從日 K 快照＋既有籌碼/基本面算，不打新請求。
+  // 換股時舊一檔的籌碼/基本面會留到新資料回來，比對 code 才不會在新股票頭上閃出上一檔的標籤
+  const highlights = useMemo(
+    () => buildStockHighlights({
+      dailyOhlcv: dailyRows,
+      chips: chipsState.data?.code === activeCode ? chipsState.data : null,
+      fundamentals: fundamentalsState.data?.code === activeCode ? fundamentalsState.data : null,
+    }),
+    [dailyRows, chipsState.data, fundamentalsState.data, activeCode],
+  );
+  const keyLevels = useMemo(() => buildKeyLevels(dailyRows), [dailyRows]);
+
+  // 圖上每區畫一條靠近現價那一邊的線（附價格軸標籤）；有寬度的區間另畫遠端點線
+  const chartLevels: ChartLevel[] = useMemo(() => {
+    if (!keyLevels) return [];
+    const out: ChartLevel[] = [];
+    for (const z of keyLevels.zones) {
+      const color = LEVEL_COLORS[z.kind];
+      // 跟卡片顯示的數字一樣取整，價格軸上的標籤才對得起來
+      const near = roundLevel(z.kind === 'resistance' ? z.low : z.high);
+      const far = roundLevel(z.kind === 'resistance' ? z.high : z.low);
+      out.push({ price: near, color, title: z.short, lineWidth: z.label === '守門' ? 2 : 1, lineStyle: 2 });
+      if (far !== near) out.push({ price: far, color, lineStyle: 3, axisLabel: false });
+    }
+    return out;
+  }, [keyLevels]);
 
   const stockBrief = useMemo(() => buildStockBrief(briefInput), [briefInput]);
 
@@ -853,6 +937,21 @@ export const StockDetail: React.FC = () => {
             </div>
           </div>
         </div>
+
+        {/* 重點標籤：營收/估值/籌碼/價格/量能各挑達到門檻的，滑過去看算法與資料日 */}
+        {highlights.length > 0 && (
+          <div className="w-full flex flex-wrap items-center gap-1.5 pt-3 border-t border-border/60">
+            {highlights.map((h) => (
+              <span
+                key={h.key}
+                title={h.detail}
+                className={`text-[11px] font-semibold px-2 py-0.5 rounded-full border cursor-help ${HIGHLIGHT_TONE[h.tone]}`}
+              >
+                {h.text}
+              </span>
+            ))}
+          </div>
+        )}
       </div>
     );
   };
@@ -2614,6 +2713,7 @@ export const StockDetail: React.FC = () => {
                   </label>
                   <span className={`text-xs flex-1 ${a.enabled ? 'text-zinc-200' : 'text-zinc-600 line-through'}`}>
                     {describeAlert(a)}
+                    {a.note && <span className="ml-1.5 text-[11px] text-zinc-500">（{a.note}）</span>}
                   </span>
                   <button
                     onClick={() => deleteAlert(a.id)}
@@ -2899,12 +2999,20 @@ export const StockDetail: React.FC = () => {
                     </button>
                   </div>
                 ) : klineState.data && klineState.data.length > 0 ? (
-                  <PriceChart rows={klineState.data} isIntraday={klineState.type === 'intraday'} />
+                  <PriceChart rows={klineState.data} isIntraday={klineState.type === 'intraday'} levels={chartLevels} />
                 ) : (
                   <div className="text-center py-16 text-zinc-500 text-xs">無圖表資料</div>
                 )}
               </div>
             </div>
+
+            <KeyLevelsCard
+              levels={keyLevels}
+              loading={klineState.loading && dailyRows === null}
+              isAlertSet={isLevelAlertSet}
+              onAddAlert={addLevelAlert}
+              saveStatus={alertsSaveStatus}
+            />
           </div>
         )}
 
