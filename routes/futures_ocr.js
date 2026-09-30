@@ -271,6 +271,7 @@ function normalizeClosed(raw, warnings) {
 
 function normalizeFills(raw, warnings) {
   const out = [];
+  const seen = new Map();
   for (const r of Array.isArray(raw) ? raw : []) {
     const product = str(r && r.product);
     const month = monthOf(r && r.month, product);
@@ -284,6 +285,12 @@ function normalizeFills(raw, warnings) {
       warnings.push(`成交回報有一列讀不完整，已略過：${product || '(無商品名)'}`);
       continue;
     }
+    // 委託書號常被裁在畫面外（手機直式只看得到「倉別」為止），同一秒、同口數、同價位
+    // 的兩筆成交指紋就會一模一樣，第二筆被當成「已匯入過」。撞號時跟平倉查詢一樣補
+    // 出現序號；第一次出現不加，已經吃過的舊指紋不會失效。
+    const baseRef = `f|${date} ${time}|${str(r.order_id)}|${direction}|${action}|${lots}|${price}`;
+    const occurrence = seen.get(baseRef) || 0;
+    seen.set(baseRef, occurrence + 1);
     out.push({
       product,
       month,
@@ -293,7 +300,7 @@ function normalizeFills(raw, warnings) {
       price,
       date,
       time,
-      ref: `f|${date} ${time}|${str(r.order_id)}|${direction}|${action}|${lots}|${price}`,
+      ref: occurrence > 0 ? `${baseRef}|${occurrence}` : baseRef,
     });
   }
   return out;

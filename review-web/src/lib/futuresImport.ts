@@ -435,6 +435,21 @@ export function buildImportPlan(
     covered.set(k, (covered.get(k) ?? 0) + num(t.lots));
   }
 
+  // 新倉的內容比對安全網跟上面平倉查詢同一個道理：只認「這次匯入前就在帳上」的部位，
+  // 而且一筆舊部位只能抵掉一列成交。同一秒、同價位分好幾筆成交是常態（一張委託被
+  // 拆成多筆配對，或連點幾次下單），這些列彼此內容一樣——對著邊跑邊長大的 positions
+  // 找，第 2 筆 1 口會被當成第 1 筆 1 口的重複（2026-09-30 實例：成交回報 1+1+1+2
+  // ＝5 口只匯進 3 口）。
+  // ref 對得上的列先整批認領它對應的舊部位，免得排在前面、ref 沒讀準的另一列先用
+  // 內容比對把那筆搶走，輪到真正的主人時卻只能走 ref 快速路徑略過，結果少記一筆。
+  const preImportIds = new Set(state.positions.map((p) => p.id));
+  const matchedPositions = new Set<string>();
+  for (const r of fillRows) {
+    if (r.action !== 'open' || !r.ref || !refsInUse.has(r.ref)) continue;
+    const owner = positions.find((p) => preImportIds.has(p.id) && p.ref === r.ref);
+    if (owner) matchedPositions.add(owner.id);
+  }
+
   for (const r of fillRows) {
     const side = fillSide(r);
     const label = `${mLabel(r.month)} ${r.direction === 'buy' ? '買進' : '賣出'} ${r.lots} 口 @${px(r.price)}（${r.time || r.date}）`;
@@ -446,10 +461,18 @@ export function buildImportPlan(
 
     if (r.action === 'open') {
       const dup = positions.find(
-        (p) => p.month === r.month && p.side === side && p.lots === r.lots
+        (p) => preImportIds.has(p.id) && !matchedPositions.has(p.id)
+          && p.month === r.month && p.side === side && p.lots === r.lots
           && Math.abs(num(p.entry_price) - r.price) < EPS && p.entry_date === r.date,
       );
       if (dup) {
+        matchedPositions.add(dup.id);
+        // 補上指紋：下次再匯同一張圖，上面的認領步驟才認得這筆舊部位是誰的
+        if (r.ref) {
+          if (!dup.ref) dup.ref = r.ref;
+          refsInUse.add(r.ref);
+          consumed.add(r.ref);
+        }
         ops.push({ kind: 'closed_skip', text: `已有相同部位，略過：${label}` });
         continue;
       }

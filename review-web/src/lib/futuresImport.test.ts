@@ -306,6 +306,55 @@ describe('匯入成交回報', () => {
     expect(again.changed).toBe(false);
   });
 
+  // 2026-09-30 真實截圖：12 月合約 4 列新倉買進 1+1+1+2＝5 口、全部 @113.8，委託書號欄被裁掉
+  const SEP30: ScanFillRow[] = [
+    ['10:34:49', 1], ['10:34:53', 1], ['10:35:00', 2], ['10:35:00', 1],
+  ].map(([time, lots]) => ({
+    product: '小型元大台灣50ETF期 202612', month: '202612', direction: 'buy', action: 'open',
+    lots: lots as number, price: 113.8, date: '2026-09-30', time: time as string,
+    ref: `f|2026-09-30 ${time}||buy|open|${lots}|113.8`,
+  }));
+  const SEP30_SCREEN = screen({ kind: 'fills', fill_rows: SEP30, totals: { pnl: null, count: 4 } });
+  const lotsOf = (s: ImportState) => s.positions.reduce((a, p) => a + p.lots, 0);
+
+  it('同一秒、同價位、同口數的好幾筆新倉不會被當成彼此的重複（2026-09-30：5 口只匯進 3 口）', () => {
+    const plan = buildImportPlan(emptyState(), [SEP30_SCREEN], spec, 'SRF', { today: '2026-09-30' });
+    expect(plan.next.positions).toHaveLength(4);
+    expect(lotsOf(plan.next)).toBe(5);
+    // 再匯一次是空操作
+    const again = buildImportPlan(plan.next, [SEP30_SCREEN], spec, 'SRF', { today: '2026-09-30' });
+    expect(lotsOf(again.next)).toBe(5);
+    expect(again.changed).toBe(false);
+  });
+
+  it('修好之前已經漏記的那次：重匯同一張成交回報只補回漏掉的 2 口，已記的 3 口不重複', () => {
+    // 修好前的實際結果：只留下 10:34:49 的 1 口與 10:35:00 的 2 口
+    const broken = emptyState({
+      positions: [
+        { id: 'f_imp20260930_SRF_1', product: 'SRF', month: '202612', side: 'long', lots: 1, entry_price: 113.8, entry_date: '2026-09-30', ref: SEP30[0].ref },
+        { id: 'f_imp20260930_SRF_2', product: 'SRF', month: '202612', side: 'long', lots: 2, entry_price: 113.8, entry_date: '2026-09-30', ref: SEP30[2].ref },
+      ],
+      imported_refs: [SEP30[0].ref, SEP30[2].ref],
+    });
+    const plan = buildImportPlan(broken, [SEP30_SCREEN], spec, 'SRF', { today: '2026-09-30' });
+    expect(lotsOf(plan.next)).toBe(5);
+    expect(plan.ops.filter((o) => o.kind === 'position_add')).toHaveLength(2);
+  });
+
+  it('手動記過的部位仍會被內容比對認出來（安全網沒被拿掉），但一筆只抵一列', () => {
+    const manual: FuturesPosition = {
+      id: 'm1', product: 'SRF', month: '202612', side: 'long', lots: 1, entry_price: 113.8, entry_date: '2026-09-30',
+    };
+    const plan = buildImportPlan(emptyState({ positions: [manual] }), [SEP30_SCREEN], spec, 'SRF', { today: '2026-09-30' });
+    // 手動那 1 口抵掉第一列 1 口，其餘三列（1+2+1）照常新增
+    expect(lotsOf(plan.next)).toBe(5);
+    expect(plan.ops.filter((o) => o.text.includes('已有相同部位'))).toHaveLength(1);
+    // 手動那筆補上了指紋，下次再匯同一張圖也不會重複
+    const again = buildImportPlan(plan.next, [SEP30_SCREEN], spec, 'SRF', { today: '2026-09-30' });
+    expect(lotsOf(again.next)).toBe(5);
+    expect(again.changed).toBe(false);
+  });
+
   it('平倉成交會沖銷部位並產生平倉紀錄', () => {
     const held: FuturesPosition = {
       id: 'p1', product: 'SRF', month: '202609', side: 'long', lots: 5, entry_price: 103.5, entry_date: '2026-08-11',
@@ -541,6 +590,18 @@ describe('gateway 截圖辨識的正規化', () => {
       month: '202609', direction: 'buy', action: 'open', lots: 5, price: 103.5,
       date: '2026-08-19', time: '09:12:03',
     });
+  });
+
+  it('成交回報：委託書號被裁掉、同一秒兩筆一模一樣的成交，指紋要分得開（第一筆保留舊格式）', () => {
+    const row = {
+      product: '小型元大台灣50ETF期 202612', datetime: '2026/09/30 10:35:00',
+      direction: '買進', open_close: '新倉', lots: 1, price: 113.8,
+    };
+    const s = normalizeScreen({ kind: 'fills', totals: { count: 2 }, fill_rows: [row, { ...row }] });
+    expect(s.fill_rows.map((r: ScanFillRow) => r.ref)).toEqual([
+      'f|2026-09-30 10:35:00||buy|open|1|113.8',
+      'f|2026-09-30 10:35:00||buy|open|1|113.8|1',
+    ]);
   });
 
   it('讀不完整的列直接丟掉並留警告，不猜數字', () => {
