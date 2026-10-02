@@ -16,9 +16,13 @@ export interface UserStock {
 
 export type FolderId = string;
 
+/** 側邊欄分區：我的清單（持股／觀察）vs 族群分類。舊資料沒有這欄，由 folderSidebar.folderGroup() 推預設值。 */
+export type FolderGroup = 'mine' | 'sector';
+
 export interface FolderDef {
   id: FolderId;
   label: string;
+  group?: FolderGroup;
 }
 
 export type FolderMap = Record<FolderId, UserStock[]>;
@@ -143,14 +147,14 @@ function randomFolderId(): FolderId {
   return `f${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
 }
 
-/** 新增資料夾，回傳新資料夾 id。 */
-export function addFolder(label: string): FolderId {
+/** 新增資料夾（預設放「族群分類」區），回傳新資料夾 id。 */
+export function addFolder(label: string, group: FolderGroup = 'sector'): FolderId {
   const trimmed = label.trim().slice(0, 30) || '未命名資料夾';
   let id = randomFolderId();
   while (state.folders.some((f) => f.id === id)) {
     id = randomFolderId();
   }
-  const nextFolders = [...state.folders, { id, label: trimmed }];
+  const nextFolders = [...state.folders, { id, label: trimmed, group }];
   const nextStocks = { ...state.stocks, [id]: [] };
   persist({ folders: nextFolders, stocks: nextStocks });
   return id;
@@ -161,6 +165,18 @@ export function renameFolder(id: FolderId, label: string): void {
   if (!trimmed) return;
   const nextFolders = state.folders.map((f) => (f.id === id ? { ...f, label: trimmed } : f));
   persist({ folders: nextFolders, stocks: state.stocks });
+}
+
+export function setFolderGroup(id: FolderId, group: FolderGroup): void {
+  const nextFolders = state.folders.map((f) => (f.id === id ? { ...f, group } : f));
+  persist({ folders: nextFolders, stocks: state.stocks });
+}
+
+/** 拖曳排序後整批換掉資料夾順序／分區；id 集合跟現有不一致（例如別處剛刪了一個）就不動。 */
+export function reorderFolders(next: FolderDef[]): void {
+  const cur = new Set(state.folders.map((f) => f.id));
+  if (next.length !== cur.size || next.some((f) => !cur.has(f.id))) return;
+  persist({ folders: next, stocks: state.stocks });
 }
 
 /** 刪除資料夾（含其中個股）。至少保留 1 個資料夾，最後一個時拒絕刪除並回傳 false。 */

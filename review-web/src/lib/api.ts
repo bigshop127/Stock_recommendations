@@ -1351,7 +1351,7 @@ export interface StockRealizedSaveResp {
 }
 export interface StockFoldersResp {
   exists: boolean;
-  data: { folders: { id: string; label: string }[]; stocks: Record<string, unknown> } | null;
+  data: { folders: { id: string; label: string; group?: 'mine' | 'sector' }[]; stocks: Record<string, unknown> } | null;
   saved_at: string | null;
 }
 export interface StockFoldersSaveResp {

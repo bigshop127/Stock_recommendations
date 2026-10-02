@@ -3,6 +3,8 @@
 > 單一事實來源（SSOT）。任何進度／更新／優化都先改這份，再同步 Obsidian vault `C:\obsidian\儲存庫\個股全面審視網` 與 `.claude` 記憶。
 > 建立日：2026-06-21。狀態：**Phase 0–8 ✅ 全案完工。Phase 8（整合・RWD 打磨・PWA・部署上既有 Oracle VM，gateway 同源 serve `review-web/dist`）2026-06-25 實作並部署完成：① 後端 gateway 同源 serve `review-web/dist` 在子路徑 `/review`；② 前端 base、Router basename、PWA scope/start_url 對齊 `/review`，未知路由重定向；③ RWD 斷點打磨及 `ChipsCharts` SVG 縮放 tooltip 比例修正；④ PWA 包含 192/512 PNG/maskable 圖標、manifest 修改與 API 快取從嚴設定；⑤ 效能分塊與路由 lazy-loading，使 build size 無 >500kB 警告。VM 上 `git pull` + `npm ci` + build + gateway 重啟及本機 `ssh -L` 與端點驗收全綠。**
 
+> 〔opt48 個股審查側邊欄改手風琴＋分區＋篩選＋拖曳 2026-10-02 新增〕使用者照一張族群圖建了 9 個「三雄」資料夾後，側邊欄變成 60 多行、資料夾名稱被擠成兩行。改成每個資料夾一行、一次只展開一個，分「我的清單／族群分類」兩區，頂部篩選框，拖曳排序。詳見 §8 opt48。
+
 > 〔opt47 老王報告頁「產生今日報告」按鈕 2026-10-02 新增〕老王晚發文時 cron 三次都撲空，報告頁加一顆按鈕手動補跑 13:00 那套流程。詳見 §8 opt47。
 
 > 〔opt46 日 K 預設兩個月＋期貨平倉紀錄分組＋短期利率改名 2026-09-28 新增〕使用者一次提五項：①上一輪（opt45）沒收尾的全部做完 ②個股 K 線一打開只看近兩個月、看得出每天的 K 棒 ③期貨「部位 & 平倉紀錄」的平倉紀錄比照已實現損益頁收納分組 ④宏觀指標「聯準會利率 4.07%」跟新聞的 3.75–4.00% 對不起來 ⑤信用卡帳單顯示「無法取得 Google access token」。順手修了兩個查證時發現的資料問題：engine 法人快取吃不到證交所事後更正、期貨平倉紀錄 id 撞號（刪一筆會兩筆一起刪）。詳見 §8 opt46。
@@ -437,6 +439,21 @@ Python engine  FastAPI :8000         ← 既有，本案會新增 /data 或 /mar
   - 腳本「沒文章／已存在」都是 exit 0，結果靠 log 字句判斷（`summarizeRun`，字句對應 `puhui_daily.cjs` main()，改那邊的 log 要一起改）。
 
   **驗證**：`node --test routes/reports_run.test.js` 9 項（測資取自 VM cron log 真實輸出）；vitest 517 全過；`npm run build` 過。
+
+- **opt48 ✅ 2026-10-02 個股審查側邊欄改手風琴＋分區＋篩選＋拖曳（使用者從三個方案選定，Claude 實作上線）。**
+
+  **起因**：同日照使用者給的族群圖（載板／貨櫃／CCL／軟板／記憶體／AI 伺服器三雄、台塑四寶、晶圓代工／封測雙雄）直接在 VM 的 `data/stock_folders.json` 建了 9 個資料夾（26 檔），側邊欄因此暴增到 60 多行。三個原因：資料夾預設全展開；hover 才出現的 5 顆操作鈕平常 `opacity-0` 但仍佔寬度，256px 側邊欄只剩約 90px 給名稱，「載板三雄 (3)」都會折行；個人清單和族群混在同一層。
+
+  **做法**：資料夾區從 `Layout.tsx` 抽成 `components/FolderSidebar.tsx`，純邏輯在 `lib/folderSidebar.ts`（`folderSidebar.test.ts` 22 項）。
+  - **一行一個資料夾**：箭頭＋名稱（過長截斷、title 看全名）＋檔數＋「⋯」。操作（加入個股／卡片牆檢視／重新命名／移到另一區／刪除）收進「⋯」選單；桌機 hover 才顯示，手機一直顯示。
+  - **手風琴**：一次只展開一個，記在 localStorage `review:folders:open`（舊的 `review:folders:expanded` 已不用）。打開個股時自動展開它所在的資料夾（目前展開的已包含它就不動，否則挑畫面上第一個有它的），每檔只自動一次，使用者手動收起就尊重；收起的資料夾若含目前個股，名稱旁有藍點。
+  - **分區**：`FolderDef.group?: 'mine' | 'sector'`。舊資料沒這欄時，`holdings`／`potential` 算我的清單、其餘算族群（`folderGroup()`）。後端 `routes/stock_folders.js` 的 sanitize 白名單同步放行 `group`（漏了會像 8/30 中文 id 那次一樣被靜靜吃掉）。區標頭 hover 有「＋」新增到該區。
+  - **篩選框**：比對資料夾名稱與股名／代號，名稱符合列整個資料夾，否則只列符合的股票（檔數顯示「符合/總數」）；篩選中所有符合的資料夾都展開、不能拖。
+  - **拖曳排序**：`@dnd-kit/core`＋`sortable`（新相依）。桌機按住移動 6px 起拖，手機長按 0.3 秒再拖（快速滑動照常捲動）。兩個區標頭也放在同一條拖曳清單裡（不能拖、會讓位），放下後依「落在哪個標頭底下」決定分區，所以拖過交界就直接換區；存檔時整批寫回並把每個資料夾的 group 寫明。拖完緊接的 click 不算展開／收合。
+
+  **資料整理（使用者選定）**：刪掉跟「載板三雄」內容完全相同的「PCB」，以及「封測」（京元電子 2449 併進「封測雙雄」）。
+
+  **驗證**：vitest 539 全過、`npm run build` 過、改動檔 eslint 乾淨；後端 sanitize 單獨測過（合法 group 保留、非法值丟掉）；無頭 Chromium 對 build 版逐項實測（API 全 mock、資料用 VM 當下的資料夾檔副本）：手風琴只開一個／再點收起、自動展開、篩選「三雄」「日月光」「無結果」、桌機拖曳同區排序與拖過標頭換區、⋯ 選單換區、區內新增、手機 390px 版面、手機長按拖曳生效且快速滑動不誤觸。
 
 ---
 

@@ -24,6 +24,8 @@ const DATA_DIR = path.join(__dirname, '..', 'data');
 const FOLDERS_PATH = path.join(DATA_DIR, 'stock_folders.json');
 const MAX_FOLDERS = 30;
 const MAX_STOCKS_PER_FOLDER = 300;
+// 側邊欄分區（2026-10-02）：mine＝我的清單、sector＝族群分類；沒帶就不寫，前端自己推預設
+const FOLDER_GROUPS = new Set(['mine', 'sector']);
 
 const DEFAULT_FOLDERS = [
   { id: 'holdings', label: '我的持股' },
@@ -68,7 +70,7 @@ function sanitizeFolders(body) {
     if (!id || seen.has(id)) continue;
     const label = safeLabel(f.label) || id;
     seen.add(id);
-    folders.push({ id, label });
+    folders.push(FOLDER_GROUPS.has(f.group) ? { id, label, group: f.group } : { id, label });
     if (folders.length >= MAX_FOLDERS) break;
   }
   const finalFolders = folders.length > 0 ? folders : DEFAULT_FOLDERS.slice();
