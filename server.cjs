@@ -34,6 +34,7 @@ app.use(express.static('public'));
 // 是萬用路由，註冊順序在前的話會把 /api/stocks/sync-realized-status 誤吃成
 // 「查代號叫 sync-realized-status 的個股」（opt37 上線時實測到，非假設）。
 app.use(require('./routes/stock_realized_sync'));
+app.use(require('./routes/reports_run'));
 app.use(require('./routes/gateway'));
 app.use(require('./routes/market'));
 app.use(require('./routes/twse_dashboard'));

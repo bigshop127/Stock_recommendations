@@ -3,6 +3,8 @@
 > 單一事實來源（SSOT）。任何進度／更新／優化都先改這份，再同步 Obsidian vault `C:\obsidian\儲存庫\個股全面審視網` 與 `.claude` 記憶。
 > 建立日：2026-06-21。狀態：**Phase 0–8 ✅ 全案完工。Phase 8（整合・RWD 打磨・PWA・部署上既有 Oracle VM，gateway 同源 serve `review-web/dist`）2026-06-25 實作並部署完成：① 後端 gateway 同源 serve `review-web/dist` 在子路徑 `/review`；② 前端 base、Router basename、PWA scope/start_url 對齊 `/review`，未知路由重定向；③ RWD 斷點打磨及 `ChipsCharts` SVG 縮放 tooltip 比例修正；④ PWA 包含 192/512 PNG/maskable 圖標、manifest 修改與 API 快取從嚴設定；⑤ 效能分塊與路由 lazy-loading，使 build size 無 >500kB 警告。VM 上 `git pull` + `npm ci` + build + gateway 重啟及本機 `ssh -L` 與端點驗收全綠。**
 
+> 〔opt47 老王報告頁「產生今日報告」按鈕 2026-10-02 新增〕老王晚發文時 cron 三次都撲空，報告頁加一顆按鈕手動補跑 13:00 那套流程。詳見 §8 opt47。
+
 > 〔opt46 日 K 預設兩個月＋期貨平倉紀錄分組＋短期利率改名 2026-09-28 新增〕使用者一次提五項：①上一輪（opt45）沒收尾的全部做完 ②個股 K 線一打開只看近兩個月、看得出每天的 K 棒 ③期貨「部位 & 平倉紀錄」的平倉紀錄比照已實現損益頁收納分組 ④宏觀指標「聯準會利率 4.07%」跟新聞的 3.75–4.00% 對不起來 ⑤信用卡帳單顯示「無法取得 Google access token」。順手修了兩個查證時發現的資料問題：engine 法人快取吃不到證交所事後更正、期貨平倉紀錄 id 撞號（刪一筆會兩筆一起刪）。詳見 §8 opt46。
 
 > 〔opt45 財報補完＋合理價／同業排名＋建倉計畫＋卡片牆＋戰情卡 2026-09-27～28〕opt44 建議的第二批與之後三項一起做：財務分析補季度損益金額、資產負債、股利決議進度；產業分析加合理價估算與同業排名（同業＝細分族群）；技術分析加個股建倉計畫；側邊欄新增「資料夾卡片牆」；個股頁可一鍵匯出戰情卡 PNG。詳見 §8 opt45。
@@ -422,6 +424,19 @@ Python engine  FastAPI :8000         ← 既有，本案會新增 /data 或 /mar
   **查證時發現、一併修的資料問題**：(a) **engine 法人快取吃不到證交所事後更正**——2330 投信 9/18、9/21、9/23 在快取裡是當晚的初值（9/18 −273,476 股，證交所／FinMind 現在是 +478,401 股），舊日期在浮水印內永遠不重抓，個股頁法人 5 日 7,469 張 vs T86 8,242 張。`cache.get_timeseries` 加 `revise_days`：`chips_inst`／`chips_margin`／`chips_shareholding` 往後補抓新的一天時，同一次請求往前多抓 10 個日曆天覆蓋（不增加 API 呼叫次數；其他資料集不變），4 個新測試。既有快取下次補抓時自動修正。(b) **期貨平倉紀錄 id 撞號**：9/01 同一天匯入兩次平倉截圖，匯入流水號每次從 1 起算，撞出兩組 `c_imp20260901_SRF_1／_2`（那 4 筆本身是真的：三筆一模一樣的 1 口＋一筆 2 口）。後果不只 React key 重複：刪除是依 id 過濾，按一筆會兩筆一起刪、現金卻只回沖一筆。修法：匯入產生 id 時跳過帳上已有的；讀取設定時 `uniqueIds` 把撞號的後者改名 `id~2`（下次存檔寫回雲端）。
 
   **驗證**：vitest 全過（新增 futuresClosedGroups 9、recentWindowStart 4、uniqueIds／匯入撞號 4）；node --test `twse_inst`／`fred`；engine `test_cache` 16/16，其餘只有既知打外部即時資料的 `test_market_capital_tide_ok`；`npm run build` 過；改動檔 lint 問題都是原本就有的。本機 vite 驗證模式（非 GET 全擋、新端點走本機、其餘經 SSH 通道接 VM 真實資料）headless Chromium：2330 日 K 開圖約 7/24～9/24、K 棒清楚；平倉紀錄收合 6 組／展開 9/15 那組 10 筆／依合約／9 月篩選、重複 key 警告消失；總覽已實現損益照常；再平衡按同步指標出現「聯準會目標 3.75–4.00%・有效 3.88%」、存檔 POST 被驗證模式擋下（沒寫進正式資料）。
+
+
+- **opt47 ✅ 2026-10-02 老王報告頁「產生今日報告」按鈕（使用者要求，Claude 實作上線）。**
+
+  **起因**：10/02 老王晚發文，VM cron 12:30／12:45／13:00 三次都在 PressPlay 文章列表找不到當天文章（13:00 那次寄出「今日無發文」），13:28 才看得到，原本要等隔天才有人補。
+
+  **做法**：`/review/reports` 日期列最右邊新增「產生今日報告」按鈕（手機只顯示雲朵圖示），按下＝gateway 在 VM 上補跑同一支 `scripts/puhui_daily.cjs`（抓文章 → Claude 摘要 → 寫 `reports/` → git push → 更新 `puhui_cache.json`）。新路由 `routes/reports_run.js`：`POST /api/reports/run-trigger` 立即回 202、`GET /api/reports/run-status` 輪詢（比照 opt37 真實同步），狀態檔 `data/puhui_run_status.json`（gitignored），輸出同時附加到 `~/puhui_daily.cron.log`。前端每 5 秒問一次，跑完自動重載並跳到今天；離開頁面再回來會接著顯示進度。今天已有報告時按鈕停用。
+  - **一律 `--quiet`、不帶 `--force`**：結果直接顯示在網頁（已產生／本來就有／文章還沒出現／讀不到文章／失敗＋原因），不再多寄信；今天已有報告就照腳本規則跳過，不會蓋掉。
+  - **子行程不繼承 gateway 的 env**：只帶 HOME/USER 等＋cron wrapper（`~/puhui_daily_cron.sh`）那幾個 export。gateway 啟動時已把 `.env` 灌進 process.env、腳本的 dotenv 又不覆蓋既有值，繼承下去 `.env` 換過的新 token 會被舊值蓋掉（9/28 Google 重新授權踩過）。
+  - **防重疊**：按鈕自己跑著時回 409；cron 那次正在跑（`pgrep -f scripts/puhui_daily.cjs`）也回 409，避免兩邊各叫一次 Claude、各寫一份。跑到一半 gateway 重啟 → 狀態端點回「上次執行被中斷」。上限 20 分鐘。
+  - 腳本「沒文章／已存在」都是 exit 0，結果靠 log 字句判斷（`summarizeRun`，字句對應 `puhui_daily.cjs` main()，改那邊的 log 要一起改）。
+
+  **驗證**：`node --test routes/reports_run.test.js` 9 項（測資取自 VM cron log 真實輸出）；vitest 517 全過；`npm run build` 過。
 
 ---
 

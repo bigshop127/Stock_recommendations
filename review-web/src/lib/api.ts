@@ -201,6 +201,18 @@ export interface Report {
   markdown: string;
   emoji_semantics: string;
 }
+// 「立即產生今日報告」按鈕（gateway 在 VM 上補跑 puhui_daily.cjs）
+export interface ReportRunStatus {
+  state: 'idle' | 'running' | 'ok' | 'error';
+  date?: string;
+  started_at?: string | null;
+  finished_at?: string | null;
+  exit_code?: number | null;
+  // done 已產生／exists 本來就有／no_article 文章還沒出現／no_access 讀不到文章／error 失敗
+  outcome?: 'done' | 'exists' | 'no_article' | 'no_access' | 'error' | null;
+  message?: string | null;
+  log_tail?: string;
+}
 
 export interface BacktestResult {
   strategy?: string;
@@ -539,6 +551,10 @@ export const api = {
     }),
   reportsList: () => req<ReportsList>('/reports/list'),
   report: (date?: string) => req<Report>(`/reports${qs({ date })}`),
+  // 立即產生今日報告：立即回 202，跑完與否輪詢 getReportRunStatus()（VM 上要 5～10 分鐘）
+  triggerReportRun: () =>
+    req<{ ok: boolean; date: string; triggered_at: string }>('/reports/run-trigger', { method: 'POST' }),
+  getReportRunStatus: () => req<ReportRunStatus>('/reports/run-status'),
   // Phase 1 新增 API 端點
   marketIndices: (o?: { range?: '1d' | '5d' | '1m' }) => req<MarketIndices>(`/market/indices${qs(o)}`),
   marketBreadth: (o?: { date?: string }) => req<MarketBreadth>(`/market/breadth${qs(o)}`),

@@ -1,8 +1,8 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { ChevronLeft, ChevronRight, Newspaper, RefreshCw } from 'lucide-react';
+import { ChevronLeft, ChevronRight, CloudDownload, Loader2, Newspaper, RefreshCw, X } from 'lucide-react';
 import { api } from '../lib/api';
-import type { Report, ReportsList } from '../lib/api';
+import type { Report, ReportRunStatus, ReportsList } from '../lib/api';
 import { ReportView } from '../components/ReportView';
 import { ReportCalendar } from '../components/ReportCalendar';
 import { FlagText } from '../components/FlagText';
@@ -33,6 +33,19 @@ function saveFontSize(n: number) {
   }
 }
 
+function taipeiToday(): string {
+  return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Taipei' }).format(new Date());
+}
+
+// 「立即產生」跑完後的提示框配色（依結果）
+const RUN_TONE: Record<string, string> = {
+  done: 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300',
+  exists: 'border-border bg-card text-zinc-300',
+  no_article: 'border-amber-500/30 bg-amber-500/10 text-amber-300',
+  no_access: 'border-rose-500/30 bg-rose-500/10 text-rose-300',
+  error: 'border-rose-500/30 bg-rose-500/10 text-rose-300',
+};
+
 /**
  * 老王每日報告：把浦惠投顧的每日整理直接放進審視網，不必再靠 Obsidian／git 同步。
  * 資料源是 gateway 的 /api/reports（純讀 VM 上的 reports/，跟 engine 無關）。
@@ -48,6 +61,57 @@ export const Reports: React.FC = () => {
   // 結果連同它對應的請求 key 一起存：key 對不上＝還在載入，effect 本體不必同步 setState
   const [listRes, setListRes] = useState<{ key: number; list?: ReportsList; error?: string } | null>(null);
   const [reportRes, setReportRes] = useState<{ key: string; report?: Report; error?: string } | null>(null);
+  // 立即產生今日報告（VM cron 12:30／12:45／13:00 都撲空時手動補跑同一套流程）
+  const [run, setRun] = useState<ReportRunStatus | null>(null);
+  const [runStarting, setRunStarting] = useState(false);
+  const [now, setNow] = useState(() => Date.now());
+  const runActive = run?.state === 'running';
+
+  // 進頁面時看一下是不是已經在跑（別台裝置按的，或按完離開又回來）
+  useEffect(() => {
+    let cancelled = false;
+    api.getReportRunStatus()
+      .then((st) => { if (!cancelled && st.state === 'running') setRun(st); })
+      .catch(() => { /* 查不到就當沒在跑 */ });
+    return () => { cancelled = true; };
+  }, []);
+
+  // 跑的時候每 5 秒問一次；產生好了就重載清單並跳到最新一篇（今天）
+  useEffect(() => {
+    if (!runActive) return;
+    const timer = setInterval(async () => {
+      setNow(Date.now());
+      try {
+        const st = await api.getReportRunStatus();
+        if (st.state === 'running') return;
+        setRun(st);
+        if (st.outcome === 'done') {
+          setParams((prev) => {
+            const next = new URLSearchParams(prev);
+            next.delete('date');
+            return next;
+          });
+          setReloadKey((k) => k + 1);
+        }
+      } catch {
+        /* 單次輪詢失敗不中斷，下一輪再問 */
+      }
+    }, 5000);
+    return () => clearInterval(timer);
+  }, [runActive, setParams]);
+
+  const startRun = async () => {
+    setRunStarting(true);
+    try {
+      const r = await api.triggerReportRun();
+      setNow(Date.now());
+      setRun({ state: 'running', date: r.date, started_at: r.triggered_at });
+    } catch (e: unknown) {
+      setRun({ state: 'error', outcome: 'error', message: e instanceof Error ? e.message : String(e) });
+    } finally {
+      setRunStarting(false);
+    }
+  };
 
   // 日期清單（新→舊）
   useEffect(() => {
@@ -96,6 +160,9 @@ export const Reports: React.FC = () => {
     if (!bar || !el) return;
     bar.scrollTo({ left: el.offsetLeft - (bar.clientWidth - el.clientWidth) / 2, behavior: 'smooth' });
   }, [activeTab, report]);
+
+  const todayDone = dates.includes(taipeiToday());
+  const runElapsed = run?.started_at ? Math.max(0, Math.round((now - Date.parse(run.started_at)) / 1000)) : 0;
 
   const idx = date ? dates.indexOf(date) : -1;
   const olderDate = idx >= 0 && idx < dates.length - 1 ? dates[idx + 1] : null;
@@ -153,7 +220,37 @@ export const Reports: React.FC = () => {
         <button type="button" className={btn} onClick={() => setReloadKey((k) => k + 1)} aria-label="重新載入">
           <RefreshCw className="w-4 h-4" />
         </button>
+        <button
+          type="button"
+          className={btn}
+          disabled={runStarting || runActive || todayDone}
+          onClick={startRun}
+          aria-label="立即產生今日報告"
+          title={todayDone ? '今天的報告已經有了' : '老王晚發文時，手動跑一次 13:00 那套流程（抓文章 → AI 整理 → 存檔）'}
+        >
+          {runStarting || runActive ? <Loader2 className="w-4 h-4 animate-spin" /> : <CloudDownload className="w-4 h-4" />}
+          <span className="hidden sm:inline">{runActive ? '產生中…' : '產生今日報告'}</span>
+        </button>
       </div>
+
+      {/* 立即產生的進度／結果 */}
+      {run && runActive && (
+        <div className="rounded-lg border border-primary/30 bg-primary/10 text-zinc-200 text-sm px-4 py-3 mb-3 flex items-start gap-2">
+          <Loader2 className="w-4 h-4 mt-0.5 shrink-0 animate-spin text-primary" />
+          <span>
+            正在產生 {run.date ?? '今日'} 報告：抓文章 → AI 整理 → 存檔，通常要 5～10 分鐘
+            （已過 {Math.floor(runElapsed / 60)} 分 {runElapsed % 60} 秒）。可以先去看別頁，回來會接著顯示。
+          </span>
+        </div>
+      )}
+      {run && !runActive && (
+        <div className={`rounded-lg border text-sm px-4 py-3 mb-3 flex items-start gap-2 ${RUN_TONE[run.outcome ?? 'error'] ?? RUN_TONE.error}`}>
+          <span className="flex-1">{run.message ?? '執行結束'}</span>
+          <button type="button" className="shrink-0 opacity-70 hover:opacity-100" onClick={() => setRun(null)} aria-label="關閉提示">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      )}
 
       {/* 字級：連續滑桿 */}
       <div className="flex items-center gap-3 mb-4 text-zinc-400">
