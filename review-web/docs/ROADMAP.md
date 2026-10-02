@@ -430,7 +430,7 @@ Python engine  FastAPI :8000         ← 既有，本案會新增 /data 或 /mar
 
   **起因**：10/02 老王晚發文，VM cron 12:30／12:45／13:00 三次都在 PressPlay 文章列表找不到當天文章（13:00 那次寄出「今日無發文」），13:28 才看得到，原本要等隔天才有人補。
 
-  **做法**：`/review/reports` 日期列最右邊新增「產生今日報告」按鈕（手機只顯示雲朵圖示），按下＝gateway 在 VM 上補跑同一支 `scripts/puhui_daily.cjs`（抓文章 → Claude 摘要 → 寫 `reports/` → git push → 更新 `puhui_cache.json`）。新路由 `routes/reports_run.js`：`POST /api/reports/run-trigger` 立即回 202、`GET /api/reports/run-status` 輪詢（比照 opt37 真實同步），狀態檔 `data/puhui_run_status.json`（gitignored），輸出同時附加到 `~/puhui_daily.cron.log`。前端每 5 秒問一次，跑完自動重載並跳到今天；離開頁面再回來會接著顯示進度。今天已有報告時按鈕停用。
+  **做法**：`/review/reports` 標題列右側新增「產生今日報告」按鈕（原本放日期列，手機上會把日期壓成「2026-…」，改放標題列），按下＝gateway 在 VM 上補跑同一支 `scripts/puhui_daily.cjs`（抓文章 → Claude 摘要 → 寫 `reports/` → git push → 更新 `puhui_cache.json`）。新路由 `routes/reports_run.js`：`POST /api/reports/run-trigger` 立即回 202、`GET /api/reports/run-status` 輪詢（比照 opt37 真實同步），狀態檔 `data/puhui_run_status.json`（gitignored），輸出同時附加到 `~/puhui_daily.cron.log`。前端每 5 秒問一次，跑完自動重載並跳到今天；離開頁面再回來會接著顯示進度。今天已有報告時按鈕停用。
   - **一律 `--quiet`、不帶 `--force`**：結果直接顯示在網頁（已產生／本來就有／文章還沒出現／讀不到文章／失敗＋原因），不再多寄信；今天已有報告就照腳本規則跳過，不會蓋掉。
   - **子行程不繼承 gateway 的 env**：只帶 HOME/USER 等＋cron wrapper（`~/puhui_daily_cron.sh`）那幾個 export。gateway 啟動時已把 `.env` 灌進 process.env、腳本的 dotenv 又不覆蓋既有值，繼承下去 `.env` 換過的新 token 會被舊值蓋掉（9/28 Google 重新授權踩過）。
   - **防重疊**：按鈕自己跑著時回 409；cron 那次正在跑（`pgrep -f scripts/puhui_daily.cjs`）也回 409，避免兩邊各叫一次 Claude、各寫一份。跑到一半 gateway 重啟 → 狀態端點回「上次執行被中斷」。上限 20 分鐘。

@@ -200,6 +200,17 @@ export const Reports: React.FC = () => {
       <div className="flex items-center gap-2 mb-1">
         <Newspaper className="w-5 h-5 text-primary" />
         <h1 className="text-lg font-bold text-zinc-100">老王每日報告</h1>
+        {/* 放標題列而不是日期列：日期列在手機上已經擠滿，多一顆會把日期壓成「2026-…」 */}
+        <button
+          type="button"
+          className="ml-auto inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border border-border bg-card text-zinc-300 hover:bg-zinc-800/60 disabled:opacity-40 disabled:hover:bg-card transition-colors shrink-0"
+          disabled={runStarting || runActive || todayDone}
+          onClick={startRun}
+          title={todayDone ? '今天的報告已經有了' : '老王晚發文時，手動跑一次 13:00 那套流程（抓文章 → AI 整理 → 存檔）'}
+        >
+          {runStarting || runActive ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <CloudDownload className="w-3.5 h-3.5" />}
+          {runActive ? '產生中…' : todayDone ? '今日報告已產生' : '產生今日報告'}
+        </button>
       </div>
       <p className="text-xs text-zinc-500 mb-4 flex flex-wrap gap-x-4 gap-y-1">
         <span>🔴 看多</span>
@@ -219,17 +230,6 @@ export const Reports: React.FC = () => {
         </button>
         <button type="button" className={btn} onClick={() => setReloadKey((k) => k + 1)} aria-label="重新載入">
           <RefreshCw className="w-4 h-4" />
-        </button>
-        <button
-          type="button"
-          className={btn}
-          disabled={runStarting || runActive || todayDone}
-          onClick={startRun}
-          aria-label="立即產生今日報告"
-          title={todayDone ? '今天的報告已經有了' : '老王晚發文時，手動跑一次 13:00 那套流程（抓文章 → AI 整理 → 存檔）'}
-        >
-          {runStarting || runActive ? <Loader2 className="w-4 h-4 animate-spin" /> : <CloudDownload className="w-4 h-4" />}
-          <span className="hidden sm:inline">{runActive ? '產生中…' : '產生今日報告'}</span>
         </button>
       </div>
 
