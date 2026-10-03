@@ -18,6 +18,7 @@ import {
   type Side,
   type EntryBatch,
   type ProductConfig,
+  type AddRowInput,
 } from './futures';
 
 const VERSION = 'v1';
@@ -54,7 +55,14 @@ export interface FuturesConfig {
   planner: Record<string, PlannerConfig>; // 逐商品一份建倉試算參數
   /** 截圖匯入已經吃過的成交指紋（見 futuresImport.ts 的 ImportState.imported_refs） */
   imported_refs: string[];
+  /** 「槓桿與口數規劃」的加入清單（opt49）：純試算，不影響實際部位 */
+  add_plan: AddRowInput[];
+  /** 同一張卡的整個帳戶目標槓桿。帳戶層級一個值，不跟著頁首商品跳 */
+  add_target_leverage: number;
 }
+
+/** 加入清單最多幾列——跟 gateway（routes/futures.js）的 MAX_ADD_PLAN_ROWS 一致 */
+export const MAX_ADD_PLAN_ROWS = 12;
 
 export const DEFAULT_PLANNER: PlannerConfig = {
   capital: 0,
@@ -106,6 +114,8 @@ const SEED: FuturesConfig = {
   stop_loss: {},
   planner: { [CONTRACT_CODE]: clonePlanner() },
   imported_refs: [],
+  add_plan: [],
+  add_target_leverage: DEFAULT_PLANNER.target_leverage,
 };
 
 export function seedFuturesConfig(): FuturesConfig {
@@ -118,6 +128,8 @@ export function seedFuturesConfig(): FuturesConfig {
     stop_loss: {},
     planner: { [CONTRACT_CODE]: clonePlanner() },
     imported_refs: [],
+    add_plan: [],
+    add_target_leverage: DEFAULT_PLANNER.target_leverage,
   };
 }
 
@@ -344,7 +356,24 @@ function sanitizeProduct(v: unknown, code: string): ProductConfig {
     price_as_of: /^\d{4}-\d{2}-\d{2}/.test(str(o.price_as_of)) ? str(o.price_as_of) : '',
     price_source: o.price_source === 'live' ? 'live' : (o.price_source === 'manual' ? 'manual' : 'daily'),
     is_custom: !preset,
+    // 封存旗標（9/22 加的）當時漏進白名單，存一次就被吃掉——封存的商品又跑回使用中清單
+    ...(o.archived === true ? { archived: true } : {}),
   };
+}
+
+/** 加入清單：商品必須還在 products 裡；口數不是非負數就當作空著（照建議） */
+function sanitizeAddPlan(v: unknown, codes: string[]): AddRowInput[] {
+  const out: AddRowInput[] = [];
+  for (const r of Array.isArray(v) ? v : []) {
+    if (!r || typeof r !== 'object') continue;
+    const o = r as Record<string, unknown>;
+    const product = safeProductCode(o.product);
+    if (!product || !codes.includes(product)) continue;
+    const n = num(o.lots, NaN);
+    out.push({ product, side: safeSide(o.side), lots: Number.isFinite(n) && n >= 0 ? Math.min(9999, Math.floor(n)) : null });
+    if (out.length >= MAX_ADD_PLAN_ROWS) break;
+  }
+  return out;
 }
 
 function sanitizeProducts(v: unknown): Record<string, ProductConfig> {
@@ -464,6 +493,8 @@ export function normalizeFutures(parsed: Record<string, unknown>): FuturesConfig
     stop_loss,
     planner,
     imported_refs: sanitizeRefs(parsed.imported_refs),
+    add_plan: sanitizeAddPlan(parsed.add_plan, codes),
+    add_target_leverage: Math.min(10, Math.max(0.1, num(parsed.add_target_leverage, DEFAULT_PLANNER.target_leverage))),
   };
 }
 

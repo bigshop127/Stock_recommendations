@@ -41,6 +41,7 @@ import {
   accountTargetPlan,
   addPositionPlan,
   lotsToAccountLeverage,
+  multiAddPlan,
   type FuturesPosition,
   type FuturesSpec,
   type CashFlow,
@@ -1748,5 +1749,168 @@ describe('帳戶層級試算：accountTargetPlan／addPositionPlan／lotsToAccou
     expect(lotsToAccountLeverage(1_000_000, 500_000, 1.5, 100_000)).toBe(10);
     expect(lotsToAccountLeverage(1_000_000, 2_000_000, 1.5, 100_000)).toBe(0);
     expect(lotsToAccountLeverage(0, 0, 1.5, 100_000)).toBe(0);
+  });
+});
+
+describe('multiAddPlan：一次加好幾個商品（opt49）', () => {
+  const specA: FuturesSpec = { ...DEFAULT_SPEC };
+  const specB: FuturesSpec = { ...DEFAULT_SPEC, contract_size: 2000, initial_margin: 15000, maintenance_margin: 11500 };
+  const specC: FuturesSpec = { ...DEFAULT_SPEC, contract_size: 2000, initial_margin: 40000, maintenance_margin: 30000 };
+  const products: Record<string, ProductPriceSpec> = {
+    SRF: { spec: specA, price: 100, beta: 1 },
+    UMC: { spec: specB, price: 50, beta: 1.5 },
+    YAGEO: { spec: specC, price: 200, beta: 1.2 },
+    NOPX: { spec: specB, price: 0, beta: 1 },
+  };
+  const positions: FuturesPosition[] = [
+    { id: 'a', product: 'SRF', month: '202609', side: 'long', lots: 5, entry_price: 100, entry_date: '' },
+    { id: 'b', product: 'UMC', month: '202609', side: 'long', lots: 2, entry_price: 50, entry_date: '' },
+  ];
+
+  it('只有一列空白列時，跟舊的單商品算法（lotsToAccountLeverage＋addPositionPlan）完全一樣', () => {
+    for (const [cash, lev] of [[1_000_000, 2.5], [300_000, 10], [200_000, 1]] as const) {
+      const plan = multiAddPlan(positions, products, cash, [{ product: 'UMC', side: 'long', lots: null }], lev);
+      const base = addPositionPlan(positions, products, cash, { product: 'UMC', side: 'long', lots: 0 });
+      const byLev = lotsToAccountLeverage(base.before.equity, base.before.contract_value, lev, 50 * 2000);
+      const want = Math.min(byLev, base.max_lots);
+      const single = addPositionPlan(positions, products, cash, { product: 'UMC', side: 'long', lots: want });
+      expect(plan.rows[0].lots).toBe(want);
+      expect(plan.rows[0].by_leverage).toBe(byLev);
+      expect(plan.rows[0].capped).toBe(byLev > base.max_lots);
+      expect(plan.rows[0].room_lots).toBe(single.room_lots);
+      expect(plan.after.equity).toBeCloseTo(single.after.equity, 6);
+      expect(plan.after.required_initial).toBeCloseTo(single.after.required_initial, 6);
+      expect(plan.after.contract_value).toBeCloseTo(single.after.contract_value, 6);
+    }
+    // 300k／10 倍那組會被保證金下修，確定這條路徑真的有被測到
+    expect(multiAddPlan(positions, products, 300_000, [{ product: 'UMC', side: 'long', lots: null }], 10).rows[0].capped).toBe(true);
+  });
+
+  it('手填的列：保證金、名目曝險照全部加總，權益只少各自的來回費用', () => {
+    const plan = multiAddPlan(positions, products, 1_000_000, [
+      { product: 'UMC', side: 'long', lots: 3 },
+      { product: 'SRF', side: 'short', lots: 2 },
+    ], 1.2);
+    expect(plan.after.required_initial - plan.before.required_initial).toBeCloseTo(3 * 15000 + 2 * specA.initial_margin, 6);
+    expect(plan.after.contract_value - plan.before.contract_value).toBeCloseTo(3 * 50 * 2000 + 2 * 100 * 1000, 6);
+    const fees = 3 * 2 * specB.fee_per_lot + 2 * 3 * 50 * 2000 * specB.tax_rate
+      + 2 * 2 * specA.fee_per_lot + 2 * 2 * 100 * 1000 * specA.tax_rate;
+    expect(plan.before.equity - plan.after.equity).toBeCloseTo(fees, 6);
+    expect(plan.after.short_lots).toBe(2);
+    expect(plan.rows.map((r) => r.by_leverage)).toEqual([null, null]);
+    expect(plan.rows[0].notional).toBeCloseTo(300_000, 6);
+    expect(plan.rows[1].initial_margin).toBeCloseTo(2 * specA.initial_margin, 6);
+  });
+
+  it('空白列平分「目標槓桿還差的名目曝險」（先扣掉手填的列），再各自換算口數', () => {
+    const lev = 2;
+    const plan = multiAddPlan(positions, products, 1_000_000, [
+      { product: 'SRF', side: 'long', lots: 4 },
+      { product: 'UMC', side: 'long', lots: null },
+      { product: 'YAGEO', side: 'long', lots: null },
+    ], lev);
+    const gap = lev * plan.before.equity - plan.before.contract_value - 4 * 100 * 1000;
+    expect(plan.gap).toBeCloseTo(gap, 6);
+    expect(plan.rows[0].lots).toBe(4);
+    expect(plan.rows[1].lots).toBe(Math.round(gap / 2 / (50 * 2000)));
+    expect(plan.rows[2].lots).toBe(Math.round(gap / 2 / (200 * 2000)));
+    expect(plan.rows.some((r) => r.capped)).toBe(false);
+    expect(plan.fits).toBe(true);
+  });
+
+  it('已經超過目標槓桿：空白列建議 0 口，gap 不會是負的', () => {
+    const plan = multiAddPlan(positions, products, 200_000, [
+      { product: 'UMC', side: 'long', lots: null },
+      { product: 'YAGEO', side: 'short', lots: null },
+    ], 1);
+    expect(plan.gap).toBe(0);
+    expect(plan.rows.map((r) => r.lots)).toEqual([0, 0]);
+    expect(plan.after.equity).toBeCloseTo(plan.before.equity, 6);
+  });
+
+  it('保證金不夠時依清單順序下修：前面的列先排滿，後面的列被修，修完一定開得了', () => {
+    const plan = multiAddPlan(positions, products, 200_000, [
+      { product: 'UMC', side: 'long', lots: null },
+      { product: 'YAGEO', side: 'long', lots: null },
+    ], 10);
+    expect(plan.rows[0].capped).toBe(false);
+    expect(plan.rows[1].capped).toBe(true);
+    expect(plan.rows[1].lots).toBeLessThan(plan.rows[1].by_leverage as number);
+    expect(plan.fits).toBe(true);
+    // 被修的那列再多一口就開不了
+    const more = multiAddPlan(positions, products, 200_000, [
+      { product: 'UMC', side: 'long', lots: plan.rows[0].lots },
+      { product: 'YAGEO', side: 'long', lots: plan.rows[1].lots + 1 },
+    ], 10);
+    expect(more.fits).toBe(false);
+  });
+
+  it('room_lots：全部加完後這個商品還能再開幾口，剛好用完成立、多一口就不成立', () => {
+    const rows = [
+      { product: 'UMC', side: 'long' as const, lots: 3 },
+      { product: 'SRF', side: 'long' as const, lots: 2 },
+    ];
+    const plan = multiAddPlan(positions, products, 250_000, rows, 1);
+    const room = plan.rows[0].room_lots;
+    expect(room).toBeGreaterThan(0);
+    const at = multiAddPlan(positions, products, 250_000, [{ ...rows[0], lots: 3 + room }, rows[1]], 1);
+    const over = multiAddPlan(positions, products, 250_000, [{ ...rows[0], lots: 3 + room + 1 }, rows[1]], 1);
+    expect(at.fits).toBe(true);
+    expect(at.rows[0].room_lots).toBe(0);
+    expect(over.fits).toBe(false);
+  });
+
+  it('手填超過保證金 → fits=false；空清單、沒報價的商品不影響帳戶', () => {
+    expect(multiAddPlan(positions, products, 100_000, [{ product: 'YAGEO', side: 'long', lots: 50 }], 1).fits).toBe(false);
+    const empty = multiAddPlan(positions, products, 100_000, [], 1);
+    expect(empty.fits).toBe(true);
+    expect(empty.after.equity).toBeCloseTo(empty.before.equity, 6);
+    const nopx = multiAddPlan(positions, products, 1_000_000, [
+      { product: 'NOPX', side: 'long', lots: null },
+      { product: 'NOPX', side: 'long', lots: 3 },
+    ], 3);
+    expect(nopx.rows.map((r) => r.lots)).toEqual([0, 3]);
+    expect(nopx.rows.map((r) => r.notional)).toEqual([0, 0]);
+    expect(nopx.after.contract_value).toBeCloseTo(nopx.before.contract_value, 6);
+  });
+});
+
+describe('gateway sanitize：opt49 加入清單＋封存旗標必須在白名單裡', () => {
+  const { sanitizeAddPlan, sanitizeFutures } = futuresRouter;
+
+  it('加入清單：商品要存在、方向預設做多、口數不合法就當空著、最多 12 列', () => {
+    const out = sanitizeAddPlan([
+      { product: 'srf', side: 'short', lots: 2.7 },
+      { product: 'UMC', lots: '' },
+      { product: 'UMC', side: 'long', lots: -1 },
+      { product: 'NOPE', side: 'long', lots: 3 },
+      { product: 'UMC', side: 'long', lots: null },
+      'junk',
+    ], ['SRF', 'UMC']);
+    expect(out).toEqual([
+      { product: 'SRF', side: 'short', lots: 2 },
+      { product: 'UMC', side: 'long', lots: null },
+      { product: 'UMC', side: 'long', lots: null },
+      { product: 'UMC', side: 'long', lots: null },
+    ]);
+    expect(sanitizeAddPlan(Array.from({ length: 20 }, () => ({ product: 'SRF', lots: 1 })), ['SRF'])).toHaveLength(12);
+    expect(sanitizeAddPlan('nope', ['SRF'])).toEqual([]);
+  });
+
+  it('整包存檔時 add_plan 與 archived 都留著', () => {
+    const out = sanitizeFutures({
+      products: {
+        SRF: { name: '小型台灣50', spec: {} },
+        CCF: { name: '聯電期', spec: {}, archived: true },
+      },
+      active_product: 'SRF',
+      add_plan: [{ product: 'CCF', side: 'long', lots: 1 }, { product: 'XXX', side: 'long', lots: 1 }],
+    });
+    expect(out.products.CCF.archived).toBe(true);
+    expect(out.products.SRF.archived).toBeUndefined();
+    expect(out.add_plan).toEqual([{ product: 'CCF', side: 'long', lots: 1 }]);
+    expect(out.add_target_leverage).toBe(1.2); // 沒給＝預設 1.2
+    expect(sanitizeFutures({ add_target_leverage: 2.5 }).add_target_leverage).toBe(2.5);
+    expect(sanitizeFutures({ add_target_leverage: 99 }).add_target_leverage).toBe(10);
   });
 });

@@ -1486,6 +1486,128 @@ export function lotsToAccountLeverage(
   return Math.max(0, Math.round((safe(targetLeverage) * equity - safe(currentNotional)) / lotValue));
 }
 
+/** 「槓桿與口數規劃」加入清單的一列（opt49，存在 FuturesConfig.add_plan） */
+export interface AddRowInput {
+  product: string;
+  side: Side;
+  /** null＝口數空著，照目標槓桿的建議口數 */
+  lots: number | null;
+}
+
+export interface MultiAddRow {
+  product: string;
+  side: Side;
+  /** 這列實際試算的口數：手填的照填，空著的照建議（已被保證金下修過） */
+  lots: number;
+  /** 空著的列照槓桿平分要幾口（下修前）；手填的列＝null */
+  by_leverage: number | null;
+  /** 空著的列因為保證金不夠被往下修了 */
+  capped: boolean;
+  price: number;
+  /** 一口的名目曝險（價格 × 契約單位） */
+  lot_value: number;
+  notional: number;
+  initial_margin: number;
+  /** 整張清單都加完之後，這個商品（同方向）還能再開幾口 */
+  room_lots: number;
+}
+
+export interface MultiAddPlan {
+  before: AccountSummary;
+  after: AccountSummary;
+  rows: MultiAddRow[];
+  /** 離目標槓桿還差、要由空著的列平分的名目曝險（已扣掉手填的列；超過目標＝0） */
+  gap: number;
+  /** 加完後權益數 ≥ 所需原始保證金（券商讓你開）；沒加任何口數時恆為 true */
+  fits: boolean;
+}
+
+/** 把加入清單變成虛擬部位接在現有部位後面，價格與月份的取法同 addPositionPlan */
+function withVirtualAdds(
+  positions: FuturesPosition[],
+  products: Record<string, ProductPriceSpec>,
+  adds: { product: string; side: Side; lots: number }[],
+): FuturesPosition[] {
+  const out = [...positions];
+  adds.forEach((a, i) => {
+    const pp = products[a.product];
+    const lots = Math.max(0, Math.floor(safe(a.lots)));
+    if (!pp || lots <= 0) return;
+    const month = referenceMonthOf(positions.filter((p) => p.product === a.product));
+    const px = priceOf(pp.price, month);
+    if (!(px > 0)) return;
+    out.push({ id: `_add${i}`, product: a.product, month, side: a.side, lots, entry_price: px, entry_date: '' });
+  });
+  return out;
+}
+
+/**
+ * 現有帳戶一次再加好幾個商品（opt49）。手填口數的列照填；空著的列把「離目標槓桿
+ * 還差的名目曝險」平均分掉再各自換算口數，保證金不夠就依清單順序逐列往下修
+ * （所以清單後面的列先被修）。只有一列空白列時，結果跟 lotsToAccountLeverage
+ * ＋ addPositionPlan 那套單商品算法完全一樣。
+ */
+export function multiAddPlan(
+  positions: FuturesPosition[],
+  products: Record<string, ProductPriceSpec>,
+  cash: number,
+  rows: AddRowInput[],
+  targetLeverage: number,
+): MultiAddPlan {
+  const list = Array.isArray(positions) ? positions : [];
+  const input = Array.isArray(rows) ? rows : [];
+  const before = summarizeAccountAll(list, products, cash);
+
+  const info = input.map((r) => {
+    const pp = products[r.product];
+    const month = referenceMonthOf(list.filter((p) => p.product === r.product));
+    const price = pp ? priceOf(pp.price, month) : 0;
+    const lot_value = pp ? price * Math.max(1, safe(pp.spec.contract_size, 1000)) : 0;
+    const typed = r.lots === null || !Number.isFinite(r.lots) ? null : Math.max(0, Math.floor(r.lots));
+    return { pp, price, lot_value, typed };
+  });
+
+  const fixedNotional = info.reduce((s, x) => s + (x.typed ?? 0) * x.lot_value, 0);
+  const blanks = info.filter((x) => x.typed === null && x.lot_value > 0).length;
+  const gap = before.equity > 0
+    ? Math.max(0, safe(targetLeverage) * before.equity - before.contract_value - fixedNotional)
+    : 0;
+  const share = blanks > 0 ? gap / blanks : 0;
+
+  const resolved = input.map((r, i) => ({ product: r.product, side: r.side, lots: info[i].typed ?? 0 }));
+  const byLev = info.map((x) => (x.typed !== null ? null : x.lot_value > 0 ? Math.round(share / x.lot_value) : 0));
+  const capped = input.map(() => false);
+  input.forEach((r, i) => {
+    const want = byLev[i];
+    if (want === null) return;
+    // 上限以「手填的列＋前面已排好的空白列」都加進去之後再算
+    const max = addPositionPlan(withVirtualAdds(list, products, resolved), products, cash, { product: r.product, side: r.side, lots: 0 }).max_lots;
+    resolved[i].lots = Math.min(want, max);
+    capped[i] = want > max;
+  });
+
+  const all = withVirtualAdds(list, products, resolved);
+  const after = summarizeAccountAll(all, products, cash);
+  const out: MultiAddRow[] = input.map((r, i) => {
+    const lots = resolved[i].lots;
+    const { pp, price, lot_value } = info[i];
+    return {
+      product: r.product,
+      side: r.side,
+      lots,
+      by_leverage: byLev[i],
+      capped: capped[i],
+      price,
+      lot_value,
+      notional: lots * lot_value,
+      initial_margin: lots * Math.max(0, safe(pp?.spec.initial_margin)),
+      room_lots: addPositionPlan(all, products, cash, { product: r.product, side: r.side, lots: 0 }).max_lots,
+    };
+  });
+  const added = resolved.reduce((s, r) => s + r.lots, 0);
+  return { before, after, rows: out, gap, fits: added === 0 || after.equity >= after.required_initial };
+}
+
 export interface TrailingStopPlan {
   peak_price: number;
   stop_price: number;

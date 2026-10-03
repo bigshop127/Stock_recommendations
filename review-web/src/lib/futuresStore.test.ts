@@ -147,3 +147,46 @@ describe('uniqueIds：平倉紀錄／部位 id 撞號時改名（2026-09-28）',
     expect(cfg.closed.filter((c) => c.id !== ids[0])).toHaveLength(1);
   });
 });
+
+describe('normalizeFutures：opt49 加入清單＋封存旗標', () => {
+  const base = {
+    products: {
+      SRF: { name: '小型台灣50', spec: {} },
+      CCF: { name: '聯電期', spec: {}, archived: true },
+    },
+    active_product: 'SRF',
+  };
+
+  it('封存旗標存一次不會被吃掉（9/22 漏進白名單的那個坑）', () => {
+    const cfg = normalizeFutures(base as unknown as Record<string, unknown>);
+    expect(cfg.products.CCF.archived).toBe(true);
+    expect(cfg.products.SRF.archived).toBeUndefined();
+    expect(normalizeFutures(cfg as unknown as Record<string, unknown>).products.CCF.archived).toBe(true);
+  });
+
+  it('加入清單：留下合法的列，商品不存在的丟掉，口數不合法當空著', () => {
+    const cfg = normalizeFutures({
+      ...base,
+      add_plan: [
+        { product: 'SRF', side: 'short', lots: 3 },
+        { product: 'CCF', side: 'long', lots: 'abc' },
+        { product: 'GONE', side: 'long', lots: 1 },
+      ],
+    } as unknown as Record<string, unknown>);
+    expect(cfg.add_plan).toEqual([
+      { product: 'SRF', side: 'short', lots: 3 },
+      { product: 'CCF', side: 'long', lots: null },
+    ]);
+  });
+
+  it('舊資料沒有 add_plan → 空陣列', () => {
+    expect(normalizeFutures(base as unknown as Record<string, unknown>).add_plan).toEqual([]);
+    expect(normalizeFutures(legacy as unknown as Record<string, unknown>).add_plan).toEqual([]);
+  });
+
+  it('帳戶目標槓桿：沒存過＝1.2，存過的值保留並夾在 0.1～10', () => {
+    expect(normalizeFutures(base as unknown as Record<string, unknown>).add_target_leverage).toBe(1.2);
+    expect(normalizeFutures({ ...base, add_target_leverage: 2.5 } as unknown as Record<string, unknown>).add_target_leverage).toBe(2.5);
+    expect(normalizeFutures({ ...base, add_target_leverage: 0 } as unknown as Record<string, unknown>).add_target_leverage).toBe(0.1);
+  });
+});

@@ -21,17 +21,17 @@ import {
   positionPnl, closedPnl, closedBreakdown, closeLots,
   summarizeAccount, summarizeAccountAll, rolloverAlerts, rolloverCost, stopLossRisk,
   indexAtPrice, stressTest, weightedEntry, trailingStopPlan,
-  accountTargetPlan, addPositionPlan, lotsToAccountLeverage,
+  accountTargetPlan, multiAddPlan,
   buildRiskReport, priceOf, referenceMonthOf,
   equityStats, summarizeCashFlows, flowDelta, holdingAsBatch,
   leverageLadder, entryPlan, rollCostEstimate, CALIBRATED_PLAN,
   type FuturesPosition, type ClosedTrade, type CashFlow, type FuturesSpec, type StressRow,
   type PriceInput, type EquityPoint, type ProductConfig, type ProductPriceSpec,
-  type AccountSummary, type Side, type TargetPlan,
+  type AccountSummary, type Side, type TargetPlan, type AddRowInput,
 } from '../lib/futures';
 import {
   getFuturesConfig, saveFuturesConfig, subscribeFutures,
-  DEFAULT_PLANNER, type FuturesConfig, type PlannerConfig,
+  DEFAULT_PLANNER, MAX_ADD_PLAN_ROWS, type FuturesConfig, type PlannerConfig,
 } from '../lib/futuresStore';
 import { groupClosedTrades, sortClosedGroups, type ClosedGroupMode, type ClosedRowView } from '../lib/futuresClosedGroups';
 
@@ -3868,11 +3868,12 @@ const ProductPicker: React.FC<{
   onChange: (code: string) => void;
   products: Record<string, ProductConfig>;
   extra?: { value: string; label: string }[];
-}> = ({ value, onChange, products, extra }) => (
+  className?: string;
+}> = ({ value, onChange, products, extra, className }) => (
   <select
     value={value}
     onChange={(e) => onChange(e.target.value)}
-    className="bg-zinc-900 border border-border rounded-lg px-2.5 py-1.5 text-xs text-zinc-100"
+    className={`bg-zinc-900 border border-border rounded-lg px-2.5 py-1.5 text-xs text-zinc-100 ${className ?? ''}`}
   >
     {extra?.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
     {Object.entries(products)
@@ -3895,11 +3896,20 @@ const SideToggle: React.FC<{ value: Side; onChange: (s: Side) => void }> = ({ va
 );
 
 type PlannerPatch = (code: string, u: (x: PlannerConfig) => PlannerConfig, persist?: boolean) => void;
+type AddConfigPatch = (u: Partial<Pick<FuturesConfig, 'add_plan' | 'add_target_leverage'>>, persist?: boolean) => void;
 
 const riskCls = (s: AccountSummary['status']) => (s === 'danger' ? 'text-rose-400' : s === 'call' ? 'text-orange-400' : s === 'warn' ? 'text-amber-400' : 'text-emerald-400');
 const accMoveText = (m: number | null | undefined) => (m === null || m === undefined ? '—' : `大盤${m < 0 ? '跌' : '漲'} ${pct(Math.abs(m), 1)}`);
 
-// ── 槓桿與口數規劃：現有帳戶再加一個商品 ─────────────────────────────────────
+// ── 槓桿與口數規劃：現有帳戶再加一個或多個商品（opt49）──────────────────────
+
+const RowCell: React.FC<{ label: string; value: string; sub?: string; cls?: string }> = ({ label, value, sub, cls }) => (
+  <div className="min-w-0">
+    <div className="text-zinc-500">{label}</div>
+    <div className={`mt-0.5 py-1.5 font-mono text-sm truncate ${cls ?? 'text-zinc-200'}`}>{value}</div>
+    {sub && <div className="text-[10px] text-zinc-600 -mt-1">{sub}</div>}
+  </div>
+);
 
 const AccountAddCard: React.FC<{
   config: FuturesConfig;
@@ -3907,46 +3917,60 @@ const AccountAddCard: React.FC<{
   summary: AccountSummary;
   activeCode: string;
   setPlannerFor: PlannerPatch;
-}> = ({ config, products, summary, activeCode, setPlannerFor }) => {
-  const [code, setCode] = useState(activeCode);
-  const [side, setSide] = useState<Side>('long');
-  const [lotsText, setLotsText] = useState('');
-  const addCode = products[code] && !products[code].archived ? code : activeCode;
-  const pc = products[addCode];
-  const p = config.planner[addCode] ?? DEFAULT_PLANNER;
+  setAddConfig: AddConfigPatch;
+}> = ({ config, products, summary, activeCode, setPlannerFor, setAddConfig }) => {
   const priceSpecs = useMemo(() => toPriceSpecs(products), [products]);
+  const usable = (c: string) => Boolean(products[c] && !products[c].archived);
+  // 清單存雲端（config.add_plan）。還沒存過、或清單上的商品都被封存了，就先放一列頁首目前的商品
+  const saved = config.add_plan.filter((r) => usable(r.product));
+  const rows: AddRowInput[] = saved.length > 0 ? saved : [{ product: activeCode, side: 'long', lots: null }];
+  const setAddPlan = (add_plan: AddRowInput[], persist = true) => setAddConfig({ add_plan }, persist);
+  // 口數邊打邊算但只存本機，離開輸入框才同步雲端（免得每打一個字就打一次 API）
+  const lotsDirty = useRef(false);
 
+  // 帳戶權益跟頁首目前商品的 planner 走（同上面槓桿體檢的本金）；目標槓桿是帳戶層級一個值
+  const p = config.planner[activeCode] ?? DEFAULT_PLANNER;
   // 滑桿拖曳中只動本地 state，放開才存（同其他滑桿的寫法）
-  const [lev, setLev] = useState(p.target_leverage);
-  const [synced, setSynced] = useState({ code: addCode, lev: p.target_leverage });
-  if (synced.code !== addCode || synced.lev !== p.target_leverage) {
-    setSynced({ code: addCode, lev: p.target_leverage });
-    setLev(p.target_leverage);
+  const [lev, setLev] = useState(config.add_target_leverage);
+  const [synced, setSynced] = useState(config.add_target_leverage);
+  if (synced !== config.add_target_leverage) {
+    setSynced(config.add_target_leverage);
+    setLev(config.add_target_leverage);
   }
+  const commitLev = () => { if (lev !== config.add_target_leverage) setAddConfig({ add_target_leverage: lev }); };
 
   /*
     本金＝權益數（現金＋未實現），帳戶已經有部位時這才是槓桿真正的分母。
-    手動填了「帳戶可用本金」就把它當成權益數：現金改成 本金 − 未實現，未實現照舊。
+    手動填了「帳戶權益」就把它當成權益數：現金改成 本金 − 未實現，未實現照舊。
   */
   const capitalOverride = p.capital > 0 ? p.capital : 0;
   const cash = capitalOverride > 0 ? capitalOverride - summary.unrealized : config.cash;
-  const base = useMemo(
-    () => addPositionPlan(config.positions, priceSpecs, cash, { product: addCode, side, lots: 0 }),
-    [config.positions, priceSpecs, cash, addCode, side],
-  );
-  const price = refPriceOf(addCode, products, config.positions);
-  const lotValue = price * Math.max(1, pc?.spec.contract_size ?? 1000);
-  const byLev = lotsToAccountLeverage(base.before.equity, base.before.contract_value, lev, lotValue);
-  const suggested = Math.min(byLev, base.max_lots);
-  const typed = parseInt(lotsText, 10);
-  const lots = Number.isFinite(typed) && typed >= 0 ? typed : suggested;
-  const plan = useMemo(
-    () => addPositionPlan(config.positions, priceSpecs, cash, { product: addCode, side, lots }),
-    [config.positions, priceSpecs, cash, addCode, side, lots],
-  );
+  const plan = multiAddPlan(config.positions, priceSpecs, cash, rows, lev);
   const b = plan.before;
   const a = plan.after;
-  const heldHere = (b.by_product ?? []).find((r) => r.product === addCode)?.lots ?? 0;
+  const heldOf = (c: string) => (b.by_product ?? []).find((r) => r.product === c)?.lots ?? 0;
+  const nameOf = (c: string) => products[c]?.name || c;
+
+  const updateRow = (i: number, u: Partial<AddRowInput>, persist = true) =>
+    setAddPlan(rows.map((r, j) => (j === i ? { ...r, ...u } : r)), persist);
+  const addRow = () => {
+    const used = new Set(rows.map((r) => r.product));
+    const next = Object.keys(products).find((c) => usable(c) && !used.has(c)) ?? activeCode;
+    setAddPlan([...rows, { product: next, side: 'long', lots: null }]);
+  };
+  const removeRow = (i: number) => setAddPlan(rows.filter((_, j) => j !== i));
+  const commitLots = () => {
+    if (!lotsDirty.current) return;
+    lotsDirty.current = false;
+    setAddPlan(rows);
+  };
+
+  const totalLots = plan.rows.reduce((s, r) => s + r.lots, 0);
+  const longLots = plan.rows.filter((r) => r.side === 'long').reduce((s, r) => s + r.lots, 0);
+  const totalNotional = plan.rows.reduce((s, r) => s + r.notional, 0);
+  const totalMargin = plan.rows.reduce((s, r) => s + r.initial_margin, 0);
+  const blanks = plan.rows.filter((r) => r.by_leverage !== null).length;
+  const cappedRows = plan.rows.filter((r) => r.capped);
 
   const compare: { label: string; before: string; after: string; cls?: string }[] = [
     { label: '權益數', before: money(b.equity), after: money(a.equity) },
@@ -3965,74 +3989,128 @@ const AccountAddCard: React.FC<{
         <div className="flex flex-wrap items-center gap-2">
           <span className="w-7 h-7 rounded-lg bg-primary/10 border border-primary/30 grid place-items-center shrink-0"><Layers className="w-4 h-4 text-primary" /></span>
           <h2 className="text-sm font-bold text-zinc-100 tracking-wide">槓桿與口數規劃</h2>
-          <div className="ml-auto flex items-center gap-2">
-            <ProductPicker value={addCode} onChange={(c) => { setCode(c); setLotsText(''); }} products={products} />
-            <SideToggle value={side} onChange={setSide} />
-          </div>
+          {config.add_plan.length > 0 && (
+            <button type="button" onClick={() => setAddPlan([])}
+              className="ml-auto inline-flex items-center gap-1 text-[11px] text-zinc-500 hover:text-zinc-300 transition">
+              <Eraser className="w-3.5 h-3.5" />清空清單
+            </button>
+          )}
         </div>
         <p className="text-[11px] text-zinc-500 mt-1">
-          以<strong className="text-zinc-400">整個帳戶現有的部位與權益</strong>為起點，試算再加入「{pc?.name ?? addCode}」會變怎樣。
-          要試一個還沒加過的商品（例如國巨期），先到「契約規格 &amp; 設定」新增商品，保證金會自動帶期交所的數字。
+          以<strong className="text-zinc-400">整個帳戶現有的部位與權益</strong>為起點，試算把下面清單的商品<strong className="text-zinc-400">全部一起加進去</strong>會變怎樣。
+          要試一個還沒加過的商品（例如國巨期），先到「契約規格 &amp; 設定」新增商品，保證金會自動帶期交所的數字。清單存雲端，手機電腦同一份。
         </p>
       </div>
 
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 items-start">
         <Field label="帳戶權益（槓桿的分母）" hint="空著或填 0＝沿用目前權益數（現金＋未實現損益）。填了就當作權益數試算。">
           <NumInput value={p.capital > 0 ? p.capital : NaN} step="10000" min="0" placeholder={`未填＝權益數 ${money(summary.equity)}`}
-            onCommit={(v) => setPlannerFor(addCode, (x) => ({ ...x, capital: Math.max(0, v) }))} />
+            onCommit={(v) => setPlannerFor(activeCode, (x) => ({ ...x, capital: Math.max(0, v) }))} />
         </Field>
-        <Field label="進場價（現價・唯讀）" hint="新部位假設以現價成交。到「部位 & 平倉紀錄」或按上方「真實同步」更新。">
-          <div className="w-full bg-zinc-900/50 border border-border rounded-lg px-3 py-2 text-sm font-mono text-zinc-400">
-            {price > 0 ? px(price) : '尚未取得'}
-            {heldHere > 0 && <span className="text-zinc-600 ml-2 text-xs">已持有 {heldHere} 口</span>}
+        <div className="sm:col-span-2 space-y-2">
+          <div className="flex flex-wrap items-baseline justify-between gap-2 text-xs">
+            <span className="text-zinc-400">整個帳戶的目標槓桿（總名目曝險 ÷ 權益數）</span>
+            <span className="font-mono">
+              <span className="text-amber-400 font-bold text-sm">{lev.toFixed(1)} 倍</span>
+              <span className="text-zinc-500 ml-2">現在 {b.leverage === null ? '0.00' : b.leverage.toFixed(2)} 倍 → 加完 <span className="text-amber-400">{a.leverage === null ? '0.00' : a.leverage.toFixed(2)}</span> 倍</span>
+            </span>
           </div>
-        </Field>
-        <Field label="加入口數" hint="空著＝照下面滑桿的建議口數。直接填數字就以你填的為準。">
-          <input type="number" min="0" step="1" value={lotsText} onChange={(e) => setLotsText(e.target.value)}
-            placeholder={`建議 ${suggested}`}
-            className="w-full bg-zinc-900 border border-border rounded-lg px-3 py-2 text-sm font-mono text-zinc-100" />
-        </Field>
+          <input
+            type="range" min="0.5" max="10" step="0.1" value={lev}
+            onChange={(e) => setLev(parseFloat(e.target.value))}
+            onMouseUp={commitLev} onTouchEnd={commitLev} onKeyUp={commitLev}
+            className="w-full h-2 bg-zinc-900 rounded-lg appearance-none cursor-pointer accent-primary"
+          />
+          {rows.every((r) => isCalibrated(r.product)) ? (
+            <div className="flex justify-between text-[10px] text-zinc-600 font-mono">
+              <span>1x 無槓桿</span>
+              <span className="text-emerald-500">1.2x 回測建議</span>
+              <span className="text-amber-500">2x 上限</span>
+              <span className="text-rose-500">3x 歸零率 30%</span>
+              <span>10x</span>
+            </div>
+          ) : (
+            <div className="flex justify-between text-[10px] text-zinc-600 font-mono">
+              <span>0.5x</span><span>1x 無槓桿</span><span>5x</span><span>10x</span>
+            </div>
+          )}
+          {blanks > 0 && (
+            <p className="text-[11px] text-zinc-500">
+              {plan.gap > 0
+                ? <>離目標還差 <span className="font-mono text-zinc-300">{money(plan.gap)}</span> 名目曝險{blanks > 1 ? `，由 ${blanks} 個口數空著的商品平分` : '，口數空著的商品照這個補'}。</>
+                : <>扣掉手填的口數後已經到目標槓桿，口數空著的商品建議 0 口。</>}
+            </p>
+          )}
+        </div>
       </div>
 
       <div className="space-y-2">
-        <div className="flex flex-wrap items-baseline justify-between gap-2 text-xs">
-          <span className="text-zinc-400">整個帳戶的目標槓桿（總名目曝險 ÷ 權益數）</span>
-          <span className="font-mono">
-            <span className="text-amber-400 font-bold text-sm">{lev.toFixed(1)} 倍</span>
-            <span className="text-zinc-500 ml-2">現在 {b.leverage === null ? '0.00' : b.leverage.toFixed(2)} 倍 → 建議加 <span className="text-primary font-bold">{suggested}</span> 口</span>
-          </span>
-        </div>
-        <input
-          type="range" min="0.5" max="10" step="0.1" value={lev}
-          onChange={(e) => { setLev(parseFloat(e.target.value)); setLotsText(''); }}
-          onMouseUp={() => setPlannerFor(addCode, (x) => ({ ...x, target_leverage: lev }))}
-          onTouchEnd={() => setPlannerFor(addCode, (x) => ({ ...x, target_leverage: lev }))}
-          onKeyUp={() => setPlannerFor(addCode, (x) => ({ ...x, target_leverage: lev }))}
-          className="w-full h-2 bg-zinc-900 rounded-lg appearance-none cursor-pointer accent-primary"
-        />
-        {isCalibrated(addCode) ? (
-          <div className="flex justify-between text-[10px] text-zinc-600 font-mono">
-            <span>1x 無槓桿</span>
-            <span className="text-emerald-500">1.2x 回測建議</span>
-            <span className="text-amber-500">2x 上限</span>
-            <span className="text-rose-500">3x 歸零率 30%</span>
-            <span>10x</span>
-          </div>
-        ) : (
-          <div className="flex justify-between text-[10px] text-zinc-600 font-mono">
-            <span>0.5x</span><span>1x 無槓桿</span><span>5x</span><span>10x</span>
-          </div>
+        {rows.map((r, i) => {
+          const row = plan.rows[i];
+          const held = heldOf(r.product);
+          return (
+            <div key={i} className="rounded-xl border border-border/60 bg-zinc-900/30 p-3 space-y-2.5">
+              <div className="flex items-center gap-2">
+                <span className="text-[10px] font-mono text-zinc-600 w-3 shrink-0">{i + 1}</span>
+                <ProductPicker className="flex-1 min-w-0" value={r.product} products={products}
+                  onChange={(c) => updateRow(i, { product: c, lots: null })} />
+                <SideToggle value={r.side} onChange={(s) => updateRow(i, { side: s })} />
+                {rows.length > 1 && (
+                  <button type="button" onClick={() => removeRow(i)} title="從清單移除"
+                    className="p-1.5 rounded-md text-zinc-600 hover:text-rose-400 hover:bg-rose-500/10 transition">
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </button>
+                )}
+              </div>
+              <div className="grid grid-cols-2 sm:grid-cols-5 gap-x-3 gap-y-2 text-[11px]">
+                <label className="block min-w-0">
+                  <span className="text-zinc-500">加入口數</span>
+                  <input type="number" min="0" step="1" inputMode="numeric"
+                    value={r.lots === null ? '' : String(r.lots)}
+                    placeholder={`建議 ${row.lots}`}
+                    onChange={(e) => {
+                      const n = parseInt(e.target.value, 10);
+                      lotsDirty.current = true;
+                      updateRow(i, { lots: e.target.value === '' || !Number.isFinite(n) || n < 0 ? null : n }, false);
+                    }}
+                    onBlur={commitLots}
+                    onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur(); }}
+                    className="mt-0.5 w-full bg-zinc-900 border border-border rounded-lg px-2.5 py-1.5 text-sm font-mono text-zinc-100" />
+                </label>
+                <RowCell label="進場價（現價）" value={row.price > 0 ? px(row.price) : '尚未取得'}
+                  sub={held > 0 ? `已持有 ${held} 口` : undefined} cls={row.price > 0 ? 'text-zinc-300' : 'text-zinc-600'} />
+                <RowCell label="名目曝險" value={money(row.notional)} />
+                <RowCell label="原始保證金" value={money(row.initial_margin)} />
+                <RowCell label="加完還能再開" value={`${row.room_lots} 口`} cls={row.room_lots > 0 ? 'text-cyan-400' : 'text-rose-400'} />
+              </div>
+              <div className="text-[10px] text-zinc-600">
+                {row.by_leverage !== null ? (
+                  <>口數空著＝照目標槓桿{blanks > 1 ? '平分' : ''}要 {row.by_leverage} 口
+                    {row.capped && <span className="text-amber-400">，保證金只夠 {row.lots} 口、已下修</span>}</>
+                ) : (
+                  <>手填 {row.lots} 口・<button type="button" onClick={() => updateRow(i, { lots: null })}
+                    className="text-primary hover:underline">改回建議口數</button></>
+                )}
+              </div>
+            </div>
+          );
+        })}
+        {rows.length < MAX_ADD_PLAN_ROWS && (
+          <button type="button" onClick={addRow}
+            className="w-full rounded-xl border border-dashed border-border py-2 text-xs text-zinc-400 hover:text-zinc-200 hover:border-zinc-500 transition inline-flex items-center justify-center gap-1.5">
+            <Plus className="w-3.5 h-3.5" />再加一個商品
+          </button>
         )}
       </div>
 
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-        <StatCard label="加入口數" value={`${lots} 口`} sub={`${side === 'long' ? '做多' : '做空'}・照槓桿要 ${byLev} 口`} cls="text-primary" />
-        <StatCard label="這筆名目曝險" value={money(lots * lotValue)} />
-        <StatCard label="這筆原始保證金" value={money(lots * (pc?.spec.initial_margin ?? 0))}
-          sub={base.before.excess > 0 ? `佔可動用 ${pct((lots * (pc?.spec.initial_margin ?? 0)) / base.before.excess, 0)}` : ''} />
-        <StatCard label="加完還能再開" value={`${plan.room_lots} 口`} sub={`從現在起最多 ${plan.max_lots} 口`}
-          cls={plan.room_lots > 0 ? 'text-cyan-400' : 'text-rose-400'}
-          hint="權益數 ≥ 所需原始保證金（風險指標 ≥ 100%）才能開新倉。" />
+        <StatCard label="加入口數" value={`${totalLots} 口`} cls="text-primary"
+          sub={rows.length === 1 ? (rows[0].side === 'long' ? '做多' : '做空') : `${rows.length} 個商品・多 ${longLots}／空 ${totalLots - longLots}`} />
+        <StatCard label="這批名目曝險" value={money(totalNotional)} />
+        <StatCard label="這批原始保證金" value={money(totalMargin)}
+          sub={b.excess > 0 ? `佔可動用 ${pct(totalMargin / b.excess, 0)}` : ''} />
+        <StatCard label="加完整體槓桿" value={a.leverage === null ? '—' : `${a.leverage.toFixed(2)} 倍`} cls="text-amber-400"
+          sub={`目標 ${lev.toFixed(1)} 倍`} />
       </div>
 
       <div className="overflow-x-auto -mx-1 px-1">
@@ -4041,7 +4119,7 @@ const AccountAddCard: React.FC<{
             <tr className="text-zinc-500 border-b border-border/60">
               <th className="text-left font-medium py-1.5 pr-2">帳戶整體</th>
               <th className="text-right font-medium py-1.5 px-2">加入前</th>
-              <th className="text-right font-medium py-1.5 px-2">加入後</th>
+              <th className="text-right font-medium py-1.5 px-2">全部加入後</th>
             </tr>
           </thead>
           <tbody className="font-mono">
@@ -4056,19 +4134,23 @@ const AccountAddCard: React.FC<{
         </table>
       </div>
       <p className="text-[10px] text-zinc-600">
-        追繳／斷頭點用「大盤變動幅度」表示——各商品依自己的 beta 一起動，跟總覽頁同一套模型。新部位以現價成交，權益只少掉一趟來回費用。
+        追繳／斷頭點用「大盤變動幅度」表示——各商品依自己的 beta 一起動，跟總覽頁同一套模型。新部位以現價成交，權益只少掉來回費用。
+        口數空著的商品平分離目標還差的名目曝險，保證金不夠時從清單後面的商品先往下修。現價到「部位 &amp; 平倉紀錄」或按上方「真實同步」更新。
       </p>
 
-      {lots > plan.max_lots && (
+      {!plan.fits && (
         <div className="text-[11px] text-rose-400 flex items-start gap-1.5">
           <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
-          <span>加 {lots} 口後權益數低於所需原始保證金，券商不會讓你開這麼多——最多只能加 {plan.max_lots} 口，想多開要先入金。</span>
+          <span>全部加完後權益數 {money(a.equity)} 低於所需原始保證金 {money(a.required_initial)}，券商不會讓你開這麼多——要把口數調小，或先入金。</span>
         </div>
       )}
-      {byLev > base.max_lots && lotsText === '' && (
+      {cappedRows.length > 0 && (
         <div className="text-[11px] text-amber-400 flex items-start gap-1.5">
           <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
-          <span>{lev.toFixed(1)} 倍要加 {byLev} 口，但保證金只夠 {base.max_lots} 口，已自動下修。</span>
+          <span>
+            {lev.toFixed(1)} 倍要的口數保證金不夠，已自動下修：
+            {cappedRows.map((r) => `${nameOf(r.product)} ${r.by_leverage}→${r.lots} 口`).join('、')}。
+          </span>
         </div>
       )}
     </div>
@@ -4561,6 +4643,10 @@ const PlannerTab: React.FC<{
     if (persist) void saveToCloud(next);
   };
   const setPlanner = (u: (x: PlannerConfig) => PlannerConfig) => setPlannerFor(activeCode, u);
+  const setAddConfig: AddConfigPatch = (u, persist = true) => {
+    const next = patch((c) => ({ ...c, ...u }));
+    if (persist) void saveToCloud(next);
+  };
 
   // 本金沒手填時用權益數（現金＋未實現）——帳戶已經有部位時，這才是槓桿真正的分母
   const capital = p.capital > 0 ? p.capital : summary.equity;
@@ -4833,7 +4919,7 @@ const PlannerTab: React.FC<{
         </div>
       )}
 
-      <AccountAddCard config={config} products={products} summary={summary} activeCode={activeCode} setPlannerFor={setPlannerFor} />
+      <AccountAddCard config={config} products={products} summary={summary} activeCode={activeCode} setPlannerFor={setPlannerFor} setAddConfig={setAddConfig} />
       <BatchCard config={config} products={products} summary={summary} activeCode={activeCode} setPlannerFor={setPlannerFor} />
       <TargetCard config={config} products={products} activeCode={activeCode} setPlannerFor={setPlannerFor} />
     </div>

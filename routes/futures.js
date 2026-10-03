@@ -265,7 +265,32 @@ function sanitizeProduct(v, code) {
     price_as_of: /^\d{4}-\d{2}-\d{2}/.test(str(o.price_as_of)) ? str(o.price_as_of) : '',
     price_source: o.price_source === 'live' ? 'live' : (o.price_source === 'manual' ? 'manual' : 'daily'),
     is_custom: Boolean(o.is_custom),
+    // 封存旗標（9/22 加的）當時漏進白名單，存一次就被吃掉——封存的商品又跑回使用中清單
+    ...(o.archived === true ? { archived: true } : {}),
   };
+}
+
+/**
+ * 「槓桿與口數規劃」的加入清單（opt49）。純試算、不影響實際部位；lots 為 null＝照
+ * 目標槓桿建議。一樣要在白名單裡，否則清單一存雲端就被吃掉、手機電腦對不起來。
+ */
+const MAX_ADD_PLAN_ROWS = 12;
+function sanitizeAddPlan(val, codes) {
+  if (!Array.isArray(val)) return [];
+  const out = [];
+  for (const r of val) {
+    if (!r || typeof r !== 'object') continue;
+    const product = safeProductCode(r.product);
+    if (!product || !codes.includes(product)) continue;
+    const n = num(r.lots, NaN);
+    out.push({
+      product,
+      side: r.side === 'short' ? 'short' : 'long',
+      lots: Number.isFinite(n) && n >= 0 ? Math.min(9999, Math.floor(n)) : null,
+    });
+    if (out.length >= MAX_ADD_PLAN_ROWS) break;
+  }
+  return out;
 }
 
 function sanitizeProducts(v) {
@@ -362,6 +387,8 @@ function sanitizeFutures(body) {
     stop_loss,
     planner,
     imported_refs: sanitizeRefs(b.imported_refs),
+    add_plan: sanitizeAddPlan(b.add_plan, codes),
+    add_target_leverage: clamp(b.add_target_leverage, 0.1, 10, DEFAULT_PLANNER.target_leverage),
   };
 }
 
@@ -1334,6 +1361,8 @@ router.sanitizeCashFlows = sanitizeCashFlows;
 router.sanitizeClosed = sanitizeClosed;
 router.sanitizeRefs = sanitizeRefs;
 router.sanitizePositions = sanitizePositions;
+router.sanitizeAddPlan = sanitizeAddPlan;
+router.sanitizeFutures = sanitizeFutures;
 router.CONTRACT_TO_MIS = CONTRACT_TO_MIS;
 router.MONTH_CODES = MONTH_CODES;
 
