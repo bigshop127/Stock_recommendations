@@ -1,0 +1,726 @@
+{
+ "asOf": "2026 年 10 月",
+ "companies": {
+  "1303": {
+   "name": "南亞 Nan Ya Plastics",
+   "spots": [
+    {
+     "scene": "mat",
+     "sceneName": "原料",
+     "stageName": "上游",
+     "parts": [
+      "玻璃纖維布與樹脂"
+     ]
+    }
+   ]
+  },
+  "1802": {
+   "name": "台玻 Taiwan Glass",
+   "spots": [
+    {
+     "scene": "mat",
+     "sceneName": "原料",
+     "stageName": "上游",
+     "parts": [
+      "玻璃纖維布與樹脂"
+     ]
+    }
+   ]
+  },
+  "1815": {
+   "name": "富喬 Fulltech",
+   "spots": [
+    {
+     "scene": "mat",
+     "sceneName": "原料",
+     "stageName": "上游",
+     "parts": [
+      "玻璃纖維布與樹脂"
+     ]
+    }
+   ]
+  },
+  "2059": {
+   "name": "川湖 King Slide",
+   "spots": [
+    {
+     "scene": "rack",
+     "sceneName": "AI 機櫃",
+     "stageName": "下游",
+     "parts": [
+      "機櫃與機構"
+     ]
+    },
+    {
+     "scene": "node",
+     "sceneName": "伺服器節點",
+     "stageName": "下游",
+     "parts": [
+      "機箱與滑軌"
+     ]
+    }
+   ]
+  },
+  "2301": {
+   "name": "光寶科 Lite-On",
+   "spots": [
+    {
+     "scene": "rack",
+     "sceneName": "AI 機櫃",
+     "stageName": "下游",
+     "parts": [
+      "電源架"
+     ]
+    }
+   ]
+  },
+  "2308": {
+   "name": "台達電 Delta",
+   "spots": [
+    {
+     "scene": "rack",
+     "sceneName": "AI 機櫃",
+     "stageName": "下游",
+     "parts": [
+      "風扇模組",
+      "液冷分歧管／CDU",
+      "電源架",
+      "電池備援模組"
+     ]
+    },
+    {
+     "scene": "node",
+     "sceneName": "伺服器節點",
+     "stageName": "下游",
+     "parts": [
+      "散熱片與風扇"
+     ]
+    }
+   ]
+  },
+  "2317": {
+   "name": "鴻海 Foxconn",
+   "spots": [
+    {
+     "scene": "rack",
+     "sceneName": "AI 機櫃",
+     "stageName": "下游",
+     "parts": [
+      "AI 運算托盤 ×6",
+      "機櫃與機構"
+     ]
+    },
+    {
+     "scene": "node",
+     "sceneName": "伺服器節點",
+     "stageName": "下游",
+     "parts": []
+    }
+   ]
+  },
+  "2327": {
+   "name": "國巨 Yageo",
+   "spots": [
+    {
+     "scene": "node",
+     "sceneName": "伺服器節點",
+     "stageName": "下游",
+     "parts": [
+      "電源元件與被動元件"
+     ]
+    }
+   ]
+  },
+  "2330": {
+   "name": "台積電 TSMC",
+   "spots": [
+    {
+     "scene": "chip",
+     "sceneName": "晶片與記憶體",
+     "stageName": "中游",
+     "parts": [
+      "完成製程的晶圓",
+      "GPU／ASIC 晶粒"
+     ]
+    },
+    {
+     "scene": "cowos",
+     "sceneName": "CoWoS 封裝",
+     "stageName": "封測",
+     "parts": [
+      "GPU／ASIC 晶粒",
+      "微凸塊",
+      "矽中介層",
+      "C4 凸塊"
+     ]
+    }
+   ]
+  },
+  "2345": {
+   "name": "智邦 Accton",
+   "spots": [
+    {
+     "scene": "rack",
+     "sceneName": "AI 機櫃",
+     "stageName": "下游",
+     "parts": [
+      "交換器托盤與高速線纜"
+     ]
+    }
+   ]
+  },
+  "2356": {
+   "name": "英業達 Inventec",
+   "spots": [
+    {
+     "scene": "rack",
+     "sceneName": "AI 機櫃",
+     "stageName": "下游",
+     "parts": [
+      "AI 運算托盤 ×6"
+     ]
+    },
+    {
+     "scene": "node",
+     "sceneName": "伺服器節點",
+     "stageName": "下游",
+     "parts": []
+    }
+   ]
+  },
+  "2368": {
+   "name": "金像電 GCE",
+   "spots": [
+    {
+     "scene": "stack",
+     "sceneName": "PCB 疊層",
+     "stageName": "中游",
+     "parts": []
+    },
+    {
+     "scene": "cowos",
+     "sceneName": "CoWoS 封裝",
+     "stageName": "封測",
+     "parts": [
+      "模組電路板"
+     ]
+    },
+    {
+     "scene": "node",
+     "sceneName": "伺服器節點",
+     "stageName": "下游",
+     "parts": [
+      "伺服器主機板"
+     ]
+    }
+   ]
+  },
+  "2382": {
+   "name": "廣達 Quanta",
+   "spots": [
+    {
+     "scene": "rack",
+     "sceneName": "AI 機櫃",
+     "stageName": "下游",
+     "parts": [
+      "AI 運算托盤 ×6"
+     ]
+    },
+    {
+     "scene": "node",
+     "sceneName": "伺服器節點",
+     "stageName": "下游",
+     "parts": []
+    }
+   ]
+  },
+  "2383": {
+   "name": "台光電 EMC",
+   "spots": [
+    {
+     "scene": "mat",
+     "sceneName": "原料",
+     "stageName": "上游",
+     "parts": [
+      "銅箔基板 CCL"
+     ]
+    },
+    {
+     "scene": "stack",
+     "sceneName": "PCB 疊層",
+     "stageName": "中游",
+     "parts": [
+      "半固化片（上）",
+      "核心板 CCL",
+      "半固化片（下）"
+     ]
+    }
+   ]
+  },
+  "2421": {
+   "name": "建準 Sunon",
+   "spots": [
+    {
+     "scene": "rack",
+     "sceneName": "AI 機櫃",
+     "stageName": "下游",
+     "parts": [
+      "風扇模組"
+     ]
+    },
+    {
+     "scene": "node",
+     "sceneName": "伺服器節點",
+     "stageName": "下游",
+     "parts": [
+      "散熱片與風扇"
+     ]
+    }
+   ]
+  },
+  "2449": {
+   "name": "京元電子 KYEC",
+   "spots": [
+    {
+     "scene": "test",
+     "sceneName": "封測檢測",
+     "stageName": "封測",
+     "parts": [
+      "系統級測試 SLT"
+     ]
+    }
+   ]
+  },
+  "3017": {
+   "name": "奇鋐 AVC",
+   "spots": [
+    {
+     "scene": "rack",
+     "sceneName": "AI 機櫃",
+     "stageName": "下游",
+     "parts": [
+      "風扇模組",
+      "液冷分歧管／CDU"
+     ]
+    },
+    {
+     "scene": "node",
+     "sceneName": "伺服器節點",
+     "stageName": "下游",
+     "parts": [
+      "液冷板與管路",
+      "散熱片與風扇"
+     ]
+    }
+   ]
+  },
+  "3030": {
+   "name": "德律 TRI",
+   "spots": [
+    {
+     "scene": "test",
+     "sceneName": "封測檢測",
+     "stageName": "封測",
+     "parts": [
+      "自動光學檢測 AOI"
+     ]
+    }
+   ]
+  },
+  "3037": {
+   "name": "欣興 Unimicron",
+   "spots": [
+    {
+     "scene": "chip",
+     "sceneName": "晶片與記憶體",
+     "stageName": "中游",
+     "parts": [
+      "ABF 載板"
+     ]
+    },
+    {
+     "scene": "cowos",
+     "sceneName": "CoWoS 封裝",
+     "stageName": "封測",
+     "parts": [
+      "ABF 載板"
+     ]
+    }
+   ]
+  },
+  "3044": {
+   "name": "健鼎 Tripod",
+   "spots": [
+    {
+     "scene": "stack",
+     "sceneName": "PCB 疊層",
+     "stageName": "中游",
+     "parts": []
+    },
+    {
+     "scene": "cowos",
+     "sceneName": "CoWoS 封裝",
+     "stageName": "封測",
+     "parts": [
+      "模組電路板"
+     ]
+    },
+    {
+     "scene": "node",
+     "sceneName": "伺服器節點",
+     "stageName": "下游",
+     "parts": [
+      "伺服器主機板"
+     ]
+    }
+   ]
+  },
+  "3189": {
+   "name": "景碩 Kinsus",
+   "spots": [
+    {
+     "scene": "chip",
+     "sceneName": "晶片與記憶體",
+     "stageName": "中游",
+     "parts": [
+      "ABF 載板"
+     ]
+    },
+    {
+     "scene": "cowos",
+     "sceneName": "CoWoS 封裝",
+     "stageName": "封測",
+     "parts": [
+      "ABF 載板"
+     ]
+    }
+   ]
+  },
+  "3231": {
+   "name": "緯創 Wistron",
+   "spots": [
+    {
+     "scene": "rack",
+     "sceneName": "AI 機櫃",
+     "stageName": "下游",
+     "parts": [
+      "AI 運算托盤 ×6"
+     ]
+    },
+    {
+     "scene": "node",
+     "sceneName": "伺服器節點",
+     "stageName": "下游",
+     "parts": []
+    }
+   ]
+  },
+  "3324": {
+   "name": "雙鴻 Auras",
+   "spots": [
+    {
+     "scene": "rack",
+     "sceneName": "AI 機櫃",
+     "stageName": "下游",
+     "parts": [
+      "液冷分歧管／CDU"
+     ]
+    },
+    {
+     "scene": "node",
+     "sceneName": "伺服器節點",
+     "stageName": "下游",
+     "parts": [
+      "液冷板與管路"
+     ]
+    }
+   ]
+  },
+  "3533": {
+   "name": "嘉澤 Lotes",
+   "spots": [
+    {
+     "scene": "node",
+     "sceneName": "伺服器節點",
+     "stageName": "下游",
+     "parts": [
+      "高速連接器與線纜"
+     ]
+    }
+   ]
+  },
+  "3665": {
+   "name": "貿聯-KY BizLink",
+   "spots": [
+    {
+     "scene": "rack",
+     "sceneName": "AI 機櫃",
+     "stageName": "下游",
+     "parts": [
+      "交換器托盤與高速線纜"
+     ]
+    },
+    {
+     "scene": "node",
+     "sceneName": "伺服器節點",
+     "stageName": "下游",
+     "parts": [
+      "高速連接器與線纜"
+     ]
+    }
+   ]
+  },
+  "3711": {
+   "name": "日月光投控 ASE",
+   "spots": [
+    {
+     "scene": "cowos",
+     "sceneName": "CoWoS 封裝",
+     "stageName": "封測",
+     "parts": [
+      "C4 凸塊"
+     ]
+    },
+    {
+     "scene": "test",
+     "sceneName": "封測檢測",
+     "stageName": "封測",
+     "parts": [
+      "打線與封膠"
+     ]
+    }
+   ]
+  },
+  "4958": {
+   "name": "臻鼎-KY ZDT",
+   "spots": [
+    {
+     "scene": "stack",
+     "sceneName": "PCB 疊層",
+     "stageName": "中游",
+     "parts": []
+    },
+    {
+     "scene": "cowos",
+     "sceneName": "CoWoS 封裝",
+     "stageName": "封測",
+     "parts": [
+      "模組電路板"
+     ]
+    },
+    {
+     "scene": "node",
+     "sceneName": "伺服器節點",
+     "stageName": "下游",
+     "parts": [
+      "伺服器主機板"
+     ]
+    }
+   ]
+  },
+  "6213": {
+   "name": "聯茂 ITEQ",
+   "spots": [
+    {
+     "scene": "mat",
+     "sceneName": "原料",
+     "stageName": "上游",
+     "parts": [
+      "銅箔基板 CCL"
+     ]
+    },
+    {
+     "scene": "stack",
+     "sceneName": "PCB 疊層",
+     "stageName": "中游",
+     "parts": [
+      "半固化片（上）",
+      "核心板 CCL",
+      "半固化片（下）"
+     ]
+    }
+   ]
+  },
+  "6223": {
+   "name": "旺矽 MPI",
+   "spots": [
+    {
+     "scene": "test",
+     "sceneName": "封測檢測",
+     "stageName": "封測",
+     "parts": [
+      "系統級測試 SLT"
+     ]
+    }
+   ]
+  },
+  "6239": {
+   "name": "力成 PTI",
+   "spots": [
+    {
+     "scene": "test",
+     "sceneName": "封測檢測",
+     "stageName": "封測",
+     "parts": [
+      "打線與封膠"
+     ]
+    }
+   ]
+  },
+  "6274": {
+   "name": "台燿 TUC",
+   "spots": [
+    {
+     "scene": "mat",
+     "sceneName": "原料",
+     "stageName": "上游",
+     "parts": [
+      "銅箔基板 CCL"
+     ]
+    },
+    {
+     "scene": "stack",
+     "sceneName": "PCB 疊層",
+     "stageName": "中游",
+     "parts": [
+      "半固化片（上）",
+      "核心板 CCL",
+      "半固化片（下）"
+     ]
+    }
+   ]
+  },
+  "6488": {
+   "name": "環球晶 GlobalWafers",
+   "spots": [
+    {
+     "scene": "mat",
+     "sceneName": "原料",
+     "stageName": "上游",
+     "parts": [
+      "矽晶棒與晶圓"
+     ]
+    }
+   ]
+  },
+  "6515": {
+   "name": "穎崴 WinWay",
+   "spots": [
+    {
+     "scene": "test",
+     "sceneName": "封測檢測",
+     "stageName": "封測",
+     "parts": [
+      "系統級測試 SLT"
+     ]
+    }
+   ]
+  },
+  "6584": {
+   "name": "南俊國際 Nan Juen",
+   "spots": [
+    {
+     "scene": "rack",
+     "sceneName": "AI 機櫃",
+     "stageName": "下游",
+     "parts": [
+      "機櫃與機構"
+     ]
+    },
+    {
+     "scene": "node",
+     "sceneName": "伺服器節點",
+     "stageName": "下游",
+     "parts": [
+      "機箱與滑軌"
+     ]
+    }
+   ]
+  },
+  "6669": {
+   "name": "緯穎 Wiwynn",
+   "spots": [
+    {
+     "scene": "rack",
+     "sceneName": "AI 機櫃",
+     "stageName": "下游",
+     "parts": [
+      "AI 運算托盤 ×6"
+     ]
+    },
+    {
+     "scene": "node",
+     "sceneName": "伺服器節點",
+     "stageName": "下游",
+     "parts": []
+    }
+   ]
+  },
+  "8046": {
+   "name": "南電 Nan Ya PCB",
+   "spots": [
+    {
+     "scene": "chip",
+     "sceneName": "晶片與記憶體",
+     "stageName": "中游",
+     "parts": [
+      "ABF 載板"
+     ]
+    },
+    {
+     "scene": "cowos",
+     "sceneName": "CoWoS 封裝",
+     "stageName": "封測",
+     "parts": [
+      "ABF 載板"
+     ]
+    }
+   ]
+  },
+  "8210": {
+   "name": "勤誠 Chenbro",
+   "spots": [
+    {
+     "scene": "rack",
+     "sceneName": "AI 機櫃",
+     "stageName": "下游",
+     "parts": [
+      "機櫃與機構"
+     ]
+    },
+    {
+     "scene": "node",
+     "sceneName": "伺服器節點",
+     "stageName": "下游",
+     "parts": [
+      "機箱與滑軌"
+     ]
+    }
+   ]
+  },
+  "8358": {
+   "name": "金居 Co-Tech",
+   "spots": [
+    {
+     "scene": "mat",
+     "sceneName": "原料",
+     "stageName": "上游",
+     "parts": [
+      "電解銅箔"
+     ]
+    },
+    {
+     "scene": "stack",
+     "sceneName": "PCB 疊層",
+     "stageName": "中游",
+     "parts": [
+      "L1 外層線路",
+      "L2 電源層",
+      "L3 接地層",
+      "L4 外層線路"
+     ]
+    }
+   ]
+  }
+ }
+}

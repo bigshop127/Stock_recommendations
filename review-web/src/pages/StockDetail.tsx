@@ -15,6 +15,7 @@ import { CODE_TO_GROUP } from '../lib/stockGroups';
 import { GroupTag } from '../components/GroupTag';
 import { buildStockHighlights } from '../lib/stockHighlights';
 import type { HighlightTone } from '../lib/stockHighlights';
+import { supplyChainDetail, supplyChainLabel, supplyChainOf } from '../lib/supplyChain';
 import { buildKeyLevels, roundLevel, LEVEL_COLORS } from '../lib/keyLevels';
 import { buildGroupContext } from '../lib/groupContext';
 import { KeyLevelsCard } from '../components/KeyLevelsCard';
@@ -813,6 +814,7 @@ export const StockDetail: React.FC = () => {
     [dailyRows, chipsState.data, fundamentalsState.data, activeCode],
   );
   const keyLevels = useMemo(() => buildKeyLevels(dailyRows), [dailyRows]);
+  const supplyChain = supplyChainOf(activeCode);
 
   // 圖上每區畫一條靠近現價那一邊的線（附價格軸標籤）；有寬度的區間另畫遠端點線
   const chartLevels: ChartLevel[] = useMemo(() => {
@@ -975,8 +977,9 @@ export const StockDetail: React.FC = () => {
           </div>
         </div>
 
-        {/* 重點標籤：營收/估值/籌碼/價格/量能各挑達到門檻的，滑過去看算法與資料日 */}
-        {highlights.length > 0 && (
+        {/* 重點標籤：營收/估值/籌碼/價格/量能各挑達到門檻的，滑過去看算法與資料日；
+            最後一顆是 AI 產業鏈位置（有出現在 3D 拆解圖上才有），點了打開 3D 並標亮這家 */}
+        {(highlights.length > 0 || supplyChain) && (
           <div className="w-full flex flex-wrap items-center gap-1.5 pt-3 border-t border-border/60">
             {highlights.map((h) => (
               <span
@@ -987,6 +990,15 @@ export const StockDetail: React.FC = () => {
                 {h.text}
               </span>
             ))}
+            {supplyChain && (
+              <Link
+                to={`/supply-chain?co=${activeCode}`}
+                title={supplyChainDetail(supplyChain)}
+                className="text-[11px] font-semibold px-2 py-0.5 rounded-full border bg-sky-500/10 text-sky-300 border-sky-500/30 hover:bg-sky-500/20 transition-colors"
+              >
+                {supplyChainLabel(supplyChain)} →
+              </Link>
+            )}
           </div>
         )}
       </div>

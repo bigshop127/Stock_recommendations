@@ -3,6 +3,8 @@
 > 單一事實來源（SSOT）。任何進度／更新／優化都先改這份，再同步 Obsidian vault `C:\obsidian\儲存庫\個股全面審視網` 與 `.claude` 記憶。
 > 建立日：2026-06-21。狀態：**Phase 0–8 ✅ 全案完工。Phase 8（整合・RWD 打磨・PWA・部署上既有 Oracle VM，gateway 同源 serve `review-web/dist`）2026-06-25 實作並部署完成：① 後端 gateway 同源 serve `review-web/dist` 在子路徑 `/review`；② 前端 base、Router basename、PWA scope/start_url 對齊 `/review`，未知路由重定向；③ RWD 斷點打磨及 `ChipsCharts` SVG 縮放 tooltip 比例修正；④ PWA 包含 192/512 PNG/maskable 圖標、manifest 修改與 API 快取從嚴設定；⑤ 效能分塊與路由 lazy-loading，使 build size 無 >500kB 警告。VM 上 `git pull` + `npm ci` + build + gateway 重啟及本機 `ssh -L` 與端點驗收全綠。**
 
+> 〔opt50 AI 產業鏈 3D 拆解頁接進審視網 2026-10-19 新增〕使用者自己做的「AI 硬體拆解台」3D 單檔網頁（85 家廠商、38 家台股）嵌成新分頁 `/supply-chain`：資料夾存過的公司標藍點、持股實心藍，附收盤價／本益比，點公司可開個股頁或一鍵加進資料夾；「我的公司」一鍵標亮全部存過的公司。個股頁標籤列多一顆「AI 產業鏈：…」反向連到 3D。詳見 §8 opt50。
+
 > 〔opt49 期貨「槓桿與口數規劃」改成多商品一起試算 2026-10-03 新增〕原本一次只能選一個商品試算加入後的帳戶變化，改成一張加入清單，可以同時加好幾個商品（各自多空、口數），看全部加進去後整個帳戶的槓桿、保證金、風險指標、追繳／斷頭點。清單存雲端。順手修好 9/22 商品「封存」旗標沒進白名單、一存就消失的 bug。詳見 §8 opt49。
 
 > 〔opt48 個股審查側邊欄改手風琴＋分區＋篩選＋拖曳 2026-10-02 新增〕使用者照一張族群圖建了 9 個「三雄」資料夾後，側邊欄變成 60 多行、資料夾名稱被擠成兩行。改成每個資料夾一行、一次只展開一個，分「我的清單／族群分類」兩區，頂部篩選框，拖曳排序。詳見 §8 opt48。
@@ -470,6 +472,22 @@ Python engine  FastAPI :8000         ← 既有，本案會新增 /data 或 /mar
   **順手修的 bug**：9/22（`13b27fa`）做的商品「封存」（`archived: true`）**前端 `sanitizeProduct` 與 gateway `sanitizeProduct` 兩邊白名單都沒放行**，封存一存就被吃掉——正式資料 8 個商品全部沒有 archived 旗標，聯電期因此一直掛在使用中清單。兩邊都補上並加回歸測試；之前按過的封存不會自己回來，要再按一次移除。
 
   **驗證**：vitest 552 全過（新增 multiAddPlan 7 項、gateway 白名單 3 項、normalizeFutures 4 項）、`npm run build` 過、改動檔 eslint 乾淨（`futures.test.ts:1265` 的 @ts-ignore 是既有的）。無頭 Chromium 對 build 版（`vite preview`＋假 gateway，資料用 VM 正式檔的唯讀副本、存檔走新版 `sanitizeFutures` 只存記憶體）實測：加兩列、手填口數、改做空、重新整理後清單從雲端讀回；桌機 1500px 與手機 390px 版面（無橫向捲動）。**坑**：dev server（StrictMode 跑兩次 effect）下期貨頁的雲端載入會被自己的 cancelled 旗標擋掉、退回空白種子設定，UI 實測要用 build 版。
+
+- **opt50 ✅ 2026-10-19 AI 產業鏈 3D 拆解頁接進審視網（使用者提出，入口／標記範圍／三個加值功能由使用者選定，Claude 實作上線）。**
+
+  **起因**：使用者自己做了一個 3D 單檔網頁「AI 硬體拆解台」（上游原料 → 晶片 → 封測 → 機櫃，7 個場景、43 個零件、85 家代表廠商，其中 38 家有台股代號，three.js 內嵌），想跟審視網裡存的股票連起來。對照當時 VM 資料夾：42 檔裡有 19 檔出現在 3D 圖上。
+
+  **做法**：
+  - **放法（使用者選「審視網內新分頁」）**：原檔放 `public/teardown/index.html`（同源靜態檔），React 頁 `pages/SupplyChain.tsx` 用 iframe 嵌在主區、從 iframe 頂端填到視窗底（`-m-6` 抵掉內容區 padding）。側邊欄「產業熱力圖」下方加「AI 產業鏈 3D」。
+  - **兩邊怎麼溝通**：postMessage（雙方都驗 origin＋來源視窗）。3D 頁 → 外層：`teardown:ready`／`teardown:open-stock`（外層 `navigate('/stock/代號')`，不整頁重載）／`teardown:add`（外層呼叫 `userStore.addToFolder`，跟側邊欄同一條雲端同步路）。外層 → 3D 頁：`teardown:folders`（資料夾一變就重送）、`teardown:quotes`。ready 跟 iframe onLoad 都會觸發整包重送（iframe 還是 about:blank 時送的訊息會遺失）。單獨開 3D 檔（沒外層）照原樣運作，「開啟個股頁」直接換頁。
+  - **標記（使用者選「全部資料夾＋持股加強」）**：存過的公司按鈕加藍點、`holdings` 資料夾（我的持股）實心藍＋「持股」字樣，滑過去看在哪些資料夾。標題列新按鈕「我的公司」：結果面板列出全部存過的公司（持股排前、其餘照上游 → 下游），階段數字改成「幾家」、場景與 3D 編號改藍色標亮；單一廠商標亮優先於「我的公司」。
+  - **加值三項（使用者全選）**：①搜尋／點公司的結果卡多一列：收盤價・本益比、所屬資料夾、「開啟個股頁 →」，沒存過的台股有資料夾下拉＋「＋加入」。②收盤價／本益比用既有 `/api/market/stock-metrics`（證交所估值表，只有上市）；上櫃 5 家（台燿、環球晶、雙鴻、金居、旺矽）收盤價改用日 K 最後一根補、本益比空著；估值表整個抓不到就不補（免得 38 檔各打一次日 K）。③個股頁重點標籤列最後一顆藍色「AI 產業鏈：CoWoS 封裝・封測檢測 →」，滑過去列出每個場景的零件，點了開 `/supply-chain?co=代號`：3D 頁跳到這家第一次出現的場景並打開它的結果卡。
+  - **個股頁的索引**：不為一顆標籤抓 750KB 的 3D 頁，`tools/build-supply-chain-index.ts`（`node` 直接跑 .ts）從 3D 頁的 `<script id="data">` 產生 `src/lib/supplyChainIndex.json`（代號 → 場景＋零件），建構邏輯在 `lib/supplyChainBuild.ts`（跟 3D 頁 INDEX 同一套走法）。`supplyChain.test.ts` 會比對索引跟 3D 頁是否同步。
+  - **PWA**：3D 頁不進 precache（`globIgnores`），並加 `navigateFallbackDenylist`——不在 precache 的導覽會被 SW 換成 SPA 的 index.html，iframe 就載錯頁。
+
+  **換新版 3D 頁時**：3D 檔裡的改動都標了「審視網連動」註解（CSS 兩段、標題列按鈕、`coHTML`、INDEX 後面一整段狀態與函式、`renderResults`／`bindResults`、`refreshHits`、`crumbs`、檔尾的 `?co=` 與 message 監聽），把這些搬到新檔，再跑 `node tools/build-supply-chain-index.ts` 重產索引。
+
+  **驗證**：vitest 558 全過（新增 6 項）、`npm run build` 過、新檔 eslint 乾淨（StockDetail 既有 13 個 lint 錯誤不是這次的）、`dist/sw.js` 確認 precache 不含 teardown、denylist 在。無頭 Chromium 對本機 gateway＋build 版實測（寫入只動本機 `data/stock_folders.json`，事後還原）：收盤價與本益比顯示、「我的公司」清單／階段家數／路徑列標籤、搜尋奇鋐→選「我的持股」→加入後雲端檔有寫入、3D 面板立刻變持股樣式、側邊欄計數同步、「開啟個股頁」跳 `/stock/3711`、個股頁標籤與說明、點標籤回 3D 聚焦日月光（CoWoS 場景）、手機 390px（標題列不溢出、頁面無捲動）。**坑**：無頭 swiftshader 下 3D 一直轉時每格很慢，真滑鼠點擊與 waitForSelector 都等不到畫面更新 → 測試先關「旋轉」、用 DOM click；截圖太早 3D 還沒畫完會是一片黑（不是 bug，等久一點再截就有）。
 
 ---
 

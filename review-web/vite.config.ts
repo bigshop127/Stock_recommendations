@@ -51,6 +51,10 @@ export default defineConfig({
         skipWaiting: true,
         clientsClaim: true,
         cleanupOutdatedCaches: true,
+        // AI 產業鏈 3D 頁（public/teardown/，單檔約 750KB）不進 precache：沒打開過的裝置不必先下載它。
+        // 不在 precache 的導覽會被 navigateFallback 換成 SPA 的 index.html，所以 iframe 這條路徑要排除。
+        globIgnores: ['**/node_modules/**/*', '**/teardown/**'],
+        navigateFallbackDenylist: [/^\/review\/teardown\//],
         runtimeCaching: [
           {
             urlPattern: /^\/api\/.*/,

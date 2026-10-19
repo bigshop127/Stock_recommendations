@@ -17,7 +17,8 @@ import {
   Wallet,
   Newspaper,
   Menu,
-  LayoutDashboard
+  LayoutDashboard,
+  Cpu
 } from 'lucide-react';
 import { api } from '../lib/api';
 import type { Health } from '../lib/api';
@@ -164,6 +165,19 @@ export const Layout: React.FC<LayoutProps> = ({ children }) => {
               產業熱力圖
             </Link>
 
+            {/* AI 產業鏈 3D 拆解：使用者自做的 3D 頁，標出資料夾裡存過的公司、可跳個股頁 */}
+            <Link
+              to="/supply-chain"
+              className={`flex items-center gap-3 px-4 py-3 rounded-lg text-sm font-medium transition-all duration-200 ${
+                location.pathname === '/supply-chain'
+                  ? 'bg-primary/10 text-primary border border-primary/20 shadow-sm'
+                  : 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800/40 border border-transparent'
+              }`}
+            >
+              <Cpu className="w-5 h-5" />
+              AI 產業鏈 3D
+            </Link>
+
             {/* 再平衡計算機 */}
             <Link
               to="/rebalance"
@@ -300,6 +314,8 @@ export const Layout: React.FC<LayoutProps> = ({ children }) => {
               ? '老王每日報告'
               : location.pathname === '/folders'
               ? '資料夾卡片牆'
+              : location.pathname === '/supply-chain'
+              ? 'AI 產業鏈 3D'
               : location.pathname.startsWith('/heatmap/sector/')
               ? `產業熱力圖 · ${(() => { try { return decodeURIComponent(location.pathname.replace('/heatmap/sector/', '')); } catch { return location.pathname.replace('/heatmap/sector/', ''); } })()}`
               : location.pathname.startsWith('/heatmap/group/')
