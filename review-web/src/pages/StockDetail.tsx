@@ -99,6 +99,8 @@ interface StockAlertItem {
 interface StockAlertEntry {
   name: string;
   alerts: StockAlertItem[];
+  /** 該檔警示總開關；缺省視為開 */
+  enabled?: boolean;
 }
 type StockAlertsConfig = Record<string, StockAlertEntry>;
 
@@ -163,6 +165,8 @@ export const StockDetail: React.FC = () => {
     return () => ro.disconnect();
   }, []);
   const [alertsConfig, setAlertsConfig] = useState<StockAlertsConfig>({});
+  // 全站警示總開關（關閉時寄信腳本整支跳過）；缺省視為開
+  const [alertsEnabled, setAlertsEnabled] = useState(true);
   // 雲端警示設定讀到之前不准存：存檔是整份覆寫，沒讀到就存會把其他個股的警示洗掉
   const [alertsLoaded, setAlertsLoaded] = useState(false);
   // 證交所「個股達違約資訊揭露標準」名單（近一年）；抓不到就當沒有，不擋頁面
@@ -205,6 +209,7 @@ export const StockDetail: React.FC = () => {
       if (cancelled) return;
       if (resp.exists && resp.data && resp.data.stocks) {
         setAlertsConfig(resp.data.stocks as unknown as StockAlertsConfig);
+        setAlertsEnabled(resp.data.enabled !== false);
       }
       setAlertsLoaded(true);
     }).catch((e) => {
@@ -213,15 +218,16 @@ export const StockDetail: React.FC = () => {
     return () => { cancelled = true; };
   }, []);
 
-  const saveAlertsConfig = async (next: StockAlertsConfig) => {
+  const saveAlertsConfig = async (next: StockAlertsConfig, globalEnabled = alertsEnabled) => {
     if (!alertsLoaded) {
       setAlertsSaveStatus('error');
       return;
     }
     setAlertsConfig(next);
+    setAlertsEnabled(globalEnabled);
     setAlertsSaveStatus('saving');
     try {
-      await api.saveStockAlerts({ stocks: next });
+      await api.saveStockAlerts({ enabled: globalEnabled, stocks: next });
       setAlertsSaveStatus('saved');
     } catch (e) {
       console.error('儲存價格警示設定失敗', e);
@@ -256,6 +262,16 @@ export const StockDetail: React.FC = () => {
       alerts: entry.alerts.map((a) => (a.id === id ? { ...a, enabled: !a.enabled } : a)),
     };
     void saveAlertsConfig({ ...alertsConfig, [activeCode]: nextEntry });
+  };
+
+  const toggleStockEnabled = () => {
+    const entry = alertsConfig[activeCode];
+    if (!entry) return;
+    void saveAlertsConfig({ ...alertsConfig, [activeCode]: { ...entry, enabled: entry.enabled === false } });
+  };
+
+  const toggleGlobalEnabled = () => {
+    void saveAlertsConfig(alertsConfig, !alertsEnabled);
   };
 
   const deleteAlert = (id: string) => {
@@ -2773,8 +2789,31 @@ export const StockDetail: React.FC = () => {
               <h3 className="font-semibold text-sm text-zinc-200">價格警示設定</h3>
             </div>
             <span className="text-[10px] text-zinc-500">
-              {alertsSaveStatus === 'saving' ? '儲存中…' : alertsSaveStatus === 'error' ? '儲存失敗' : '收盤後自動檢查，達標會寄 Email 通知'}
+              {alertsSaveStatus === 'saving' ? '儲存中…' : alertsSaveStatus === 'error' ? '儲存失敗' : alertsEnabled ? '收盤後自動檢查，達標會寄 Email 通知' : '全站警示已關閉，不會寄任何通知'}
             </span>
+          </div>
+
+          <div className="flex items-center gap-x-6 gap-y-2 flex-wrap mb-4 text-xs">
+            <label className="flex items-center gap-2 cursor-pointer select-none text-zinc-300">
+              <input
+                type="checkbox"
+                checked={alertsEnabled}
+                onChange={toggleGlobalEnabled}
+                className="rounded border-zinc-800 bg-zinc-950 text-primary focus:ring-0 focus:ring-offset-0 w-3.5 h-3.5"
+              />
+              全站警示（關閉＝所有個股都不寄信）
+            </label>
+            {alertsConfig[activeCode] && (
+              <label className={`flex items-center gap-2 cursor-pointer select-none ${alertsEnabled ? 'text-zinc-300' : 'text-zinc-600'}`}>
+                <input
+                  type="checkbox"
+                  checked={alertsConfig[activeCode]!.enabled !== false}
+                  onChange={toggleStockEnabled}
+                  className="rounded border-zinc-800 bg-zinc-950 text-primary focus:ring-0 focus:ring-offset-0 w-3.5 h-3.5"
+                />
+                此檔警示（關閉＝只停這檔，條件保留）
+              </label>
+            )}
           </div>
 
           {(alertsConfig[activeCode]?.alerts.length ?? 0) > 0 && (

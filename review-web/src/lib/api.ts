@@ -1361,7 +1361,7 @@ export interface StockFoldersSaveResp {
 }
 export interface StockAlertsResp {
   exists: boolean;
-  data: { stocks: Record<string, unknown> } | null;
+  data: { enabled?: boolean; stocks: Record<string, unknown> } | null;
   saved_at: string | null;
 }
 export interface StockAlertsSaveResp {

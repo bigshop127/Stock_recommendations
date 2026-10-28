@@ -424,6 +424,30 @@ router.post('/api/futures/positions', (req, res) => {
 
 // ── 期交所每日行情與即時報價 ──────────────────────────────────────────────────
 const TAIFEX_URL = 'https://openapi.taifex.com.tw/v1/DailyMarketReportFut';
+
+/**
+ * 期交所 openapi 的同一個網址會**交替**回 JSON 與 CSV（2026-10-28 實測連打 8 次是 JCJCJCJC，
+ * 跟 header 無關），解析 CSV 會丟 "Unexpected token '日'"。回 CSV 就重打，直到拿到 JSON 為止。
+ * HTTP 非 2xx 不重試，原樣回 { status }，讓呼叫端沿用原本的錯誤訊息。
+ */
+async function fetchTaifexJson(url, tries = 6) {
+  let lastErr = '';
+  for (let i = 0; i < tries; i += 1) {
+    const r = await fetch(url, {
+      headers: { Accept: 'application/json', 'User-Agent': 'puhui-review-web/1.0' },
+      signal: AbortSignal.timeout(20000),
+    });
+    if (!r.ok) return { status: r.status, json: null };
+    const text = await r.text();
+    try {
+      return { status: r.status, json: JSON.parse(text) };
+    } catch (e) {
+      lastErr = e.message;
+    }
+  }
+  throw new Error(`期交所連續 ${tries} 次回傳非 JSON（${lastErr}）`);
+}
+
 const TAIFEX_MIS_URL = process.env.TAIFEX_MIS_URL
   || 'https://mis.taifex.com.tw/futures/api/getQuoteDetail';
 
@@ -628,14 +652,11 @@ router.get('/api/futures/quote', async (req, res) => {
     // 新鮮度只看 dailyRawCache.at，不能看 parseRows 的結果——「這份檔裡沒有這個商品」
     // 跟「快取過期」是兩件事，混在一起的話不認識的 contract 會每次請求都重抓 815 KB。
     if (!dailyRawCache.rows || now - dailyRawCache.at >= DAILY_TTL_MS) {
-      const r = await fetch(TAIFEX_URL, {
-        headers: { Accept: 'application/json', 'User-Agent': 'puhui-review-web/1.0' },
-        signal: AbortSignal.timeout(20000),
-      });
-      if (!r.ok) {
+      const r = await fetchTaifexJson(TAIFEX_URL);
+      if (r.json === null) {
         return sendError(res, httpError(502, 'TAIFEX', `期交所回應 HTTP ${r.status}`));
       }
-      dailyRawCache = { at: now, rows: await r.json() };
+      dailyRawCache = { at: now, rows: r.json };
     }
 
     months = parseRows(dailyRawCache.rows, rawContract);
@@ -878,14 +899,11 @@ router.get('/api/futures/margins', async (req, res) => {
   };
 
   try {
-    const r = await fetch(MARGINS_URL, {
-      headers: { Accept: 'application/json', 'User-Agent': 'puhui-review-web/1.0' },
-      signal: AbortSignal.timeout(20000),
-    });
-    if (!r.ok) {
+    const r = await fetchTaifexJson(MARGINS_URL);
+    if (r.json === null) {
       return serveDisk(`HTTP ${r.status}`);
     }
-    const rows = await r.json();
+    const rows = r.json;
     if (!Array.isArray(rows) || rows.length === 0) {
       return serveDisk('回應沒有可用的保證金資料');
     }

@@ -225,6 +225,7 @@ async function main() {
     log(`找不到或無法解析 ${ALERTS_PATH}（尚未設定任何警示）。跳過。`);
     return;
   }
+  if (cfg && cfg.enabled === false) { log('全站價格警示已關閉（網站「價格警示設定」的全站開關），跳過。'); return; }
   const stocks = cfg && typeof cfg.stocks === 'object' ? cfg.stocks : {};
   const codes = Object.keys(stocks);
   if (codes.length === 0) { log('沒有設定任何個股警示，跳過。'); return; }
@@ -235,6 +236,7 @@ async function main() {
 
   for (const code of codes) {
     const entry = stocks[code];
+    if (entry && entry.enabled === false) continue; // 該檔警示整檔關閉
     const alerts = (entry && Array.isArray(entry.alerts) ? entry.alerts : []).filter((a) => a.enabled !== false);
     if (alerts.length === 0) continue;
 

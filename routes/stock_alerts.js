@@ -76,10 +76,12 @@ function sanitizeAlerts(body) {
       if (clean && alerts.length < MAX_ALERTS_PER_STOCK) alerts.push(clean);
     });
     if (alerts.length === 0) continue;
-    stocks[code] = { name, alerts };
+    // 個股總開關：只在關閉時才寫進檔，預設（開）維持原本的檔案格式
+    stocks[code] = { name, alerts, ...(entry.enabled === false ? { enabled: false } : {}) };
     count += 1;
   }
-  return { stocks };
+  // 全站總開關：同樣只在關閉時寫入 `enabled: false`
+  return { ...(b.enabled === false ? { enabled: false } : {}), stocks };
 }
 
 router.get('/api/stock-alerts', (req, res) => {
