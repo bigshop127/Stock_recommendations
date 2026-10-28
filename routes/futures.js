@@ -426,11 +426,15 @@ router.post('/api/futures/positions', (req, res) => {
 const TAIFEX_URL = 'https://openapi.taifex.com.tw/v1/DailyMarketReportFut';
 
 /**
- * 期交所 openapi 的同一個網址會**交替**回 JSON 與 CSV（2026-10-28 實測連打 8 次是 JCJCJCJC，
- * 跟 header 無關），解析 CSV 會丟 "Unexpected token '日'"。回 CSV 就重打，直到拿到 JSON 為止。
+ * 期交所 openapi 的同一個網址會**不定時**回 JSON 或 CSV（2026-10-28 實測：同一台 VM 連打 8 次
+ * 是 JCJCJCJC，有時整排全 JSON、有時 CDN 把 CSV 版本快取住連打 6 次都是 CSV；跟 header 無關），
+ * 直接 r.json() 會丟 "Unexpected token '日'"。處理順序：
+ *   1. 是 JSON → 直接用。
+ *   2. 是 CSV 且呼叫端給了 csvKeys（中文欄名→JSON 欄名）→ 轉成跟 JSON 同形的列，不必再賭下一次。
+ *   3. 否則重打，用盡次數才丟錯。
  * HTTP 非 2xx 不重試，原樣回 { status }，讓呼叫端沿用原本的錯誤訊息。
  */
-async function fetchTaifexJson(url, tries = 6) {
+async function fetchTaifexJson(url, csvKeys = null, tries = 4) {
   let lastErr = '';
   for (let i = 0; i < tries; i += 1) {
     const r = await fetch(url, {
@@ -444,9 +448,38 @@ async function fetchTaifexJson(url, tries = 6) {
     } catch (e) {
       lastErr = e.message;
     }
+    if (csvKeys) {
+      const rows = csvToRows(text, csvKeys);
+      if (rows) return { status: r.status, json: rows };
+    }
   }
-  throw new Error(`期交所連續 ${tries} 次回傳非 JSON（${lastErr}）`);
+  throw new Error(`期交所連續 ${tries} 次回傳無法解析的內容（${lastErr}）`);
 }
+
+/** 期交所 CSV 沒有引號、欄位內無逗號；表頭對不上 csvKeys 就回 null（不硬猜） */
+function csvToRows(text, csvKeys) {
+  const lines = String(text).replace(/^\uFEFF/, '').split(/\r?\n/).filter((l) => l.length > 0);
+  if (lines.length < 2) return null;
+  const keys = lines[0].split(',').map((h) => csvKeys[h.trim()]);
+  if (keys.some((k) => !k)) return null;
+  return lines.slice(1).map((line) => {
+    const cells = line.split(',');
+    const row = {};
+    keys.forEach((k, i) => { row[k] = (cells[i] ?? '').trim(); });
+    return row;
+  });
+}
+
+// DailyMarketReportFut 的 CSV 表頭（2026-10-28 實測）→ JSON 欄名
+const DAILY_CSV_KEYS = {
+  '日期': 'Date', '契約代號': 'Contract', '到期月份(週別)': 'ContractMonth(Week)',
+  '開盤價': 'Open', '最高價': 'High', '最低價': 'Low', '最後成交價': 'Last',
+  '漲跌價': 'Change', '漲跌%': '%', '合計成交量': 'Volume', '結算價': 'SettlementPrice',
+  '未沖銷契約數': 'OpenInterest', '最後最佳買價': 'BestBid', '最後最佳賣價': 'BestAsk',
+  '歷史最高價': 'HistoricalHigh', '歷史最低價': 'HistoricalLow',
+  '是否因訊息面暫停交易': 'TradingHalt', '交易時段': 'TradingSession',
+  '價差對單式委託成交量': 'Volume(ExecutionsAmongSpreadOrderAndSingleOrderOnly)',
+};
 
 const TAIFEX_MIS_URL = process.env.TAIFEX_MIS_URL
   || 'https://mis.taifex.com.tw/futures/api/getQuoteDetail';
@@ -652,7 +685,7 @@ router.get('/api/futures/quote', async (req, res) => {
     // 新鮮度只看 dailyRawCache.at，不能看 parseRows 的結果——「這份檔裡沒有這個商品」
     // 跟「快取過期」是兩件事，混在一起的話不認識的 contract 會每次請求都重抓 815 KB。
     if (!dailyRawCache.rows || now - dailyRawCache.at >= DAILY_TTL_MS) {
-      const r = await fetchTaifexJson(TAIFEX_URL);
+      const r = await fetchTaifexJson(TAIFEX_URL, DAILY_CSV_KEYS);
       if (r.json === null) {
         return sendError(res, httpError(502, 'TAIFEX', `期交所回應 HTTP ${r.status}`));
       }
