@@ -3918,7 +3918,8 @@ const AccountAddCard: React.FC<{
   activeCode: string;
   setPlannerFor: PlannerPatch;
   setAddConfig: AddConfigPatch;
-}> = ({ config, products, summary, activeCode, setPlannerFor, setAddConfig }) => {
+  setProductPrice: (code: string, price: number) => void;
+}> = ({ config, products, summary, activeCode, setPlannerFor, setAddConfig, setProductPrice }) => {
   const priceSpecs = useMemo(() => toPriceSpecs(products), [products]);
   const usable = (c: string) => Boolean(products[c] && !products[c].archived);
   // 清單存雲端（config.add_plan）。還沒存過、或清單上的商品都被封存了，就先放一列頁首目前的商品
@@ -4077,8 +4078,17 @@ const AccountAddCard: React.FC<{
                     onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur(); }}
                     className="mt-0.5 w-full bg-zinc-900 border border-border rounded-lg px-2.5 py-1.5 text-sm font-mono text-zinc-100" />
                 </label>
-                <RowCell label="進場價（現價）" value={row.price > 0 ? px(row.price) : '尚未取得'}
-                  sub={held > 0 ? `已持有 ${held} 口` : undefined} cls={row.price > 0 ? 'text-zinc-300' : 'text-zinc-600'} />
+                {row.price > 0 ? (
+                  <RowCell label="進場價（現價）" value={px(row.price)}
+                    sub={held > 0 ? `已持有 ${held} 口` : undefined} cls="text-zinc-300" />
+                ) : (
+                  <div className="min-w-0">
+                    <span className="text-zinc-500">進場價（尚未取得，請手填）</span>
+                    <NumInput key={`px-${r.product}`} value={NaN} step="0.05" min="0" placeholder="例：60.5"
+                      onCommit={(v) => { if (v > 0) setProductPrice(r.product, v); }} />
+                    <div className="text-[10px] text-amber-400 mt-0.5">沒價格就算不出名目曝險與加完槓桿；按上方「真實同步」也會自動帶入</div>
+                  </div>
+                )}
                 <RowCell label="名目曝險" value={money(row.notional)} />
                 <RowCell label="原始保證金" value={money(row.initial_margin)} />
                 <RowCell label="加完還能再開" value={`${row.room_lots} 口`} cls={row.room_lots > 0 ? 'text-cyan-400' : 'text-rose-400'} />
@@ -4647,6 +4657,15 @@ const PlannerTab: React.FC<{
     const next = patch((c) => ({ ...c, ...u }));
     if (persist) void saveToCloud(next);
   };
+  // 清單裡的商品還沒抓到行情時，讓使用者直接手填參考價（存在該商品的 price）
+  const setProductPrice = (code: string, price: number) => {
+    const next = patch((c) => {
+      const pr = c.products[code];
+      if (!pr) return c;
+      return { ...c, products: { ...c.products, [code]: { ...pr, price: Math.max(0, price) } } };
+    });
+    void saveToCloud(next);
+  };
 
   // 本金沒手填時用權益數（現金＋未實現）——帳戶已經有部位時，這才是槓桿真正的分母
   const capital = p.capital > 0 ? p.capital : summary.equity;
@@ -4919,7 +4938,7 @@ const PlannerTab: React.FC<{
         </div>
       )}
 
-      <AccountAddCard config={config} products={products} summary={summary} activeCode={activeCode} setPlannerFor={setPlannerFor} setAddConfig={setAddConfig} />
+      <AccountAddCard config={config} products={products} summary={summary} activeCode={activeCode} setPlannerFor={setPlannerFor} setAddConfig={setAddConfig} setProductPrice={setProductPrice} />
       <BatchCard config={config} products={products} summary={summary} activeCode={activeCode} setPlannerFor={setPlannerFor} />
       <TargetCard config={config} products={products} activeCode={activeCode} setPlannerFor={setPlannerFor} />
     </div>
