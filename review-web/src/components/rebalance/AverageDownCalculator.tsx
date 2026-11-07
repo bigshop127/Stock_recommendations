@@ -7,6 +7,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { CheckCircle2, CloudOff, Loader2, Plus, RefreshCw, RotateCcw, Trash2, Info } from 'lucide-react';
 import { api, type FullInventory, type RebalanceHoldingsResp } from '../../lib/api';
+import { looksLikeCode, lookupStockName } from '../../lib/stockNames';
 import {
   DEFAULT_FEE_RATE_PCT, DROP_STEP, defaultTarget, dropSlider, estimateCost, holdingStats, kindOfCode, mergePositions,
   parseNum, parseSyncTime, planAverageDown, targetForDrop,
@@ -118,7 +119,10 @@ function Seg<T extends string | number>({
 interface Row {
   key: string;
   code: string;
+  /** 券商給的名稱（真實持倉）或使用者自己輸入的名稱（手動）；可能是空的 */
   name: string;
+  /** 畫面上顯示的中文名：name 沒有時用代號查到的股名 */
+  shownName: string;
   source: 'real' | 'manual';
   kind: AssetKind;
   shares: string;
@@ -206,6 +210,27 @@ export function AverageDownCalculator({ onRealSynced }: { onRealSynced?: (resp: 
   const env: CalcEnv = useMemo(() => ({ feeRate, unit: st.unit }), [feeRate, st.unit]);
   const syncedAt = inv?.synced_at ?? '';
 
+  // 沒有名稱的個股（舊快照沒帶 stk_na、或手動只填代號）→ 用代號查中文股名補上，查到才顯示
+  const [looked, setLooked] = useState<Record<string, string>>({});
+  const needNames = useMemo(() => {
+    const s = new Set<string>();
+    for (const p of mergePositions(inv?.positions ?? [])) if (!p.name) s.add(p.code.trim().toUpperCase());
+    for (const m of st.manual) if (!m.name.trim()) s.add(m.code.trim().toUpperCase());
+    return [...s].filter(looksLikeCode).sort().join(',');
+  }, [inv, st.manual]);
+  useEffect(() => {
+    if (!needNames) return;
+    for (const c of needNames.split(',')) {
+      lookupStockName(c).then((name) => {
+        if (name && alive.current) setLooked((prev) => (prev[c] === name ? prev : { ...prev, [c]: name }));
+      });
+    }
+  }, [needNames]);
+  const shownNameOf = useCallback(
+    (name: string, code: string) => name.trim() || looked[code.trim().toUpperCase()] || '',
+    [looked],
+  );
+
   // 真實＋手動 → 列
   const rows: Row[] = useMemo(() => {
     const out: Row[] = [];
@@ -220,7 +245,7 @@ export function AverageDownCalculator({ onRealSynced }: { onRealSynced?: (resp: 
       const price = live?.price ?? (p.market_price > 0 ? String(p.market_price) : '');
       const kind = st.plans[key]?.kind ?? kindOfCode(p.code);
       out.push({
-        key, code: p.code, name: p.name || '', source: 'real', kind, shares, cost, price,
+        key, code: p.code, name: p.name || '', shownName: shownNameOf(p.name || '', p.code), source: 'real', kind, shares, cost, price,
         holding: { shares: parseNum(shares), cost: parseNum(cost), price: parseNum(price), kind },
         costEstimated: costEstimated && live?.cost === undefined,
         edited: !!live && (live.shares !== undefined || live.cost !== undefined || live.price !== undefined),
@@ -228,14 +253,14 @@ export function AverageDownCalculator({ onRealSynced }: { onRealSynced?: (resp: 
     }
     for (const m of st.manual) {
       out.push({
-        key: `m:${m.id}`, code: m.code, name: m.name, source: 'manual', kind: m.kind,
+        key: `m:${m.id}`, code: m.code, name: m.name, shownName: shownNameOf(m.name, m.code), source: 'manual', kind: m.kind,
         shares: m.shares, cost: m.cost, price: m.price,
         holding: { shares: parseNum(m.shares), cost: parseNum(m.cost), price: parseNum(m.price), kind: m.kind },
         costEstimated: false, edited: false,
       });
     }
     return out;
-  }, [inv, st.edits, st.plans, st.manual, syncedAt, feeRate]);
+  }, [inv, st.edits, st.plans, st.manual, syncedAt, feeRate, shownNameOf]);
 
   const active = rows.find((r) => r.key === st.active) ?? rows[0];
 
@@ -391,7 +416,10 @@ export function AverageDownCalculator({ onRealSynced }: { onRealSynced?: (resp: 
               className={`flex flex-col items-start px-3 py-1.5 rounded-lg border text-left transition-colors ${
                 sel ? 'border-primary bg-primary/10' : 'border-zinc-800 bg-zinc-950/40 hover:border-zinc-600'
               }`}>
-              <span className="text-xs font-medium text-zinc-100">{r.name || r.code || '未命名'}</span>
+              <span className="text-xs font-medium text-zinc-100 whitespace-nowrap">
+                {r.shownName || r.code || '未命名'}
+                {r.shownName && r.code && <span className="ml-1.5 text-[10px] font-mono font-normal text-zinc-500">{r.code}</span>}
+              </span>
               {s && Number.isFinite(s.pct)
                 ? <span className={`text-[11px] font-mono ${pnlCls(s.pct)}`}>{pct1(s.pct)}</span>
                 : <span className="text-[11px] font-mono text-zinc-600">—</span>}
@@ -410,7 +438,7 @@ export function AverageDownCalculator({ onRealSynced }: { onRealSynced?: (resp: 
           <div className="flex items-center justify-between gap-2 flex-wrap border-b border-border/60 pb-3">
             <div className="flex items-center gap-2 min-w-0">
               <span className="text-sm font-semibold text-zinc-100 font-mono">{active.code || '—'}</span>
-              <span className="text-xs text-zinc-400 truncate">{active.name}</span>
+              <span className="text-xs text-zinc-400 truncate">{active.shownName}</span>
               <span className={`text-[10px] px-1.5 py-0.5 rounded ${active.source === 'real' ? 'bg-emerald-500/15 text-emerald-300' : 'bg-zinc-800 text-zinc-400'}`}>
                 {active.source === 'real' ? '真實持倉' : '手動輸入'}
               </span>
@@ -663,7 +691,8 @@ export function AverageDownCalculator({ onRealSynced }: { onRealSynced?: (resp: 
                     <th scope="row" className="text-left font-sans font-normal py-2 pr-2 whitespace-nowrap">
                       <button type="button" className="underline decoration-zinc-700 underline-offset-4 hover:text-primary text-zinc-200"
                         onClick={() => { select(r.key); panelRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }); }}>
-                        {r.name || r.code || '未命名'}
+                        {r.shownName || r.code || '未命名'}
+                        {r.shownName && r.code && <span className="block text-left text-[10px] font-mono text-zinc-500 no-underline">{r.code}</span>}
                       </button>
                     </th>
                     {res.kind === 'ok' ? (
