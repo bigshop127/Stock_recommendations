@@ -162,6 +162,8 @@ function sanitizeFullInventory(v) {
           avg_cost: Math.max(0, safeNum(p.avg_cost, 0)),
           market_price: Math.max(0, safeNum(p.market_price, 0)),
           value: Math.max(0, safeNum(p.value, 0)),
+          // 含買進手續費的總成本（玉山 cost_sum）：個股攤平計算機用；舊快照沒有這欄
+          ...(safeNum(p.cost, 0) > 0 ? { cost: safeNum(p.cost, 0) } : {}),
         }
       : null))
     .filter((p) => p !== null);

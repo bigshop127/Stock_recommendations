@@ -5,6 +5,7 @@ import { getRebalanceConfig, saveRebalanceConfig, subscribeRebalance, type Rebal
 import { computeRebalance, aggregatePortfolio, BOND_ETFS, ETF_CODE, DEFAULT_MACRO_THRESHOLDS, type RebalanceResult, type Trade, computeFundFlows, computeMarketStatus, type MarketStatus, type BondPriority, type MacroState, type MacroCombination, type MacroThresholds, type MacroKey } from '../lib/rebalance';
 import { api, type Settlement } from '../lib/api';
 import { HoldingsScreenshotImport } from '../components/rebalance/HoldingsScreenshotImport';
+import { AverageDownCalculator } from '../components/rebalance/AverageDownCalculator';
 import { MarketLeverageRefLine } from '../components/MarketLeverageCard';
 import type { HoldingsImportPlan } from '../lib/rebalanceHoldingsImport';
 
@@ -46,10 +47,12 @@ const tradeCodeCls = (code: string) => (TRADE_COLORS[code] ?? TRADE_COLORS['0063
 // 分頁（像個股頁一樣，點開才看該區塊內容，不用整頁滑）
 // 【2026-07-13 合併】持倉現況＋建倉&交易紀錄合成一頁；Beta儀表＋偏離分析&建議合成一頁；整體邏輯放最後
 // 【2026-08-31】宏觀 regime 指標原本獨立分頁，改回移到「Beta 儀表 & 偏離分析」分頁的儀表下方，減少分頁跳轉
-type RebalanceTab = 'holdings' | 'beta' | 'logic';
+// 【2026-11-07】新增「個股攤平」分頁（opt51）：玉山整戶真實持倉的攤平試算，放在整體邏輯前面
+type RebalanceTab = 'holdings' | 'beta' | 'avgdown' | 'logic';
 const REBALANCE_TABS: { id: RebalanceTab; label: string }[] = [
   { id: 'holdings', label: '持倉現況 & 交易紀錄' },
   { id: 'beta', label: 'Beta 儀表 & 偏離分析' },
+  { id: 'avgdown', label: '個股攤平計算機' },
   { id: 'logic', label: '整體邏輯' },
 ];
 const DEFAULT_REBALANCE_TAB: RebalanceTab = 'beta';
@@ -212,7 +215,10 @@ export function Rebalance() {
     if (rawTab && REBALANCE_TABS.some((t) => t.id === rawTab)) return rawTab;
     return DEFAULT_REBALANCE_TAB;
   }, [rawTab]);
+  // 攤平計算機第一次點開後就保持掛載（只是隱藏）：玉山同步輪詢跑到一半切分頁不會被中斷，輸入也不會掉
+  const [avgdownMounted, setAvgdownMounted] = useState(() => searchParams.get('tab') === 'avgdown');
   const handleTabChange = (tabId: RebalanceTab) => {
+    if (tabId === 'avgdown') setAvgdownMounted(true);
     const nextParams = new URLSearchParams(searchParams);
     nextParams.set('tab', tabId);
     setSearchParams(nextParams, { replace: true });
@@ -1099,7 +1105,11 @@ export function Rebalance() {
             return (
               <button
                 key={t.id}
-                onClick={() => handleTabChange(t.id)}
+                onClick={(e) => {
+                  handleTabChange(t.id);
+                  // 手機上標籤列橫向捲動，第 4 個標籤容易被切在右邊：點了就捲到看得到
+                  e.currentTarget.scrollIntoView?.({ inline: 'center', block: 'nearest', behavior: 'smooth' });
+                }}
                 className={`flex items-center gap-1.5 px-4 py-2 text-xs font-semibold rounded-lg transition whitespace-nowrap shrink-0 ${
                   isActive
                     ? 'bg-primary text-white shadow-sm'
@@ -1112,6 +1122,18 @@ export function Rebalance() {
           })}
         </div>
       </div>
+
+      {/* 個股攤平計算機：玉山整戶真實持倉。同步完成時也更新本頁的持倉與在途交割款，避免之後存檔蓋掉新資料 */}
+      {(avgdownMounted || activeTab === 'avgdown') && (
+        <div hidden={activeTab !== 'avgdown'}>
+          <AverageDownCalculator
+            onRealSynced={(resp) => {
+              if (resp.holdings) saveRebalanceConfig(resp.holdings as unknown as RebalanceConfig);
+              setSettlement(resp.settlement ?? null);
+            }}
+          />
+        </div>
+      )}
 
       {/* 整體邏輯（說明頁，非操作介面：策略規則＋回測結論＋後台待辦，供之後回來複習用） */}
       {activeTab === 'logic' && (

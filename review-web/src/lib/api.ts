@@ -1165,11 +1165,12 @@ export interface Settlement {
 // 唯讀 metadata，只有真實同步腳本會寫入，前端存設定表單時不會（也不該）帶這欄位。
 export interface FullInventoryPosition {
   code: string;
-  name?: string; // 沒把握 Fugle API 一定有給，讀不到就沒有這欄，前端退回顯示代號
+  name?: string; // 玉山 stk_na；舊快照（2026-11-07 前）沒有這欄，前端退回顯示代號
   shares: number;
-  avg_cost: number;
+  avg_cost: number; // 不含手續費的均價
   market_price: number;
   value: number;
+  cost?: number; // 含買進手續費的總成本（玉山 cost_sum）；舊快照沒有，攤平計算機會改用估算
 }
 export interface FullInventory {
   total_value: number;

@@ -29,7 +29,7 @@ import configparser
 import json
 import os
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 
 import requests
 
@@ -104,12 +104,34 @@ def extract_positions(inventories):
     return out
 
 
+def _num(v, default=0.0):
+    """E.Sun returns every numeric field as a string ("25000", "-879650", "35.14")."""
+    try:
+        return float(str(v).replace(",", "").strip())
+    except (TypeError, ValueError):
+        return default
+
+
 def extract_full_inventory(inventories):
     """Same per-item cost_qty/market_price logic as extract_positions(), but over
     EVERY code in the account instead of just TRACKED_CODES — used to price the
     "資產變化圖" net-worth snapshot's 股票/ETF 庫存市值, which needs the whole
-    account, not just the 00631L/00687B/00953B rebalance strategy legs."""
-    out = []
+    account, not just the 00631L/00687B/00953B rebalance strategy legs, and by
+    the 個股攤平計算機 (再平衡計算機 tab) as its real-holdings source.
+
+    Fields (verified 2026-11-07 against the live account; all values are strings):
+      stk_na   -> name (clean UTF-8, e.g. "台達電")
+      cost_qty -> shares backing the cost basis (see extract_positions)
+      price_avg-> average price EXCLUDING fees
+      cost_sum -> total cost INCLUDING the buy fee, reported as a negative number
+                  (-346992 for 200 sh of 2308) = the "成本" the broker app shows.
+                  Exported as the positive `cost`; the 攤平計算機 needs it because
+                  avg_cost alone would understate the break-even price.
+    Several rows can share one code (e.g. board lots vs odd lots), so rows are
+    merged per code; avg_cost is then re-derived from the merged totals.
+    """
+    merged = {}
+    order = []
     for item in inventories:
         code = item.get("stk_no")
         if not code:
@@ -117,22 +139,46 @@ def extract_full_inventory(inventories):
         raw_qty = item.get("cost_qty")
         if raw_qty in (None, ""):
             raw_qty = item.get("qty_l", 0)
-        shares = int(float(raw_qty or 0))
+        shares = int(_num(raw_qty))
         if shares <= 0:
             continue
-        avg_cost = float(item.get("price_avg", 0) or 0)
-        market_price = float(item.get("price_now", 0) or item.get("price_mkt", 0) or 0)
-        # 沒把握 esun_trade 的 inventories 一定會給名稱欄位（沒查到官方文件列出保證有這個
-        # key），純粹能拿就拿、拿不到就讓前端退回顯示代號本身，不影響市值計算。
-        name = str(item.get("stock_name") or item.get("name") or "").strip()
-        out.append({
+        price_sum = _num(item.get("price_qty_sum"))
+        avg_cost = _num(item.get("price_avg"))
+        if price_sum <= 0:
+            price_sum = avg_cost * shares
+        cost = abs(_num(item.get("cost_sum")))
+        market_price = _num(item.get("price_now")) or _num(item.get("price_mkt"))
+        name = str(item.get("stk_na") or item.get("stock_name") or item.get("name") or "").strip()
+        if code not in merged:
+            merged[code] = {"code": code, "name": name, "shares": 0, "price_sum": 0.0,
+                            "cost": 0.0, "has_cost": False, "market_price": market_price}
+            order.append(code)
+        m = merged[code]
+        m["shares"] += shares
+        m["price_sum"] += price_sum
+        if cost > 0:
+            m["cost"] += cost
+            m["has_cost"] = True
+        if not m["name"] and name:
+            m["name"] = name
+        if market_price:
+            m["market_price"] = market_price
+
+    out = []
+    for code in order:
+        m = merged[code]
+        shares = m["shares"]
+        row = {
             "code": code,
-            "name": name,
+            "name": m["name"],
             "shares": shares,
-            "avg_cost": avg_cost,
-            "market_price": market_price,
-            "value": shares * market_price,
-        })
+            "avg_cost": round(m["price_sum"] / shares, 4) if shares else 0.0,
+            "market_price": m["market_price"],
+            "value": shares * m["market_price"],
+        }
+        if m["has_cost"]:
+            row["cost"] = m["cost"]
+        out.append(row)
     return out
 
 
@@ -293,7 +339,8 @@ def main():
     full_inventory = {
         "total_value": full_inventory_total,
         "positions": full_positions,
-        "synced_at": datetime.now().isoformat(),
+        # 帶時區（UTC）：以前是無時區字串，瀏覽器會當成本地時間、顯示早 8 小時
+        "synced_at": datetime.now(timezone.utc).isoformat(),
     }
     print(f"\nFull account inventory (all codes, for net-worth snapshot): {len(full_positions)} positions, total value {full_inventory_total:.0f}")
 
