@@ -11,6 +11,7 @@ import {
 } from 'lucide-react';
 import { Panel, StatTile, RiskMeter, ThreatCard, LevelCard, Row, Chip, type Tone } from '../components/futures/ui';
 import { ScreenshotImport } from '../components/futures/ScreenshotImport';
+import { SimPanel } from '../components/futures/FuturesSim';
 import type { AccountImportState, ProductLookup } from '../lib/futuresImport';
 import { api } from '../lib/api';
 import type { FuturesMonthQuote, FuturesQuoteResp, FuturesEquityHistoryResp, FuturesMarginsResp, FuturesStockMarginsResp, FuturesStockContractsResp, TaiexResp } from '../lib/api';
@@ -641,7 +642,8 @@ export function FuturesPnl() {
         <PositionsTab config={config} spec={spec} summary={summary} priceInput={priceInput} quote={quote} holidays={holidays} patch={patch} saveToCloud={saveToCloud} products={products} activeCode={activeCode} />
       )}
       {activeTab === 'stress' && (
-        <StressTab summary={summary} stress={stress} beta={beta} patch={patch} saveToCloud={saveToCloud} products={products} activeCode={activeCode} />
+        <StressTab summary={summary} stress={stress} beta={beta} patch={patch} saveToCloud={saveToCloud} products={products} activeCode={activeCode}
+          positions={config.positions} productsMap={productsMap} cash={config.cash} />
       )}
       {activeTab === 'planner' && (
         <PlannerTab config={config} spec={spec} summary={summary} patch={patch} saveToCloud={saveToCloud} products={products} activeCode={activeCode} />
@@ -3369,7 +3371,11 @@ const StressTab: React.FC<{
   saveToCloud: (cfg?: FuturesConfig) => Promise<void>;
   products: Record<string, ProductConfig>;
   activeCode: string;
-}> = ({ summary, stress, beta, patch, saveToCloud, products, activeCode }) => {
+  /** 模擬建倉要疊加的真實部位與帳戶現金 */
+  positions: FuturesPosition[];
+  productsMap: Record<string, ProductPriceSpec>;
+  cash: number;
+}> = ({ summary, stress, beta, patch, saveToCloud, products, activeCode, positions, productsMap, cash }) => {
   const hasIndexRef = Object.values(products).some((p) => p.index_ref > 0);
   const setDrops = (drops: number[]) => {
     void saveToCloud(patch((c) => ({
@@ -3393,10 +3399,18 @@ const StressTab: React.FC<{
   const firstDanger = downside.find((r) => r.status === 'danger') ?? null;
   const anyStops = stress.some((r) => r.stopped_lots > 0);
 
+  const sim = <SimPanel positions={positions} products={products} productsMap={productsMap} cash={cash} />;
+
   if (summary.total_lots === 0) {
     return (
-      <div className="bg-card/70 border border-border rounded-2xl p-5 shadow-sm">
-        <p className="text-xs text-zinc-500">目前沒有未平倉部位，沒有東西可以壓力測試。先到「部位 &amp; 平倉紀錄」新增，或到「建倉 &amp; 出場試算」規劃一個組合。</p>
+      <div className="space-y-5">
+        <div className="bg-card/70 border border-border rounded-2xl p-5 shadow-sm">
+          <p className="text-xs text-zinc-500">
+            目前沒有未平倉部位，所以沒有真實部位可以壓力測試。想先看「如果我現在買（賣）幾口會怎樣」，用下面的模擬建倉；
+            已經下單的部位到「部位 &amp; 平倉紀錄」新增後，這裡就會出現大盤暴跌壓力測試矩陣。
+          </p>
+        </div>
+        {sim}
       </div>
     );
   }
@@ -3519,6 +3533,8 @@ const StressTab: React.FC<{
           停損也常因跳空而滑價，斷頭會比表上更早發生。
         </p>
       </Panel>
+
+      {sim}
     </div>
   );
 };
