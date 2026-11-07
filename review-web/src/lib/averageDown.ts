@@ -125,6 +125,65 @@ export function defaultTarget(h: Holding, env: CalcEnv): string {
   return ((A0 + pp) / 2).toFixed(2);
 }
 
+// ───────────────────────── 「均價下降 %」滑軌 ─────────────────────────
+
+export const DROP_STEP = 0.5;
+/** 滑軌最多拉到均價下降 50%（再往下要買的股數會大到沒有參考價值） */
+export const DROP_CAP = 50;
+
+/** 目標均價 ＝ 目前均價 × (1 − 下降 %)；0% 代表「不攤平」，回空字串 */
+export function targetForDrop(avg: number, pct: number): string {
+  if (!(avg > 0) || !(pct > 0)) return '';
+  return (avg * (1 - pct / 100)).toFixed(2);
+}
+
+/** 反算：目前的目標均價相當於均價下降幾 %；目標空白或不合理回 0 */
+export function dropPctOf(avg: number, target: number): number {
+  if (!(avg > 0) || !(target > 0) || !(target < avg)) return 0;
+  return (1 - target / avg) * 100;
+}
+
+export interface DropMark {
+  pct: number;
+  /** 拉到這個 % 需準備的金額；0% 是 0；算不出來是 null */
+  total: number | null;
+}
+export interface DropSlider {
+  /** 滑軌右端（%），已對齊 DROP_STEP */
+  max: number;
+  /** 目前目標均價對應的下降 % */
+  pct: number;
+  marks: DropMark[];
+}
+
+/**
+ * 滑軌的範圍與刻度。右端取「目標均價離買進價（含手續費）還有 5% 的空間」那一點——
+ * 再往右買進股數趨近無限大；最多 {@link DROP_CAP}%。買進價已不低於均價、或空間不到一個
+ * 刻度時回 null（這時不需要攤平，或請改用輸入框）。
+ */
+export function dropSlider(h: Holding, env: CalcEnv, buyPrice: number, target: number): DropSlider | null {
+  if (!(h.shares > 0) || !(h.cost > 0)) return null;
+  const p = buyPrice > 0 ? buyPrice : h.price;
+  if (!(p > 0)) return null;
+  const A0 = h.cost / h.shares;
+  const pp = p * (1 + env.feeRate);
+  if (!(A0 > pp)) return null;
+  const reach = 0.95 * (1 - pp / A0) * 100;
+  const max = Math.floor(Math.min(reach, DROP_CAP) / DROP_STEP) * DROP_STEP;
+  if (!(max >= DROP_STEP)) return null;
+
+  const gap = [1, 2, 5, 10, 20, 25].find((g) => max / g <= 5) ?? 25;
+  const marks: DropMark[] = [];
+  for (let pct = 0; pct <= max + 1e-9; pct += gap) {
+    if (pct === 0) { marks.push({ pct, total: 0 }); continue; }
+    const r = planAverageDown(h, env, {
+      mode: 'target', buyPrice, target: parseFloat(targetForDrop(A0, pct)), budget: NaN, buyShares: NaN,
+    });
+    marks.push({ pct, total: r.kind === 'ok' ? r.total : null });
+  }
+  return { max, pct: Math.min(dropPctOf(A0, target), max), marks };
+}
+
 export function planAverageDown(h: Holding, env: CalcEnv, plan: PlanInput): PlanResult {
   const bad = (msg: string, kind: 'bad' | 'skip' = 'bad'): PlanMsg => ({ kind, msg });
   const f = env.feeRate;

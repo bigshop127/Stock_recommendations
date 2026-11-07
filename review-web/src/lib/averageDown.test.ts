@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
-  breakEvenPrice, defaultTarget, estimateCost, feeOf, holdingStats, kindOfCode, mergePositions, parseNum, parseSyncTime, planAverageDown,
+  breakEvenPrice, defaultTarget, dropPctOf, dropSlider, estimateCost, feeOf, holdingStats, kindOfCode, mergePositions, parseNum, parseSyncTime,
+  planAverageDown, targetForDrop,
   type CalcEnv, type Holding, type PlanInput,
 } from './averageDown';
 
@@ -164,6 +165,68 @@ describe('defaultTarget', () => {
     expect(defaultTarget(UNIMICRON, ENV_ODD)).toBe('');
     // 台達電：均價 1734.96、買進價 1055×1.001425=1056.50 → 中點 1395.73
     expect(defaultTarget(DELTA, ENV_ODD)).toBe('1395.73');
+  });
+});
+
+describe('均價下降滑軌：targetForDrop / dropPctOf / dropSlider', () => {
+  it('targetForDrop 與 dropPctOf 互為反運算；0% 或壞值回空字串／0', () => {
+    expect(targetForDrop(1734.96, 10)).toBe('1561.46');
+    expect(dropPctOf(1734.96, 1561.46)).toBeCloseTo(10, 2);
+    expect(targetForDrop(100, 0)).toBe('');
+    expect(targetForDrop(NaN, 10)).toBe('');
+    expect(dropPctOf(100, NaN)).toBe(0);
+    expect(dropPctOf(100, 120)).toBe(0); // 目標高於均價不合理 → 滑軌回到 0
+  });
+
+  it('台達電：範圍對齊 0.5%、刻度 0/10/20/30，金額單調增加且等於直接算的結果', () => {
+    const s = dropSlider(DELTA, ENV_ODD, NaN, 1500)!;
+    expect(s).not.toBeNull();
+    expect(s.max).toBe(37);
+    expect(s.marks.map((m) => m.pct)).toEqual([0, 10, 20, 30]);
+    expect(s.marks[0].total).toBe(0);
+    const totals = s.marks.map((m) => m.total as number);
+    expect(totals.every((t) => t !== null)).toBe(true);
+    for (let i = 1; i < totals.length; i++) expect(totals[i]).toBeGreaterThan(totals[i - 1]);
+    const direct = planAverageDown(DELTA, ENV_ODD, { ...base, mode: 'target', target: parseFloat(targetForDrop(346992 / 200, 20)) });
+    expect(direct.kind === 'ok' && direct.total).toBe(totals[2]);
+    // 目前目標 1500 ≈ 均價下降 13.5%
+    expect(s.pct).toBeCloseTo(13.54, 1);
+  });
+
+  it('滑軌最右端仍算得出結果（不會落進「目標太接近買進價」）', () => {
+    for (const h of [DELTA, L2]) {
+      const s = dropSlider(h, ENV_ODD, NaN, NaN)!;
+      expect(s).not.toBeNull();
+      const A0 = h.cost / h.shares;
+      const r = planAverageDown(h, ENV_ODD, { ...base, mode: 'target', target: parseFloat(targetForDrop(A0, s.max)) });
+      expect(r.kind).toBe('ok');
+    }
+  });
+
+  it('00631L：右端被買進價限制在 23.5%；整張模式金額也跟著走', () => {
+    expect(dropSlider(L2, ENV_ODD, NaN, NaN)!.max).toBe(23.5);
+    const lot = dropSlider(L2, ENV_LOT, NaN, NaN)!;
+    const m10 = lot.marks.find((m) => m.pct === 10)!;
+    const r = planAverageDown(L2, ENV_LOT, { ...base, mode: 'target', target: parseFloat(targetForDrop(L2.cost / L2.shares, 10)) });
+    expect(r.kind === 'ok' && r.total).toBe(m10.total);
+  });
+
+  it('買進價可自訂：掛得越低，同樣的 % 需要的錢越少', () => {
+    const cur = dropSlider(DELTA, ENV_ODD, NaN, NaN)!;
+    const low = dropSlider(DELTA, ENV_ODD, 1000, NaN)!;
+    expect(low.max).toBeGreaterThan(cur.max);
+    expect(low.marks[1].total as number).toBeLessThan(cur.marks[1].total as number);
+  });
+
+  it('上限 50%：均價遠高於現價時不會拉到 85%', () => {
+    const h: Holding = { shares: 1000, cost: 100000, price: 10, kind: 'stock' };
+    expect(dropSlider(h, ENV_ODD, NaN, NaN)!.max).toBe(50);
+  });
+
+  it('不需要攤平（現價已不低於均價）或資料不全 → null', () => {
+    expect(dropSlider(UNIMICRON, ENV_ODD, NaN, NaN)).toBeNull();
+    expect(dropSlider({ ...DELTA, shares: 0 }, ENV_ODD, NaN, NaN)).toBeNull();
+    expect(dropSlider({ ...DELTA, price: 0 }, ENV_ODD, NaN, NaN)).toBeNull();
   });
 });
 

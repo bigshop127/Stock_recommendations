@@ -8,8 +8,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { CheckCircle2, CloudOff, Loader2, Plus, RefreshCw, RotateCcw, Trash2, Info } from 'lucide-react';
 import { api, type FullInventory, type RebalanceHoldingsResp } from '../../lib/api';
 import {
-  DEFAULT_FEE_RATE_PCT, defaultTarget, estimateCost, holdingStats, kindOfCode, mergePositions,
-  parseNum, parseSyncTime, planAverageDown,
+  DEFAULT_FEE_RATE_PCT, DROP_STEP, defaultTarget, dropSlider, estimateCost, holdingStats, kindOfCode, mergePositions,
+  parseNum, parseSyncTime, planAverageDown, targetForDrop,
   type AssetKind, type AvgMode, type CalcEnv, type Holding, type PlanInput, type PlanResult,
 } from '../../lib/averageDown';
 
@@ -80,6 +80,12 @@ const pct2 = (n: number) => `${n > 0 ? '+' : n < 0 ? '−' : ''}${Math.abs(n * 1
 const pnlCls = (n: number) => (!Number.isFinite(n) || n === 0 ? 'text-zinc-300' : n > 0 ? 'text-bull' : 'text-bear');
 const lotsText = (n: number) => (n >= 1000 ? `（${Number((n / 1000).toFixed(3))} 張）` : '');
 const gapText = (g: number) => (g > 0 ? `+${(g * 100).toFixed(1)}%` : '已回本');
+/** 刻度下的簡短金額：65.9萬、1,234萬、1.2億 */
+const wan = (n: number) => {
+  if (n >= 1e8) return `${Number((n / 1e8).toFixed(1))}億`;
+  if (n >= 1e4) return `${n >= 1e6 ? Math.round(n / 1e4).toLocaleString('zh-TW') : Number((n / 1e4).toFixed(1))}萬`;
+  return nf0(n);
+};
 
 const INPUT_CLS =
   'w-full h-10 px-3 bg-zinc-950 border border-zinc-800 rounded-lg text-sm font-mono text-zinc-100 placeholder:text-zinc-600 focus:outline-none focus:border-primary';
@@ -297,6 +303,12 @@ export function AverageDownCalculator({ onRealSynced }: { onRealSynced?: (resp: 
   const ap = active ? planOf(active) : null;
   const aStats = active ? holdingStats(active.holding, env) : null;
   const aResult = active ? resultOf(active) : null;
+  const aSlider = active && ap && ap.mode === 'target' && aStats
+    ? dropSlider(active.holding, env, parseNum(ap.buyPrice), parseNum(ap.target))
+    : null;
+  const setDrop = (pct: number) => {
+    if (active && aStats) setPlan(active, { target: targetForDrop(aStats.avg, pct) });
+  };
 
   const summary = useMemo(() => {
     let total = 0;
@@ -505,16 +517,54 @@ export function AverageDownCalculator({ onRealSynced }: { onRealSynced?: (resp: 
               )}
             </div>
 
-            {ap.mode === 'target' && (
-              <div className="flex flex-wrap items-center gap-1.5">
-                <span className="text-[11px] text-zinc-500 mr-1">均價下降</span>
-                {[0.05, 0.1, 0.15, 0.2].map((d) => (
-                  <button key={d} type="button" disabled={!aStats}
-                    onClick={() => aStats && setPlan(active, { target: (aStats.avg * (1 - d)).toFixed(2) })}
-                    className="h-8 px-3 rounded-full border border-zinc-700 text-xs text-zinc-300 hover:border-primary hover:text-primary disabled:opacity-40 transition-colors">
-                    {Math.round(d * 100)}%
-                  </button>
-                ))}
+            {aSlider && aStats && (
+              <div className="space-y-2 pt-1" data-testid="avg-drop-slider">
+                <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1 text-xs">
+                  <span className="text-zinc-400">
+                    均價下降
+                    <span className="font-mono font-semibold text-primary text-sm ml-2">
+                      {aSlider.pct > 0 ? `${Number(aSlider.pct.toFixed(1))}%` : '—'}
+                    </span>
+                  </span>
+                  <span className="font-mono text-zinc-300">
+                    {aResult && aResult.kind === 'ok'
+                      ? <>需準備 <span className="font-semibold text-primary text-sm">NT$ {nf0(aResult.total)}</span></>
+                      : <span className="text-zinc-500">拉動滑軌選擇要攤到多低</span>}
+                  </span>
+                </div>
+                <input
+                  id="avg-drop"
+                  type="range"
+                  min={0}
+                  max={aSlider.max}
+                  step={DROP_STEP}
+                  value={aSlider.pct}
+                  onChange={(e) => setDrop(parseFloat(e.target.value))}
+                  aria-label="均價下降百分比"
+                  aria-valuetext={aResult && aResult.kind === 'ok'
+                    ? `均價下降 ${Number(aSlider.pct.toFixed(1))}%，需準備 ${nf0(aResult.total)} 元`
+                    : '尚未選擇'}
+                  className="w-full h-2 bg-zinc-800 rounded-lg appearance-none cursor-pointer accent-primary"
+                />
+                {/* 刻度：點一下跳過去；每個刻度下面是拉到那裡要準備的錢 */}
+                <div className="relative h-10 mx-2 text-[11px] font-mono">
+                  {aSlider.marks.map((m) => {
+                    const frac = m.pct / aSlider.max;
+                    return (
+                      <button
+                        key={m.pct}
+                        type="button"
+                        onClick={() => setDrop(m.pct)}
+                        className="absolute top-0 -translate-x-1/2 px-1 py-0.5 text-center whitespace-nowrap text-zinc-400 hover:text-primary transition-colors"
+                        style={{ left: `${frac * 100}%` }}
+                        title={m.total === null ? undefined : `均價下降 ${m.pct}%：需準備約 NT$ ${nf0(m.total)}`}
+                      >
+                        <span className="block">{m.pct}%</span>
+                        <span className="block text-[10px] text-zinc-500">{m.total === null ? '—' : m.total === 0 ? '0' : wan(m.total)}</span>
+                      </button>
+                    );
+                  })}
+                </div>
               </div>
             )}
           </div>
