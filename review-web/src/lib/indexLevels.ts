@@ -180,11 +180,14 @@ export function computeIndexLevels(pts: Pt[], ath: { value: number; date: string
   };
 }
 
-/** 一年內的日期寫 M/D，更早的寫 YYYY/M/D；null（即時價）寫「最新」 */
+/**
+ * 跟最後交易日同一年寫 M/D，其他年份寫 YYYY/M/D（去年 11/21 只寫 11/21 會被看成今年還沒到的日子）；
+ * null（即時價）寫「最新」
+ */
 export function fmtLevelDate(date: string | null, lastDate: string): string {
   if (!date) return '最新';
   const [y, m, d] = date.split('-').map(Number);
-  if (date >= shiftMonths(lastDate, -12)) return `${m}/${d}`;
+  if (date.slice(0, 4) === lastDate.slice(0, 4)) return `${m}/${d}`;
   return `${y}/${m}/${d}`;
 }
 

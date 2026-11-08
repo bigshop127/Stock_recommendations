@@ -97,8 +97,9 @@ describe('sliceRange / 格式', () => {
     expect(sliceRange(pts, '3m').map((p) => p.c)).toEqual([2, 3, 4]);
     expect(sliceRange(pts, '1y')).toHaveLength(4);
   });
-  it('日期：一年內 M/D、更早帶年份、即時價寫最新', () => {
+  it('日期：同一年 M/D、其他年份帶年（去年 11/21 不能只寫 11/21）、即時價寫最新', () => {
     expect(fmtLevelDate('2026-10-30', '2026-11-06')).toBe('10/30');
+    expect(fmtLevelDate('2025-11-21', '2026-11-06')).toBe('2025/11/21');
     expect(fmtLevelDate('2024-03-05', '2026-11-06')).toBe('2024/3/5');
     expect(fmtLevelDate(null, '2026-11-06')).toBe('最新');
     expect(fmtPct(-8.24)).toBe('−8.2%');

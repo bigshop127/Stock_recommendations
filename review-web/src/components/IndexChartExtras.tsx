@@ -101,30 +101,31 @@ export const IndexSparkline: React.FC<{
 
 const toneOf = (v: number) => (v > 0 ? 'text-bull' : v < 0 ? 'text-bear' : 'text-zinc-400');
 
+// 手機上方塊很窄：數字與日期放不下時日期自己換行，不截掉
 const Row: React.FC<{ label: string; children: React.ReactNode }> = ({ label, children }) => (
   <div className="flex items-baseline gap-1.5 min-w-0 text-[10px] leading-4">
     <span className="text-zinc-500 shrink-0 w-[2.6rem]">{label}</span>
-    <span className="font-mono truncate">{children}</span>
+    <span className="font-mono min-w-0 flex flex-wrap gap-x-1">{children}</span>
   </div>
 );
 
-/** 一年高／一年低／歷史高／波段 四行；wide＝台股寬方塊，排成兩欄 */
+/** 一年高／一年低／歷史高／波段 四行；wide＝台股寬方塊，螢幕夠寬時排成兩欄 */
 export const IndexLevelStats: React.FC<{ lv: IndexLevels; wide?: boolean }> = ({ lv, wide = false }) => {
   const d = (date: string | null) => fmtLevelDate(date, lv.lastDate);
   return (
-    <div className={`grid gap-x-3 ${wide ? 'grid-cols-2' : 'grid-cols-1'}`}>
+    <div className={`grid gap-x-3 grid-cols-1 ${wide ? '2xl:grid-cols-2' : ''}`}>
       <Row label="一年高">
-        <span className={toneOf(lv.high1y.pct)}>{fmtPct(lv.high1y.pct)}</span>{' '}
+        <span className={toneOf(lv.high1y.pct)}>{fmtPct(lv.high1y.pct)}</span>
         <span className="text-zinc-500">{d(lv.high1y.date)}</span>
       </Row>
       <Row label="一年低">
-        <span className={toneOf(lv.low1y.pct)}>{fmtPct(lv.low1y.pct)}</span>{' '}
+        <span className={toneOf(lv.low1y.pct)}>{fmtPct(lv.low1y.pct)}</span>
         <span className="text-zinc-500">{d(lv.low1y.date)}</span>
       </Row>
       <Row label="歷史高">
         {lv.ath ? (
           <>
-            <span className={toneOf(lv.ath.pct)}>{fmtPct(lv.ath.pct)}</span>{' '}
+            <span className={toneOf(lv.ath.pct)}>{fmtPct(lv.ath.pct)}</span>
             <span className="text-zinc-500">{lv.athIsHigh1y ? '＝一年高' : d(lv.ath.date)}</span>
           </>
         ) : (
@@ -136,9 +137,9 @@ export const IndexLevelStats: React.FC<{ lv: IndexLevels; wide?: boolean }> = ({
           <>
             <span className={toneOf(lv.swing.pivot.pct)}>
               {lv.swing.dir === 'down' ? '回檔' : '上漲'} {fmtPct(lv.swing.pivot.pct)}
-            </span>{' '}
+            </span>
             <span className="text-zinc-500">
-              自{d(lv.swing.pivot.date)}{lv.swing.dir === 'down' ? '高' : '低'}
+              自 {d(lv.swing.pivot.date)} {lv.swing.dir === 'down' ? '高點' : '低點'}
             </span>
           </>
         ) : (
