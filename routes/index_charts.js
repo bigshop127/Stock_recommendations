@@ -225,23 +225,35 @@ async function buildDaily() {
 
 let dailyCache = { at: 0, data: null };
 let dailyInflight = null;
-router.get('/api/market/index-history', async (req, res) => {
-  const now = Date.now();
-  if (req.query.force !== '1' && dailyCache.data && now - dailyCache.at < DAILY_TTL_MS) {
-    return res.json({ ...dailyCache.data, cached: true });
-  }
+function refreshDaily() {
   if (!dailyInflight) {
     dailyInflight = buildDaily()
       .then((data) => { dailyCache = { at: Date.now(), data }; return data; })
       .finally(() => { dailyInflight = null; });
   }
+  return dailyInflight;
+}
+
+// 快取過期時先回舊的、背景重抓（日線本來就不是即時，前端會接上方塊的即時價），
+// 只有開機後完全沒資料、或按「重新整理」帶 force=1 才等新的。
+router.get('/api/market/index-history', async (req, res) => {
+  const fresh = dailyCache.data && Date.now() - dailyCache.at < DAILY_TTL_MS;
+  if (req.query.force !== '1' && dailyCache.data) {
+    if (!fresh) refreshDaily().catch((e) => console.warn('[index-history] 背景重抓失敗:', errMsg(e)));
+    return res.json({ ...dailyCache.data, cached: true, refreshing: !fresh });
+  }
   try {
-    res.json({ ...(await dailyInflight), cached: false });
+    res.json({ ...(await refreshDaily()), cached: false });
   } catch (err) {
     if (dailyCache.data) return res.json({ ...dailyCache.data, cached: true, stale: true, stale_reason: errMsg(err) });
     sendError(res, err);
   }
 });
+
+// 開機先抓一次：第一個打開大盤頁的人不用等十幾秒
+setTimeout(() => {
+  refreshDaily().catch((e) => console.warn('[index-history] 開機預抓失敗:', errMsg(e)));
+}, 5000).unref();
 
 // ── 當日分時 ────────────────────────────────────────────────────────────────
 async function intradayOf(def) {
