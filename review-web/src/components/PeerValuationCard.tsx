@@ -4,11 +4,10 @@ import { Scale } from 'lucide-react';
 import type { PeerValuationState } from '../lib/usePeerValuation';
 import { fmtMetric } from '../lib/peerValuation';
 import type { FairValue, MetricRank } from '../lib/peerValuation';
+import { vsFairText } from '../lib/ownValuation';
 
 const fmtPrice = (v: number) =>
   v >= 1000 ? Math.round(v).toLocaleString() : v >= 100 ? v.toFixed(1) : v.toFixed(2);
-
-const gapText = (g: number) => (g >= 0 ? `現價低於合理價 ${g.toFixed(1)}%` : `現價高於合理價 ${Math.abs(g).toFixed(1)}%`);
 
 /** 區間條：同業 25～75 百分位推出的價格帶＋合理價刻度＋現價 */
 const RangeBar: React.FC<{ fv: FairValue; price: number | null }> = ({ fv, price }) => {
@@ -41,9 +40,11 @@ const FairTile: React.FC<{ title: string; fv: FairValue | null; reason: string |
           <span className="text-xl font-bold font-mono text-zinc-100">{fmtPrice(fv.fair)}</span>
           <span className="text-[11px] font-mono text-zinc-500">區間 {fmtPrice(fv.low)}～{fmtPrice(fv.high)}</span>
         </div>
-        {fv.gapPct !== null && (
-          <div className={`text-xs font-semibold mt-0.5 ${fv.gapPct >= 0 ? 'text-bull' : 'text-bear'}`}>{gapText(fv.gapPct)}</div>
-        )}
+        {price !== null && price > 0 && (() => {
+          // opt53：舊版把 (合理價 ÷ 現價 − 1) 寫成「現價高於合理價」，數字錯；改用 現價 ÷ 合理價 − 1
+          const g = vsFairText(price, fv.fair);
+          return <div className={`text-xs font-semibold mt-0.5 ${g.cheap ? 'text-bull' : 'text-bear'}`}>{g.text}</div>;
+        })()}
         <RangeBar fv={fv} price={price} />
         <div className="text-[10px] text-zinc-500 leading-relaxed">
           同業{multipleLabel}中位數 <span className="font-mono text-zinc-300">{fv.median.toFixed(1)} 倍</span> × {baseLabel}{' '}
@@ -97,7 +98,7 @@ export const PeerValuationCard: React.FC<{ state: PeerValuationState }> = ({ sta
     <div className="flex items-center justify-between gap-2 border-b border-border/60 pb-3 mb-4 flex-wrap">
       <div className="flex items-center gap-2">
         <Scale className="w-5 h-5 text-primary" />
-        <h3 className="font-semibold text-sm text-zinc-200">合理價與同業排名</h3>
+        <h3 className="font-semibold text-sm text-zinc-200">同業對照：同業倍數套在本股＋同業排名</h3>
       </div>
       {data && (
         <span className="text-[11px] px-2.5 py-1 rounded-full bg-primary/10 text-primary border border-primary/20">
@@ -135,8 +136,8 @@ export const PeerValuationCard: React.FC<{ state: PeerValuationState }> = ({ sta
       {header}
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-        <FairTile title="本益比法合理價" fv={data.pe} reason={data.peReason} price={data.price} baseLabel="近四季 EPS" multipleLabel="本益比" />
-        <FairTile title="淨值比法合理價" fv={data.pb} reason={data.pbReason} price={data.price} baseLabel="每股淨值" multipleLabel="淨值比" />
+        <FairTile title="同業本益比法" fv={data.pe} reason={data.peReason} price={data.price} baseLabel="近四季 EPS" multipleLabel="本益比" />
+        <FairTile title="同業淨值比法" fv={data.pb} reason={data.pbReason} price={data.price} baseLabel="每股淨值" multipleLabel="淨值比" />
       </div>
       {data.price !== null && (data.pe || data.pb) && (
         <div className="flex items-center gap-3 text-[10px] text-zinc-500 flex-wrap -mt-2">

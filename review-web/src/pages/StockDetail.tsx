@@ -22,6 +22,8 @@ import { KeyLevelsCard } from '../components/KeyLevelsCard';
 import type { LevelAlertCondition } from '../components/KeyLevelsCard';
 import type { ChartLevel } from '../components/PriceChart';
 import { PeerValuationCard } from '../components/PeerValuationCard';
+import { OwnValuationCard } from '../components/OwnValuationCard';
+import { buildOwnValuation } from '../lib/ownValuation';
 import { PositionPlanCard } from '../components/PositionPlanCard';
 import { QuarterlyIncomeTable, BalanceSheetPanel, DividendProgressList } from '../components/FinancialStatements';
 import { looksFinancial } from '../lib/financialStatements';
@@ -852,7 +854,16 @@ export const StockDetail: React.FC = () => {
   // 合理價＋同業排名（opt45）：切到產業分析才抓；現價用報價列的即時價，沒有就用證交所收盤
   const livePriceRaw = headerBookState.data?.code === activeCode ? headerBookState.data?.book?.last_price : null;
   const livePrice = typeof livePriceRaw === 'number' && livePriceRaw > 0 ? livePriceRaw : null;
-  const peerValuation = usePeerValuation(activeCode, peersState.data?.stocks ?? null, livePrice, activeTab === 'industry' || posterOpen);
+  // 同業對照只在產業分析分頁用（opt53 起戰情卡的合理價改用自身區間，不用再等同業）
+  const peerValuation = usePeerValuation(activeCode, peersState.data?.stocks ?? null, livePrice, activeTab === 'industry');
+  // 合理價（opt53）：營收推估 EPS × 自身近 3 年本益比；現價用即時價，沒有就用最近一根日 K 收盤
+  const ownValuation = useMemo(() => {
+    const f = fundamentalsState.data;
+    if (!f || f.code !== activeCode) return null;
+    const lastClose = dailyRows && dailyRows.length ? dailyRows[dailyRows.length - 1].close : null;
+    return buildOwnValuation(f, livePrice ?? (typeof lastClose === 'number' && lastClose > 0 ? lastClose : null));
+  }, [fundamentalsState.data, activeCode, livePrice, dailyRows]);
+  const ownValuationLoading = fundamentalsState.loading;
   const livePrevClose = headerBookState.data?.code === activeCode
     ? (headerBookState.data?.book?.day as { prev_close?: number } | undefined)?.prev_close ?? null
     : null;
@@ -2390,7 +2401,10 @@ export const StockDetail: React.FC = () => {
 
     return (
       <div className="space-y-6">
-        {/* 合理價＋同業排名（opt45，同業＝細分族群；上櫃／ETF 沒有族群就不顯示） */}
+        {/* 合理價（opt53）：營收推估 EPS × 自身近 3 年本益比；所有股票都算（上櫃也有） */}
+        <OwnValuationCard result={ownValuation} loading={ownValuationLoading} />
+
+        {/* 同業對照（opt45，同業＝細分族群；上櫃／ETF 沒有族群就不顯示） */}
         <PeerValuationCard state={peerValuation} />
 
         {/* 月營收 vs 官方產業（opt41，自己抓資料；ETF 等查不到就不顯示） */}
@@ -3274,8 +3288,8 @@ export const StockDetail: React.FC = () => {
             highlights={highlights}
             levels={keyLevels}
             dailyRows={dailyRows}
-            peer={peerValuation.data}
-            peerLoading={peerValuation.loading}
+            own={ownValuation}
+            ownLoading={ownValuationLoading}
             brief={stockBrief}
             onClose={() => setPosterOpen(false)}
           />

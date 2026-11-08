@@ -399,9 +399,30 @@ export interface DividendRow {
   stock_dividend: number | null;
 }
 
+/** 自身本益比／淨值比近三年區間（opt53 合理價；engine get_fundamentals） */
+export interface ValuationBand {
+  p25: number;
+  p50: number;
+  p75: number;
+  n: number;                     // 用了幾個交易日
+}
+export interface ValuationBands {
+  years: number;
+  start: string | null;          // 實際資料起訖（新上市的會比 3 年短）
+  end: string | null;
+  pe: ValuationBand | null;      // 不到半年資料就 null
+  pb: ValuationBand | null;
+  dropped_outliers: number;      // 拿掉的單日跳針
+  quarters_checked: number;      // 近 12 季有 EPS 的季數
+  loss_quarters: number | null;  // 其中虧損的季數
+}
+
 export interface StockFundamentals {
   code: string;
   name: string | null;
+  industries?: string[];         // TaiwanStockInfo 產業別（opt53）
+  is_financial?: boolean;
+  valuation_bands?: ValuationBands;
   as_of: string;
   summary: FundamentalSummary;
   valuation: ValuationRow[];
@@ -650,6 +671,8 @@ export const api = {
   // 證交所臺股儀表板（gateway 自抓，不經 engine）：市場槓桿溫度、近一年個股違約揭露名單
   getMarketCredit: (force = false) => req<MarketCreditResp>(`/market/credit${qs({ force: force ? 1 : undefined })}`),
   getGlobalIndices: (force = false) => req<GlobalIndicesResp>(`/market/global-indices${qs({ force: force ? 1 : undefined })}`),
+  getIndexHistory: (force = false) => req<IndexHistoryResp>(`/market/index-history${qs({ force: force ? 1 : undefined })}`),
+  getIndexIntraday: (force = false) => req<IndexIntradayResp>(`/market/index-intraday${qs({ force: force ? 1 : undefined })}`),
   getDefaultDisclosures: (force = false) => defaultDisclosuresOnce(force),
   // 月營收（證交所／櫃買逐家月營收表＋臺股儀表板趨勢，gateway 自抓）：全體上市、官方產業、單一公司 vs 產業
   getMarketRevenue: (force = false) => req<MarketRevenueResp>(`/market/revenue${qs({ force: force ? 1 : undefined })}`),
@@ -895,6 +918,40 @@ export interface GlobalIndex {
   session: 'open' | 'closed';
   ok: boolean;
   error?: string;
+}
+
+/** 大盤頁指數方塊線圖（opt53）：近兩年日收盤＋歷史最高收盤；gateway 自抓 Yahoo／櫃買中心／期交所 */
+export interface IndexHistoryItem {
+  key: string;
+  name: string;
+  ok: boolean;
+  source?: string;
+  error?: string;
+  d: string[];                 // 交易日 YYYY-MM-DD（交易所當地日期）
+  c: number[];                 // 收盤
+  partial_last: boolean;       // 最後一根是今天盤中還在變的半根
+  ath: { value: number; date: string } | null;
+}
+export interface IndexHistoryResp {
+  items: IndexHistoryItem[];
+  fetched_at: string;
+  cached?: boolean;
+  stale?: boolean;
+}
+/** 當日分時（opt53）：台股每分鐘、國際每 5 分鐘 */
+export interface IndexIntradayItem {
+  key: string;
+  ok: boolean;
+  date: string | null;
+  t: number[];                 // epoch ms
+  c: number[];
+  source?: string;
+  error?: string;
+}
+export interface IndexIntradayResp {
+  items: IndexIntradayItem[];
+  fetched_at: string;
+  cached?: boolean;
 }
 
 export interface GlobalIndicesResp {

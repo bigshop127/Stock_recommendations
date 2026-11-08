@@ -13,7 +13,13 @@ import type {
   MarketRevenueResp,
   GlobalIndicesResp,
   IndexRow,
+  IndexHistoryResp,
+  IndexIntradayResp,
 } from '../lib/api';
+import { CHART_RANGES, computeIndexLevels, sliceRange, withLive } from '../lib/indexLevels';
+import type { ChartRange, IndexLevels } from '../lib/indexLevels';
+import { IndexLevelStats, IndexSparkline } from '../components/IndexChartExtras';
+import type { SparkPoint } from '../components/IndexChartExtras';
 import {
   Activity,
   BarChart3,
@@ -67,7 +73,9 @@ const IndexTile: React.FC<{
   changePct: number | null;
   meta: React.ReactNode;
   wide?: boolean;
-}> = ({ name, badge, price, change, changePct, meta, wide = false }) => {
+  /** opt53：線圖＋距高低點，放在方塊下半部 */
+  extras?: React.ReactNode;
+}> = ({ name, badge, price, change, changePct, meta, wide = false, extras }) => {
   const tone = change === null ? 'text-zinc-500' : change >= 0 ? 'text-bull' : 'text-bear';
   const priceStr =
     price !== null ? price.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '--';
@@ -84,15 +92,18 @@ const IndexTile: React.FC<{
   );
   if (wide) {
     return (
-      <div className="flex items-center justify-between gap-3 p-3.5 rounded-lg bg-zinc-950/40 border border-border/30 min-w-0">
-        <div className="min-w-0">
-          {title}
-          <div className="text-[9px] text-zinc-500 font-mono mt-1 truncate">{meta}</div>
+      <div className="p-3.5 rounded-lg bg-zinc-950/40 border border-border/30 min-w-0">
+        <div className="flex items-center justify-between gap-3">
+          <div className="min-w-0">
+            {title}
+            <div className="text-[9px] text-zinc-500 font-mono mt-1 truncate">{meta}</div>
+          </div>
+          <div className="text-right shrink-0">
+            <div className="text-xl font-bold font-mono text-zinc-100 leading-tight">{priceStr}</div>
+            <div className={`text-[11px] font-mono font-medium mt-0.5 ${tone}`}>{changeStr}</div>
+          </div>
         </div>
-        <div className="text-right shrink-0">
-          <div className="text-xl font-bold font-mono text-zinc-100 leading-tight">{priceStr}</div>
-          <div className={`text-[11px] font-mono font-medium mt-0.5 ${tone}`}>{changeStr}</div>
-        </div>
+        {extras && <div className="mt-2.5">{extras}</div>}
       </div>
     );
   }
@@ -102,9 +113,51 @@ const IndexTile: React.FC<{
       <div className="text-base font-bold font-mono text-zinc-100 mt-1.5 leading-tight">{priceStr}</div>
       <div className={`text-[11px] font-mono font-medium mt-0.5 ${tone}`}>{changeStr}</div>
       <div className="text-[9px] text-zinc-500 font-mono mt-1 truncate">{meta}</div>
+      {extras && <div className="mt-2">{extras}</div>}
     </div>
   );
 };
+
+// opt53：方塊下半部（線圖＋距高低點），兩塊各自顯示載入中／抓不到
+const IndexExtras: React.FC<{
+  chart: { points: SparkPoint[]; baseline: number | null } | 'loading' | 'error';
+  levels: IndexLevels | null | 'loading';
+  wide?: boolean;
+}> = ({ chart, levels, wide = false }) => (
+  <div className="space-y-2">
+    {chart === 'loading' ? (
+      <div className="h-11 rounded bg-zinc-900/60 animate-pulse" />
+    ) : chart === 'error' ? (
+      <div className="h-11 flex items-center text-[10px] text-zinc-600">線圖暫時抓不到</div>
+    ) : (
+      <IndexSparkline points={chart.points} baseline={chart.baseline} />
+    )}
+    {levels === 'loading' ? (
+      <div className="h-8 rounded bg-zinc-900/40 animate-pulse" />
+    ) : levels ? (
+      <IndexLevelStats lv={levels} wide={wide} />
+    ) : (
+      <div className="text-[10px] text-zinc-600">高低點暫時抓不到</div>
+    )}
+  </div>
+);
+
+const CHART_RANGE_KEY = 'review.indexChartRange';
+const loadChartRange = (): ChartRange => {
+  try {
+    const v = localStorage.getItem(CHART_RANGE_KEY);
+    if (v === '1d' || v === '3m' || v === '1y') return v;
+  } catch {
+    /* 私密視窗等讀不到就用預設 */
+  }
+  return '3m';
+};
+const fmtSparkDate = (iso: string) => {
+  const [y, m, d] = iso.split('-').map(Number);
+  return `${y}/${m}/${d}`;
+};
+const fmtSparkTime = (ms: number) =>
+  new Date(ms).toLocaleTimeString('zh-TW', { timeZone: 'Asia/Taipei', hour: '2-digit', minute: '2-digit', hour12: false });
 
 // 合併卡裡兩段資料各自顯示載入中／錯誤，一段抓不到不會拖累另一段
 const SectionStatus: React.FC<{ loading: boolean; error: string | null; onRetry: () => void }> = ({
@@ -753,6 +806,26 @@ export const Dashboard: React.FC = () => {
     loading: boolean;
     error: string | null;
   }>({ data: null, loading: true, error: null });
+  // opt53：指數方塊線圖＋距高低點
+  const [indexHistState, setIndexHistState] = useState<{
+    data: IndexHistoryResp | null;
+    loading: boolean;
+    error: string | null;
+  }>({ data: null, loading: true, error: null });
+  const [indexIntraState, setIndexIntraState] = useState<{
+    data: IndexIntradayResp | null;
+    loading: boolean;
+    error: string | null;
+  }>({ data: null, loading: false, error: null });
+  const [chartRange, setChartRangeState] = useState<ChartRange>(loadChartRange);
+  const setChartRange = (r: ChartRange) => {
+    setChartRangeState(r);
+    try {
+      localStorage.setItem(CHART_RANGE_KEY, r);
+    } catch {
+      /* 存不了就只在這次有效 */
+    }
+  };
 
   // 分頁記在網址 ?tab=，重新整理或從別頁返回都停在原本那頁
   const [searchParams, setSearchParams] = useSearchParams();
@@ -1059,7 +1132,29 @@ export const Dashboard: React.FC = () => {
     }
   };
 
+  // 指數線圖：gateway 自抓 Yahoo／櫃買中心／期交所、不經 engine，mock 模式照樣抓真的
+  const fetchIndexHistory = async (force = false) => {
+    setIndexHistState((prev) => ({ ...prev, loading: true, error: null }));
+    try {
+      const data = await api.getIndexHistory(force);
+      setIndexHistState({ data, loading: false, error: null });
+    } catch (err) {
+      setIndexHistState((prev) => ({ data: prev.data, loading: false, error: (err instanceof Error && err.message) || '無法取得指數歷史' }));
+    }
+  };
+  const fetchIndexIntraday = async (force = false) => {
+    setIndexIntraState((prev) => ({ ...prev, loading: true, error: null }));
+    try {
+      const data = await api.getIndexIntraday(force);
+      setIndexIntraState({ data, loading: false, error: null });
+    } catch (err) {
+      setIndexIntraState((prev) => ({ data: prev.data, loading: false, error: (err instanceof Error && err.message) || '無法取得指數分時' }));
+    }
+  };
+
   const fetchAllData = (force = false) => {
+    fetchIndexHistory(force);
+    if (chartRange === '1d') fetchIndexIntraday(force);
     if (useMock) {
       loadMockData();
       fetchGlobal(force);
@@ -1081,6 +1176,13 @@ export const Dashboard: React.FC = () => {
   useEffect(() => {
     fetchAllData();
   }, [useMock]);
+
+  // 切到「1日」才抓分時（預設 3 月用不到）
+  useEffect(() => {
+    if (chartRange === '1d' && !indexIntraState.data && !indexIntraState.loading && !indexIntraState.error) {
+      fetchIndexIntraday();
+    }
+  }, [chartRange, indexIntraState.data, indexIntraState.loading, indexIntraState.error]);
 
   // Market Summary Logic
   const summary = useMemo(() => {
@@ -1148,6 +1250,48 @@ export const Dashboard: React.FC = () => {
       (i): i is IndexRow => !!i,
     );
   }, [indicesState.data]);
+
+  // opt53：每檔方塊的線圖＋距高低點。「現在」用方塊上的即時價，% 才對得起來
+  const indexExtras = useMemo(() => {
+    const live = new Map<string, { price: number | null; change: number | null }>();
+    for (const r of twIndices) live.set(r.key.toUpperCase(), { price: r.price, change: r.change });
+    for (const g of globalState.data?.indices || []) live.set(g.key.toUpperCase(), { price: g.price, change: g.change });
+    const hist = new Map((indexHistState.data?.items || []).map((i) => [i.key.toUpperCase(), i]));
+    const intra = new Map((indexIntraState.data?.items || []).map((i) => [i.key.toUpperCase(), i]));
+    const histPending = !indexHistState.data && (indexHistState.loading || !indexHistState.error);
+    const intraPending = !indexIntraState.data && (indexIntraState.loading || !indexIntraState.error);
+
+    return (key: string): React.ReactNode => {
+      const k = key.toUpperCase();
+      const lv = live.get(k);
+      const h = hist.get(k);
+      const pts = h && h.ok ? withLive(h.d, h.c, lv?.price ?? null, h.partial_last) : null;
+      const levels: IndexLevels | null | 'loading' = histPending
+        ? 'loading'
+        : pts && h
+          ? computeIndexLevels(pts, h.ath)
+          : null;
+
+      let chart: { points: SparkPoint[]; baseline: number | null } | 'loading' | 'error';
+      if (chartRange === '1d') {
+        const it = intra.get(k);
+        if (intraPending) chart = 'loading';
+        else if (!it || !it.ok) chart = 'error';
+        else {
+          const prev = lv && lv.price !== null && lv.change !== null ? lv.price - lv.change : null;
+          chart = { points: it.c.map((y, i) => ({ y, label: fmtSparkTime(it.t[i]) })), baseline: prev };
+        }
+      } else if (histPending) chart = 'loading';
+      else if (!pts) chart = 'error';
+      else {
+        chart = {
+          points: sliceRange(pts, chartRange).map((p) => ({ y: p.c, label: p.d ? fmtSparkDate(p.d) : '最新' })),
+          baseline: null,
+        };
+      }
+      return <IndexExtras chart={chart} levels={levels} wide={TW_INDEX_KEYS.includes(k)} />;
+    };
+  }, [twIndices, globalState.data, indexHistState, indexIntraState, chartRange]);
 
   // TWSE Index summary row
   const twseIndex = useMemo(() => {
@@ -1395,6 +1539,28 @@ export const Dashboard: React.FC = () => {
           caption="加權、櫃買、台指期 · 美股三大指數、費城半導體、日經 225、韓國綜合"
         >
           <div className="space-y-5">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <span className="text-[10px] text-zinc-500">
+                高低點看近一年收盤；波段＝收盤反向超過 5% 才換段；歷史高＝歷史最高收盤
+              </span>
+              <div className="flex items-center gap-1" role="group" aria-label="線圖期間">
+                <span className="text-[10px] text-zinc-500 mr-1">線圖</span>
+                {CHART_RANGES.map((r) => (
+                  <button
+                    key={r.id}
+                    onClick={() => setChartRange(r.id)}
+                    aria-pressed={chartRange === r.id}
+                    className={`px-2.5 py-1 rounded text-[11px] transition ${
+                      chartRange === r.id
+                        ? 'bg-primary/20 text-primary font-semibold'
+                        : 'bg-zinc-800/70 text-zinc-400 hover:text-zinc-200'
+                    }`}
+                  >
+                    {r.label}
+                  </button>
+                ))}
+              </div>
+            </div>
             <section>
               <div className="flex items-baseline justify-between gap-3 mb-2">
                 <span className="text-xs font-semibold text-zinc-300">台股期現貨</span>
@@ -1417,6 +1583,7 @@ export const Dashboard: React.FC = () => {
                       change={idx.change}
                       changePct={idx.change_pct}
                       meta={`來源: ${idx.source}`}
+                      extras={indexExtras(idx.key)}
                     />
                   ))}
                 </div>
@@ -1459,6 +1626,7 @@ export const Dashboard: React.FC = () => {
                           <span className="text-amber-400">暫時抓不到</span>
                         )
                       }
+                      extras={indexExtras(idx.key)}
                     />
                   ))}
                 </div>

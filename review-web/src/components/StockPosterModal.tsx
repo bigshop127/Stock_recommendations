@@ -6,7 +6,8 @@ import type { OhlcvRow } from '../lib/api';
 import type { KeyLevels } from '../lib/keyLevels';
 import { LEVEL_COLORS, fmtLevel } from '../lib/keyLevels';
 import type { Highlight } from '../lib/stockHighlights';
-import type { PeerValuation } from '../lib/peerValuation';
+import type { OwnValuationResult } from '../lib/ownValuation';
+import { ZONE_LABEL, vsFairText, zoneOf } from '../lib/ownValuation';
 import type { StockBrief } from '../lib/stockBrief';
 import { cardMetrics } from '../lib/folderCards';
 import { computePlan, defaultBatches, fmtShares, loadPlanSettings } from '../lib/positionPlan';
@@ -21,8 +22,9 @@ export interface PosterProps {
   highlights: Highlight[];
   levels: KeyLevels | null;
   dailyRows: OhlcvRow[] | null;
-  peer: PeerValuation | null;
-  peerLoading: boolean;
+  /** opt53 合理價：營收推估 EPS × 自身近 3 年本益比（或淨值比） */
+  own: OwnValuationResult | null;
+  ownLoading: boolean;
   brief: StockBrief;
   onClose: () => void;
 }
@@ -49,8 +51,8 @@ const Section: React.FC<{ title: string; children: React.ReactNode; right?: Reac
 );
 
 /** 海報本體：固定 540px 寬，匯出時 ×2 → 1080px */
-const Poster = React.forwardRef<HTMLDivElement, Omit<PosterProps, 'onClose' | 'peerLoading'>>(
-  ({ code, name, price, changePct, highlights, levels, dailyRows, peer, brief }, ref) => {
+const Poster = React.forwardRef<HTMLDivElement, Omit<PosterProps, 'onClose' | 'ownLoading'>>(
+  ({ code, name, price, changePct, highlights, levels, dailyRows, own, brief }, ref) => {
     const metrics = useMemo(() => cardMetrics(dailyRows, null), [dailyRows]);
     const plan = useMemo(() => (levels ? computePlan(levels, defaultBatches(levels), loadPlanSettings()) : null), [levels]);
     const group = CODE_TO_GROUP.get(code);
@@ -59,7 +61,11 @@ const Poster = React.forwardRef<HTMLDivElement, Omit<PosterProps, 'onClose' | 'p
       .map((z) => ({ price: z.kind === 'resistance' ? z.low : z.high, color: LEVEL_COLORS[z.kind], width: z.label === '守門' ? 2 : 1 }));
     const px = price ?? metrics.close;
     const chg = changePct ?? metrics.changePct;
-    const fair = peer?.pe ?? peer?.pb ?? null;
+    const val = own && own.ok ? own.v : null;
+    // 海報上的「現價」是報價列即時價，合理價位置也用同一個價算，兩個數字才對得起來
+    const valPrice = px ?? val?.price ?? null;
+    const gap = val && valPrice ? vsFairText(valPrice, val.prices.fair) : null;
+    const zone = val && valPrice ? zoneOf(valPrice, val.prices) : null;
     const plus = brief.plus.slice(0, 2);
     const minus = brief.minus.slice(0, 2);
 
@@ -119,22 +125,26 @@ const Poster = React.forwardRef<HTMLDivElement, Omit<PosterProps, 'onClose' | 'p
             )}
           </Section>
 
-          <Section title="合理價" right={peer ? `同業：${peer.scopeName}` : undefined}>
-            {fair ? (
+          <Section title="合理價" right={val ? `${val.method === 'pe' ? '本益比' : '淨值比'}・自身近 ${val.years} 年` : undefined}>
+            {val ? (
               <div className="space-y-1">
-                <div className="text-xl font-black font-mono">{fmtLevel(fair.fair)}</div>
-                <div className="text-[10px] text-zinc-500 font-mono">區間 {fmtLevel(fair.low)}～{fmtLevel(fair.high)}</div>
-                {fair.gapPct !== null && (
-                  <div className={`text-[11px] font-semibold ${fair.gapPct >= 0 ? 'text-red-400' : 'text-emerald-400'}`}>
-                    {fair.gapPct >= 0 ? `現價低於合理價 ${fair.gapPct.toFixed(1)}%` : `現價高於合理價 ${Math.abs(fair.gapPct).toFixed(1)}%`}
-                  </div>
+                <div className="text-xl font-black font-mono">{fmtLevel(val.prices.fair)}</div>
+                <div className="text-[10px] text-zinc-500 font-mono">
+                  便宜 {fmtLevel(val.prices.cheap)}・昂貴 {fmtLevel(val.prices.expensive)}
+                </div>
+                {zone && <div className="text-[11px] text-zinc-300">現價落在「{ZONE_LABEL[zone]}」</div>}
+                {gap && (
+                  <div className={`text-[11px] font-semibold ${gap.cheap ? 'text-red-400' : 'text-emerald-400'}`}>{gap.text}</div>
                 )}
-                <div className="text-[9px] text-zinc-500">
-                  {fair.method === 'pe' ? '同業本益比中位數' : '同業淨值比中位數'} {fair.median.toFixed(1)} 倍 × {fair.method === 'pe' ? 'EPS' : '每股淨值'} {fair.base.toFixed(2)}
+                <div className="text-[9px] text-zinc-500 leading-snug">
+                  {val.method === 'pe'
+                    ? `推估 EPS ${val.base.toFixed(2)} × 本益比中位數 ${val.band.p50.toFixed(1)} 倍`
+                    : `每股淨值 ${val.base.toFixed(2)} × 淨值比中位數 ${val.band.p50.toFixed(2)} 倍（${val.switchReason}）`}
+                  {val.conservative && `；保守 ${fmtLevel(val.conservative.prices.fair)}（營收不再成長）`}
                 </div>
               </div>
             ) : (
-              <div className="text-[11px] text-zinc-500 leading-relaxed">{peer ? peer.peReason ?? '無法估算' : '上櫃、ETF 或同業資料不足，不估'}</div>
+              <div className="text-[11px] text-zinc-500 leading-relaxed">{own && !own.ok ? own.reason : '基本面載入中…'}</div>
             )}
           </Section>
         </div>
@@ -172,7 +182,7 @@ const Poster = React.forwardRef<HTMLDivElement, Omit<PosterProps, 'onClose' | 'p
         )}
 
         <div className="text-[9px] text-zinc-600 leading-relaxed pt-1 border-t border-zinc-800">
-          資料：還原日 K {levels?.date ?? metrics.date ?? '—'}；合理價用證交所本益比／淨值比與細分族群同業；摘要與價位皆由規則計算。
+          資料：還原日 K {levels?.date ?? metrics.date ?? '—'}；合理價＝最近 3 個月營收推估的未來四季 EPS × 自身近 3 年本益比（金融、虧損過的用淨值比）；摘要與價位皆由規則計算。
           僅供個人研究參考，不構成投資建議。
         </div>
       </div>
@@ -182,7 +192,7 @@ const Poster = React.forwardRef<HTMLDivElement, Omit<PosterProps, 'onClose' | 'p
 Poster.displayName = 'Poster';
 
 export const StockPosterModal: React.FC<PosterProps> = (props) => {
-  const { onClose, peerLoading, code, name } = props;
+  const { onClose, ownLoading, code, name } = props;
   const posterRef = useRef<HTMLDivElement>(null);
   const [busy, setBusy] = useState<'download' | 'share' | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -275,7 +285,7 @@ export const StockPosterModal: React.FC<PosterProps> = (props) => {
             </button>
           </div>
         </div>
-        {peerLoading && <div className="text-[11px] text-zinc-500">同業估值載入中，合理價稍後補上…</div>}
+        {ownLoading && !props.own && <div className="text-[11px] text-zinc-500">基本面載入中，合理價稍後補上…</div>}
         {error && <div className="text-[11px] text-red-400">{error}</div>}
         <div className="rounded-xl overflow-hidden border border-zinc-800 w-fit mx-auto" style={{ zoom: exporting ? 1 : zoom }}>
           <Poster
@@ -287,7 +297,7 @@ export const StockPosterModal: React.FC<PosterProps> = (props) => {
             highlights={props.highlights}
             levels={props.levels}
             dailyRows={props.dailyRows}
-            peer={props.peer}
+            own={props.own}
             brief={props.brief}
           />
         </div>

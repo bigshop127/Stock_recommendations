@@ -353,10 +353,11 @@ def fetch_shares_issued(code: str, start: str, end: str) -> pd.DataFrame:
 
 # ── 股名（補 StockSignal.name）──────────────────────────────────────────────
 _name_cache: dict[str, str] = {}
+_industry_cache: dict[str, list[str]] = {}
 
 
 def get_stock_name(code: str) -> str | None:
-    """由 TaiwanStockInfo 取股名；查不到回 None。結果記憶體快取。"""
+    """由 TaiwanStockInfo 取股名；查不到回 None。結果記憶體快取（同一次查詢順便記產業別）。"""
     if code in _name_cache:
         return _name_cache[code]
     try:
@@ -367,7 +368,19 @@ def get_stock_name(code: str) -> str | None:
     if not raw.empty and "stock_name" in raw.columns:
         name = str(raw.iloc[-1]["stock_name"])
         _name_cache[code] = name
+    if not raw.empty and "industry_category" in raw.columns:
+        _industry_cache[code] = sorted({str(v).strip() for v in raw["industry_category"].dropna() if str(v).strip()})
     return name
+
+
+def get_stock_industries(code: str) -> list[str]:
+    """TaiwanStockInfo 的產業別（同一檔可能有好幾列，例：電子工業＋半導體業）；查不到回空陣列。
+
+    合理價（opt53）用來判斷金融股要改用淨值比。跟 get_stock_name 共用同一次查詢。
+    """
+    if code not in _industry_cache:
+        get_stock_name(code)
+    return list(_industry_cache.get(code, []))
 
 
 # ── 股名 → 代號 反查（階段4 老王次要個股常只有股名）───────────────────────────

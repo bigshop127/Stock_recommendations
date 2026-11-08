@@ -37,6 +37,7 @@ app.use(require('./routes/stock_realized_sync'));
 app.use(require('./routes/reports_run'));
 app.use(require('./routes/gateway'));
 app.use(require('./routes/market'));
+app.use(require('./routes/index_charts'));
 app.use(require('./routes/twse_dashboard'));
 app.use(require('./routes/rebalance'));
 app.use(require('./routes/rebalance_ocr'));

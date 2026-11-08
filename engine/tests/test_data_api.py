@@ -28,6 +28,7 @@ client = TestClient(app)
 def _tmp_cache(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "engine_cache_dir", str(tmp_path))
     monkeypatch.setattr(finmind_client, "get_stock_name", lambda code: "台積電")
+    monkeypatch.setattr(finmind_client, "get_stock_industries", lambda code: ["半導體業"])
 
 
 def test_ohlcv_clean_output(monkeypatch):
@@ -609,3 +610,72 @@ def test_symbols_search(monkeypatch):
 
 
 
+
+
+# ── opt53 合理價：自身本益比／淨值比近三年區間 ─────────────────────────────────
+def test_valuation_bands_quantiles_and_spike_filter():
+    from app.data.service import _valuation_bands, _drop_isolated_spikes
+
+    # 單日跳針（前後都 40、那天 6）拿掉；財報換季的「之後一直維持」不能被拿掉
+    s = pd.Series([40.0, 41.0, 6.12, 40.5, 40.0, 20.0, 20.5, 21.0])
+    kept, dropped = _drop_isolated_spikes(s)
+    assert dropped == 1
+    assert 6.12 not in kept.tolist()
+    assert 20.0 in kept.tolist()
+
+    n = 200
+    dates = pd.date_range("2024-01-01", periods=n, freq="D").strftime("%Y-%m-%d")
+    pe = [10.0 + i * 0.1 for i in range(n)]  # 10.0 ~ 29.9
+    pe[0] = 0.0                                # 虧損日（證交所不列）→ 不算
+    df = pd.DataFrame({"date": dates, "pe_ratio": pe, "pb_ratio": [2.0] * n})
+    b = _valuation_bands(df)
+    valid = pd.Series(pe[1:])
+    assert b["pe"]["n"] == n - 1
+    assert b["pe"]["p50"] == round(float(valid.quantile(0.5)), 2)
+    assert b["pe"]["p25"] < b["pe"]["p50"] < b["pe"]["p75"]
+    assert b["pb"] == {"p25": 2.0, "p50": 2.0, "p75": 2.0, "n": n}
+    assert b["start"] == "2024-01-01" and b["years"] == 3
+
+    # 不到半年（新上市）→ 不給區間
+    short = _valuation_bands(df.head(60))
+    assert short["pe"] is None and short["pb"] is None
+    assert _valuation_bands(pd.DataFrame())["pe"] is None
+
+
+def test_fundamentals_bands_loss_quarters_and_industry(monkeypatch):
+    n = 800  # 約三年多的日資料：畫面 valuation 只給近一年，區間用三年
+    dates = [_days_ago(n - i) for i in range(n)]
+    captured = {}
+
+    def fake_val(code, start, end):
+        captured["start"] = start
+        return pd.DataFrame({"date": dates, "pe_ratio": [20.0] * n, "pb_ratio": [3.0] * n, "dividend_yield": [2.0] * n})
+
+    monkeypatch.setattr(finmind_client, "fetch_valuation", fake_val)
+    monkeypatch.setattr(finmind_client, "fetch_month_revenue", lambda code, start, end: pd.DataFrame())
+    monkeypatch.setattr(
+        finmind_client, "fetch_financials",
+        lambda code, start, end: pd.DataFrame([
+            _fin_row(_quarter_end(5), -1.0, 800.0, -30.0),  # 三年內虧損一季
+            _fin_row(_quarter_end(4), 5.0, 800.0, 300.0),
+            _fin_row(_quarter_end(3), 6.0, 900.0, 320.0),
+            _fin_row(_quarter_end(2), 7.0, 950.0, 340.0),
+            _fin_row(_quarter_end(1), 8.0, 1000.0, 360.0),
+            _fin_row(_quarter_end(0), 9.0, 1200.0, 450.0),
+        ])
+    )
+    for fn in ("fetch_balance_sheet", "fetch_dividend", "fetch_shares_issued", "fetch_ohlcv"):
+        monkeypatch.setattr(finmind_client, fn, lambda code, start, end: pd.DataFrame())
+    monkeypatch.setattr(finmind_client, "get_stock_industries", lambda code: ["金融保險業"])
+
+    from app.data.service import get_fundamentals
+    res = get_fundamentals("2882")
+    assert captured["start"] <= _days_ago(3 * 365)
+    assert all(v["date"] >= _days_ago(365) for v in res["valuation"])
+    assert 240 <= len(res["valuation"]) <= 370
+    b = res["valuation_bands"]
+    assert b["pe"]["p50"] == 20.0 and b["pb"]["p50"] == 3.0
+    assert b["pe"]["n"] == n  # 三年全部都算進區間（測資約 2.2 年）
+    assert b["loss_quarters"] == 1 and b["quarters_checked"] == 6
+    assert res["is_financial"] is True
+    assert res["industries"] == ["金融保險業"]

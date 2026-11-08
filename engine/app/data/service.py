@@ -118,6 +118,63 @@ def _clean_records(df, map_fn=None) -> list[dict]:
     return cleaned
 
 
+# ── 自身本益比／淨值比區間（opt53 合理價，2026-11-08）────────────────────────
+# 使用者定案：看近 3 年，取 25／50／75 百分位當「便宜／合理／昂貴」倍數。
+BAND_YEARS = 3
+BAND_MIN_POINTS = 120  # 不到半年的資料（新上市）不算區間
+
+
+def _drop_isolated_spikes(s: pd.Series, jump: float = 0.4, agree: float = 0.15) -> tuple[pd.Series, int]:
+    """拿掉單日跳針：跟前後一天都差超過 jump、而前後兩天彼此接近（agree 內）的那一點。
+
+    FinMind 的 TaiwanStockPER 偶爾有一天整列錯（實例：3711 在 2026-06-19 本益比 6.12、
+    前後都是 40 多倍），會把區間下緣拉低。真正的財報換季跳動是「之後一直維持」，不會被這條拿掉。
+    """
+    vals = s.tolist()
+    keep = [True] * len(vals)
+    for i in range(1, len(vals) - 1):
+        prev, cur, nxt = vals[i - 1], vals[i], vals[i + 1]
+        if prev <= 0 or nxt <= 0:
+            continue
+        if abs(cur / prev - 1) > jump and abs(cur / nxt - 1) > jump and abs(prev / nxt - 1) < agree:
+            keep[i] = False
+    out = s[keep]
+    return out, len(vals) - len(out)
+
+
+def _valuation_bands(df: pd.DataFrame) -> dict:
+    """近 BAND_YEARS 年的本益比、淨值比 25／50／75 百分位。
+
+    本益比只收 > 0（證交所虧損股不列本益比，FinMind 給 0）。資料不足就回 None，讓前端說原因、不印空值。
+    quarters_checked／loss_quarters 由 get_fundamentals 看損益表補上。
+    """
+    out: dict = {
+        "years": BAND_YEARS, "start": None, "end": None, "pe": None, "pb": None,
+        "dropped_outliers": 0, "quarters_checked": 0, "loss_quarters": None,
+    }
+    if df is None or df.empty or "date" not in df.columns:
+        return out
+    d = df.sort_values("date").reset_index(drop=True)
+    out["start"] = str(d["date"].iloc[0])[:10]
+    out["end"] = str(d["date"].iloc[-1])[:10]
+    for col, key in (("pe_ratio", "pe"), ("pb_ratio", "pb")):
+        if col not in d.columns:
+            continue
+        s = pd.to_numeric(d[col], errors="coerce")
+        s = s[(s > 0) & s.notna()]
+        s, dropped = _drop_isolated_spikes(s)
+        out["dropped_outliers"] += dropped
+        if len(s) < BAND_MIN_POINTS:
+            continue
+        out[key] = {
+            "p25": round(float(s.quantile(0.25)), 2),
+            "p50": round(float(s.quantile(0.5)), 2),
+            "p75": round(float(s.quantile(0.75)), 2),
+            "n": int(len(s)),
+        }
+    return out
+
+
 def get_fundamentals(code: str) -> dict:
     """個股基本面聚合：估值（日）、月營收（月）、損益 (季)、資產負債 (季)、股利 (每次配發) 與最新 summary。
 
@@ -127,9 +184,15 @@ def get_fundamentals(code: str) -> dict:
     today = datetime.date.today()
     val_end = today.isoformat()
 
-    # 1. Valuation: 近一年（日頻、當天就有，照舊用浮水印快取）
+    # 1. Valuation：抓近三年算「自身本益比／淨值比區間」（opt53 合理價），畫面上的 valuation 照舊只給近一年
     val_start = (today - datetime.timedelta(days=365)).isoformat()
-    val_df, _ = cache.get_timeseries("fundamentals_valuation", code, val_start, val_end, finmind_client.fetch_valuation)
+    band_start = (today - datetime.timedelta(days=BAND_YEARS * 365 + 1)).isoformat()
+    val_all, _ = cache.get_timeseries("fundamentals_valuation", code, band_start, val_end, finmind_client.fetch_valuation)
+    val_bands = _valuation_bands(val_all)
+    if not val_all.empty:
+        val_df = val_all[val_all["date"].astype(str) >= val_start].reset_index(drop=True)
+    else:
+        val_df = val_all
 
     # 2. Revenue: 近 ~25 月（為了算 YoY 往前多拿 13 個月）
     # FinMind 月營收的 date 是「公布那個月的 1 日」：8 月營收＝2026-09-01，營收月份要往前推一個月
@@ -202,6 +265,11 @@ def get_fundamentals(code: str) -> dict:
             q = [int(v) for v in last4["qidx"].tolist()]
             if q == list(range(q[0], q[0] + 4)):
                 eps_ttm = round(float(last4["eps"].sum()), 2)
+
+        # 近三年（12 季）有幾季虧損：合理價遇到虧損過的（景氣循環股）改用淨值比
+        recent_eps = pd.to_numeric(fin_df.tail(BAND_YEARS * 4)["eps"], errors="coerce").dropna()
+        val_bands["quarters_checked"] = int(len(recent_eps))
+        val_bands["loss_quarters"] = int((recent_eps < 0).sum())
 
         fin_df = fin_df.drop(columns=["qidx"]).tail(10).reset_index(drop=True)
 
@@ -282,9 +350,18 @@ def get_fundamentals(code: str) -> dict:
         r["quarter"] = _quarter_label(date_str) if date_str else None
         return r
 
+    name = finmind_client.get_stock_name(code)
+    try:
+        industries = finmind_client.get_stock_industries(code)
+    except Exception:
+        industries = []
+
     return {
         "code": code,
-        "name": finmind_client.get_stock_name(code),
+        "name": name,
+        "industries": industries,
+        "is_financial": any("金融" in s for s in industries),
+        "valuation_bands": val_bands,
         "as_of": as_of,
         "summary": {
             "pe_ratio": pe_ratio,

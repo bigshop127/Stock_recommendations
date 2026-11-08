@@ -111,6 +111,7 @@ data/taifex_margins.json
 data/twse_holidays.json
 # opt27 加權指數報價快取（gateway 自抓 TWSE MIS，同樣可重抓）
 data/twse_taiex.json
+data/index_history.json
 # 證交所臺股儀表板：信用交易／違約揭露快取（routes/twse_dashboard.js，可重抓）
 data/twse_credit.json
 data/twse_default_disclosures.json
