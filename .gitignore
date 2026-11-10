@@ -143,3 +143,6 @@ data/stock_folders.json
 data/stock_price_alerts.json
 data/stock_price_alert_state.json
 data/stock_price_alert.log
+
+# opt54 資金潮汐：法人資金流向日檔（routes/inst_flow.js，可重抓）
+data/inst_flow/

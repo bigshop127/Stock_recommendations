@@ -499,6 +499,7 @@ router.get('/api/market/stock-metrics', async (req, res) => {
 // 今天還沒產出（證交所約 15:00 後）10 分鐘後再試。證交所限流嚴，實際打出去的請求間隔 1.5 秒。
 
 const { parseT86, sumInstNet, ymdIso: t86Iso } = require('../lib/twse_inst');
+const { twseSlot } = require('../lib/twse_gate');
 
 const T86_TODAY_RETRY_MS = 10 * 60 * 1000;
 const T86_GAP_MS = 1500;
@@ -507,16 +508,14 @@ const T86_MAX_LOOKBACK = 14; // 最多往回看幾個日曆天（連假也夠湊
 // 「今天還沒產出」那筆 final=false：就算隔天變成過去的日子也要重抓，不能當成沒開盤記一輩子
 const t86Cache = new Map();
 const t86Inflight = new Map();
-let t86LastHit = 0;
 
 async function fetchT86Day(ymd, today) {
   const hit = t86Cache.get(ymd);
   if (hit && (hit.day || hit.final || Date.now() - hit.at < T86_TODAY_RETRY_MS)) return hit.day;
   if (t86Inflight.has(ymd)) return t86Inflight.get(ymd);
   const p = (async () => {
-    const wait = t86LastHit + T86_GAP_MS - Date.now();
-    t86LastHit = Date.now() + Math.max(0, wait);
-    if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+    // 跟資金潮汐的回補排同一條隊（lib/twse_gate），兩邊同時要資料也不會一起打爆證交所
+    await twseSlot(T86_GAP_MS);
     const parsed = parseT86(await twseGet(`/fund/T86?date=${ymd}&selectType=ALLBUT0999&response=json`));
     const day = parsed.noData ? null : { date: parsed.date || t86Iso(ymd), net: parsed.net };
     t86Cache.set(ymd, { at: Date.now(), day, final: ymd < today });

@@ -39,6 +39,7 @@ app.use(require('./routes/gateway'));
 app.use(require('./routes/market'));
 app.use(require('./routes/index_charts'));
 app.use(require('./routes/twse_dashboard'));
+app.use(require('./routes/inst_flow'));
 app.use(require('./routes/rebalance'));
 app.use(require('./routes/rebalance_ocr'));
 app.use(require('./routes/networth'));

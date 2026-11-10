@@ -1,548 +1,572 @@
-import React, { useEffect, useState, useMemo } from 'react';
-import { Link } from 'react-router-dom';
-import { api, type CapitalTideData, type CapitalTideStock } from '../lib/api';
-import { groupLabel } from '../lib/stockGroups';
-import { GroupTag } from '../components/GroupTag';
+import React, { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { ChevronLeft, ChevronRight, Loader2, Pause, Play, RefreshCw, Search, Waves } from 'lucide-react';
+import { api, type InstFlowPayload, type InstitutionalTrades, type MarketInstitutional } from '../lib/api';
 import {
-  Waves,
-  RefreshCw,
-  Search,
-  TrendingUp,
-  Loader2,
-  ChevronRight,
-  Info,
-  Sliders,
-  DollarSign
-} from 'lucide-react';
+  buildCube,
+  buildFrames,
+  buildUnits,
+  conclusionText,
+  FETCH_DAYS,
+  flowHeadline,
+  fmtMd,
+  fmtYi,
+  foreignVsTrust,
+  INST_LABEL,
+  INST_SHORT,
+  INSTS,
+  instStreak,
+  keyFlows,
+  LEVEL_LABEL,
+  LONG_WINDOW,
+  MAX_FRAMES,
+  topUnits,
+  unitAvgChange,
+  upDownCounts,
+  weekdayOf,
+  WINDOW,
+  type Inst,
+  type Level,
+  type UnitValue,
+} from '../lib/capitalFlow';
+import { TideChart } from '../components/tide/TideChart';
+import { TideDetail } from '../components/tide/TideDetail';
+import { TideSummary, type InstTotals } from '../components/tide/TideSummary';
+
+/**
+ * 資金潮汐（opt54，2026-11-10 改版）：法人資金流向泡泡圖。
+ *
+ * 一顆泡泡＝一個族群（可切大類），橫軸近 5 日法人買賣超、縱軸加速流入，
+ * 可以播放過去最多 10 個交易日看泡泡怎麼移動；點泡泡看成分股。
+ * 資料 /api/market/inst-flow（gateway 自己抓證交所），第一次使用會在背景回補，這裡輪詢到補齊為止。
+ */
+
+/** 播放速度：每個交易日停留多久；開頭先停一下讓人看清楚起點 */
+const MS_PER_DAY = 700;
+const HOLD_MS = 450;
+const POLL_MS = 5000;
+
+type RankTab = 'in' | 'out' | 'up' | 'down';
+const RANK_TABS: [RankTab, string][] = [
+  ['in', '流入'],
+  ['out', '流出'],
+  ['up', '加速'],
+  ['down', '降溫'],
+];
+const LEVELS: Level[] = ['group', 'category'];
+
+function useMediaQuery(query: string): boolean {
+  return useSyncExternalStore(
+    (onChange) => {
+      const mq = window.matchMedia(query);
+      mq.addEventListener('change', onChange);
+      return () => mq.removeEventListener('change', onChange);
+    },
+    () => window.matchMedia(query).matches,
+  );
+}
+
+const errText = (e: unknown) => (e instanceof Error ? e.message : String(e));
+const segBtn = (active: boolean) =>
+  `px-3 py-1.5 text-xs font-semibold rounded-md transition ${active ? 'bg-zinc-700 text-zinc-100' : 'text-zinc-400 hover:text-zinc-200'}`;
 
 export const CapitalTide: React.FC = () => {
-  const [data, setData] = useState<CapitalTideData | null>(null);
+  const [payload, setPayload] = useState<InstFlowPayload | null>(null);
+  const [official, setOfficial] = useState<MarketInstitutional | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [searchQuery, setSearchQuery] = useState('');
-  const [selectedStock, setSelectedStock] = useState<CapitalTideStock | null>(null);
-  const [hoveredStock, setHoveredStock] = useState<CapitalTideStock | null>(null);
-  const [tooltipPos, setTooltipPos] = useState({ x: 0, y: 0 });
 
-  const fetchData = async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      const res = await api.marketCapitalTide();
-      setData(res);
-    } catch (err: any) {
-      setError(err.message || '無法取得資金潮汐數據');
-    } finally {
-      setLoading(false);
-    }
-  };
+  const [inst, setInst] = useState<Inst>('all');
+  const [level, setLevel] = useState<Level>('group');
+  /** null＝停在最新一天；數字＝第幾個播放日（播放中是小數） */
+  const [playhead, setPlayhead] = useState<number | null>(null);
+  const [playing, setPlaying] = useState(false);
+  const [selectedName, setSelectedName] = useState<string | null>(null);
+  const [query, setQuery] = useState('');
+  const [rankTab, setRankTab] = useState<RankTab>('in');
+
+  const isWide = useMediaQuery('(min-width: 1280px)');
+  const chartCardRef = useRef<HTMLElement>(null);
+  const playFromRef = useRef(0);
+
+  const load = useCallback(
+    () =>
+      api
+        .marketInstFlow({ days: FETCH_DAYS, quotes: MAX_FRAMES })
+        .then(
+          (p) => {
+            setPayload(p);
+            setError(null);
+          },
+          (e: unknown) => setError(errText(e)),
+        )
+        .finally(() => setLoading(false)),
+    [],
+  );
 
   useEffect(() => {
-    fetchData();
-  }, []);
+    void load();
+    // 三大法人的官方金額走 engine；抓不到就用個股估算頂著，不擋整頁
+    api.marketInstitutional({ days: 20 }).then(setOfficial).catch(() => setOfficial(null));
+  }, [load]);
 
-  // Compute quadrant stats
-  const stats = useMemo(() => {
-    if (!data) return null;
-    const stocks = data.stocks;
-    const counts = {
-      inflow_up: 0,
-      inflow_down: 0,
-      outflow_up: 0,
-      outflow_down: 0,
+  // 後端還在回補歷史資料時每 5 秒再問一次，補齊（或後端這一輪停了）就不問
+  useEffect(() => {
+    if (!payload || payload.have >= payload.want || !payload.refreshing) return;
+    const timer = window.setTimeout(() => void load(), POLL_MS);
+    return () => window.clearTimeout(timer);
+  }, [payload, load]);
+
+  // ── 泡泡、播放日 ──
+  const units = useMemo(() => (payload ? buildUnits(payload.codes, level) : []), [payload, level]);
+  const frames = useMemo(() => (payload ? buildFrames(buildCube(payload, units, inst)) : []), [payload, units, inst]);
+  const last = frames.length - 1;
+  const ph = playhead === null ? last : Math.min(playhead, last);
+  const cur = last >= 0 ? frames[Math.round(ph)] : null;
+  const latest = last >= 0 ? frames[last] : null;
+
+  const headline = useMemo(() => (latest ? flowHeadline(units, latest) : null), [units, latest]);
+  const highlight = useMemo(
+    () => (headline ? [headline.to?.unit, headline.from?.unit].filter((u): u is number => u !== undefined) : []),
+    [headline],
+  );
+  const selectedIdx = selectedName === null ? -1 : units.findIndex((u) => u.name === selectedName);
+  const selected = selectedIdx >= 0 ? selectedIdx : null;
+
+  const matched = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q || !payload) return null;
+    const hit = new Set<number>();
+    units.forEach((u, i) => {
+      const inName = u.name.toLowerCase().includes(q);
+      const inMember = u.members.some((m) => payload.codes[m].startsWith(q) || payload.names[m].toLowerCase().includes(q));
+      if (inName || inMember) hit.add(i);
+    });
+    return hit;
+  }, [query, units, payload]);
+  // 搜尋只剩一兩顆時，直接把它們當重點泡泡（標名字、畫軌跡），不用再去圖上找
+  const focusUnits = useMemo(
+    () => (matched && matched.size > 0 && matched.size <= 3 ? [...highlight, ...matched] : highlight),
+    [highlight, matched],
+  );
+
+  const rank = useMemo<UnitValue[]>(() => {
+    if (!cur) return [];
+    switch (rankTab) {
+      case 'in': return topUnits(units, cur.x, 8, true, (v) => v > 0);
+      case 'out': return topUnits(units, cur.x, 8, false, (v) => v < 0);
+      case 'up': return topUnits(units, cur.y, 8, true, (v) => v > 0);
+      default: return topUnits(units, cur.y, 8, false, (v) => v < 0);
+    }
+  }, [units, cur, rankTab]);
+
+  // ── 盤後結論：固定看最新一天、全體法人、細分族群 ──
+  const summary = useMemo(() => {
+    if (!payload) return null;
+    const groupUnits = buildUnits(payload.codes, 'group');
+    const lastFrame = (i: Inst) => buildFrames(buildCube(payload, groupUnits, i), 1)[0];
+    const all = lastFrame('all');
+    if (!all) return null;
+    return {
+      date: all.date,
+      flows: keyFlows(groupUnits, all),
+      duo: foreignVsTrust(groupUnits, lastFrame('foreign').x, lastFrame('trust').x),
+      counts: upDownCounts(unitAvgChange(payload, groupUnits, all.dayIndex)),
     };
-    stocks.forEach((s) => {
-      if (counts[s.quadrant] !== undefined) {
-        counts[s.quadrant]++;
+  }, [payload]);
+
+  const instSummary = useMemo<{ totals: InstTotals; conclusionStreaks: Parameters<typeof conclusionText>[0] } | null>(() => {
+    if (!payload || !payload.days.length) return null;
+    const date = payload.dates[payload.dates.length - 1];
+    // 官方金額（元）要有「泡泡圖最新那一天」才用；法人日報比收盤統計晚出，兩邊可能差一天
+    const officialTrend = official?.trend ?? [];
+    const k = officialTrend.findIndex((r) => r.date === date);
+    let trend: InstitutionalTrades[];
+    let isOfficial = false;
+    if (k >= 0) {
+      const yi = (v: number) => v / 1e8;
+      trend = officialTrend.slice(0, k + 1).map((r) => ({
+        foreign: yi(r.foreign),
+        investment_trust: yi(r.investment_trust),
+        dealer: yi(r.dealer),
+        total: yi(r.total),
+      }));
+      isOfficial = true;
+    } else {
+      const sum = (a: number[]) => a.reduce((s, v) => s + v, 0) / 100;
+      trend = payload.days.map((d) => {
+        const f = sum(d.f);
+        const t = sum(d.t);
+        const dl = sum(d.d);
+        return { foreign: f, investment_trust: t, dealer: dl, total: f + t + dl };
+      });
+    }
+    const now = trend[trend.length - 1];
+    const prev = trend.length > 1 ? trend[trend.length - 2] : null;
+    return {
+      totals: {
+        official: isOfficial,
+        foreign: [now.foreign, prev ? prev.foreign : null],
+        trust: [now.investment_trust, prev ? prev.investment_trust : null],
+        dealer: [now.dealer, prev ? prev.dealer : null],
+      },
+      conclusionStreaks: { foreign: instStreak(trend, 'foreign'), trust: instStreak(trend, 'investment_trust') },
+    };
+  }, [payload, official]);
+
+  // ── 播放 ──
+  useEffect(() => {
+    if (!playing || last < 1) return;
+    let raf = 0;
+    let prev = performance.now();
+    let hold = HOLD_MS;
+    let pos = playFromRef.current;
+    const step = (now: number) => {
+      // 分頁切到背景再回來時 now 會跳一大段，夾住免得一口氣跳到底
+      const dt = Math.min(100, now - prev);
+      prev = now;
+      if (hold > 0) hold -= dt;
+      else pos += dt / MS_PER_DAY;
+      if (pos >= last) {
+        setPlayhead(null);
+        setPlaying(false);
+        return;
       }
-    });
+      setPlayhead(pos);
+      raf = requestAnimationFrame(step);
+    };
+    raf = requestAnimationFrame(step);
+    return () => cancelAnimationFrame(raf);
+  }, [playing, last]);
 
-    const topBuyers = [...stocks]
-      .sort((a, b) => b.flow_raw - a.flow_raw)
-      .slice(0, 5);
-
-    const topGainers = [...stocks]
-      .sort((a, b) => b.momentum_raw - a.momentum_raw)
-      .slice(0, 5);
-
-    return { counts, topBuyers, topGainers };
-  }, [data]);
-
-  const handleMouseMove = (e: React.MouseEvent<SVGCircleElement>) => {
-    const svg = e.currentTarget.ownerSVGElement;
-    if (!svg) return;
-    const rect = svg.getBoundingClientRect();
-    setTooltipPos({
-      x: e.clientX - rect.left + 15,
-      y: e.clientY - rect.top - 15,
-    });
-  };
-
-  const getQuadrantLabel = (quad: string) => {
-    switch (quad) {
-      case 'inflow_up':
-        return '資金流入 + 上漲 (強勢偏多)';
-      case 'inflow_down':
-        return '資金流入 + 下跌 (拉回伺機)';
-      case 'outflow_up':
-        return '資金流出 + 上漲 (無量拉抬)';
-      case 'outflow_down':
-        return '資金流出 + 下跌 (弱勢避開)';
-      default:
-        return '';
+  const togglePlay = () => {
+    if (playing) {
+      setPlaying(false);
+      setPlayhead(Math.round(ph) >= last ? null : Math.round(ph));
+      return;
     }
+    // 停在最後一天就從頭播，停在中間就接著播
+    playFromRef.current = playhead === null || ph >= last ? 0 : ph;
+    setPlayhead(playFromRef.current);
+    setPlaying(true);
+  };
+  const seek = (i: number) => {
+    setPlaying(false);
+    const v = Math.max(0, Math.min(last, i));
+    setPlayhead(v >= last ? null : v);
   };
 
-  const getQuadrantColorClass = (quad: string) => {
-    switch (quad) {
-      case 'inflow_up':
-        return 'text-bull border-bull/20 bg-bull/5';
-      case 'inflow_down':
-        return 'text-neutral border-neutral/20 bg-neutral/5';
-      case 'outflow_up':
-        return 'text-accent border-accent/20 bg-accent/5';
-      case 'outflow_down':
-        return 'text-bear border-bear/20 bg-bear/5';
-      default:
-        return 'text-zinc-400 border-zinc-800 bg-zinc-900/50';
-    }
+  const changeLevel = (lv: Level) => {
+    setLevel(lv);
+    setSelectedName(null);
+  };
+  const pickGroup = (name: string) => {
+    setLevel('group');
+    setSelectedName(name);
+    chartCardRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   };
 
-  // 座標展布：原始 flow_x / momentum_y 多半擠在中央 (少數極端值把尺度拉大)，
-  // 用凹函數 (signed power, 指數 <1) 把靠近 0 的值往外推，明顯降低泡泡重疊、提升可讀性。
-  // 指數再壓低 (0.42) 讓中央密集區展得更開。
-  const spreadAxis = (v: number) => {
-    const c = Math.max(-1, Math.min(1, v));
-    return Math.sign(c) * Math.pow(Math.abs(c), 0.42);
-  };
-  const radiusOf = (s: CapitalTideStock) => 3.5 + s.size * 11;
-
-  // 泡泡防重疊：先依展布函數放置初始座標，再做數次力導鬆弛把互相重疊的泡泡推開，
-  // 大幅提升中央密集區的可讀性。位移限制在繪圖框內、僅輕微推移故不破壞象限語意 (顏色仍鎖定原象限)。
-  const layout = useMemo(() => {
-    if (!data) return new Map<string, { x: number; y: number; r: number }>();
-    const pts = data.stocks.map((s) => ({
-      code: s.code,
-      x: 300 + spreadAxis(s.flow_x) * 250,
-      y: 300 - spreadAxis(s.momentum_y) * 250,
-      r: radiusOf(s),
-    }));
-    const PAD = 2; // 泡泡間最小間隙
-    const MIN = 56;
-    const MAX = 544;
-    for (let iter = 0; iter < 80; iter++) {
-      for (let i = 0; i < pts.length; i++) {
-        for (let j = i + 1; j < pts.length; j++) {
-          const a = pts[i];
-          const b = pts[j];
-          let dx = b.x - a.x;
-          let dy = b.y - a.y;
-          let dist = Math.sqrt(dx * dx + dy * dy);
-          const minDist = a.r + b.r + PAD;
-          if (dist < minDist) {
-            if (dist < 0.01) {
-              // 完全重合：給一個確定性的微小偏移避免除以零
-              dx = (i % 2 === 0 ? 1 : -1) * 0.5;
-              dy = (j % 2 === 0 ? 1 : -1) * 0.5;
-              dist = 0.7;
-            }
-            const push = (minDist - dist) / 2;
-            const ux = dx / dist;
-            const uy = dy / dist;
-            a.x -= ux * push;
-            a.y -= uy * push;
-            b.x += ux * push;
-            b.y += uy * push;
-          }
-        }
-      }
-      // 夾回繪圖框
-      for (const p of pts) {
-        p.x = Math.max(MIN, Math.min(MAX, p.x));
-        p.y = Math.max(MIN, Math.min(MAX, p.y));
-      }
-    }
-    const m = new Map<string, { x: number; y: number; r: number }>();
-    for (const p of pts) m.set(p.code, { x: p.x, y: p.y, r: p.r });
-    return m;
-  }, [data]);
-
-  const plotX = (s: CapitalTideStock) => layout.get(s.code)?.x ?? 300 + spreadAxis(s.flow_x) * 250;
-  const plotY = (s: CapitalTideStock) => layout.get(s.code)?.y ?? 300 - spreadAxis(s.momentum_y) * 250;
-
-  const getQuadrantDotColor = (quad: string) => {
-    switch (quad) {
-      case 'inflow_up':
-        return '#ef4444'; // Red
-      case 'inflow_down':
-        return '#f59e0b'; // Amber
-      case 'outflow_up':
-        return '#06b6d4'; // Cyan
-      case 'outflow_down':
-        return '#22c55e'; // Green
-      default:
-        return '#71717a';
-    }
-  };
-
-  if (loading) {
+  // ── 畫面 ──
+  if (loading && !payload) {
     return (
-      <div className="h-[70vh] flex flex-col items-center justify-center gap-3">
-        <Loader2 className="w-10 h-10 animate-spin text-primary" />
-        <span className="text-sm font-medium font-mono text-zinc-400 animate-pulse">
-          計算與分析全市場資金潮汐中 (包含 Watchlist 與 0050)...
-        </span>
+      <div className="flex h-[70vh] flex-col items-center justify-center gap-3">
+        <Loader2 className="h-10 w-10 animate-spin text-primary" />
+        <span className="animate-pulse font-mono text-sm font-medium text-zinc-400">載入法人資金流向中…</span>
       </div>
     );
   }
-
-  if (error || !data) {
+  if (!payload) {
     return (
-      <div className="h-[70vh] flex flex-col items-center justify-center text-center p-6 border border-zinc-800 bg-zinc-900/20 rounded-xl max-w-xl mx-auto my-12">
-        <Waves className="w-12 h-12 text-zinc-600 mb-4" />
-        <span className="text-sm text-red-400 font-semibold mb-2">載入資金潮汐資料失敗</span>
-        <span className="text-xs text-zinc-500 font-mono mb-6">{error || '無資料'}</span>
+      <div className="mx-auto my-12 flex h-[60vh] max-w-xl flex-col items-center justify-center rounded-xl border border-zinc-800 bg-zinc-900/20 p-6 text-center">
+        <Waves className="mb-4 h-12 w-12 text-zinc-600" />
+        <span className="mb-2 text-sm font-semibold text-red-400">載入資金潮汐資料失敗</span>
+        <span className="mb-6 font-mono text-xs text-zinc-500">{error || '無資料'}</span>
         <button
-          onClick={fetchData}
-          className="flex items-center gap-1.5 px-4 py-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded-lg text-xs font-semibold transition"
+          onClick={() => { setLoading(true); void load(); }}
+          className="flex items-center gap-1.5 rounded-lg bg-zinc-800 px-4 py-2 text-xs font-semibold text-zinc-300 transition hover:bg-zinc-700"
         >
-          <RefreshCw className="w-3.5 h-3.5" />
+          <RefreshCw className="h-3.5 w-3.5" />
           重新整理
         </button>
       </div>
     );
   }
 
+  const backfilling = payload.have < payload.want;
+  const who = INST_SHORT[inst];
+  const selectedUnit = selected !== null ? units[selected] : null;
+  const detail = selectedUnit && cur && selected !== null ? (
+    <TideDetail
+      payload={payload}
+      unit={selectedUnit}
+      unitIndex={selected}
+      frame={cur}
+      inst={inst}
+      level={level}
+      compact={isWide}
+      onClose={() => setSelectedName(null)}
+    />
+  ) : null;
+
   return (
-    <div className="space-y-6">
-      {/* 標題與說明 */}
-      <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+    <div className="space-y-4 sm:space-y-6">
+      {/* 標題 */}
+      <div className="flex flex-col justify-between gap-3 lg:flex-row lg:items-center">
         <div>
-          <h2 className="text-xl font-bold tracking-tight text-zinc-100 flex items-center gap-2">
-            <Waves className="w-5 h-5 text-primary" />
-            資金潮汐與動能分佈觀測
+          <h2 className="flex items-center gap-2 text-xl font-bold tracking-tight text-zinc-100">
+            <Waves className="h-5 w-5 text-primary" />
+            資金潮汐・法人資金流去哪？
           </h2>
-          <p className="text-xs text-zinc-500 mt-1">
-            二維平面分佈：X 軸為近 5 日三大法人淨買賣超 (張)，Y 軸為近 5 日平均每日漲跌幅 (%)，泡泡大小代表成交值。座標已做視覺展布，將密集於中央的個股向外推開以利閱讀（相對位置不變）。
+          <p className="mt-1 text-xs text-zinc-500">
+            每天盤後整理外資、投信、自營商在各族群的買賣超，一眼看出資金正在加碼、撤出的地方。
           </p>
         </div>
-        <div className="flex items-center gap-3">
-          <div className="relative">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-zinc-500" />
+        <div className="flex items-center gap-2">
+          <div className="relative flex-1 lg:flex-none">
+            <Search className="absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-zinc-500" />
             <input
               type="text"
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="搜尋代號或名稱..."
-              className="bg-zinc-900 border border-zinc-850 rounded-lg pl-9 pr-4 py-1.5 text-xs text-zinc-100 focus:outline-none focus:border-primary/50 transition-colors w-48"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="搜尋族群、代號或股名…"
+              className="w-full rounded-lg border border-zinc-800 bg-zinc-900 py-1.5 pl-9 pr-3 text-xs text-zinc-100 transition-colors focus:border-primary/50 focus:outline-none lg:w-56"
             />
           </div>
           <button
-            onClick={fetchData}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-zinc-900 border border-zinc-800 text-xs font-semibold hover:bg-zinc-800 transition text-zinc-300"
+            onClick={() => void load()}
+            className="flex shrink-0 items-center gap-1.5 rounded-lg border border-zinc-800 bg-zinc-900 px-3 py-1.5 text-xs font-semibold text-zinc-300 transition hover:bg-zinc-800"
           >
-            <RefreshCw className="w-3.5 h-3.5" />
+            <RefreshCw className="h-3.5 w-3.5" />
             重新整理
           </button>
         </div>
       </div>
 
-      <div className="grid grid-cols-1 xl:grid-cols-7 gap-6">
-        {/* 左側：SVG Scatter Plot 泡泡圖 */}
-        <div className="xl:col-span-5 bg-card border border-border rounded-xl p-4 relative select-none">
-          <div className="absolute top-4 left-4 flex items-center gap-1.5 bg-zinc-950/60 border border-zinc-800/80 px-2.5 py-1 rounded text-[10px] text-zinc-400 font-mono z-10">
-            <Info className="w-3 h-3 text-primary" />
-            評估範圍: {data.universe} ({data.stocks.length} 檔)
-          </div>
+      {(backfilling || error) && (
+        <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
+          {backfilling && (
+            <div className="flex items-center gap-2">
+              {payload.refreshing && <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" />}
+              <span>
+                歷史資料{payload.refreshing ? '回補中' : '還沒補齊'}：已有 {payload.have}／{payload.want} 個交易日
+                {payload.refreshing ? '（第一次使用約需兩三分鐘，畫面會自己更新）' : '，按「重新整理」再補一次'}。
+              </span>
+            </div>
+          )}
+          {error && <div>最近一次更新失敗：{error}</div>}
+          {payload.errors?.length ? <div className="mt-1 font-mono text-[10px] text-amber-300/70">{payload.errors.join('；')}</div> : null}
+        </div>
+      )}
 
-          <div className="aspect-square w-full max-w-[92vh] mx-auto relative mt-6">
-            <svg viewBox="0 0 600 600" className="w-full h-full overflow-visible">
-              {/* 四象限背景 */}
-              {/* 右上 (inflow_up) */}
-              <rect x="300" y="50" width="250" height="250" className="fill-bull/[0.01]" />
-              {/* 左上 (outflow_up) */}
-              <rect x="50" y="50" width="250" height="250" className="fill-accent/[0.01]" />
-              {/* 右下 (inflow_down) */}
-              <rect x="300" y="300" width="250" height="250" className="fill-neutral/[0.01]" />
-              {/* 左下 (outflow_down) */}
-              <rect x="50" y="300" width="250" height="250" className="fill-bear/[0.01]" />
+      {summary && instSummary && (
+        <TideSummary
+          date={summary.date}
+          conclusion={conclusionText(instSummary.conclusionStreaks, summary.counts)}
+          counts={summary.counts}
+          totals={instSummary.totals}
+          flows={summary.flows}
+          duo={summary.duo}
+          onPick={pickGroup}
+        />
+      )}
 
-              {/* 網格虛線 */}
-              <line x1="50" y1="175" x2="550" y2="175" stroke="#27272a" strokeWidth="1" strokeDasharray="4 4" />
-              <line x1="50" y1="425" x2="550" y2="425" stroke="#27272a" strokeWidth="1" strokeDasharray="4 4" />
-              <line x1="175" y1="50" x2="175" y2="550" stroke="#27272a" strokeWidth="1" strokeDasharray="4 4" />
-              <line x1="425" y1="50" x2="425" y2="550" stroke="#27272a" strokeWidth="1" strokeDasharray="4 4" />
+      {!cur || !latest ? (
+        <div className="flex h-64 flex-col items-center justify-center rounded-xl border border-dashed border-zinc-800 text-center text-sm text-zinc-500">
+          {payload.refreshing && <Loader2 className="mb-3 h-8 w-8 animate-spin text-primary" />}
+          至少要 {WINDOW * 2} 個交易日才畫得出泡泡圖，目前 {payload.have} 個
+          {payload.refreshing ? '，資料補上來會自動顯示。' : '。'}
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 gap-4 sm:gap-6 xl:grid-cols-3 xl:items-start">
+          {/* 泡泡圖 */}
+          <section ref={chartCardRef} className="min-w-0 rounded-xl border border-border bg-card p-3 sm:p-4 xl:col-span-2">
+            <div className="flex items-baseline justify-between">
+              <h3 className="text-base font-bold text-zinc-100">法人資金流向</h3>
+              <span className="text-[11px] text-zinc-500">更新時間 {fmtMd(latest.date)}</span>
+            </div>
 
-              {/* 十字分隔線 */}
-              <line x1="50" y1="300" x2="550" y2="300" stroke="#3f3f46" strokeWidth="1.5" />
-              <line x1="300" y1="50" x2="300" y2="550" stroke="#3f3f46" strokeWidth="1.5" />
+            {/* 法人別分頁 */}
+            <div className="mt-2 flex border-b border-zinc-800">
+              {INSTS.map((i) => (
+                <button
+                  key={i}
+                  onClick={() => setInst(i)}
+                  className={`-mb-px flex-1 border-b-2 px-2 py-2 text-sm font-semibold transition sm:flex-none sm:px-5 ${
+                    inst === i ? 'border-bull text-bull' : 'border-transparent text-zinc-400 hover:text-zinc-200'
+                  }`}
+                >
+                  {INST_LABEL[i]}
+                </button>
+              ))}
+            </div>
 
-              {/* 坐標軸箭頭 / 標籤 */}
-              <text x="550" y="315" className="fill-zinc-500 font-mono font-semibold text-[10px]" textAnchor="end">
-                {data.axes.x.label} 流入 ➔
-              </text>
-              <text x="50" y="288" className="fill-zinc-500 font-mono font-semibold text-[10px]" textAnchor="start">
-                ➦ 流出
-              </text>
-              <text x="312" y="65" className="fill-zinc-500 font-mono font-semibold text-[10px]" textAnchor="start">
-                ▲ {data.axes.y.label} (上漲)
-              </text>
-              <text x="312" y="540" className="fill-zinc-500 font-mono font-semibold text-[10px]" textAnchor="start">
-                ▼ 下跌
-              </text>
-
-              {/* 象限名稱標籤 */}
-              <text x="535" y="65" className="fill-bull/40 font-bold text-[11px]" textAnchor="end">
-                資金流入 + 上漲 (強勢區)
-              </text>
-              <text x="65" y="65" className="fill-accent/40 font-bold text-[11px]" textAnchor="start">
-                資金流出 + 上漲 (無量拉抬)
-              </text>
-              <text x="535" y="545" className="fill-neutral/40 font-bold text-[11px]" textAnchor="end">
-                資金流入 + 下跌 (拉回洗盤)
-              </text>
-              <text x="65" y="545" className="fill-bear/40 font-bold text-[11px]" textAnchor="start">
-                資金流出 + 下跌 (弱勢區)
-              </text>
-
-              {/* 繪製泡泡 */}
-              {data.stocks.map((stock) => {
-                const cx = plotX(stock);
-                const cy = plotY(stock);
-                const r = layout.get(stock.code)?.r ?? radiusOf(stock);
-                const fill = getQuadrantDotColor(stock.quadrant);
-                const isMatch = searchQuery
-                  ? stock.code.includes(searchQuery) || stock.name.toLowerCase().includes(searchQuery.toLowerCase())
-                  : true;
-
-                return (
-                  <circle
-                    key={stock.code}
-                    cx={cx}
-                    cy={cy}
-                    r={r}
-                    fill={fill}
-                    fillOpacity={isMatch ? (hoveredStock?.code === stock.code ? 0.95 : 0.6) : 0.08}
-                    stroke={fill}
-                    strokeWidth={hoveredStock?.code === stock.code ? 2 : 1}
-                    strokeOpacity={isMatch ? 0.95 : 0.08}
-                    className="cursor-pointer transition-all duration-150"
-                    onMouseEnter={() => setHoveredStock(stock)}
-                    onMouseMove={handleMouseMove}
-                    onMouseLeave={() => setHoveredStock(null)}
-                    onClick={() => setSelectedStock(selectedStock?.code === stock.code ? null : stock)}
-                  />
-                );
-              })}
-
-              {/* 點擊高亮環 */}
-              {selectedStock && (
-                <circle
-                  cx={plotX(selectedStock)}
-                  cy={plotY(selectedStock)}
-                  r={(layout.get(selectedStock.code)?.r ?? radiusOf(selectedStock)) + 4}
-                  fill="none"
-                  stroke="#ffffff"
-                  strokeWidth="1.5"
-                  strokeDasharray="3 3"
-                  className="animate-pulse"
-                />
-              )}
-            </svg>
-
-            {/* Hover Tooltip (手刻 DOM Tooltip 漂浮在 SVG 上) */}
-            {hoveredStock && (
-              <div
-                className="absolute z-30 bg-zinc-950/95 border border-zinc-800 rounded-xl p-3 shadow-xl text-xs space-y-2 pointer-events-none w-56 backdrop-blur-sm"
-                style={{ left: `${tooltipPos.x}px`, top: `${tooltipPos.y}px` }}
+            <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <div className="flex rounded-lg border border-zinc-800 bg-zinc-900 p-0.5">
+                  {LEVELS.map((lv) => (
+                    <button key={lv} onClick={() => changeLevel(lv)} className={segBtn(level === lv)}>
+                      {LEVEL_LABEL[lv]}
+                    </button>
+                  ))}
+                </div>
+                <span className="hidden text-[11px] text-zinc-500 underline decoration-amber-400/70 decoration-2 underline-offset-4 sm:inline">
+                  點擊泡泡查看成分股
+                </span>
+              </div>
+              <button
+                onClick={togglePlay}
+                disabled={last < 1}
+                className="flex items-center gap-1.5 rounded-lg border border-zinc-600 bg-zinc-900 px-3.5 py-1.5 text-sm font-bold text-zinc-100 transition hover:border-zinc-400 disabled:opacity-40"
               >
-                <div className="flex items-center justify-between border-b border-zinc-800/80 pb-1.5">
-                  <span className="font-bold text-zinc-100">{hoveredStock.name}</span>
-                  <span className="font-mono text-zinc-500">{hoveredStock.code}</span>
-                </div>
-                <div className="grid grid-cols-2 gap-y-1 font-mono text-[11px] text-zinc-400">
-                  <div>族群:</div>
-                  <div className="text-zinc-200 text-right truncate">{groupLabel(hoveredStock.code, hoveredStock.sector)}</div>
-                  <div>強弱評分:</div>
-                  <div className="text-zinc-200 text-right">{hoveredStock.strength} 分</div>
-                  <div>5日法人超:</div>
-                  <div className={`text-right ${hoveredStock.flow_raw >= 0 ? 'text-bull' : 'text-bear'}`}>
-                    {hoveredStock.flow_raw >= 0 ? '+' : ''}
-                    {hoveredStock.flow_raw.toLocaleString()} 張
+                {playing ? <Pause className="h-4 w-4 fill-current" /> : <Play className="h-4 w-4 fill-current" />}
+                {playing ? '暫停' : `過去 ${frames.length} 天`}
+              </button>
+            </div>
+
+            {headline && (headline.from || headline.to) && (
+              <p className="mt-3 text-sm leading-relaxed text-zinc-300">
+                {who}的資金重心，近 {WINDOW} 日
+                {headline.from && headline.to ? (
+                  <>
+                    正從 <b className="text-bear">{headline.from.name}</b>
+                    <span className="text-zinc-500">（{fmtYi(headline.from.value)} 億）</span>流向{' '}
+                    <b className="text-bull">{headline.to.name}</b>
+                    <span className="text-zinc-500">（{fmtYi(headline.to.value)} 億）</span>
+                  </>
+                ) : headline.to ? (
+                  <>
+                    集中流入 <b className="text-bull">{headline.to.name}</b>
+                    <span className="text-zinc-500">（{fmtYi(headline.to.value)} 億）</span>，沒有族群被賣超
+                  </>
+                ) : (
+                  <>
+                    撤出最多的是 <b className="text-bear">{headline.from?.name}</b>
+                    <span className="text-zinc-500">（{fmtYi(headline.from?.value)} 億）</span>，沒有族群被買超
+                  </>
+                )}
+              </p>
+            )}
+
+            <div className="mt-2">
+              <TideChart
+                units={units}
+                frames={frames}
+                playhead={ph}
+                playing={playing}
+                highlight={focusUnits}
+                selected={selected}
+                matched={matched}
+                instShort={who}
+                onSelect={(u) => setSelectedName(u === null ? null : units[u].name)}
+              />
+            </div>
+
+            {/* 日期滑桿 */}
+            <div className="mt-2 flex items-center gap-2">
+              <button
+                onClick={() => seek(Math.round(ph) - 1)}
+                disabled={Math.round(ph) <= 0}
+                aria-label="前一個交易日"
+                className="rounded-md border border-zinc-800 p-1.5 text-zinc-300 transition hover:bg-zinc-800 disabled:opacity-30"
+              >
+                <ChevronLeft className="h-4 w-4" />
+              </button>
+              <input
+                type="range"
+                min={0}
+                max={Math.max(last, 0)}
+                step={1}
+                value={Math.round(ph)}
+                onChange={(e) => seek(Number(e.target.value))}
+                aria-label="播放日期"
+                className="h-1.5 min-w-0 flex-1 cursor-pointer accent-red-500"
+                style={{ colorScheme: 'dark' }}
+              />
+              <button
+                onClick={() => seek(Math.round(ph) + 1)}
+                disabled={Math.round(ph) >= last}
+                aria-label="後一個交易日"
+                className="rounded-md border border-zinc-800 p-1.5 text-zinc-300 transition hover:bg-zinc-800 disabled:opacity-30"
+              >
+                <ChevronRight className="h-4 w-4" />
+              </button>
+              <span className="w-[5.5rem] shrink-0 text-right font-mono text-base font-bold tabular-nums text-zinc-100">
+                {fmtMd(cur.date)}
+                <span className="ml-1 font-sans text-xs font-medium text-zinc-500">（{weekdayOf(cur.date)}）</span>
+              </span>
+            </div>
+
+            <p className="mt-3 text-[11px] leading-relaxed text-zinc-500">
+              加速流入＝近 {WINDOW} 天比前 {WINDOW} 天，平均每天多買多少（億）。泡泡大小＝近 {WINDOW} 日成交金額；兩軸都是中間放大的刻度。
+              範圍：上市普通股 {units.reduce((n, u) => n + u.members.length, 0).toLocaleString()} 檔、{units.length} 個{LEVEL_LABEL[level]}（不含 ETF、上櫃）。
+              金額＝買賣超股數 × 當日成交均價，是估算值。
+            </p>
+          </section>
+
+          {/* 右欄：明細（寬螢幕）＋排行 */}
+          <aside className="min-w-0 space-y-4 sm:space-y-6">
+            {isWide && (
+              <div className="flex max-h-[720px] flex-col rounded-xl border border-border bg-card p-4">
+                {detail ?? (
+                  <div className="flex h-40 flex-col items-center justify-center rounded-lg border border-dashed border-zinc-800 p-4 text-center">
+                    <span className="text-xs text-zinc-500">在左邊點任一顆泡泡</span>
+                    <span className="mt-1 text-[10px] text-zinc-600">這裡會列出它的買賣超與成分股</span>
                   </div>
-                  <div>5日均漲幅:</div>
-                  <div className={`text-right ${hoveredStock.momentum_raw >= 0 ? 'text-bull' : 'text-bear'}`}>
-                    {hoveredStock.momentum_raw >= 0 ? '+' : ''}
-                    {hoveredStock.momentum_raw.toFixed(2)} %/日
-                  </div>
-                </div>
-                <div className="text-[10px] text-zinc-500 italic text-center pt-1 border-t border-zinc-900">
-                  點擊以固定在下方看板
-                </div>
+                )}
               </div>
             )}
-          </div>
-        </div>
 
-        {/* 右側面板：強弱分析、法人焦點、動能領先與選定個股 */}
-        <div className="space-y-6 xl:col-span-2 min-w-0">
-          {/* 1. 選定個股看板 */}
-          <div className="bg-card border border-border rounded-xl p-5">
-            <h3 className="text-xs font-bold text-zinc-400 uppercase tracking-wider mb-3 flex items-center gap-1.5">
-              <Sliders className="w-4 h-4 text-primary" />
-              個股潮汐分析
-            </h3>
-            {selectedStock ? (
-              <div className="space-y-4">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <h4 className="text-base font-bold text-zinc-100">{selectedStock.name}</h4>
-                    <span className="text-xs font-mono text-zinc-500 flex items-center gap-1.5">
-                      {selectedStock.code}
-                      <GroupTag code={selectedStock.code} fallback={selectedStock.sector} link />
-                    </span>
-                  </div>
-                  <Link
-                    to={`/stock/${selectedStock.code}`}
-                    className="px-3 py-1 bg-primary/10 text-primary hover:bg-primary/20 text-xs font-semibold rounded-md border border-primary/20 transition flex items-center gap-1"
-                  >
-                    進入審查
-                    <ChevronRight className="w-3.5 h-3.5" />
-                  </Link>
-                </div>
-
-                <div className="p-3 rounded-lg border border-zinc-800 bg-zinc-900/30 grid grid-cols-2 gap-4 text-center">
-                  <div>
-                    <span className="text-[10px] text-zinc-500 block mb-1">5日累計法人買賣</span>
-                    <span className={`text-sm font-bold font-mono ${selectedStock.flow_raw >= 0 ? 'text-bull' : 'text-bear'}`}>
-                      {selectedStock.flow_raw >= 0 ? '+' : ''}
-                      {selectedStock.flow_raw.toLocaleString()} 張
-                    </span>
-                  </div>
-                  <div>
-                    <span className="text-[10px] text-zinc-500 block mb-1">5日平均每日漲跌</span>
-                    <span className={`text-sm font-bold font-mono ${selectedStock.momentum_raw >= 0 ? 'text-bull' : 'text-bear'}`}>
-                      {selectedStock.momentum_raw >= 0 ? '+' : ''}
-                      {selectedStock.momentum_raw.toFixed(2)} %/日
-                    </span>
-                  </div>
-                </div>
-
-                <div className="space-y-2">
-                  <div className="flex items-center justify-between text-xs">
-                    <span className="text-zinc-500">潮汐位置:</span>
-                    <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold border ${getQuadrantColorClass(selectedStock.quadrant)}`}>
-                      {getQuadrantLabel(selectedStock.quadrant)}
-                    </span>
-                  </div>
-                  <div className="flex items-center justify-between text-xs">
-                    <span className="text-zinc-500">合成強弱評分:</span>
-                    <div className="flex items-center gap-2">
-                      <div className="w-24 h-1.5 bg-zinc-800 rounded-full overflow-hidden">
-                        <div
-                          className="h-full bg-primary"
-                          style={{ width: `${selectedStock.strength}%` }}
-                        ></div>
-                      </div>
-                      <span className="font-bold text-zinc-300 font-mono">{selectedStock.strength}/100</span>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            ) : (
-              <div className="h-36 flex flex-col items-center justify-center border border-dashed border-zinc-800 rounded-lg text-center p-4">
-                <span className="text-xs text-zinc-500">在左側點選任一泡泡</span>
-                <span className="text-[10px] text-zinc-600 mt-1">即可在此展開完整資金數據</span>
-              </div>
-            )}
-          </div>
-
-          {/* 2. 象限個股計數 */}
-          {stats && (
-            <div className="bg-card border border-border rounded-xl p-5">
-              <h3 className="text-xs font-bold text-zinc-400 uppercase tracking-wider mb-3 flex items-center gap-1.5">
-                象限分佈統計
+            <div className="rounded-xl border border-border bg-card p-4">
+              <h3 className="text-xs font-bold text-zinc-300">
+                {LEVEL_LABEL[level]}排行
+                <span className="ml-1.5 font-normal text-zinc-500">{who}・{fmtMd(cur.date)}</span>
               </h3>
-              <div className="grid grid-cols-2 gap-3 text-center">
-                <div className="p-3 rounded-lg border border-bull/10 bg-bull/5 flex flex-col justify-between">
-                  <span className="text-[10px] text-zinc-500">強勢偏多 (右上)</span>
-                  <span className="text-lg font-bold text-bull font-mono mt-1">{stats.counts.inflow_up} 檔</span>
-                </div>
-                <div className="p-3 rounded-lg border border-neutral/10 bg-neutral/5 flex flex-col justify-between">
-                  <span className="text-[10px] text-zinc-500">拉回洗盤 (右下)</span>
-                  <span className="text-lg font-bold text-neutral font-mono mt-1">{stats.counts.inflow_down} 檔</span>
-                </div>
-                <div className="p-3 rounded-lg border border-accent/10 bg-accent/5 flex flex-col justify-between">
-                  <span className="text-[10px] text-zinc-500">無量拉抬 (左上)</span>
-                  <span className="text-lg font-bold text-accent font-mono mt-1">{stats.counts.outflow_up} 檔</span>
-                </div>
-                <div className="p-3 rounded-lg border border-bear/10 bg-bear/5 flex flex-col justify-between">
-                  <span className="text-[10px] text-zinc-500">弱勢避開 (左下)</span>
-                  <span className="text-lg font-bold text-bear font-mono mt-1">{stats.counts.outflow_down} 檔</span>
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* 3. 法人焦點選股榜 */}
-          {stats && (
-            <div className="bg-card border border-border rounded-xl p-5">
-              <h3 className="text-xs font-bold text-zinc-400 uppercase tracking-wider mb-3 flex items-center gap-1.5">
-                <DollarSign className="w-4 h-4 text-bull" />
-                近5日法人買超前 5 名
-              </h3>
-              <div className="divide-y divide-zinc-800/60 text-xs">
-                {stats.topBuyers.map((s, idx) => (
-                  <div
-                    key={s.code}
-                    className="py-2.5 flex items-center justify-between cursor-pointer hover:bg-zinc-800/10 transition px-1 rounded"
-                    onClick={() => setSelectedStock(s)}
-                  >
-                    <div className="flex items-center gap-2">
-                      <span className="font-mono text-[10px] text-zinc-500 w-4">#{idx + 1}</span>
-                      <span className="font-bold text-zinc-200">{s.name}</span>
-                      <span className="font-mono text-zinc-500 text-[10px]">{s.code}</span>
-                    </div>
-                    <div className="text-right font-mono">
-                      <div className="text-bull font-bold">+{s.flow_raw.toLocaleString()} 張</div>
-                      <GroupTag code={s.code} fallback={s.sector} className="mt-0.5" />
-                    </div>
-                  </div>
+              <div className="mt-2 grid grid-cols-4 rounded-lg border border-zinc-800 bg-zinc-900 p-0.5">
+                {RANK_TABS.map(([key, label]) => (
+                  <button key={key} onClick={() => setRankTab(key)} className={`whitespace-nowrap ${segBtn(rankTab === key)}`}>
+                    {label}
+                  </button>
                 ))}
               </div>
-            </div>
-          )}
-
-          {/* 4. 動能領先選股榜 */}
-          {stats && (
-            <div className="bg-card border border-border rounded-xl p-5">
-              <h3 className="text-xs font-bold text-zinc-400 uppercase tracking-wider mb-3 flex items-center gap-1.5">
-                <TrendingUp className="w-4 h-4 text-bull" />
-                近5日平均漲幅前 5 名
-              </h3>
-              <div className="divide-y divide-zinc-800/60 text-xs">
-                {stats.topGainers.map((s, idx) => (
-                  <div
-                    key={s.code}
-                    className="py-2.5 flex items-center justify-between cursor-pointer hover:bg-zinc-800/10 transition px-1 rounded"
-                    onClick={() => setSelectedStock(s)}
+              <div className="mt-2 divide-y divide-zinc-800/60 text-xs">
+                {rank.length === 0 && <div className="py-4 text-center text-zinc-600">沒有符合的{LEVEL_LABEL[level]}</div>}
+                {rank.map((r, idx) => (
+                  <button
+                    key={r.unit}
+                    onClick={() => setSelectedName(r.name)}
+                    className={`flex w-full items-center justify-between gap-2 rounded px-1 py-2 text-left transition hover:bg-zinc-800/30 ${
+                      selected === r.unit ? 'bg-zinc-800/40' : ''
+                    }`}
                   >
-                    <div className="flex items-center gap-2">
-                      <span className="font-mono text-[10px] text-zinc-500 w-4">#{idx + 1}</span>
-                      <span className="font-bold text-zinc-200">{s.name}</span>
-                      <span className="font-mono text-zinc-500 text-[10px]">{s.code}</span>
-                    </div>
-                    <div className="text-right font-mono">
-                      <div className="text-bull font-bold">+{s.momentum_raw.toFixed(2)} %/日</div>
-                      <GroupTag code={s.code} fallback={s.sector} className="mt-0.5" />
-                    </div>
-                  </div>
+                    <span className="flex min-w-0 items-center gap-2">
+                      <span className="w-4 shrink-0 font-mono text-[10px] text-zinc-500">#{idx + 1}</span>
+                      <span className="truncate font-bold text-zinc-200">{r.name}</span>
+                    </span>
+                    <span className={`shrink-0 font-mono font-bold ${r.value >= 0 ? 'text-bull' : 'text-bear'}`}>
+                      {fmtYi(r.value)} {rankTab === 'in' || rankTab === 'out' ? '億' : '億/天'}
+                    </span>
+                  </button>
                 ))}
               </div>
+              <p className="mt-2 text-[10px] text-zinc-600">
+                {rankTab === 'in' || rankTab === 'out' ? `近 ${WINDOW} 日買賣超` : `近 ${WINDOW} 日比前 ${WINDOW} 日，平均每天多買（賣）多少`}
+                ；近 {LONG_WINDOW} 日累計在點開的明細裡。
+              </p>
             </div>
-          )}
+          </aside>
         </div>
-      </div>
+      )}
+
+      {/* 手機／窄螢幕：明細從底部滑上來 */}
+      {!isWide && detail && (
+        <div className="fixed inset-0 z-50 flex items-end bg-black/60" onClick={() => setSelectedName(null)}>
+          <div
+            className="flex max-h-[84vh] w-full flex-col overscroll-contain rounded-t-2xl border-t border-border bg-card p-4 shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {detail}
+          </div>
+        </div>
+      )}
     </div>
   );
 };

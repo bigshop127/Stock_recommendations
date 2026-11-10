@@ -588,7 +588,7 @@ export const api = {
   stockShareholding: (code: string, weeks?: number) => req<ShareholdingDispersion>(`/stocks/${code}/shareholding${qs({ weeks })}`),
   stockNews: (code: string) => req<StockNews>(`/stocks/${code}/news`),
   symbolSearch: (q: string, limit?: number) => req<SymbolSearch>(`/symbols/search${qs({ q, limit })}`),
-  marketCapitalTide: (o?: { date?: string; universe?: string }) => req<CapitalTideData>(`/market/capital-tide${qs(o)}`),
+  marketInstFlow: (o?: { days?: number; quotes?: number }) => req<InstFlowPayload>(`/market/inst-flow${qs(o)}`),
   marketStockHeatmap: (o?: { period?: string; date?: string }, force?: boolean) => marketStockHeatmap(o, force),
 
   // 再平衡持倉雲端同步（gateway 讀寫 data/rebalance_holdings.json，與告警腳本同一份）
@@ -1268,32 +1268,35 @@ export interface SymbolSearch {
   degraded?: boolean;
 }
 
-export interface CapitalTideStock {
-  code: string;
-  name: string;
-  sector: string;
-  flow_x: number;
-  flow_raw: number;
-  momentum_y: number;
-  momentum_raw: number;
-  size: number;
-  size_raw: number;
-  strength: number;
-  quadrant: 'inflow_up' | 'inflow_down' | 'outflow_up' | 'outflow_down';
+/** 資金潮汐（法人資金流向）：一天的全市場欄位陣列，index 對齊 InstFlowPayload.codes */
+export interface InstFlowDay {
+  date: string;
+  /** 外資／投信／自營商買賣超金額（百萬元，股數 × 成交均價估算） */
+  f: number[];
+  t: number[];
+  d: number[];
+  /** 成交金額（百萬元） */
+  val: number[];
+  /** 收盤價、漲跌幅 %：只有最後幾天才帶，其他天是 null */
+  close: (number | null)[] | null;
+  chg: (number | null)[] | null;
 }
 
-export interface CapitalTideData {
-  date: string;
-  window_days: number;
-  universe: string;
-  axes: {
-    x: { label: string; unit: string };
-    y: { label: string; unit: string };
-  };
-  stocks: CapitalTideStock[];
-  source: string;
-  degraded?: boolean;
+export interface InstFlowPayload {
+  /** 交易日，舊到新 */
+  dates: string[];
+  /** 上市普通股代號與名稱 */
+  codes: string[];
+  names: string[];
+  days: InstFlowDay[];
+  /** 手上有幾個交易日／要幾個；不足時後端正在背景回補 */
+  have: number;
+  want: number;
+  refreshing: boolean;
   errors?: string[];
+  fetched_at: string | null;
+  source: string;
+  note?: string;
 }
 
 export interface HeatmapStock {
