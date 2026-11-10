@@ -131,6 +131,29 @@ describe('simGrid：口數 × 漲跌幅', () => {
   });
 });
 
+describe('simGrid：新口數 vs 新＋舊 兩種口徑', () => {
+  const positions: FuturesPosition[] = [
+    { id: 'a', product: 'NYF', month: '202611', side: 'long', lots: 1, entry_price: 100, entry_date: '2026-11-01' },
+  ];
+  const products: Record<string, ProductPriceSpec> = { NYF: { spec: NYF, price: 100, beta: 1, index_ref: 40000 } };
+
+  it('沒疊加真實部位：account_pnl ＝ pnl，權益 ＝ 現金 ＋ pnl', () => {
+    const c = simGrid(long(2_000_000), [2], [0.05])[0][0];
+    expect(c.account_pnl).toBeCloseTo(c.pnl, 4);
+    expect(c.equity).toBeCloseTo(2_000_000 + c.pnl, 4);
+  });
+
+  it('疊加真實部位：account_pnl ＝ 新口數損益 ＋ 現有部位損益；pnl 仍只看新口數', () => {
+    const only = simGrid(long(2_000_000), [2], [0.05])[0][0];
+    const both = simGrid({ ...long(2_000_000), base: { positions, products } }, [2], [0.05])[0][0];
+    expect(both.pnl).toBeCloseTo(only.pnl, 4);
+    // 現有部位：NYF 多 1 口 @100 → 105（beta 1、大盤 +5%），扣來回費用
+    const existing = 5 * NYF.contract_size - (2 * NYF.fee_per_lot + (100 + 105) * NYF.contract_size * NYF.tax_rate);
+    expect(both.account_pnl).toBeCloseTo(only.pnl + existing, 3);
+    expect(both.equity).toBeCloseTo(2_000_000 + both.account_pnl, 3);
+  });
+});
+
 describe('lotsToShow', () => {
   it('1～10，加上選的口數與資金上限，去重排序', () => {
     expect(lotsToShow(3, 5)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);

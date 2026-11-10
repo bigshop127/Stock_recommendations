@@ -12,6 +12,7 @@
  * 不要拿 emerald / rose 去表示賺賠，會跟這裡的風險語意打架。
  */
 import React from 'react';
+import { FONT_SCALE_MAX, FONT_SCALE_MIN, FONT_SCALE_STEP } from '../../lib/useFontScale';
 
 export type Tone = 'emerald' | 'amber' | 'orange' | 'rose' | 'sky' | 'zinc' | 'primary';
 
@@ -280,4 +281,28 @@ export const Row: React.FC<{
       {sub ? <span className="text-zinc-600 font-normal ml-1.5">{sub}</span> : null}
     </dd>
   </div>
+);
+
+/**
+ * 字體大小滑軌。倍率交給 `ScaledBox` 套到表格上（用 CSS zoom，整張表連小字、標籤一起放大縮小）。
+ */
+export const FontScaleSlider: React.FC<{ value: number; onChange: (v: number) => void; label?: string }> = ({ value, onChange, label = '字體' }) => (
+  <label className="inline-flex items-center gap-1.5 text-[10px] text-zinc-500" title="調整表格字體大小（會記住）">
+    <span>{label}</span>
+    <span className="text-[9px] text-zinc-600" aria-hidden>A</span>
+    <input
+      type="range" min={FONT_SCALE_MIN} max={FONT_SCALE_MAX} step={FONT_SCALE_STEP} value={value}
+      onChange={(e) => onChange(parseFloat(e.target.value))}
+      aria-label={`${label}大小`} aria-valuetext={`${Math.round(value * 100)}%`}
+      className="w-24 h-1.5 bg-zinc-800 rounded-lg appearance-none cursor-pointer accent-primary"
+      data-testid="font-scale-slider"
+    />
+    <span className="text-sm text-zinc-400" aria-hidden>A</span>
+    <span className="font-mono tabular-nums w-9 text-right text-zinc-400">{Math.round(value * 100)}%</span>
+  </label>
+);
+
+/** 把內容整塊放大縮小（`zoom`）；倍率 1 時不加任何樣式 */
+export const ScaledBox: React.FC<{ scale: number; children: React.ReactNode }> = ({ scale, children }) => (
+  <div style={scale === 1 ? undefined : { zoom: scale }} data-fscale={scale}>{children}</div>
 );

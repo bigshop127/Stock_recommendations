@@ -132,6 +132,8 @@ export interface SimCell {
   price: number;
   /** 這筆假想部位自己的損益（含來回費用） */
   pnl: number;
+  /** 帳戶層級的未實現損益（含來回費用）：有疊加真實部位時＝假想部位＋真實部位；沒疊加時＝pnl */
+  account_pnl: number;
   /** 帳戶層級：權益數、風險指標、狀態 */
   equity: number;
   risk: number | null;
@@ -149,7 +151,7 @@ export function simGrid(inp: SimInput, lotsList: number[], moves: number[]): Sim
   const unit = betaOf(inp);
   return lotsList.map((lots) => {
     const n = Math.floor(lots);
-    if (!(n > 0) || !(entry > 0)) return moves.map((m) => ({ move: m, price: 0, pnl: 0, equity: 0, risk: null, status: 'flat' as const }));
+    if (!(n > 0) || !(entry > 0)) return moves.map((m) => ({ move: m, price: 0, pnl: 0, account_pnl: 0, equity: 0, risk: null, status: 'flat' as const }));
     const { pos, positions, products } = build(inp, n);
     const rows = stressTest(positions, products, safe(inp.cash), { drops: moves.map((m) => -m / unit) });
     const byDrop = new Map(rows.map((r) => [r.drop, r]));
@@ -160,6 +162,7 @@ export function simGrid(inp: SimInput, lotsList: number[], moves: number[]): Sim
         move: m,
         price,
         pnl: positionPnl(pos, price, inp.spec).net_pnl,
+        account_pnl: r?.unrealized ?? 0,
         equity: r?.equity ?? 0,
         risk: r?.risk_indicator ?? null,
         status: r?.status ?? 'flat',

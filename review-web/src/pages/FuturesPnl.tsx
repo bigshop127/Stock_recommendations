@@ -9,7 +9,8 @@ import {
   ChevronDown, ChevronUp, ChevronRight, Eraser, History, Compass, Filter,
   Archive, RotateCcw,
 } from 'lucide-react';
-import { Panel, StatTile, RiskMeter, ThreatCard, LevelCard, Row, Chip, type Tone } from '../components/futures/ui';
+import { Panel, StatTile, RiskMeter, ThreatCard, LevelCard, Row, Chip, FontScaleSlider, ScaledBox, type Tone } from '../components/futures/ui';
+import { useFontScale } from '../lib/useFontScale';
 import { ScreenshotImport } from '../components/futures/ScreenshotImport';
 import { SimPanel } from '../components/futures/FuturesSim';
 import type { AccountImportState, ProductLookup } from '../lib/futuresImport';
@@ -3377,6 +3378,7 @@ const StressTab: React.FC<{
   cash: number;
 }> = ({ summary, stress, beta, patch, saveToCloud, products, activeCode, positions, productsMap, cash }) => {
   const hasIndexRef = Object.values(products).some((p) => p.index_ref > 0);
+  const [fontScale, setFontScale] = useFontScale('stress-matrix');
   const setDrops = (drops: number[]) => {
     void saveToCloud(patch((c) => ({
       ...c,
@@ -3451,6 +3453,8 @@ const StressTab: React.FC<{
         tone="amber"
         right={
           <div className="flex flex-wrap items-center gap-1.5">
+            <FontScaleSlider value={fontScale} onChange={setFontScale} />
+            <span className="w-px h-4 bg-border mx-1" aria-hidden />
             <span className="text-[10px] text-zinc-600 mr-1">試算不同修正幅度下的帳戶衝擊</span>
             {STRESS_PRESETS.map((p) => (
               <button
@@ -3466,7 +3470,8 @@ const StressTab: React.FC<{
       >
         <p className="sm:hidden text-[10px] text-zinc-600 mb-1.5">← 左右滑動可看完整欄位 →</p>
         <div className="overflow-x-auto -mx-1 px-1">
-          <table className="w-full min-w-[780px] text-xs">
+          <ScaledBox scale={fontScale}>
+          <table className="w-full min-w-[780px] text-xs" data-testid="stress-matrix">
             <thead>
               <tr className="text-zinc-500 border-b border-border">
                 <th className="text-left font-semibold py-2.5 pr-3">大盤修正</th>
@@ -3520,6 +3525,7 @@ const StressTab: React.FC<{
               })}
             </tbody>
           </table>
+          </ScaledBox>
         </div>
 
         <p className="text-[11px] text-zinc-500 mt-4">
