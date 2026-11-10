@@ -12,7 +12,8 @@
 | **大盤** | `/api/market/breadth` | GET | **新增** | TWSE | 否 |
 | **大盤** | `/api/market/sectors` | GET | **新增** | TWSE | 否 |
 | **大盤** | `/api/market/institutional` | GET | **新增** | TWSE | 否 |
-| **大盤** | `/api/market/capital-tide` | GET | **新增** | FinMind / yfinance | 否（每日快取） |
+| **大盤** | `/api/market/capital-tide` | GET | 前端已不用（opt54 起） | FinMind / yfinance | 否（每日快取） |
+| **大盤** | `/api/market/inst-flow` | GET | **新增**（opt54） | 證交所 T86＋MI_INDEX（gateway 直接抓、存檔累積） | 否 |
 | **個股** | `/api/stocks/:code` | GET | 既有 | Engine | 否 |
 | **個股** | `/api/stocks/:code/ohlcv` | GET | 既有 | yfinance / 富果 | 否 |
 | **個股** | `/api/stocks/:code/book` | GET | 既有 | 富果 / TWSE | **是** (五檔) |
@@ -400,6 +401,7 @@
 ```
 
 ### 2.11 資金潮汐（資金流向 × 動能泡泡圖）`/api/market/capital-tide?date=&universe=`
+* **現況（2026-11-10 opt54）**：資金潮汐頁已改用 §2.23 `/api/market/inst-flow`，前端不再呼叫這個端點；engine 端點與 gateway 轉發仍在。
 * **Method**: `GET`
 * **Description**: 有界 universe（預設 `watchlist_union_0050`，沿用 breadth 同一份取得邏輯）逐檔算「近 5 日三大法人淨買賣超」與「近 5 日平均每日漲幅（**還原價**）」，z-score 正規化到 `[-1, 1]` 當泡泡座標。**engine 端每日整批快取**（`cache_path/capital_tide/{date}_{universe}.json`），gateway 轉發（120s timeout）。
 * **降級**：個別股缺資料 → 略過並記入 `errors[]`，不整批 500；engine down → gateway 走統一錯誤格式。
@@ -739,3 +741,41 @@
 }
 ```
 * **Response (200 OK)**: `{ "ok": true, "added": 1, "skipped_already": 0, "skipped_duplicate": 0, "total_incoming": 1, "saved_at": "ISO時間" }`
+
+### 2.23 資金潮汐（法人資金流向）`/api/market/inst-flow?days=30&quotes=10`
+
+* **Method**: `GET`
+* **Description**: 全部上市普通股、每個交易日一列的三大法人買賣超金額。gateway 自己抓證交所 `fund/T86`＋`afterTrading/MI_INDEX`（不經 engine），抓到就存 `data/inst_flow/YYYY-MM-DD.json`。族群怎麼分、泡泡座標怎麼算都在前端（`src/lib/capitalFlow.ts`＋`stockGroups.ts`）。
+* **參數**：`days`＝要幾個交易日（預設 30、最多 60）；`quotes`＝最後幾天要帶收盤價與漲跌幅（預設 10）。
+* **不會等**：永遠立刻回手上有的資料。資料不夠時在背景回補（第一次約兩分多鐘），看 `have`／`want`／`refreshing`；前端在 `have < want && refreshing` 時每 5 秒重問。
+* **只回連續的一段**：從最新一天往回，遇到「不確定有沒有開盤」的日子就停（中間有洞累計會算錯）。
+* **金額是估算值**：買賣超股數 × 當日成交均價（成交金額 ÷ 成交股數，沒有成交就用收盤價），單位百萬元、四捨五入成整數。
+* **壓縮**：請求帶 `Accept-Encoding: gzip` 時回 gzip（原始約 480 KB、壓縮後約 170 KB）。
+* **Response Schema (200 OK)**:
+```jsonc
+{
+  "dates": ["2026-09-23", "…", "2026-11-10"],     // 舊到新
+  "codes": ["1101", "1102", "…"],                  // 以下各陣列的 index 都對齊這個
+  "names": ["台泥", "亞泥", "…"],
+  "days": [
+    {
+      "date": "2026-11-10",
+      "f": [12, -3, "…"],        // 外資（含外資自營商）買賣超，百萬元
+      "t": [0, 5, "…"],          // 投信
+      "d": [-1, 0, "…"],         // 自營商（自行買賣＋避險）
+      "val": [850, 420, "…"],    // 成交金額，百萬元
+      "close": [31.5, 40.2, "…"],// 收盤價；只有最後 quotes 天有，其餘為 null
+      "chg": [0.64, -1.2, "…"]   // 漲跌幅 %；同上，個別股沒有漲跌資料時該格為 null
+    }
+  ],
+  "fetched_at": "2026-11-10T09:12:00.000Z",
+  "have": 30,                    // 這次回了幾天
+  "want": 30,
+  "refreshing": false,           // 背景是否還在回補
+  "errors": ["2026-10-01：HTTP 403 /fund/T86"],   // 上一輪抓不到的；沒有就不帶這個欄位
+  "unit": { "amount": "百萬元", "chg": "%" },
+  "source": "twse-T86+MI_INDEX",
+  "note": "金額＝買賣超股數 × 當日成交均價（估算）；範圍為上市普通股"
+}
+```
+* 某一天沒有某檔股票（當天還沒上市／已下市）時，該格為 0（`close`／`chg` 為 null）。
