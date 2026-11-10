@@ -5143,6 +5143,19 @@ const SettingsTab: React.FC<{
         if (same) {
           return { text: `保證金＝期交所 ${apiMargins.date} 現行值（OpenAPI 自動同步）${stale}`, warn: false };
         }
+        // 維持一樣、只有原始比期交所高＝典型的「期貨商加收原始保證金」（11/10 玉山微台：
+        // 35,050 × 1.2 ＝ 42,060）。這時要對得上券商的可動用保證金／風險指標，反而應該
+        // 保留券商的數字，不能叫使用者按同步改回期交所值。
+        if (activeProductCfg.spec.maintenance_margin === marginInfo.maintenance
+          && activeProductCfg.spec.initial_margin > marginInfo.initial) {
+          const pctUp = (activeProductCfg.spec.initial_margin / marginInfo.initial - 1) * 100;
+          return {
+            text: `原始保證金設成 ${money(activeProductCfg.spec.initial_margin)}，比期交所 ${apiMargins.date} 公告的 ${money(marginInfo.initial)} 高 ${pctUp.toFixed(1)}%（維持保證金相同）`
+              + `——如果是期貨商加收（券商 App 的原始保證金 ÷ 口數），保留這個值才對得上券商的可動用保證金與風險指標；`
+              + `期交所下次調整時，按「同步保證金」後記得再把原始保證金改回券商的收法。${stale}`,
+            warn: false,
+          };
+        }
         return {
           text: `⚠️ 目前設定（原始 ${money(activeProductCfg.spec.initial_margin)}／維持 ${money(activeProductCfg.spec.maintenance_margin)}）`
             + `與期交所 ${apiMargins.date} 現行值（原始 ${money(marginInfo.initial)}／維持 ${money(marginInfo.maintenance)}）不一致`
@@ -5227,9 +5240,24 @@ const SettingsTab: React.FC<{
    * 「整帳戶取代」——帳戶現在可以同時持有 SRF 期貨與個股期貨，不能因為切到別的
    * 商品就把既有商品的規格洗掉。
    */
+  /**
+   * 內建商品「期交所現行」保證金（指數類 OpenAPI／ETF 期貨 stockMargining 頁）。
+   * SYMBOL_PRESETS 裡的數字是寫死的舊公告，只能當抓不到時的退路——
+   * 常用清單卡片跟新增商品都先用這個，不然會把好幾個月前的保證金當現行值（11/10 微台
+   * 卡片還寫 31,800，期交所 8/12 起已是 35,050）。
+   */
+  const liveMarginOf = (code: string): { initial: number; maintenance: number; date: string } | null => {
+    const idx = apiMargins?.margins[code];
+    if (idx) return { initial: idx.initial, maintenance: idx.maintenance, date: apiMargins!.date };
+    const etf = stockMargins?.etfs[code];
+    if (etf) return { initial: etf.initial, maintenance: etf.maintenance, date: stockMargins!.etf_date };
+    return null;
+  };
+
   const addPreset = (code: string) => {
     const p = findPreset(code);
     if (!p) return;
+    const live = liveMarginOf(code);
     void saveToCloud(patch((c) => {
       if (c.products[code]) {
         return {
@@ -5240,7 +5268,8 @@ const SettingsTab: React.FC<{
       }
       const product: ProductConfig = {
         code, name: p.name, quote_contract: p.code, underlying: p.underlying,
-        spec: { ...p.spec }, beta: 1, index_ref: 0, index_linked: p.index_linked,
+        spec: { ...p.spec, ...(live ? { initial_margin: live.initial, maintenance_margin: live.maintenance } : {}) },
+        beta: 1, index_ref: 0, index_linked: p.index_linked,
         price: 0, prices: {}, price_month: '', price_as_of: '', price_source: 'daily',
         is_custom: false,
       };
@@ -5534,7 +5563,10 @@ const SettingsTab: React.FC<{
         <div className="pt-2 border-t border-border/50">
           <div className="text-[11px] text-zinc-500 mb-2">從常用清單加入</div>
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
-            {SYMBOL_PRESETS.map((p) => (
+            {SYMBOL_PRESETS.map((p) => {
+              const live = liveMarginOf(p.code);
+              const own = products[p.code] && !products[p.code].archived ? products[p.code].spec : null;
+              return (
               <button
                 key={p.code}
                 onClick={() => addPreset(p.code)}
@@ -5551,10 +5583,16 @@ const SettingsTab: React.FC<{
                   {p.code}．一口 {p.spec.contract_size.toLocaleString()} {p.unit_label}
                 </div>
                 <div className="text-[10px] text-zinc-600 mt-0.5 font-mono">
-                  原始 {money(p.spec.initial_margin)} / 維持 {money(p.spec.maintenance_margin)}
+                  {live ? `期交所 ${live.date.slice(5).replace('-', '/')}` : '預設'}：原始 {money(live?.initial ?? p.spec.initial_margin)} / 維持 {money(live?.maintenance ?? p.spec.maintenance_margin)}
                 </div>
+                {own && live && own.initial_margin !== live.initial && (
+                  <div className="text-[10px] text-zinc-500 mt-0.5 font-mono">
+                    你的設定：原始 {money(own.initial_margin)} / 維持 {money(own.maintenance_margin)}
+                  </div>
+                )}
               </button>
-            ))}
+              );
+            })}
           </div>
         </div>
 

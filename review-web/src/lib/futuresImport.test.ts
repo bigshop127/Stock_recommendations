@@ -699,6 +699,55 @@ describe('matchProduct：商品名稱配對', () => {
     const products: Record<string, ProductLookup> = { SRF: { name: '小型元大台灣50ETF期', spec } };
     expect(matchProduct('聯電期202609', products)).toBeNull();
   });
+
+  // 11/10 真實事故：玉山成交回報寫「微台期 202703」，帳戶存「微型臺指期貨」→ 整批不套用。
+  // 帳戶設定照使用者當時 VM 上的真實資料（SRF/NYF/TMF/MTX/TX＋封存的個股期貨）。
+  describe('臺指三兄弟的券商簡稱（帳戶同時有大台／小台／微台）', () => {
+    const real: Record<string, ProductLookup> = {
+      SRF: { name: '小型元大台灣50ETF期貨', spec },
+      CCF: { name: '聯電期', spec },
+      NYF: { name: '元大台灣50ETF期貨', spec },
+      TMF: { name: '微型臺指期貨', spec },
+      MTX: { name: '小型臺指期貨', spec },
+      TX: { name: '臺股期貨（大台）', spec },
+    };
+    it.each([
+      ['微台期 202703', 'TMF'], ['微台期202611', 'TMF'], ['微台指', 'TMF'], ['微型臺指期貨202612', 'TMF'],
+      ['小台期202611', 'MTX'], ['小台指', 'MTX'], ['小型臺指202612', 'MTX'], ['小型台指期 202612', 'MTX'],
+      ['台指期202611', 'TX'], ['臺指期貨 202612', 'TX'], ['大台', 'TX'], ['臺股期貨202611', 'TX'],
+      ['元大台灣50ETF期202612', 'NYF'], ['小型元大台灣50ETF期202612', 'SRF'], ['聯電期202612', 'CCF'],
+    ])('%s → %s', (raw, code) => {
+      expect(matchProduct(raw, real)).toBe(code);
+    });
+
+    it('子字串同時對到兩個商品時不猜（以前會回傳第一個對到的）', () => {
+      // 「台指」同時是「微型台指」「小型台指」的一部分；沒有 TX 時不能硬塞給其中一個
+      const noTx: Record<string, ProductLookup> = { TMF: real.TMF, MTX: real.MTX };
+      expect(matchProduct('台指202611', noTx)).toBeNull();
+    });
+
+    it('原截圖整批跑一次：兩筆「微台期 202703」買進新倉都記到 TMF，沒有「帳戶還沒設定」警告', () => {
+      const tmfSpec = { ...spec, contract_size: 10, tick_size: 1, initial_margin: 42000, maintenance_margin: 26900 };
+      const products: Record<string, ProductLookup> = { ...real, TMF: { name: '微型臺指期貨', spec: tmfSpec } };
+      const base = { product: '微台期 202703', datetime: '2026/11/10 09:06:26', direction: '買進', open_close: '新倉', lots: 5, order_id: '61215' };
+      const s = ocrRouter.normalizeScreen({
+        kind: 'fills', title: '期權-成交回報', totals: { count: 2 },
+        fill_rows: [{ ...base, price: 42788 }, { ...base, price: 42791 }],
+      });
+      const plan = buildImportPlanForAccount(emptyAccountState({ cash: 629694 }), [s], products, { today: '2026-11-10' });
+      expect(plan.warnings.filter((w) => w.includes('還沒設定'))).toEqual([]);
+      const tmf = plan.next.positions.filter((p) => p.product === 'TMF');
+      expect(tmf.reduce((n, p) => n + p.lots, 0)).toBe(10);
+      expect(tmf.every((p) => p.month === '202703' && p.side === 'long')).toBe(true);
+      expect(tmf.map((p) => p.entry_price).sort()).toEqual([42788, 42791]);
+      expect(plan.next.positions.filter((p) => p.product !== 'TMF')).toEqual([]);
+    });
+
+    it('簡稱只做完全相等：沒設定微台的帳戶看到「微台期」仍回 null', () => {
+      const noTmf: Record<string, ProductLookup> = { MTX: real.MTX, TX: real.TX };
+      expect(matchProduct('微台期202703', noTmf)).toBeNull();
+    });
+  });
 });
 
 describe('帳戶總覽截圖對帳（buildImportPlanForAccount）', () => {

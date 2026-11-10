@@ -734,21 +734,47 @@ function normalizeProductName(s: string): string {
  * 沒有這條路的話，早期用舊預設名字新增的帳戶會一直配不到（例如 SRF 舊預設是「小型
  * 臺灣50 ETF 期貨」，但券商 App 實際顯示「小型元大台灣50ETF期」，兩者連正規化後都對
  * 不起來——差在「元大」這個發行商簡稱）。
+ *
+ * 比對分兩輪（11/10 真實事故：玉山成交回報寫「微台期 202703」，帳戶存「微型臺指期貨」，
+ * 子字串對不上而整批不套用）：
+ *   ① 完全相等（正規化後）——候選含帳戶名字、預設官方名字、預設的券商簡稱 aliases；
+ *   ② 子字串——只用名字、不用 aliases，而且**只有剛好一個商品對得上才算數**。
+ *      以前是「第一個對到的就回傳」，「元大台灣50ETF期」(NYF) 會先撞到 SRF 的
+ *      「小型元大台灣50ETF」、「台指期」(大台) 會先撞到「微型台指」——同時有兩個
+ *      商品的帳戶會靜靜記錯帳。對到兩個以上就當配不到，交給使用者處理。
  */
 export function matchProduct(rawProduct: string, products: Record<string, ProductLookup>): string | null {
   const stripped = String(rawProduct || '').replace(/20\d{2}(?:0[1-9]|1[0-2])\s*$/, '').trim();
   if (!stripped) return null;
   const strippedNorm = normalizeProductName(stripped);
   if (!strippedNorm) return null;
-  for (const [code, p] of Object.entries(products)) {
-    const candidates = new Set([p.name, findPreset(code)?.name].filter((n): n is string => !!n && !!n.trim()));
-    for (const name of candidates) {
-      if (stripped === name || stripped.includes(name) || name.includes(stripped)) return code;
-      const nameNorm = normalizeProductName(name);
-      if (nameNorm && (strippedNorm === nameNorm || strippedNorm.includes(nameNorm) || nameNorm.includes(strippedNorm))) return code;
+
+  const entries = Object.entries(products).map(([code, p]) => {
+    const preset = findPreset(code);
+    const names = [...new Set([p.name, preset?.name].filter((n): n is string => !!n && !!n.trim()))];
+    return { code, names, aliases: preset?.aliases ?? [] };
+  });
+
+  // ① 完全相等
+  for (const { code, names, aliases } of entries) {
+    for (const name of [...names, ...aliases]) {
+      if (stripped === name || strippedNorm === normalizeProductName(name)) return code;
     }
   }
-  return null;
+
+  // ② 子字串，必須唯一
+  const hits = new Set<string>();
+  for (const { code, names } of entries) {
+    for (const name of names) {
+      const nameNorm = normalizeProductName(name);
+      if (stripped.includes(name) || name.includes(stripped)
+        || (nameNorm && (strippedNorm.includes(nameNorm) || nameNorm.includes(strippedNorm)))) {
+        hits.add(code);
+        break;
+      }
+    }
+  }
+  return hits.size === 1 ? [...hits][0] : null;
 }
 
 /**

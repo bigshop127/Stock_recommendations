@@ -891,6 +891,12 @@ export interface SymbolPreset {
   unit_label: string;     // contract_size 的單位：'股/口' 或 '元/點'
   price_label: string;    // 「現在價格」欄位的標籤
   index_linked: boolean;  // true＝標的本身就是大盤指數（beta 固定 1，不需另填指數）
+  /**
+   * 券商 App 常用的簡稱（玉山成交回報寫「微台期 202703」，不是「微型臺指期貨」）。
+   * 截圖匯入的 matchProduct() 只拿這些做「正規化後完全相等」的比對，**不做子字串**——
+   * 「大台」「台指」這種短字串一拿去子字串比對就會誤配到別的商品。
+   */
+  aliases?: string[];
 }
 
 /**
@@ -937,6 +943,7 @@ export const SYMBOL_PRESETS: (SymbolPreset & { spec: FuturesSpec })[] = [
     unit_label: '元/點',
     price_label: '台指點數',
     index_linked: true,
+    aliases: ['臺股期貨', '台指期', '大台', '大台指', '臺指期貨'],
     spec: {
       contract_size: 200, tick_size: 1,
       initial_margin: 636000, maintenance_margin: 488000,
@@ -950,6 +957,7 @@ export const SYMBOL_PRESETS: (SymbolPreset & { spec: FuturesSpec })[] = [
     unit_label: '元/點',
     price_label: '小型台指點數',
     index_linked: true,
+    aliases: ['小台', '小台指', '小型臺指', '小型台指期'],
     spec: {
       contract_size: 50, tick_size: 1,
       initial_margin: 159000, maintenance_margin: 122000,
@@ -963,6 +971,7 @@ export const SYMBOL_PRESETS: (SymbolPreset & { spec: FuturesSpec })[] = [
     unit_label: '元/點',
     price_label: '微型台指點數',
     index_linked: true,
+    aliases: ['微台', '微台指', '微型臺指', '微型台指期'],
     spec: {
       contract_size: 10, tick_size: 1,
       initial_margin: 31800, maintenance_margin: 24400,
