@@ -8,7 +8,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   findPreset, monthRank, marginPerLot, listedMonths, summarizeAccount, summarizeAccountAll,
-  defaultFarMonthRule, positionPnl,
+  defaultFarMonthRule, positionPnl, farUntil, monthBreakdown, stressTest,
   type FuturesPosition, type FuturesSpec, type ProductPriceSpec,
 } from './futures';
 import { normalizeFutures } from './futuresStore';
@@ -174,5 +174,45 @@ describe('預設規則與白名單', () => {
     expect(legacy.products.TX.spec.far_month_surcharge).toBe(0.2);
     expect(legacy.products.SRF.spec.far_month_surcharge).toBe(0);
     expect(legacy.products.SRF.spec.near_months).toBe(2);
+  });
+});
+
+describe('壓力測試：各月份明細', () => {
+  const pos = (id: string, month: string, lots: number, side: 'long' | 'short' = 'long'): FuturesPosition => ({
+    id, product: 'TX', month, side, lots, entry_price: 30_000, entry_date: '2026-11-01',
+  });
+  const price = { byMonth: { '202612': 30_000, '202703': 30_000 }, fallback: 30_000 };
+  const products: Record<string, ProductPriceSpec> = { TX: { spec: TX, price, beta: 1 } };
+
+  it('farUntil：202703 在 12/16 結算後（12/17 起）轉近月；近月回 null', () => {
+    expect(farUntil('202703', 3, '2026-11-11')).toBe('2026-12-17');
+    expect(farUntil('202612', 3, '2026-11-11')).toBeNull();
+  });
+
+  it('monthBreakdown：每月份保證金、遠月多佔、情境損益', () => {
+    const rows = monthBreakdown([pos('a', '202612', 1), pos('b', '202703', 2), pos('c', '202703', 1, 'short')], products, 0.1, '2026-11-11');
+    expect(rows.map((r) => r.month)).toEqual(['202612', '202703']);
+    const [near, far] = rows;
+    expect(near.far).toBe(false);
+    expect(near.required_initial).toBe(700_000);
+    expect(far.far).toBe(true);
+    expect(far.lots).toBe(3);
+    expect(far.long_lots).toBe(2);
+    expect(far.short_lots).toBe(1);
+    expect(far.required_initial).toBe(3 * 840_000);
+    expect(far.extra_initial).toBe(3 * 140_000);
+    expect(far.near_since).toBe('2026-12-17');
+    // 大盤跌 10%：多單虧、空單賺，近月多單 1 口虧 30000×0.1×200 = 600,000 ＋費用
+    expect(near.unrealized_at_drop).toBeLessThan(-600_000);
+    expect(near.unrealized_at_drop).toBeGreaterThan(-601_000);
+  });
+
+  it('合計與 summarizeAccountAll 的保證金一致；stressTest 帶 required_initial', () => {
+    const list = [pos('a', '202612', 1), pos('b', '202703', 2)];
+    const rows = monthBreakdown(list, products, 0, '2026-11-11');
+    const all = summarizeAccountAll(list, products, 5_000_000, [], '2026-11-11');
+    expect(rows.reduce((a, r) => a + r.required_initial, 0)).toBe(all.required_initial);
+    const st = stressTest(list, products, 5_000_000, { drops: [0.1], today: '2026-11-11' });
+    expect(st[0].required_initial).toBe(all.required_initial);
   });
 });

@@ -1192,6 +1192,7 @@ export interface StressRow {
   unrealized: number;            // 該情境的未實現損益（含來回費用）
   equity: number;                // 該情境的權益數
   excess: number;                // 超額保證金
+  required_initial: number;      // 該情境（停損出場後）所需原始保證金，已含各月份遠月加收
   risk_indicator: number | null;
   status: AccountSummary['status'];
   stopped_lots: number;          // 該情境下被停損出場的口數
@@ -1272,12 +1273,99 @@ export function stressTest(
       unrealized: s.unrealized,
       equity: s.equity,
       excess: s.excess,
+      required_initial: s.required_initial,
       risk_indicator: s.risk_indicator,
       status: s.status,
       stopped_lots: stoppedLots,
       stop_realized: realized,
     };
   });
+}
+
+/**
+ * 某月份「從哪一天起不再被加收」（換月後它進入最近 N 檔）。現在就不加收、或一年多內都不會
+ * 轉近月（算不出來）回 null。逐日往後找，用的是跟 monthRank 同一套換月邏輯。
+ */
+export function farUntil(month: string, nearMonths: number, today: string = twToday(), holidays?: Holidays): string | null {
+  const n = Math.max(1, Math.round(safe(nearMonths, 3)));
+  const r0 = monthRank(month, today, holidays);
+  if (r0 === null || r0 <= n) return null;
+  const d = new Date(today + 'T00:00:00Z');
+  for (let i = 0; i < 800; i += 1) {
+    d.setUTCDate(d.getUTCDate() + 1);
+    const iso = isoOf(d);
+    const r = monthRank(month, iso, holidays);
+    if (r !== null && r <= n) return iso;
+  }
+  return null;
+}
+
+export interface MonthBreakdownRow {
+  product: string;
+  month: string;
+  long_lots: number;
+  short_lots: number;
+  lots: number;
+  rank: number | null;
+  far: boolean;
+  surcharge: number;
+  /** 每口（已含加收）與這個月份部位合計佔用 */
+  initial_per_lot: number;
+  maintenance_per_lot: number;
+  required_initial: number;
+  required_maintenance: number;
+  /** 遠月加收多佔的原始保證金（沒加收＝0） */
+  extra_initial: number;
+  /** 從這天起不再加收（已是近月＝null） */
+  near_since: string | null;
+  /** 這個月份的報價（沒報價用商品價） */
+  price: number;
+  /** 大盤變動 drop 時，這個月份部位的未實現損益（含來回費用） */
+  unrealized_at_drop: number;
+}
+
+/**
+ * 壓力測試用的「各月份明細」：同一商品買不同月份，保證金（遠月加收）、換月時點與
+ * 在指定大盤情境下的損益各自獨立。多空同月份分開計口數但保證金照 summarizeAccountAll 的
+ * 口徑（逐口累加，不在這裡做對沖折抵）。
+ */
+export function monthBreakdown(
+  positions: FuturesPosition[],
+  products: Record<string, ProductPriceSpec>,
+  drop = 0,
+  today: string = twToday(),
+  holidays?: Holidays,
+): MonthBreakdownRow[] {
+  const map = new Map<string, MonthBreakdownRow>();
+  for (const p of Array.isArray(positions) ? positions : []) {
+    const lots = Math.max(0, safe(p.lots));
+    const pp = products[p.product];
+    if (!(lots > 0) || !pp) continue;
+    const key = `${p.product}|${p.month}`;
+    const mpl = marginPerLot(pp.spec, p.month, today, holidays);
+    let row = map.get(key);
+    if (!row) {
+      row = {
+        product: p.product, month: p.month, long_lots: 0, short_lots: 0, lots: 0,
+        rank: mpl.rank, far: mpl.far, surcharge: mpl.surcharge,
+        initial_per_lot: mpl.initial, maintenance_per_lot: mpl.maintenance,
+        required_initial: 0, required_maintenance: 0, extra_initial: 0,
+        near_since: mpl.far ? farUntil(p.month, safe(pp.spec.near_months, 3), today, holidays) : null,
+        price: priceOf(pp.price, p.month), unrealized_at_drop: 0,
+      };
+      map.set(key, row);
+    }
+    if (p.side === 'long') row.long_lots += lots; else row.short_lots += lots;
+    row.lots += lots;
+    row.required_initial += mpl.initial * lots;
+    row.required_maintenance += mpl.maintenance * lots;
+    const baseInit = Math.max(0, safe(pp.spec.initial_margin));
+    row.extra_initial += mpl.far ? (mpl.initial - baseInit) * lots : 0;
+    const beta = Math.max(0, safe(pp.beta, 1));
+    const shocked = row.price * Math.max(0, 1 - beta * safe(drop));
+    row.unrealized_at_drop += positionPnl(p, shocked, pp.spec, today).net_pnl;
+  }
+  return [...map.values()].sort((a, b) => a.product.localeCompare(b.product) || a.month.localeCompare(b.month));
 }
 
 /** 口數最多的月份（平手取近月）；沒有部位時回空字串 */

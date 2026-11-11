@@ -24,7 +24,7 @@ import {
   summarizeAccount, summarizeAccountAll, rolloverAlerts, rolloverCost, stopLossRisk,
   indexAtPrice, stressTest, weightedEntry, trailingStopPlan,
   accountTargetPlan, multiAddPlan,
-  buildRiskReport, priceOf, referenceMonthOf,
+  buildRiskReport, priceOf, referenceMonthOf, monthBreakdown, twToday,
   equityStats, summarizeCashFlows, flowDelta, holdingAsBatch,
   leverageLadder, entryPlan, rollCostEstimate, CALIBRATED_PLAN,
   type FuturesPosition, type ClosedTrade, type CashFlow, type FuturesSpec, type StressRow,
@@ -3472,7 +3472,7 @@ const StressTab: React.FC<{
         <p className="sm:hidden text-[10px] text-zinc-600 mb-1.5">← 左右滑動可看完整欄位 →</p>
         <div className="overflow-x-auto -mx-1 px-1">
           <ScaledBox scale={fontScale}>
-          <table className="w-full min-w-[780px] text-xs" data-testid="stress-matrix">
+          <table className="w-full min-w-[880px] text-xs" data-testid="stress-matrix">
             <thead>
               <tr className="text-zinc-500 border-b border-border">
                 <th className="text-left font-semibold py-2.5 pr-3">大盤修正</th>
@@ -3480,6 +3480,7 @@ const StressTab: React.FC<{
                 <th className="text-right font-semibold py-2.5 pr-3">預估標的價格</th>
                 <th className="text-right font-semibold py-2.5 pr-3">未實現損益</th>
                 <th className="text-right font-semibold py-2.5 pr-3">帳戶剩餘淨值</th>
+                <th className="text-right font-semibold py-2.5 pr-3" title="該情境下帳戶所需原始保證金，已依各月份套用遠月加收">所需原始保證金</th>
                 <th className="text-right font-semibold py-2.5 pr-3">超額保證金</th>
                 <th className="text-right font-semibold py-2.5 pr-3">預估風險指標</th>
                 {anyStops && <th className="text-right font-semibold py-2.5 pr-3">停損出場</th>}
@@ -3507,6 +3508,7 @@ const StressTab: React.FC<{
                     <td className="py-2.5 pr-3 text-right font-mono tabular-nums text-zinc-300">{px(r.price_after)}</td>
                     <td className={`py-2.5 pr-3 text-right font-mono tabular-nums ${pnlCls(r.unrealized)}`}>{money(r.unrealized)}</td>
                     <td className={`py-2.5 pr-3 text-right font-mono tabular-nums font-bold ${r.equity < 0 ? 'text-rose-500' : 'text-zinc-100'}`}>{money(r.equity)}</td>
+                    <td className="py-2.5 pr-3 text-right font-mono tabular-nums text-zinc-400">{money(r.required_initial)}</td>
                     <td className={`py-2.5 pr-3 text-right font-mono tabular-nums ${r.excess >= 0 ? 'text-zinc-400' : 'text-amber-400'}`}>{money(r.excess)}</td>
                     <td className={`py-2.5 pr-3 text-right font-mono tabular-nums font-semibold ${tone.cls}`}>
                       {r.risk_indicator !== null ? `${(r.risk_indicator * 100).toFixed(1)}%` : '—'}
@@ -3541,8 +3543,109 @@ const StressTab: React.FC<{
         </p>
       </Panel>
 
+      <MonthBreakdownPanel positions={positions} productsMap={productsMap} products={products} stress={stress} />
+
       {sim}
     </div>
+  );
+};
+
+/** 各月份明細：同一商品買不同到期月份，保證金（遠月加收）、何時轉近月、情境損益各自不同 */
+const MonthBreakdownPanel: React.FC<{
+  positions: FuturesPosition[];
+  productsMap: Record<string, ProductPriceSpec>;
+  products: Record<string, ProductConfig>;
+  stress: StressRow[];
+}> = ({ positions, productsMap, products, stress }) => {
+  const drops = useMemo(() => stress.map((r) => r.drop), [stress]);
+  const [drop, setDrop] = useState(0);
+  const today = twToday();
+  const rows = useMemo(() => monthBreakdown(positions, productsMap, drop, today), [positions, productsMap, drop, today]);
+  if (rows.length === 0) return null;
+  const totalExtra = rows.reduce((a, r) => a + r.extra_initial, 0);
+  const totalInit = rows.reduce((a, r) => a + r.required_initial, 0);
+  const totalPnl = rows.reduce((a, r) => a + r.unrealized_at_drop, 0);
+  const farRows = rows.filter((r) => r.far);
+  return (
+    <Panel
+      title="各到期月份明細"
+      icon={<Layers className="w-4 h-4" />}
+      tone="amber"
+      right={
+        <label className="flex items-center gap-1.5 text-[11px] text-zinc-500">
+          損益情境
+          <select
+            value={drop}
+            onChange={(e) => setDrop(Number(e.target.value))}
+            className="bg-zinc-900 border border-border rounded-lg px-2 py-1 text-zinc-200"
+            data-testid="month-drop"
+          >
+            <option value={0}>現價（大盤不變）</option>
+            {drops.map((d) => (
+              <option key={d} value={d}>大盤 {moveText(d)}</option>
+            ))}
+          </select>
+        </label>
+      }
+    >
+      <div className="overflow-x-auto -mx-1 px-1">
+        <table className="w-full min-w-[760px] text-xs" data-testid="month-breakdown">
+          <thead>
+            <tr className="text-zinc-500 border-b border-border">
+              <th className="text-left font-semibold py-2.5 pr-3">商品／月份</th>
+              <th className="text-right font-semibold py-2.5 pr-3">口數（多／空）</th>
+              <th className="text-right font-semibold py-2.5 pr-3">每口原始保證金</th>
+              <th className="text-right font-semibold py-2.5 pr-3">佔用原始保證金</th>
+              <th className="text-right font-semibold py-2.5 pr-3">遠月多佔</th>
+              <th className="text-right font-semibold py-2.5 pr-3">此月份損益</th>
+              <th className="text-left font-semibold py-2.5">狀態</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r) => (
+              <tr key={`${r.product}|${r.month}`} className="border-b border-border/40 last:border-0">
+                <td className="py-2.5 pr-3 font-mono">
+                  <span className="text-zinc-200">{products[r.product]?.name || r.product}</span>{' '}
+                  <span className="text-zinc-400">{r.month}</span>
+                </td>
+                <td className="py-2.5 pr-3 text-right font-mono tabular-nums text-zinc-300">
+                  {r.lots}（{r.long_lots}／{r.short_lots}）
+                </td>
+                <td className="py-2.5 pr-3 text-right font-mono tabular-nums text-zinc-300">{money(r.initial_per_lot)}</td>
+                <td className="py-2.5 pr-3 text-right font-mono tabular-nums text-zinc-100">{money(r.required_initial)}</td>
+                <td className={`py-2.5 pr-3 text-right font-mono tabular-nums ${r.extra_initial > 0 ? 'text-amber-400' : 'text-zinc-600'}`}>
+                  {r.extra_initial > 0 ? `+${money(r.extra_initial)}` : '—'}
+                </td>
+                <td className={`py-2.5 pr-3 text-right font-mono tabular-nums ${pnlCls(r.unrealized_at_drop)}`}>{money(r.unrealized_at_drop)}</td>
+                <td className="py-2.5">
+                  {r.far
+                    ? <Chip tone="amber">第 {r.rank} 檔・遠月 +{(r.surcharge * 100).toFixed(0)}%{r.near_since ? `（${r.near_since} 起轉近月）` : ''}</Chip>
+                    : r.rank !== null && r.rank <= 0
+                      ? <Chip tone="rose">已過最後交易日</Chip>
+                      : <Chip tone="emerald">第 {r.rank ?? '?'} 檔・近月</Chip>}
+                </td>
+              </tr>
+            ))}
+            <tr className="border-t border-border text-zinc-300 font-semibold">
+              <td className="py-2.5 pr-3">合計</td>
+              <td />
+              <td />
+              <td className="py-2.5 pr-3 text-right font-mono tabular-nums">{money(totalInit)}</td>
+              <td className="py-2.5 pr-3 text-right font-mono tabular-nums text-amber-400">{totalExtra > 0 ? `+${money(totalExtra)}` : '—'}</td>
+              <td className={`py-2.5 pr-3 text-right font-mono tabular-nums ${pnlCls(totalPnl)}`}>{money(totalPnl)}</td>
+              <td />
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <p className="text-[11px] text-zinc-500 mt-3">
+        上方壓力測試矩陣的保證金、風險指標、追繳／斷頭情境都已逐月份計算（遠月部位佔用較多）。
+        {farRows.length > 0
+          ? <> 目前有 {farRows.length} 個遠月份，換月後（括號日期起）加收會消失，風險指標會回升——所以遠月部位在轉近月前是壓力最大的時候。</>
+          : <> 目前部位都在近月，沒有遠月加收。</>}
+        {' '}此表的損益是各月份依各自報價、套同一個大盤情境的結果，兩個月份的價差不變動。
+      </p>
+    </Panel>
   );
 };
 
