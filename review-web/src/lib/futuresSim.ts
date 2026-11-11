@@ -23,6 +23,10 @@ export interface SimInput {
   cash: number;
   /** 假想商品相對大盤的 beta；指數期貨＝1 */
   beta?: number;
+  /** 假想部位的到期月份 'YYYYMM'；決定是否套遠月加收。省略＝近月（不加收） */
+  month?: string;
+  /** 判斷「最近月份」用的今天（'YYYY-MM-DD'）；省略＝台北時間今天。測試用。 */
+  today?: string;
   /** 疊加在上面的既有真實部位；省略＝帳戶是空的，只算這一筆 */
   base?: { positions: FuturesPosition[]; products: Record<string, ProductPriceSpec> };
 }
@@ -60,7 +64,7 @@ const betaOf = (inp: SimInput): number => (safe(inp.beta, 1) > 0 ? safe(inp.beta
 
 function build(inp: SimInput, lots: number) {
   const pos: FuturesPosition = {
-    id: 'sim', product: SIM_KEY, month: '', side: inp.side, lots, entry_price: inp.entry, entry_date: '',
+    id: 'sim', product: SIM_KEY, month: inp.month ?? '', side: inp.side, lots, entry_price: inp.entry, entry_date: '',
   };
   const simProduct: ProductPriceSpec = {
     spec: inp.spec,
@@ -81,8 +85,8 @@ export function simulateLots(inp: SimInput, lots: number): SimRow | null {
   const entry = safe(inp.entry);
   if (!(n > 0) || !(entry > 0)) return null;
   const { pos, positions, products } = build(inp, n);
-  const s = summarizeAccountAll(positions, products, safe(inp.cash), []);
-  const pnl = positionPnl(pos, entry, inp.spec);
+  const s = summarizeAccountAll(positions, products, safe(inp.cash), [], inp.today);
+  const pnl = positionPnl(pos, entry, inp.spec, inp.today);
   const beta = betaOf(inp);
 
   // 追繳／斷頭用「大盤同時變動 X%」表示；假想商品的價格變動 ＝ beta × X。
@@ -153,7 +157,7 @@ export function simGrid(inp: SimInput, lotsList: number[], moves: number[]): Sim
     const n = Math.floor(lots);
     if (!(n > 0) || !(entry > 0)) return moves.map((m) => ({ move: m, price: 0, pnl: 0, account_pnl: 0, equity: 0, risk: null, status: 'flat' as const }));
     const { pos, positions, products } = build(inp, n);
-    const rows = stressTest(positions, products, safe(inp.cash), { drops: moves.map((m) => -m / unit) });
+    const rows = stressTest(positions, products, safe(inp.cash), { drops: moves.map((m) => -m / unit), today: inp.today });
     const byDrop = new Map(rows.map((r) => [r.drop, r]));
     return moves.map((m) => {
       const r = byDrop.get(-m / unit);
@@ -161,7 +165,7 @@ export function simGrid(inp: SimInput, lotsList: number[], moves: number[]): Sim
       return {
         move: m,
         price,
-        pnl: positionPnl(pos, price, inp.spec).net_pnl,
+        pnl: positionPnl(pos, price, inp.spec, inp.today).net_pnl,
         account_pnl: r?.unrealized ?? 0,
         equity: r?.equity ?? 0,
         risk: r?.risk_indicator ?? null,

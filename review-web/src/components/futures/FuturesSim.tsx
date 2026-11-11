@@ -15,7 +15,7 @@ import { useFontScale } from '../../lib/useFontScale';
 import { api } from '../../lib/api';
 import type { FuturesMarginInfo } from '../../lib/api';
 import {
-  SYMBOL_PRESETS, findPreset,
+  SYMBOL_PRESETS, findPreset, listedMonths, marginPerLot,
   type AccountSummary, type FuturesPosition, type FuturesSpec, type ProductConfig, type ProductPriceSpec, type Side,
 } from '../../lib/futures';
 import { lotsToShow, maxAffordableLots, simGrid, simulateLots, type SimCell, type SimInput, type SimRow } from '../../lib/futuresSim';
@@ -63,9 +63,11 @@ interface Persisted {
   move: number;
   /** 完整對照表是否展開、表格口徑 */
   tableOpen: boolean; scope: Scope;
+  /** 假想部位的到期月份 'YYYYMM'；空字串＝最近月（不加收） */
+  month: string;
 }
 const STORAGE_KEY = 'review-futures-sim-v1';
-const DEFAULTS: Persisted = { code: 'TX', side: 'long', lots: 1, preset: 'swing', metric: 'pnl', move: -0.1, tableOpen: false, scope: 'new' };
+const DEFAULTS: Persisted = { code: 'TX', side: 'long', lots: 1, preset: 'swing', metric: 'pnl', move: -0.1, tableOpen: false, scope: 'new', month: '' };
 function loadPersisted(): Persisted {
   try {
     const d = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? 'null') as Partial<Persisted> | null;
@@ -79,6 +81,7 @@ function loadPersisted(): Persisted {
       move: typeof d.move === 'number' && Number.isFinite(d.move) && d.move > -1 ? d.move : DEFAULTS.move,
       tableOpen: d.tableOpen === true,
       scope: d.scope === 'all' ? 'all' : 'new',
+      month: typeof d.month === 'string' && /^\d{6}$/.test(d.month) ? d.month : '',
     };
   } catch {
     return DEFAULTS;
@@ -168,13 +171,17 @@ export function SimPanel({ positions, products, productsMap, cash }: {
   const [fontScale, setFontScale] = useFontScale('sim');
 
   // 兩種口徑：只算新加入的口數（帳戶只有這一筆）／新口數＋現有真實部位
+  // 假想部位的到期月份：只列目前掛牌的 6 檔；存的月份已過期就回到最近月
+  const monthList = useMemo(() => listedMonths(), []);
+  const simMonth = monthList.includes(st.month) ? st.month : monthList[0] ?? '';
   const inpNew: SimInput | null = useMemo(() => {
     if (!baseSpec || !(entry > 0) || !Number.isFinite(cashVal) || !(initVal > 0) || !(maintVal > 0)) return null;
     return {
       spec: { ...baseSpec, initial_margin: initVal, maintenance_margin: maintVal },
-      side: st.side, entry, cash: cashVal, beta,
+      side: st.side, entry, cash: cashVal, beta, month: simMonth,
     };
-  }, [baseSpec, entry, cashVal, initVal, maintVal, st.side, beta]);
+  }, [baseSpec, entry, cashVal, initVal, maintVal, st.side, beta, simMonth]);
+  const monthMargin = baseSpec ? marginPerLot({ ...baseSpec, initial_margin: initVal, maintenance_margin: maintVal }, simMonth) : null;
   const inpAll: SimInput | null = useMemo(
     () => (inpNew && hasReal ? { ...inpNew, base: { positions, products: productsMap } } : null),
     [inpNew, hasReal, positions, productsMap],
@@ -258,6 +265,18 @@ export function SimPanel({ positions, products, productsMap, cash }: {
             </div>
           </div>
           <div>
+            <label htmlFor="sim-month" className={LABEL_CLS}>到期月份</label>
+            <select id="sim-month" value={simMonth} onChange={(e) => patchSt({ month: e.target.value })} className={INPUT_CLS.replace('font-mono', '')}>
+              {monthList.map((m, i) => {
+                const mm = baseSpec ? marginPerLot(baseSpec, m) : null;
+                return <option key={m} value={m}>{m}{i === 0 ? '（近月）' : ''}{mm?.far ? `・遠月 +${Math.round(mm.surcharge * 100)}%` : ''}</option>;
+              })}
+            </select>
+            <p className="text-[10px] text-zinc-600 mt-1 truncate">
+              {monthMargin?.far ? `遠月每口原始 ${money(monthMargin.initial)}` : '近三檔不加收'}
+            </p>
+          </div>
+          <div>
             <label htmlFor="sim-entry" className={LABEL_CLS}>進場價（{unitLabel}）</label>
             <input id="sim-entry" type="text" inputMode="decimal" autoComplete="off"
               value={entryText ?? (Number.isFinite(defEntry) ? String(defEntry) : '')}
@@ -282,12 +301,12 @@ export function SimPanel({ positions, products, productsMap, cash }: {
             </p>
           </div>
           <div>
-            <label htmlFor="sim-init" className={LABEL_CLS}>原始保證金（元/口）</label>
+            <label htmlFor="sim-init" className={LABEL_CLS}>近月原始保證金（元/口）</label>
             <input id="sim-init" type="text" inputMode="numeric" autoComplete="off"
               value={initText ?? String(defInit || '')} onChange={(e) => setInitText(e.target.value)} className={INPUT_CLS} />
           </div>
           <div>
-            <label htmlFor="sim-maint" className={LABEL_CLS}>維持保證金（元/口）</label>
+            <label htmlFor="sim-maint" className={LABEL_CLS}>近月維持保證金（元/口）</label>
             <input id="sim-maint" type="text" inputMode="numeric" autoComplete="off"
               value={maintText ?? String(defMaint || '')} onChange={(e) => setMaintText(e.target.value)} className={INPUT_CLS} />
           </div>

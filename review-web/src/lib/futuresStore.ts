@@ -11,6 +11,7 @@ import {
   CONTRACT_CODE,
   DEFAULT_STRESS_DROPS,
   findPreset,
+  defaultFarMonthRule,
   type FuturesSpec,
   type FuturesPosition,
   type ClosedTrade,
@@ -161,8 +162,10 @@ function safeDate(v: unknown): string {
   return /^\d{4}-\d{2}-\d{2}$/.test(s) ? s : '';
 }
 
-function sanitizeSpec(v: unknown): FuturesSpec {
+function sanitizeSpec(v: unknown, code = ''): FuturesSpec {
   const o = (v && typeof v === 'object' ? v : {}) as Record<string, unknown>;
+  // 遠月加收：舊資料沒有這兩個欄位 → 依商品給預設（指數類 20%／3 檔，其餘不加收）
+  const farRule = defaultFarMonthRule(code);
   return {
     contract_size: Math.max(1, num(o.contract_size, DEFAULT_SPEC.contract_size)),
     tick_size: Math.max(0.0001, num(o.tick_size, DEFAULT_SPEC.tick_size)),
@@ -172,6 +175,8 @@ function sanitizeSpec(v: unknown): FuturesSpec {
     tax_rate: Math.max(0, num(o.tax_rate, DEFAULT_SPEC.tax_rate)),
     rollover_days: Math.max(0, Math.round(num(o.rollover_days, DEFAULT_SPEC.rollover_days))),
     liquidation_ratio: Math.min(1, Math.max(0, num(o.liquidation_ratio, DEFAULT_SPEC.liquidation_ratio))),
+    far_month_surcharge: Math.min(1, Math.max(0, num(o.far_month_surcharge, farRule.far_month_surcharge))),
+    near_months: Math.min(12, Math.max(1, Math.round(num(o.near_months, farRule.near_months)))),
   };
 }
 
@@ -346,7 +351,7 @@ function sanitizeProduct(v: unknown, code: string): ProductConfig {
     name: str(o.name) || preset?.name || code,
     quote_contract: safeProductCode(o.quote_contract, code) || code,
     underlying: str(o.underlying) || preset?.underlying || '',
-    spec: sanitizeSpec(o.spec),
+    spec: sanitizeSpec(o.spec, code),
     beta: Math.min(5, Math.max(0.01, num(o.beta, 1))),
     index_ref: Math.max(0, num(o.index_ref, 0)),
     index_linked: preset ? preset.index_linked : Boolean(o.index_linked),
@@ -403,7 +408,7 @@ function legacyProduct(parsed: Record<string, unknown>): { code: string; product
       name: preset?.name || code,
       quote_contract: code,
       underlying: preset?.underlying || '',
-      spec: sanitizeSpec(parsed.spec),
+      spec: sanitizeSpec(parsed.spec, code),
       beta: Math.min(5, Math.max(0.01, num(parsed.beta, 1))),
       index_ref: Math.max(0, num(parsed.index_ref, 0)),
       index_linked: Boolean(preset?.index_linked),

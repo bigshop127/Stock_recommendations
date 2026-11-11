@@ -19,7 +19,7 @@ import type { FuturesMonthQuote, FuturesQuoteResp, FuturesEquityHistoryResp, Fut
 import {
   CONTRACT_CODE, CONTRACT_NAME, UNDERLYING_CODE,
   SYMBOL_PRESETS, findPreset,
-  tickValue, lastTradingDay, tradingDaysBetween,
+  tickValue, lastTradingDay, tradingDaysBetween, marginPerLot,
   positionPnl, closedPnl, closedBreakdown, closeLots,
   summarizeAccount, summarizeAccountAll, rolloverAlerts, rolloverCost, stopLossRisk,
   indexAtPrice, stressTest, weightedEntry, trailingStopPlan,
@@ -437,7 +437,7 @@ export function FuturesPnl() {
                 {(preset?.underlying || activeProduct.underlying) ? `（${preset?.underlying || activeProduct.underlying}）` : ''}
               </Chip>
               <Chip tone="zinc" className="hidden sm:inline-flex">跳一檔 {spec.tick_size} ＝ {money(tickValue(spec))}</Chip>
-              <Chip tone="zinc" className="hidden sm:inline-flex">原始 / 維持保證金 {money(spec.initial_margin)} / {money(spec.maintenance_margin)}</Chip>
+              <Chip tone="zinc" className="hidden sm:inline-flex">近月原始 / 維持保證金 {money(spec.initial_margin)} / {money(spec.maintenance_margin)}{(spec.far_month_surcharge ?? 0) > 0 ? `（遠月 +${Math.round((spec.far_month_surcharge ?? 0) * 100)}%）` : ''}</Chip>
             </div>
           </div>
           {/* 手機排成等寬三格（原本會換行成 2+1，看起來像壞掉） */}
@@ -1986,8 +1986,8 @@ const OverviewTab: React.FC<{
       >
         <dl className="space-y-2.5 text-xs">
           <Row label="權益數" value={money(summary.equity)} cls={`text-base font-bold ${pnlCls(summary.equity)}`} />
-          <Row label={Object.keys(products).length > 1 ? '所需原始保證金（逐商品加總）' : `所需原始保證金（${summary.total_lots} 口 × ${money(spec.initial_margin)}）`} value={money(summary.required_initial)} />
-          <Row label={Object.keys(products).length > 1 ? '所需維持保證金（逐商品加總）' : `所需維持保證金（${summary.total_lots} 口 × ${money(spec.maintenance_margin)}）`} value={money(summary.required_maintenance)} />
+          <Row label={Object.keys(products).length > 1 ? '所需原始保證金（逐商品加總）' : (summary.far_lots > 0 ? `所需原始保證金（${summary.total_lots} 口，含遠月加收）` : `所需原始保證金（${summary.total_lots} 口 × ${money(spec.initial_margin)}）`)} value={money(summary.required_initial)} />
+          <Row label={Object.keys(products).length > 1 ? '所需維持保證金（逐商品加總）' : (summary.far_lots > 0 ? `所需維持保證金（${summary.total_lots} 口，含遠月加收）` : `所需維持保證金（${summary.total_lots} 口 × ${money(spec.maintenance_margin)}）`)} value={money(summary.required_maintenance)} />
           <Row
             label="超額保證金（＝期貨商的「可動用保證金」）"
             value={money(summary.excess)}
@@ -2564,7 +2564,8 @@ const PositionsTab: React.FC<{
               <p className="text-[11px] text-zinc-500">
                 {monthLabel(form.month)} 最後交易日 {lastTradingDay(form.month, holidays) ?? '—'}；
                 {form.lots && Number(form.lots) > 0 && (
-                  <> 這筆需要原始保證金 {money(activeProductCfg.spec.initial_margin * Number(form.lots))}。</>
+                  <> 這筆需要原始保證金 {money(marginPerLot(activeProductCfg.spec, form.month).initial * Number(form.lots))}
+                    {marginPerLot(activeProductCfg.spec, form.month).far && `（遠月，已含加收 ${Math.round(marginPerLot(activeProductCfg.spec, form.month).surcharge * 100)}%）`}。</>
                 )}
               </p>
             )}
@@ -2946,8 +2947,8 @@ const CashReconcile: React.FC<{
             hint="現金餘額 ＋ 毛未平倉損益。期貨商不會先扣還沒發生的出場費用，所以這裡用毛額——跟本頁上方那個「保證金權益數」差一趟來回手續費與期交稅，兩個都對，只是口徑不同。" />
           <Row label="未平倉損益" value={money(summary.unrealized_gross)} cls={pnlCls(summary.unrealized_gross)}
             hint="純價差，不扣費用。本頁上方顯示的是扣掉來回費用的淨額。" />
-          <Row label={multiProduct ? '原始保證金（逐商品加總）' : `原始保證金（${summary.total_lots} 口 × ${money(spec.initial_margin)}）`} value={money(summary.required_initial)} />
-          <Row label={multiProduct ? '維持率保證金（逐商品加總）' : `維持率保證金（${summary.total_lots} 口 × ${money(spec.maintenance_margin)}）`} value={money(summary.required_maintenance)}
+          <Row label={multiProduct ? '原始保證金（逐商品加總）' : (summary.far_lots > 0 ? `原始保證金（${summary.total_lots} 口，含遠月加收）` : `原始保證金（${summary.total_lots} 口 × ${money(spec.initial_margin)}）`)} value={money(summary.required_initial)} />
+          <Row label={multiProduct ? '維持率保證金（逐商品加總）' : (summary.far_lots > 0 ? `維持率保證金（${summary.total_lots} 口，含遠月加收）` : `維持率保證金（${summary.total_lots} 口 × ${money(spec.maintenance_margin)}）`)} value={money(summary.required_maintenance)}
             hint="這兩格對不上，就是「契約規格與費用」裡的保證金填錯了——期貨商調整保證金時要回來改。" />
           <Row label="可動用保證金" value={money(brokerAvailable)} cls={brokerAvailable >= 0 ? 'text-emerald-400' : 'text-rose-400'}
             hint="權益總值 − 原始保證金。" />
@@ -4978,6 +4979,8 @@ const SPEC_FIELDS: { key: keyof FuturesSpec; label: string; step: string; hint: 
   { key: 'tax_rate', label: '期交稅率', step: '0.00001', hint: '股價指數類期貨＝十萬分之二（0.00002），按成交金額課，買賣各一次。' },
   { key: 'rollover_days', label: '轉倉提醒提前天數', step: '1', hint: '預設 7＝到期前一週開始提醒。' },
   { key: 'liquidation_ratio', label: '強制平倉風險指標', step: '0.05', hint: '期交所規定 25%（0.25）。盤中低於此值期貨商會代為沖銷。' },
+  { key: 'far_month_surcharge', label: '遠月加收比例', step: '0.05', hint: '0.2＝加收 20%。期貨商自訂（非期交所規定），各家不同：國票 20%、統一 30%、玉山未公告，目前 20% 是推定值，請用期貨商 App 對帳校正。上面的原始／維持保證金請填「近月」口徑。不加收填 0。' },
+  { key: 'near_months', label: '免加收的最近月份數', step: '1', hint: '指數類（大台／小台／微台）＝3：最近 3 檔免加收，第 4 檔起才加收；其他期貨通常是 2。判斷看掛牌順位，不是日曆上的三個月。' },
 ];
 
 const NEW_PRODUCT_FORM_SEED = {
@@ -5212,8 +5215,11 @@ const SettingsTab: React.FC<{
 
   // 非受控＋key：按「還原預設值」時 key 跟著變，輸入框重掛載吃到新值
   const commit = (key: keyof FuturesSpec, raw: string) => {
-    const v = parseFloat(raw);
+    let v = parseFloat(raw);
     if (!Number.isFinite(v)) return;
+    // 跟 sanitizeSpec 同一組範圍：不夾的話畫面會先顯示超範圍的值，重新整理後才被改掉
+    if (key === 'far_month_surcharge') v = Math.min(1, Math.max(0, v));
+    if (key === 'near_months') v = Math.min(12, Math.max(1, Math.round(v)));
     if (v === activeProductCfg.spec[key]) return; // 沒改就不要假裝存了一次
     setJustSaved(key);
     void saveToCloud(patch((c) => ({
@@ -5816,6 +5822,10 @@ const SettingsTab: React.FC<{
             <dl className="grid grid-cols-2 lg:grid-cols-3 gap-x-6 gap-y-2 text-xs">
               <Row label="所需原始保證金" value={money(specPreview.required_initial)} />
               <Row label="所需維持保證金" value={money(specPreview.required_maintenance)} />
+              {specPreview.far_lots > 0 && (
+                <Row label={`其中遠月 ${specPreview.far_lots} 口加收`} value={`＋${money(specPreview.far_extra_initial)}`} cls="text-amber-400"
+                  hint="這些口數的到期月份落在「最近月份以外」，期貨商會依「遠月加收比例」多收保證金，已計入上面的所需保證金。" />
+              )}
               <Row label="權益數" value={money(specPreview.equity)} cls={pnlCls(specPreview.equity)} />
               <Row
                 label="風險指標"

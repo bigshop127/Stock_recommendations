@@ -580,7 +580,9 @@
       "contract_size": 1000, "tick_size": 0.05,
       "initial_margin": 7900, "maintenance_margin": 6100,
       "fee_per_lot": 30, "tax_rate": 0.00002,
-      "rollover_days": 7, "liquidation_ratio": 0.25
+      "rollover_days": 7, "liquidation_ratio": 0.25,
+      "far_month_surcharge": 0.2,  // 遠月加收比例（期貨商自訂，非期交所規定）；0＝不加收。缺欄位時依商品補：TX/MTX/TMF＝0.2，其餘 0
+      "near_months": 3             // 免加收的最近月份數：指數類 3、其他 2。initial/maintenance_margin 一律是「近月」口徑
     },
     "positions": [
       { "id": "f_…", "month": "202608", "side": "long", "lots": 2,

@@ -299,8 +299,9 @@ function summarizeAll(products, positions, cash) {
     const row = byProduct.get(code) || { product: code, lots: 0, unrealized: 0, required_initial: 0, required_maintenance: 0 };
     row.lots += lots;
     row.unrealized += r.net_pnl;
-    row.required_initial += Math.max(0, safeNum(spec.initial_margin, 0)) * lots;
-    row.required_maintenance += Math.max(0, safeNum(spec.maintenance_margin, 0)) * lots;
+    const mpl = marginPerLot(spec, code, posn.month);
+    row.required_initial += mpl.initial * lots;
+    row.required_maintenance += mpl.maintenance * lots;
     byProduct.set(code, row);
   }
 
@@ -347,6 +348,28 @@ function summarizeAll(products, positions, cash) {
     liquidation_price: cut_shift === null ? null : Math.max(0, reference_price + cut_shift),
     by_product: [...byProduct.values()],
   };
+}
+
+/**
+ * 遠月加收保證金（期貨商自訂、非期交所規定；規則與前端 review-web/src/lib/futures.ts 的
+ * marginPerLot() 完全一致，兩邊要一起改）。指數類（TX/MTX/TMF）預設 20%＋最近 3 檔免加收；
+ * spec 沒有 far_month_surcharge 欄位（舊資料、尚未存過）時依商品代碼補預設，
+ * 這樣通知的保證金口徑不會比網頁低。
+ */
+function marginPerLot(spec, code, month, holidays) {
+  const isIndex = ['TX', 'MTX', 'TMF'].includes(String(code || '').toUpperCase());
+  const rate = Math.min(1, Math.max(0, safeNum(spec.far_month_surcharge, isIndex ? 0.2 : 0)));
+  const n = Math.max(1, Math.round(safeNum(spec.near_months, isIndex ? 3 : 2)));
+  const base = { initial: Math.max(0, safeNum(spec.initial_margin, 0)), maintenance: Math.max(0, safeNum(spec.maintenance_margin, 0)) };
+  const m = /^(\d{4})(\d{2})$/.exec(String(month || ''));
+  if (!(rate > 0) || !m) return base;
+  const today = new Date(Date.now() + 8 * 3600 * 1000).toISOString().slice(0, 10);
+  let cur = Number(today.slice(0, 4)) * 12 + Number(today.slice(5, 7)) - 1;
+  const ltd = lastTradingDay(today.slice(0, 4) + today.slice(5, 7), holidays);
+  if (ltd && today > ltd) cur += 1;
+  const rank = Number(m[1]) * 12 + Number(m[2]) - 1 - cur + 1;
+  if (rank <= n) return base;
+  return { initial: Math.round(base.initial * (1 + rate)), maintenance: Math.round(base.maintenance * (1 + rate)) };
 }
 
 /** 最後交易日＝第三個星期三，遇休市順延（假日曆抓不到時只跳過週末） */

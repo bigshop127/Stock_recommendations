@@ -2,7 +2,8 @@ import { describe, expect, it } from 'vitest';
 import { findPreset, type FuturesPosition, type ProductPriceSpec } from './futures';
 import { lotsToShow, maxAffordableLots, simGrid, simulateLots, type SimInput } from './futuresSim';
 
-const TX = findPreset('TX')!.spec;   // 大台：每點 200、原始 636,000、維持 488,000、手續費 60、期交稅十萬分之二
+// 固定用 2026-06 的舊公告值：這組測試驗的是算式，不是預設值；預設值會隨期交所公告更新
+const TX = { ...findPreset('TX')!.spec, initial_margin: 636_000, maintenance_margin: 488_000 };   // 大台：每點 200、原始 636,000、維持 488,000、手續費 60、期交稅十萬分之二
 const NYF = findPreset('NYF')!.spec;
 
 const long = (cash: number, entry = 40000): SimInput => ({ spec: TX, side: 'long', entry, cash });

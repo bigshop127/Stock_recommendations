@@ -54,7 +54,8 @@ describe('normalizeFutures：舊格式遷移成單一商品', () => {
     expect(cfg.active_product).toBe('SRF');
 
     const p = cfg.products.SRF;
-    expect(p.spec).toEqual(legacy.spec);
+    // 舊資料沒有遠月加收欄位：SRF 不是指數類 → 補成「不加收、免加收 2 檔」
+    expect(p.spec).toEqual({ ...legacy.spec, far_month_surcharge: 0, near_months: 2 });
     expect(p.beta).toBeCloseTo(1.05, 10);
     expect(p.index_ref).toBe(24000);
     expect(p.price).toBeCloseTo(104.7, 10);

@@ -50,8 +50,17 @@ function safeDate(v) {
   return /^\d{4}-\d{2}-\d{2}$/.test(s) ? s : '';
 }
 
-function sanitizeSpec(v) {
+// 遠月加收預設：指數類（大台／小台／微台）20%＋最近 3 檔免加收，其餘不加收（期貨商自訂，非期交所規定）。
+// 前端 futures.ts 的 defaultFarMonthRule() 是同一份規則，兩邊要一起改。
+const INDEX_FUTURES_CODES = ['TX', 'MTX', 'TMF'];
+function defaultFarMonthRule(code) {
+  const isIndex = INDEX_FUTURES_CODES.includes(String(code || '').trim().toUpperCase());
+  return { far_month_surcharge: isIndex ? 0.2 : 0, near_months: isIndex ? 3 : 2 };
+}
+
+function sanitizeSpec(v, code = '') {
   const o = v && typeof v === 'object' ? v : {};
+  const farRule = defaultFarMonthRule(code);
   return {
     contract_size: Math.max(1, num(o.contract_size, DEFAULT_SPEC.contract_size)),
     tick_size: Math.max(0.0001, num(o.tick_size, DEFAULT_SPEC.tick_size)),
@@ -61,6 +70,9 @@ function sanitizeSpec(v) {
     tax_rate: Math.max(0, num(o.tax_rate, DEFAULT_SPEC.tax_rate)),
     rollover_days: Math.max(0, Math.round(num(o.rollover_days, DEFAULT_SPEC.rollover_days))),
     liquidation_ratio: Math.min(1, Math.max(0, num(o.liquidation_ratio, DEFAULT_SPEC.liquidation_ratio))),
+    // 白名單：漏了這兩個欄位，使用者調的加收比例一存雲端就被吃掉
+    far_month_surcharge: Math.min(1, Math.max(0, num(o.far_month_surcharge, farRule.far_month_surcharge))),
+    near_months: Math.min(12, Math.max(1, Math.round(num(o.near_months, farRule.near_months)))),
   };
 }
 
@@ -255,7 +267,7 @@ function sanitizeProduct(v, code) {
     name: str(o.name) || code,
     quote_contract: safeProductCode(o.quote_contract, code) || code,
     underlying: str(o.underlying),
-    spec: sanitizeSpec(o.spec),
+    spec: sanitizeSpec(o.spec, code),
     beta: clamp(o.beta, 0.01, 5, 1),
     index_ref: Math.max(0, num(o.index_ref, 0)),
     index_linked: Boolean(o.index_linked),
@@ -319,7 +331,7 @@ function legacyProduct(b) {
       name: code,
       quote_contract: code,
       underlying: '',
-      spec: sanitizeSpec(b.spec),
+      spec: sanitizeSpec(b.spec, code),
       beta: clamp(b.beta, 0.01, 5, 1),
       index_ref: Math.max(0, num(b.index_ref, 0)),
       index_linked: false,

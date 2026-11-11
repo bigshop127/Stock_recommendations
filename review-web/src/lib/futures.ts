@@ -23,6 +23,16 @@ export interface FuturesSpec {
   tax_rate: number;            // 期交稅率（成交金額 × 稅率，單邊）：股價指數類＝十萬分之二
   rollover_days: number;       // 到期前幾天開始提醒轉倉（預設 7＝前一週）
   liquidation_ratio: number;   // 盤中強制平倉的風險指標門檻（期交所規定＝25%）
+  /**
+   * 遠月加收比例（0.2＝加收 20%）。**這不是期交所規定，是期貨商自己加的**（期交所公告值
+   * 是「期貨商收取的最低標準」，期貨商管理規則第 46 條允許另加）。各家比例不同：
+   * 國票寫 20%、統一寫 30%，玉山沒有公開公告——預設 20% 是用玉山微台 202703 約為期交所
+   * ×1.2 的實測推定，之後要用玉山 App 對帳校正。沒填（舊資料）＝0＝不加收。
+   * 同時套用在原始與維持保證金，見 marginPerLot()。
+   */
+  far_month_surcharge?: number;
+  /** 免加收的「最近月份」個數：指數類（臺股／小型／微型臺指）＝3，其他期貨＝2。沒填＝3。 */
+  near_months?: number;
 }
 
 export const CONTRACT_CODE = 'SRF';
@@ -228,6 +238,94 @@ export function tradingDaysBetween(from: string, to: string, holidays?: Holidays
   return count;
 }
 
+// ── 遠月加收保證金 ───────────────────────────────────────────────────────────
+//
+// 規則整理（2026-11-11 查證，來源見 docs/ROADMAP.md「期貨保證金規則」）：
+//   · 期交所公告的保證金每個商品只有一個數字，**不分月份**；結算:維持:原始＝1:1.035:1.35。
+//   · 期貨商可另加收。臺股指數類「到期月份在三個最近月份**以外**」加收；其他期貨是「二個
+//     最近月份以外」。判斷的是掛牌月份的**順位**（第 4 檔以後），不是日曆上的三個月。
+//     例：11 月時最近三個月＝202611／202612／202701，202703 是第 4 檔 → 加收。
+//   · 最近月份＝還沒過最後交易日（第三個星期三）的最近 N 個連續月份。
+
+/** 內建商品的預設加收規則：指數類（大台／小台／微台）20%＋最近 3 檔；其餘預設不加收 */
+export const INDEX_FUTURES_CODES = ['TX', 'MTX', 'TMF'];
+export const DEFAULT_FAR_MONTH_SURCHARGE = 0.2;
+
+export function defaultFarMonthRule(code: string): { far_month_surcharge: number; near_months: number } {
+  const isIndex = INDEX_FUTURES_CODES.includes(String(code || '').trim().toUpperCase());
+  return { far_month_surcharge: isIndex ? DEFAULT_FAR_MONTH_SURCHARGE : 0, near_months: isIndex ? 3 : 2 };
+}
+
+/** 台北時間今天（'YYYY-MM-DD'）——不用本機時區，VM 在國外時日期才不會差一天 */
+export function twToday(now: number = Date.now()): string {
+  return new Date(now + 8 * 3600 * 1000).toISOString().slice(0, 10);
+}
+
+/**
+ * 某到期月份是第幾檔掛牌月份（1＝最近月）。已過最後交易日的月份回 0 或負數；
+ * 月份格式不對回 null。只看連續月份——季月（遠月）本來就排在連續月之後，順位大於 N 即可。
+ */
+export function monthRank(month: string, today: string, holidays?: Holidays): number | null {
+  const m = /^(\d{4})(\d{2})$/.exec(String(month || '').trim());
+  const t = /^(\d{4})-(\d{2})-\d{2}$/.exec(String(today || ''));
+  if (!m || !t) return null;
+  const idx = (y: number, mo: number) => y * 12 + (mo - 1);
+  let cur = idx(Number(t[1]), Number(t[2]));
+  // 當月契約過了最後交易日就已結算，最近月份從下個月起算
+  const ltd = lastTradingDay(`${t[1]}${t[2]}`, holidays);
+  if (ltd && today > ltd) cur += 1;
+  return idx(Number(m[1]), Number(m[2])) - cur + 1;
+}
+
+/**
+ * 目前可交易的掛牌月份（指數類）：最近 3 個連續月份＋其後 3 個季月（3／6／9／12）。
+ * 給「模擬建倉」選月份用；實際掛牌以期交所為準，這裡只是合理的候選清單。
+ */
+export function listedMonths(today: string = twToday(), holidays?: Holidays): string[] {
+  const t = /^(\d{4})-(\d{2})-\d{2}$/.exec(today);
+  if (!t) return [];
+  let idx = Number(t[1]) * 12 + Number(t[2]) - 1;
+  const ltd = lastTradingDay(`${t[1]}${t[2]}`, holidays);
+  if (ltd && today > ltd) idx += 1;
+  const fmt = (i: number) => `${Math.floor(i / 12)}${String((i % 12) + 1).padStart(2, '0')}`;
+  const out = [idx, idx + 1, idx + 2];
+  let q = idx + 3;
+  while (out.length < 6) {
+    if ((q % 12) % 3 === 2) out.push(q); // 月份 3／6／9／12（0 起算＝2／5／8／11）
+    q += 1;
+  }
+  return out.map(fmt);
+}
+
+export interface MarginPerLot {
+  initial: number;      // 這個月份每口原始保證金（已含加收）
+  maintenance: number;  // 每口維持保證金（已含加收）
+  far: boolean;         // 是否落在加收月份
+  surcharge: number;    // 實際套用的加收比例（不加收＝0）
+  rank: number | null;  // 掛牌月份順位（1＝最近月）
+}
+
+/**
+ * 某月份每口所需保證金＝spec 的基準值 ×（遠月則 +加收比例）。
+ * 基準值是「近月」口徑：期交所公告值，或你自己在商品設定填的近月值。
+ * 加收後取整數元；實際期貨商是否再進位到千元沒有公告，對不上時以 App 為準校正比例。
+ */
+export function marginPerLot(spec: FuturesSpec, month: string, today?: string, holidays?: Holidays): MarginPerLot {
+  const base = { initial: Math.max(0, safe(spec.initial_margin)), maintenance: Math.max(0, safe(spec.maintenance_margin)) };
+  const rate = Math.min(1, Math.max(0, safe(spec.far_month_surcharge, 0)));
+  const n = Math.max(1, Math.round(safe(spec.near_months, 3)));
+  const rank = monthRank(month, today ?? twToday(), holidays);
+  const far = rate > 0 && rank !== null && rank > n;
+  if (!far) return { ...base, far: false, surcharge: 0, rank };
+  return {
+    initial: Math.round(base.initial * (1 + rate)),
+    maintenance: Math.round(base.maintenance * (1 + rate)),
+    far: true,
+    surcharge: rate,
+    rank,
+  };
+}
+
 // ── 單筆部位損益 ─────────────────────────────────────────────────────────────
 
 export interface PositionPnl {
@@ -248,7 +346,7 @@ export interface PositionPnl {
  * 費用採「來回」計算（進場那次已經付了、出場那次遲早要付），這樣損益平衡價才是
  * 真的平衡；只算單邊會讓人以為打平其實還虧一趟手續費。
  */
-export function positionPnl(pos: FuturesPosition, price: number, spec: FuturesSpec): PositionPnl {
+export function positionPnl(pos: FuturesPosition, price: number, spec: FuturesSpec, today?: string): PositionPnl {
   const lots = Math.max(0, safe(pos.lots));
   const entry = Math.max(0, safe(pos.entry_price));
   const p = Math.max(0, safe(price));
@@ -264,7 +362,7 @@ export function positionPnl(pos: FuturesPosition, price: number, spec: FuturesSp
   const tax = (cost_value + contract_value) * taxRate;
   const net_pnl = gross_pnl - fees - tax;
 
-  const margin_required = Math.max(0, safe(spec.initial_margin)) * lots;
+  const margin_required = marginPerLot(spec, pos.month, today).initial * lots;
   const return_on_margin = margin_required > 0 ? net_pnl / margin_required : 0;
 
   // 損益平衡：s × (P − entry) × unit × lots ＝ fees + tax(P)
@@ -477,6 +575,9 @@ export interface AccountSummary {
   margin_call_price: number | null;  // 參考月份的追繳價（＝reference_price + margin_call_shift）
   liquidation_price: number | null;  // 參考月份的斷頭價
   status: 'flat' | 'ok' | 'warn' | 'call' | 'danger';
+  /** 落在遠月加收月份的口數，以及因加收多出來的原始保證金（元）。沒有遠月部位＝0 */
+  far_lots: number;
+  far_extra_initial: number;
   /**
    * 以下三個欄位只有 summarizeAccountAll()（多商品彙總）才會填，summarizeAccount()
    * （單商品）維持 undefined——舊有呼叫端不用改就能繼續動作。
@@ -496,6 +597,7 @@ export interface ProductSummaryRow {
   unrealized: number;
   required_initial: number;
   required_maintenance: number;
+  far_lots?: number;
 }
 
 /**
@@ -519,9 +621,14 @@ export function summarizeAccount(
   spec: FuturesSpec,
   cash: number,
   closed: ClosedTrade[] = [],
+  today?: string,
 ): AccountSummary {
   const unit = Math.max(1, safe(spec.contract_size, 1000));
   const list = Array.isArray(positions) ? positions : [];
+  let required_initial = 0;
+  let required_maintenance = 0;
+  let far_lots = 0;
+  let far_extra_initial = 0;
 
   let total_lots = 0;
   let net_lots = 0;
@@ -539,10 +646,17 @@ export function summarizeAccount(
     total_lots += lots;
     net_lots += s * lots;
     if (s > 0) long_lots += lots; else short_lots += lots;
-    const pnl = positionPnl(pos, priceOf(price, pos.month), spec);
+    const pnl = positionPnl(pos, priceOf(price, pos.month), spec, today);
     contract_value += pnl.contract_value;
     unrealized += pnl.net_pnl;
     unrealized_gross += pnl.gross_pnl;
+    const mpl = marginPerLot(spec, pos.month, today);
+    required_initial += mpl.initial * lots;
+    required_maintenance += mpl.maintenance * lots;
+    if (mpl.far) {
+      far_lots += lots;
+      far_extra_initial += (mpl.initial - Math.max(0, safe(spec.initial_margin))) * lots;
+    }
     lotsByMonth.set(pos.month, (lotsByMonth.get(pos.month) ?? 0) + lots);
   }
 
@@ -560,8 +674,6 @@ export function summarizeAccount(
   const cashBal = safe(cash);
   const equity = cashBal + unrealized;
   const equity_broker = cashBal + unrealized_gross;
-  const required_initial = Math.max(0, safe(spec.initial_margin)) * total_lots;
-  const required_maintenance = Math.max(0, safe(spec.maintenance_margin)) * total_lots;
   const excess = equity - required_initial;
   const risk_indicator = required_initial > 0 ? equity / required_initial : null;
   const margin_call_ratio = required_initial > 0 ? required_maintenance / required_initial : null;
@@ -605,6 +717,8 @@ export function summarizeAccount(
     margin_call_price: priceAt(margin_call_shift),
     liquidation_price: priceAt(liquidation_shift),
     status,
+    far_lots,
+    far_extra_initial,
   };
 }
 
@@ -631,6 +745,7 @@ export function summarizeAccountAll(
   products: Record<string, ProductPriceSpec>,
   cash: number,
   closed: ClosedTrade[] = [],
+  today?: string,
 ): AccountSummary {
   const keys = Object.keys(products);
   const fallbackKey = keys[0];
@@ -645,6 +760,8 @@ export function summarizeAccountAll(
   let unrealized = 0;
   let unrealized_gross = 0;
   let denom = 0;
+  let far_lots = 0;
+  let far_extra_initial = 0;
   const lotsByRef = new Map<string, number>();      // key = `${product}:${month}`，找口數最多的那筆當參考
   const byProduct = new Map<string, ProductSummaryRow>();
 
@@ -664,7 +781,7 @@ export function summarizeAccountAll(
     net_lots += s * lots;
     if (s > 0) long_lots += lots; else short_lots += lots;
 
-    const pnl = positionPnl(pos, price0, spec);
+    const pnl = positionPnl(pos, price0, spec, today);
     contract_value += pnl.contract_value;
     unrealized += pnl.net_pnl;
     unrealized_gross += pnl.gross_pnl;
@@ -682,8 +799,14 @@ export function summarizeAccountAll(
     row.lots += lots;
     row.contract_value += pnl.contract_value;
     row.unrealized += pnl.net_pnl;
-    row.required_initial += Math.max(0, safe(spec.initial_margin)) * lots;
-    row.required_maintenance += Math.max(0, safe(spec.maintenance_margin)) * lots;
+    const mpl = marginPerLot(spec, pos.month, today);
+    row.required_initial += mpl.initial * lots;
+    row.required_maintenance += mpl.maintenance * lots;
+    if (mpl.far) {
+      row.far_lots = (row.far_lots ?? 0) + lots;
+      far_lots += lots;
+      far_extra_initial += (mpl.initial - Math.max(0, safe(spec.initial_margin))) * lots;
+    }
     byProduct.set(pos.product, row);
   }
 
@@ -752,6 +875,8 @@ export function summarizeAccountAll(
     margin_call_price: priceAt(margin_call_shift),
     liquidation_price: priceAt(liquidation_shift),
     status,
+    far_lots,
+    far_extra_initial,
     reference_product,
     margin_call_move,
     liquidation_move,
@@ -902,7 +1027,8 @@ export interface SymbolPreset {
 /**
  * 保證金來源：
  *   指數類（TX / MTX / TMF）＝期交所 OpenAPI `v1/IndexFuturesAndOptionsMargining`
- *     的 2026-07-28 公告值（該端點每日更新，opt25 會接成自動同步）。
+ *     的 2026-08-12 公告值（這裡只是抓不到 API 時的退路，每日會被 API 值蓋掉；
+ *     這是**近月基準值**，遠月加收由 marginPerLot() 另外套）（該端點每日更新，opt25 會接成自動同步）。
  *   股票／ETF 類（SRF / NYF）＝期交所 2026-06-18 公告，**該類沒有 OpenAPI 端點**，
  *     只有 taifex.com.tw/cht/5/stockMargining 的 HTML 表格，目前仍需手動維護。
  *
@@ -921,6 +1047,7 @@ export const SYMBOL_PRESETS: (SymbolPreset & { spec: FuturesSpec })[] = [
       contract_size: 1000, tick_size: 0.05,
       initial_margin: 7900, maintenance_margin: 6100,
       fee_per_lot: 30, tax_rate: 0.00002, rollover_days: 7, liquidation_ratio: 0.25,
+      far_month_surcharge: 0, near_months: 2,
     },
   },
   {
@@ -934,6 +1061,7 @@ export const SYMBOL_PRESETS: (SymbolPreset & { spec: FuturesSpec })[] = [
       contract_size: 10000, tick_size: 0.05,
       initial_margin: 79000, maintenance_margin: 61000,
       fee_per_lot: 60, tax_rate: 0.00002, rollover_days: 7, liquidation_ratio: 0.25,
+      far_month_surcharge: 0, near_months: 2,
     },
   },
   {
@@ -946,8 +1074,9 @@ export const SYMBOL_PRESETS: (SymbolPreset & { spec: FuturesSpec })[] = [
     aliases: ['臺股期貨', '台指期', '大台', '大台指', '臺指期貨'],
     spec: {
       contract_size: 200, tick_size: 1,
-      initial_margin: 636000, maintenance_margin: 488000,
+      initial_margin: 701000, maintenance_margin: 538000,
       fee_per_lot: 60, tax_rate: 0.00002, rollover_days: 7, liquidation_ratio: 0.25,
+      far_month_surcharge: DEFAULT_FAR_MONTH_SURCHARGE, near_months: 3,
     },
   },
   {
@@ -960,8 +1089,9 @@ export const SYMBOL_PRESETS: (SymbolPreset & { spec: FuturesSpec })[] = [
     aliases: ['小台', '小台指', '小型臺指', '小型台指期'],
     spec: {
       contract_size: 50, tick_size: 1,
-      initial_margin: 159000, maintenance_margin: 122000,
+      initial_margin: 175250, maintenance_margin: 134500,
       fee_per_lot: 50, tax_rate: 0.00002, rollover_days: 7, liquidation_ratio: 0.25,
+      far_month_surcharge: DEFAULT_FAR_MONTH_SURCHARGE, near_months: 3,
     },
   },
   {
@@ -974,8 +1104,9 @@ export const SYMBOL_PRESETS: (SymbolPreset & { spec: FuturesSpec })[] = [
     aliases: ['微台', '微台指', '微型臺指', '微型台指期'],
     spec: {
       contract_size: 10, tick_size: 1,
-      initial_margin: 31800, maintenance_margin: 24400,
+      initial_margin: 35050, maintenance_margin: 26900,
       fee_per_lot: 30, tax_rate: 0.00002, rollover_days: 7, liquidation_ratio: 0.25,
+      far_month_surcharge: DEFAULT_FAR_MONTH_SURCHARGE, near_months: 3,
     },
   },
 ];
@@ -1119,7 +1250,7 @@ export function stressTest(
   positions: FuturesPosition[],
   products: Record<string, ProductPriceSpec>,
   cash: number,
-  opts: { drops?: number[]; stopLoss?: Record<string, number> } = {},
+  opts: { drops?: number[]; stopLoss?: Record<string, number>; today?: string } = {},
 ): StressRow[] {
   const drops = (opts.drops ?? DEFAULT_STRESS_DROPS).slice().sort((a, b) => a - b);
 
@@ -1131,7 +1262,7 @@ export function stressTest(
       after[code] = { ...pp, price: scalePrices(pp.price, Math.max(0, 1 - beta * drop)) };
     }
     const { remaining, realized, stoppedLots } = applyStops(positions, after, opts.stopLoss);
-    const s = summarizeAccountAll(remaining, after, safe(cash) + realized, []);
+    const s = summarizeAccountAll(remaining, after, safe(cash) + realized, [], opts.today);
     const refCode = s.reference_product || Object.keys(products)[0] || '';
     const refIndex = safe(products[refCode]?.index_ref, 0);
     return {
@@ -1335,9 +1466,9 @@ export function targetPlan(
   const equity_now = safe(cash) + now;
   const equity_after = safe(cash) + then;
 
-  const total_lots = (Array.isArray(positions) ? positions : [])
-    .reduce((s, x) => s + Math.max(0, safe(x.lots)), 0);
-  const required_initial = Math.max(0, safe(spec.initial_margin)) * total_lots;
+  // 逐月份算：遠月部位每口保證金較高（期貨商加收），不能全部按近月口徑乘總口數
+  const required_initial = (Array.isArray(positions) ? positions : [])
+    .reduce((s, x) => s + marginPerLot(spec, x.month).initial * Math.max(0, safe(x.lots)), 0);
   const reserve = required_initial * Math.max(1, safe(reserveMultiple, 2.5));
 
   return {
@@ -1472,7 +1603,7 @@ export function addPositionPlan(
   const fits = (n: number) => { const s = summarizeAccountAll(virtual(n), products, cash); return s.equity >= s.required_initial; };
   let max_lots = 0;
   if (pp && px > 0) {
-    const perLot = Math.max(1, safe(pp.spec.initial_margin) + 2 * safe(pp.spec.fee_per_lot)
+    const perLot = Math.max(1, marginPerLot(pp.spec, month).initial + 2 * safe(pp.spec.fee_per_lot)
       + 2 * px * Math.max(1, safe(pp.spec.contract_size, 1000)) * Math.max(0, safe(pp.spec.tax_rate)));
     let n = Math.max(0, Math.floor((before.equity - before.required_initial) / perLot) + 1);
     while (n > 0 && !fits(n)) n--;
@@ -1573,7 +1704,7 @@ export function multiAddPlan(
     const price = pp ? priceOf(pp.price, month) : 0;
     const lot_value = pp ? price * Math.max(1, safe(pp.spec.contract_size, 1000)) : 0;
     const typed = r.lots === null || !Number.isFinite(r.lots) ? null : Math.max(0, Math.floor(r.lots));
-    return { pp, price, lot_value, typed };
+    return { pp, price, lot_value, typed, month };
   });
 
   const fixedNotional = info.reduce((s, x) => s + (x.typed ?? 0) * x.lot_value, 0);
@@ -1599,7 +1730,7 @@ export function multiAddPlan(
   const after = summarizeAccountAll(all, products, cash);
   const out: MultiAddRow[] = input.map((r, i) => {
     const lots = resolved[i].lots;
-    const { pp, price, lot_value } = info[i];
+    const { pp, price, lot_value, month } = info[i];
     return {
       product: r.product,
       side: r.side,
@@ -1609,7 +1740,7 @@ export function multiAddPlan(
       price,
       lot_value,
       notional: lots * lot_value,
-      initial_margin: lots * Math.max(0, safe(pp?.spec.initial_margin)),
+      initial_margin: lots * (pp ? marginPerLot(pp.spec, month).initial : 0),
       room_lots: addPositionPlan(all, products, cash, { product: r.product, side: r.side, lots: 0 }).max_lots,
     };
   });
