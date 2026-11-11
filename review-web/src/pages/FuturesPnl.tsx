@@ -5158,10 +5158,22 @@ const SettingsTab: React.FC<{
         if (activeProductCfg.spec.maintenance_margin === marginInfo.maintenance
           && activeProductCfg.spec.initial_margin > marginInfo.initial) {
           const pctUp = (activeProductCfg.spec.initial_margin / marginInfo.initial - 1) * 100;
+          // 2026-11-11 起遠月加收由「遠月加收比例」欄位處理，原始／維持保證金要填近月口徑（＝期交所公告值）。
+          // 原始保證金剛好是期交所 ×(1＋加收比例)＝舊做法（把遠月加收後的數字直接填進來），
+          // 現在這樣會被再加收一次，遠月部位的保證金會多算成約 1.44 倍。
+          const far = activeProductCfg.spec.far_month_surcharge ?? 0;
+          if (far > 0 && Math.abs(activeProductCfg.spec.initial_margin / marginInfo.initial - (1 + far)) < 0.005) {
+            return {
+              text: `⚠️ 原始保證金 ${money(activeProductCfg.spec.initial_margin)} ＝ 期交所 ${apiMargins.date} 公告 ${money(marginInfo.initial)} × ${(1 + far).toFixed(2)}，`
+                + `看起來是把遠月加收後的數字直接填進來了。現在系統有「遠月加收比例」（${Math.round(far * 100)}%）會自動逐月份加收，`
+                + `這裡請改回期交所公告值（按下方「同步保證金」，原始 ${money(marginInfo.initial)}／維持 ${money(marginInfo.maintenance)}），否則遠月會被重複加收。${stale}`,
+              warn: true,
+            };
+          }
           return {
             text: `原始保證金設成 ${money(activeProductCfg.spec.initial_margin)}，比期交所 ${apiMargins.date} 公告的 ${money(marginInfo.initial)} 高 ${pctUp.toFixed(1)}%（維持保證金相同）`
               + `——如果是期貨商加收（券商 App 的原始保證金 ÷ 口數），保留這個值才對得上券商的可動用保證金與風險指標；`
-              + `期交所下次調整時，按「同步保證金」後記得再把原始保證金改回券商的收法。${stale}`,
+              + `期交所下次調整時，按「同步保證金」後記得再把原始保證金改回券商的收法。（遠月加收請改用「遠月加收比例」欄位，不要直接加在這裡。）${stale}`,
             warn: false,
           };
         }
