@@ -11,6 +11,7 @@ import {
   Search,
   LayoutDashboard,
   ArrowRightLeft,
+  RefreshCw,
 } from 'lucide-react';
 import {
   DndContext,
@@ -30,6 +31,7 @@ import {
   subscribeFolders,
   moveStock,
   addToFolder,
+  addManyToFolder,
   addFolder,
   renameFolder,
   deleteFolder,
@@ -48,6 +50,8 @@ import {
   splitSections,
 } from '../lib/folderSidebar';
 import { SymbolSearch } from './SymbolSearch';
+import { runRealSync, holdingsToNewStocks } from '../lib/realSync';
+import { lookupStockName } from '../lib/stockNames';
 
 const OPEN_KEY = 'review:folders:open';
 
@@ -117,6 +121,25 @@ export const FolderSidebar: React.FC<{ activeCode: string | null }> = ({ activeC
   const markDragEnded = () => {
     justDraggedRef.current = true;
     setTimeout(() => { justDraggedRef.current = false; }, 0);
+  };
+
+  // 「我的持股」旁的同步鈕：叫 VM 重抓玉山實際持股，再把還沒在資料夾裡的加進來（只加不刪）
+  const [holdSync, setHoldSync] = useState<{ busy: boolean; msg: string | null; err: boolean }>({ busy: false, msg: null, err: false });
+  const syncHoldings = async (folderId: FolderId) => {
+    if (holdSync.busy) return;
+    setHoldSync({ busy: true, msg: '向玉山抓持股中…（約 10 秒～3 分鐘）', err: false });
+    try {
+      const resp = await runRealSync();
+      const positions = resp.full_inventory?.positions ?? [];
+      let fresh = holdingsToNewStocks(positions, (getFolders()[folderId] ?? []).map((s) => s.code));
+      // 舊快照沒帶股名 → 用代號查中文名補上（查不到就留空，側欄會只顯示代號）
+      fresh = await Promise.all(fresh.map(async (s) => (s.name ? s : { ...s, name: (await lookupStockName(s.code)) ?? '' })));
+      const added = addManyToFolder(folderId, fresh);
+      const total = new Set(positions.filter((p) => p.shares > 0).map((p) => p.code)).size;
+      setHoldSync({ busy: false, msg: added > 0 ? `已加入 ${added} 檔（實際持股共 ${total} 檔）` : `沒有新持股（實際持股 ${total} 檔都已在裡面）`, err: false });
+    } catch (e) {
+      setHoldSync({ busy: false, msg: e instanceof Error ? e.message : '同步失敗', err: true });
+    }
   };
 
   useEffect(() => subscribeFolders(() => {
@@ -383,6 +406,17 @@ export const FolderSidebar: React.FC<{ activeCode: string | null }> = ({ activeC
               <span className="text-[10px] tabular-nums text-zinc-600 shrink-0">
                 {filter && shownStocks.length !== allStocks.length ? `${shownStocks.length}/${allStocks.length}` : allStocks.length}
               </span>
+              {f.id === 'holdings' && (
+                <button
+                  onClick={(e) => { e.stopPropagation(); void syncHoldings(f.id); }}
+                  disabled={holdSync.busy}
+                  className="p-0.5 rounded text-zinc-500 hover:text-primary hover:bg-zinc-800 shrink-0 disabled:cursor-wait"
+                  title="從玉山同步實際持股（只加入、不會刪除）"
+                  aria-label="從玉山同步實際持股"
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 ${holdSync.busy ? 'animate-spin text-primary' : ''}`} />
+                </button>
+              )}
               <button
                 onClick={(e) => {
                   e.stopPropagation();
@@ -400,6 +434,17 @@ export const FolderSidebar: React.FC<{ activeCode: string | null }> = ({ activeC
             </>
           )}
         </div>
+
+        {f.id === 'holdings' && holdSync.msg && (
+          <div className={`mx-1.5 mb-1 flex items-start justify-between gap-1 text-[10px] leading-snug ${holdSync.err ? 'text-rose-400' : 'text-zinc-500'}`}>
+            <span>{holdSync.msg}</span>
+            {!holdSync.busy && (
+              <button onClick={() => setHoldSync({ busy: false, msg: null, err: false })} className="shrink-0 text-zinc-600 hover:text-zinc-300" aria-label="關閉">
+                <X className="w-3 h-3" />
+              </button>
+            )}
+          </div>
+        )}
 
         {/* 資料夾內搜尋框（從 ⋯ →「加入個股」打開） */}
         {activeSearchFolder === f.id && (

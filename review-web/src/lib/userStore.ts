@@ -199,6 +199,17 @@ export function addToFolder(folder: FolderId, stock: UserStock): void {
   }
 }
 
+/** 一次加入多檔（只存檔一次）；同代號略過，回傳實際加入幾檔。 */
+export function addManyToFolder(folder: FolderId, stocks: UserStock[]): number {
+  if (!state.stocks[folder] && !state.folders.some((f) => f.id === folder)) return 0;
+  const list = state.stocks[folder] || [];
+  const have = new Set(list.map((s) => s.code));
+  const fresh = stocks.filter((s) => !have.has(s.code) && have.add(s.code));
+  if (fresh.length === 0) return 0;
+  persist({ folders: state.folders, stocks: { ...state.stocks, [folder]: [...list, ...fresh] } });
+  return fresh.length;
+}
+
 // 移除
 export function removeFromFolder(folder: FolderId, code: string): void {
   const list = state.stocks[folder] || [];

@@ -244,7 +244,7 @@ export function SimPanel({ positions, products, productsMap, cash }: {
       tone="sky"
       desc="還沒下單前先試算：不同口數要多少保證金、帳戶撐不撐得住、價格漲跌多少會賺賠多少。純試算，不存雲端、不動真實部位。"
     >
-      <div className="space-y-5" data-testid="futures-sim">
+      <div className="space-y-3.5" data-testid="futures-sim">
         {/* ── 輸入 ── */}
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
           <div className="col-span-2">
@@ -329,8 +329,8 @@ export function SimPanel({ positions, products, productsMap, cash }: {
         ) : (
           <>
             {/* ── 兩條滑軌：口數、價格漲跌幅 ── */}
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-x-8 gap-y-5">
-              <div className="space-y-2">
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-x-8 gap-y-3">
+              <div className="space-y-1.5">
                 <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1 text-xs">
                   <span className="text-zinc-400">
                     口數
@@ -354,7 +354,7 @@ export function SimPanel({ positions, products, productsMap, cash }: {
                 </div>
               </div>
 
-              <div className="space-y-2">
+              <div className="space-y-1.5">
                 <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1 text-xs">
                   <span className="text-zinc-400">價格漲跌幅</span>
                   <span className="font-mono font-bold text-sm text-sky-300" data-testid="sim-move-headline">
@@ -376,21 +376,21 @@ export function SimPanel({ positions, products, productsMap, cash }: {
             </div>
 
             {/* ── 結果（字體可調）── */}
-            <div className="flex flex-wrap items-center justify-between gap-2 pt-1 border-t border-border/50">
-              <h3 className="text-xs font-semibold text-zinc-200 pt-2">
+            <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-border/50">
+              <h3 className="text-xs font-semibold text-zinc-200">
                 {lots} 口、價格{movePct(move)}（{priceText(movePrice)}）的結果
               </h3>
-              <div className="pt-2"><FontScaleSlider value={fontScale} onChange={setFontScale} /></div>
+              <FontScaleSlider value={fontScale} onChange={setFontScale} />
             </div>
 
             <ScaledBox scale={fontScale}>
-              <div className={`grid grid-cols-1 ${cardAll ? 'lg:grid-cols-2' : ''} gap-4`} data-testid="sim-cards">
+              <div className={`grid grid-cols-1 ${cardAll ? 'lg:grid-cols-2' : ''} gap-3`} data-testid="sim-cards">
                 {cardNew && (
                   <ResultCard
                     testId="sim-card-new"
                     title={`只算新加入的 ${lots} 口`}
                     note="假設帳戶只有這一筆（現金同上）"
-                    tone="sky"
+                    tone="sky" wide={!cardAll}
                     row={cardNew.row} cell={cardNew.cell}
                     pnlLabel={`這 ${lots} 口的損益`} pnl={cardNew.cell?.pnl ?? 0}
                     marginLabel="這筆原始保證金" margin={cardNew.row?.sim_initial ?? 0}
@@ -504,8 +504,10 @@ const TONE_BOX: Partial<Record<Tone, string>> = {
 };
 
 /** 一種口徑的結果卡：漲跌後的損益／權益／風險指標，加上進場當下的保證金與追繳斷頭價 */
-function ResultCard({ testId, title, note, tone, row, cell, pnlLabel, pnl, pnlSub, marginLabel, margin, extra }: {
+function ResultCard({ testId, title, note, tone, wide, row, cell, pnlLabel, pnl, pnlSub, marginLabel, margin, extra }: {
   testId: string; title: string; note: string; tone: Tone;
+  /** 整排只有這一張卡時：寬螢幕改成左右兩欄（左＝漲跌後結果、右＝進場當下），不要讓標籤和數字隔整個畫面 */
+  wide?: boolean;
   row: SimRow | null; cell: SimCell | null;
   pnlLabel: string; pnl: number; pnlSub?: React.ReactNode;
   marginLabel: string; margin: number;
@@ -514,32 +516,37 @@ function ResultCard({ testId, title, note, tone, row, cell, pnlLabel, pnl, pnlSu
   const afterStatus = cell ? STATUS[cell.status] : STATUS.flat;
   const nowStatus = row ? STATUS[row.status] : STATUS.flat;
   return (
-    <div data-testid={testId} className={`rounded-xl border p-4 space-y-3 ${TONE_BOX[tone] ?? ''}`}>
-      <div>
-        <h4 className="text-sm font-bold text-zinc-100">{title}</h4>
-        <p className="text-[11px] text-zinc-500">{note}</p>
-      </div>
-
-      <div>
-        <div className="text-[11px] text-zinc-500">{pnlLabel}</div>
-        <div className={`text-2xl font-bold font-mono tabular-nums leading-tight ${pnlCls(pnl)}`} data-testid={`${testId}-pnl`}>{signed(pnl)}</div>
-        {pnlSub && <div className="text-[11px] text-zinc-500 mt-0.5 font-mono">{pnlSub}</div>}
-      </div>
-
-      <dl className="space-y-1.5 text-xs">
-        <Row label="漲跌後帳戶權益" value={cell ? money(cell.equity) : '—'} cls={cell && cell.equity < 0 ? 'text-rose-500' : 'text-zinc-100'} />
-        <div className="flex items-center justify-between gap-3">
-          <dt className="text-zinc-500">漲跌後風險指標</dt>
-          <dd className="flex items-center gap-1.5 font-mono tabular-nums text-zinc-100">
-            {cell && cell.risk !== null ? pctText(cell.risk, 0) : '—'}
-            <Chip tone={afterStatus.tone}>{afterStatus.label}</Chip>
-          </dd>
+    <div data-testid={testId}
+      className={`rounded-xl border px-4 py-3 ${wide ? 'lg:grid lg:grid-cols-2' : ''} ${TONE_BOX[tone] ?? ''}`}>
+      <div className={`space-y-2.5 ${wide ? 'lg:pr-10' : ''}`}>
+        <div className="flex flex-wrap items-baseline justify-between gap-x-3">
+          <h4 className="text-sm font-bold text-zinc-100">{title}</h4>
+          <p className="text-[11px] text-zinc-500">{note}</p>
         </div>
-      </dl>
 
-      <div className="pt-2 border-t border-border/50">
-        <div className="text-[10px] text-zinc-600 mb-1.5">進場當下</div>
-        <dl className="space-y-1.5 text-xs">
+        <div className="flex flex-wrap items-baseline justify-between gap-x-3">
+          <div className="text-[11px] text-zinc-500">{pnlLabel}</div>
+          <div className="text-right">
+            <div className={`text-2xl font-bold font-mono tabular-nums leading-tight ${pnlCls(pnl)}`} data-testid={`${testId}-pnl`}>{signed(pnl)}</div>
+            {pnlSub && <div className="text-[11px] text-zinc-500 font-mono">{pnlSub}</div>}
+          </div>
+        </div>
+
+        <dl className="space-y-1 text-xs">
+          <Row label="漲跌後帳戶權益" value={cell ? money(cell.equity) : '—'} cls={cell && cell.equity < 0 ? 'text-rose-500' : 'text-zinc-100'} />
+          <div className="flex items-center justify-between gap-3">
+            <dt className="text-zinc-500">漲跌後風險指標</dt>
+            <dd className="flex items-center gap-1.5 font-mono tabular-nums text-zinc-100">
+              {cell && cell.risk !== null ? pctText(cell.risk, 0) : '—'}
+              <Chip tone={afterStatus.tone} className="!py-0.5">{afterStatus.label}</Chip>
+            </dd>
+          </div>
+        </dl>
+      </div>
+
+      <div className={`mt-2.5 pt-2 border-t border-border/50 ${wide ? 'lg:mt-0 lg:pt-0 lg:border-t-0 lg:border-l lg:border-border/50 lg:pl-10' : ''}`}>
+        <div className="text-[10px] text-zinc-600 mb-1">進場當下</div>
+        <dl className="space-y-1 text-xs">
           <Row label={marginLabel} value={money(margin)} />
           <Row label="超額保證金（還能動用）" value={row ? money(row.excess) : '—'} cls={row && row.excess < 0 ? 'text-amber-400' : 'text-zinc-300'} />
           <div className="flex items-center justify-between gap-3">
